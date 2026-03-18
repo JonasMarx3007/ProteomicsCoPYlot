@@ -1,0 +1,19 @@
+Proteomics CoPYlot
+Copyright (c) 2025-2026 Jonas Marx
+
+The combined application and CoPYlot source in this distribution are licensed
+under GNU GPL version 3 only (SPDX: GPL-3.0-only). See LICENSE for the complete
+terms, including the absence of warranty and recipients' redistribution rights.
+Third-party components and biological data retain their respective licences.
+
+Peptide collapse
+---------------
+Original R implementation: Alexander Hogrebe, Perseus Plugin Peptide Collapse,
+RcodePeptideCollapse.R, version 1.3, 2019-04-03, licensed under GPL-3.0.
+Source: https://github.com/AlexHgO/Perseus_Plugin_Peptide_Collapse
+Python translation/rewrite and subsequent modifications: Denys Oliinyk and
+Yue Yang.
+The Python implementation is a modified version, not the upstream R program.
+
+Upstream plugin copyright notice (retained verbatim from AssemblyInfo.cs):
+Copyright © Max-Plank Institute of Biochemistry and Novo-Nordisk Foundation Center of Protein Research 2018
