@@ -1,18 +1,20 @@
-## Setup
+# ProteomicsCoPYlot
 
-### Backend
+## Install
+
+### 1. Clone the project
+git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
+cd ProteomicsCoPYlot
+
+### 2. Setup backend
 cd backend
 py -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-### Frontend
+### 3. Setup frontend
 cd frontend
 npm install
 
-### Env
-Copy the example env files and fill them in.
-
-### Run
-Backend: uvicorn app.main:app --reload
-Frontend: npm run dev
+### 3. Run
+cd ProteomicsCoPYlot
+run_app.bat
