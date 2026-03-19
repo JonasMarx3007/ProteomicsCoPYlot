@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 AnnotationKind = Literal["protein", "phospho"]
 FilterMode = Literal["per_group", "in_at_least_one_group"]
+MetadataSource = Literal["manual", "auto", "uploaded"]
 
 
 class ConditionAssignment(BaseModel):
@@ -14,7 +15,7 @@ class ConditionAssignment(BaseModel):
 
 
 class AnnotationFilterConfig(BaseModel):
-    minPresent: int = Field(default=3, ge=0)
+    minPresent: int = Field(default=0, ge=0)
     mode: FilterMode = "per_group"
 
 
@@ -39,7 +40,16 @@ class AnnotationResultResponse(BaseModel):
     filteredColumns: int
     filteredPreview: list[dict[str, Any]]
     isLog2Transformed: bool
+    metadataSource: MetadataSource = "manual"
     filter: AnnotationFilterConfig | None = None
     autoDetected: bool
     warnings: list[str] = Field(default_factory=list)
 
+
+class MetadataUploadResponse(BaseModel):
+    kind: AnnotationKind
+    filename: str
+    rows: int
+    columns: int
+    createdAt: str
+    preview: list[dict[str, Any]]

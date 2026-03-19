@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-"""
-Centralized function module for translated backend logic.
-
-This file intentionally mirrors the original Streamlit `utils/functions.py`
-concept so changes versus the original implementation are easy to inspect.
-The most relevant migrated functions are:
-- `log2_transform_data`
-- `filter_data`
-- `impute_values_with_diagnostics` (adapted from `impute_values`)
-- `qqnorm_plot_data` (adapted from `qqnorm_plot`)
-- `first_digit_distribution_data`
-- `data_pattern_structure_data`
-"""
-
 import math
 import re
 from dataclasses import dataclass
@@ -22,6 +8,9 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+
+from app.schemas.annotation import AnnotationKind
+from app.schemas.completeness import CompletenessTablesResponse
 
 FilterMode = Literal["per_group", "in_at_least_one_group"]
 DataSource = Literal["filtered", "log2", "raw"]
@@ -50,6 +39,7 @@ class ImputationDiagnostics:
     after_imputed: np.ndarray
 
 
+# Data Pipeline
 def build_metadata_from_conditions(
     data: pd.DataFrame,
     conditions: list[dict[str, object]],
@@ -309,3 +299,340 @@ def data_pattern_structure_data(values: np.ndarray) -> list[tuple[int, float]]:
     freq_of_freq = value_freq.value_counts().sort_index()
     total = float(freq_of_freq.sum()) if float(freq_of_freq.sum()) > 0 else 1.0
     return [(int(occ), float((count / total) * 100.0)) for occ, count in freq_of_freq.items()]
+
+
+# Imputation Pipeline
+def imputation_before_plot(
+    kind: AnnotationKind,
+    q_value: float,
+    adjust_std: float,
+    seed: int,
+    sample_wise: bool,
+) -> bytes:
+    from app.services.plot_images import imputation_before_plot as _impl
+
+    return _impl(kind, q_value, adjust_std, seed, sample_wise)
+
+
+def imputation_overall_fit_plot(
+    kind: AnnotationKind,
+    q_value: float,
+    adjust_std: float,
+    seed: int,
+    sample_wise: bool,
+) -> bytes:
+    from app.services.plot_images import imputation_overall_fit_plot as _impl
+
+    return _impl(kind, q_value, adjust_std, seed, sample_wise)
+
+
+def imputation_after_plot(
+    kind: AnnotationKind,
+    q_value: float,
+    adjust_std: float,
+    seed: int,
+    sample_wise: bool,
+) -> bytes:
+    from app.services.plot_images import imputation_after_plot as _impl
+
+    return _impl(kind, q_value, adjust_std, seed, sample_wise)
+
+
+# Distribution Pipeline
+def distribution_qqnorm_plot(kind: AnnotationKind) -> bytes:
+    from app.services.plot_images import distribution_qqnorm_plot as _impl
+
+    return _impl(kind)
+
+
+# Verification Pipeline
+def verification_first_digit_plot(kind: AnnotationKind) -> bytes:
+    from app.services.plot_images import verification_first_digit_plot as _impl
+
+    return _impl(kind)
+
+
+def verification_duplicate_pattern_plot(kind: AnnotationKind) -> bytes:
+    from app.services.plot_images import verification_duplicate_pattern_plot as _impl
+
+    return _impl(kind)
+
+
+# Completeness Pipeline
+def completeness_missing_value_plot(
+    kind: AnnotationKind,
+    bin_count: int = 0,
+    header: bool = True,
+    text: bool = True,
+    text_size: int = 8,
+    color: str = "#2563eb",
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.completeness_tools import completeness_missing_value_plot as _impl
+
+    return _impl(
+        kind=kind,
+        bin_count=bin_count,
+        header=header,
+        text=text,
+        text_size=text_size,
+        color=color,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def completeness_missing_value_heatmap(
+    kind: AnnotationKind,
+    include_id: bool = True,
+    header: bool = True,
+    width_cm: float = 10,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.completeness_tools import completeness_missing_value_heatmap as _impl
+
+    return _impl(
+        kind=kind,
+        include_id=include_id,
+        header=header,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def completeness_tables(
+    kind: AnnotationKind,
+    outlier_threshold: float = 50.0,
+    include_id: bool = True,
+) -> CompletenessTablesResponse:
+    from app.services.completeness_tools import completeness_tables as _impl
+
+    return _impl(
+        kind=kind,
+        outlier_threshold=outlier_threshold,
+        include_id=include_id,
+    )
+
+
+# QC Pipeline
+def qc_coverage_plot(
+    kind: AnnotationKind,
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    summary: bool = False,
+    text: bool = False,
+    text_size: int = 9,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_coverage_plot as _impl
+
+    return _impl(
+        kind=kind,
+        include_id=include_id,
+        header=header,
+        legend=legend,
+        summary=summary,
+        text=text,
+        text_size=text_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_intensity_histogram_plot(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_intensity_histogram_plot as _impl
+
+    return _impl(
+        kind=kind,
+        header=header,
+        legend=legend,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_boxplot_plot(
+    kind: AnnotationKind,
+    mode: str = "Mean",
+    outliers: bool = False,
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    text: bool = False,
+    text_size: int = 9,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_boxplot_plot as _impl
+
+    return _impl(
+        kind=kind,
+        mode=mode,
+        outliers=outliers,
+        include_id=include_id,
+        header=header,
+        legend=legend,
+        text=text,
+        text_size=text_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_cv_plot(
+    kind: AnnotationKind,
+    outliers: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    text: bool = False,
+    text_size: int = 9,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_cv_plot as _impl
+
+    return _impl(
+        kind=kind,
+        outliers=outliers,
+        header=header,
+        legend=legend,
+        text=text,
+        text_size=text_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_pca_plot(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    plot_dim: str = "2D",
+    add_ellipses: bool = False,
+    dot_size: int = 5,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_pca_plot as _impl
+
+    return _impl(
+        kind=kind,
+        header=header,
+        legend=legend,
+        plot_dim=plot_dim,
+        add_ellipses=add_ellipses,
+        dot_size=dot_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_pca_interactive_html(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    plot_dim: str = "2D",
+    add_ellipses: bool = False,
+    dot_size: int = 8,
+    width_cm: float = 20,
+    height_cm: float = 10,
+) -> str:
+    from app.services.plot_images import qc_pca_interactive_html as _impl
+
+    return _impl(
+        kind=kind,
+        header=header,
+        legend=legend,
+        plot_dim=plot_dim,
+        add_ellipses=add_ellipses,
+        dot_size=dot_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+    )
+
+
+def qc_abundance_plot(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    condition: str = "All Conditions",
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_abundance_plot as _impl
+
+    return _impl(
+        kind=kind,
+        header=header,
+        legend=legend,
+        condition=condition,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_abundance_interactive_html(
+    kind: AnnotationKind,
+    condition: str = "All Conditions",
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+) -> str:
+    from app.services.plot_images import qc_abundance_interactive_html as _impl
+
+    return _impl(
+        kind=kind,
+        condition=condition,
+        header=header,
+        legend=legend,
+        width_cm=width_cm,
+        height_cm=height_cm,
+    )
+
+
+def qc_correlation_plot(
+    kind: AnnotationKind,
+    method: str = "Matrix",
+    include_id: bool = False,
+    full_range: bool = False,
+    width_cm: float = 20,
+    height_cm: float = 16,
+    dpi: int = 400,
+) -> bytes:
+    from app.services.plot_images import qc_correlation_plot as _impl
+
+    return _impl(
+        kind=kind,
+        method=method,
+        include_id=include_id,
+        full_range=full_range,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
