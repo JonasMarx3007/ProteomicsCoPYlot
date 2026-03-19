@@ -30,7 +30,6 @@ export default function Sidebar({ activeSection, onChange }: SidebarProps) {
           <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
             Proteomics CoPYlot
           </div>
-          <div className="mt-1 text-2xl font-bold text-slate-900">Rewrite</div>
         </div>
       </div>
 
