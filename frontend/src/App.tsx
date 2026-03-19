@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import UploadPage from "./features/upload/UploadPage";
@@ -19,6 +19,10 @@ export default function App() {
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
   const [currentDataset, setCurrentDataset] =
     useState<DatasetPreviewResponse | null>(null);
+
+  useEffect(() => {
+    document.title = "Proteomics CoPYlot";
+  }, []);
 
   const topBar = useMemo(() => {
     if (activeSection !== "data") return null;

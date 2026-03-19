@@ -1,33 +1,39 @@
+import { useState } from "react";
 import type { DatasetKind } from "../../lib/types";
 
 type UploadFormProps = {
-  file: File | null;
   kind: DatasetKind;
   loading: boolean;
-  onFileChange: (file: File | null) => void;
   onKindChange: (kind: DatasetKind) => void;
-  onSubmit: () => void;
+  onFileSubmit: (file: File, kind: "protein" | "phospho") => void;
+  onPeptideSubmit: (path: string) => void;
 };
 
 export default function UploadForm({
-  file,
   kind,
   loading,
-  onFileChange,
   onKindChange,
-  onSubmit,
+  onFileSubmit,
+  onPeptideSubmit,
 }: UploadFormProps) {
+  const [file, setFile] = useState<File | null>(null);
+  const [peptidePath, setPeptidePath] = useState("");
+
+  const isTableKind = kind === "protein" || kind === "phospho";
+  const isPeptide = kind === "peptide";
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4">
-        <h2 className="text-lg font-semibold">Upload dataset</h2>
+        <h2 className="text-lg font-semibold">Upload Dataset</h2>
         <p className="text-sm text-slate-500">
-          Supported formats: CSV, TSV, TXT, XLSX, Parquet
+          Protein and phospho datasets are uploaded and previewed. Peptide stores
+          only the absolute file path.
         </p>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)_auto] lg:items-end">
-        <div className="min-w-0">
+      <div className="grid gap-4">
+        <div className="max-w-sm">
           <label className="mb-2 block text-sm font-medium text-slate-700">
             Dataset type
           </label>
@@ -38,33 +44,58 @@ export default function UploadForm({
           >
             <option value="protein">Protein</option>
             <option value="phospho">Phospho</option>
+            <option value="peptide">Peptide</option>
           </select>
         </div>
 
-        <div className="min-w-0">
-          <label className="mb-2 block text-sm font-medium text-slate-700">
-            File
-          </label>
-          <input
-            type="file"
-            accept=".csv,.tsv,.txt,.xlsx,.parquet"
-            onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
-            className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
-          />
-          {file && (
-            <div className="mt-2 truncate text-sm text-slate-500">
-              {file.name}
+        {isTableKind && (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div className="min-w-0">
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                File
+              </label>
+              <input
+                type="file"
+                accept=".csv,.tsv,.txt,.xlsx,.parquet"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
             </div>
-          )}
-        </div>
 
-        <button
-          onClick={onSubmit}
-          disabled={!file || loading}
-          className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
-        >
-          {loading ? "Uploading..." : "Upload"}
-        </button>
+            <button
+              onClick={() => file && onFileSubmit(file, kind)}
+              disabled={!file || loading}
+              className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
+            >
+              {loading ? "Uploading..." : "Upload"}
+            </button>
+          </div>
+        )}
+
+        {isPeptide && (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div className="min-w-0">
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Absolute file path
+              </label>
+              <input
+                type="text"
+                value={peptidePath}
+                onChange={(e) => setPeptidePath(e.target.value)}
+                placeholder="C:\Data\my_peptide_file.tsv"
+                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </div>
+
+            <button
+              onClick={() => onPeptideSubmit(peptidePath)}
+              disabled={!peptidePath.trim() || loading}
+              className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
+            >
+              {loading ? "Saving..." : "Save Path"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

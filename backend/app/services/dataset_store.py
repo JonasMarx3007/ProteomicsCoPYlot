@@ -2,35 +2,61 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
-from uuid import uuid4
 
 import pandas as pd
 
-DatasetKind = Literal["protein", "phospho"]
+DatasetKind = Literal["protein", "phospho", "peptide"]
 
 
 @dataclass
-class StoredDataset:
-    dataset_id: str
+class StoredTableDataset:
     filename: str
-    kind: DatasetKind
+    kind: Literal["protein", "phospho"]
     frame: pd.DataFrame
 
 
-_DATASETS: dict[str, StoredDataset] = {}
+@dataclass
+class StoredPeptideDataset:
+    filename: str
+    kind: Literal["peptide"]
+    path: str
 
 
-def save_dataset(filename: str, kind: DatasetKind, frame: pd.DataFrame) -> StoredDataset:
-    dataset_id = f"ds_{uuid4().hex[:12]}"
-    stored = StoredDataset(
-        dataset_id=dataset_id,
+_CURRENT_DATASETS: dict[str, StoredTableDataset | StoredPeptideDataset | None] = {
+    "protein": None,
+    "phospho": None,
+    "peptide": None,
+}
+
+
+def save_table_dataset(
+    filename: str, kind: Literal["protein", "phospho"], frame: pd.DataFrame
+) -> StoredTableDataset:
+    stored = StoredTableDataset(
         filename=filename,
         kind=kind,
         frame=frame,
     )
-    _DATASETS[dataset_id] = stored
+    _CURRENT_DATASETS[kind] = stored
     return stored
 
 
-def get_dataset(dataset_id: str) -> StoredDataset | None:
-    return _DATASETS.get(dataset_id)
+def save_peptide_path(path: str) -> StoredPeptideDataset:
+    normalized = path.strip()
+    filename = normalized.replace("\\", "/").split("/")[-1]
+
+    stored = StoredPeptideDataset(
+        filename=filename,
+        kind="peptide",
+        path=normalized,
+    )
+    _CURRENT_DATASETS["peptide"] = stored
+    return stored
+
+
+def get_current_dataset(kind: DatasetKind):
+    return _CURRENT_DATASETS.get(kind)
+
+
+def get_all_current_datasets():
+    return _CURRENT_DATASETS.copy()
