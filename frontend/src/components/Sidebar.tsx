@@ -20,41 +20,76 @@ const items: SidebarItem[] = [
 type SidebarProps = {
   activeSection: SidebarSection;
   onChange: (section: SidebarSection) => void;
+  isOpen: boolean;
+  onClose: () => void;
 };
 
-export default function Sidebar({ activeSection, onChange }: SidebarProps) {
+export default function Sidebar({
+  activeSection,
+  onChange,
+  isOpen,
+  onClose,
+}: SidebarProps) {
   return (
-    <aside className="hidden h-screen w-64 shrink-0 border-r border-slate-200 bg-white md:flex md:flex-col">
-      <div className="shrink-0 p-4">
-        <div className="mb-6">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-            Proteomics CoPYlot
+    <>
+      <div
+        className={[
+          "fixed inset-0 z-30 bg-slate-900/40 transition-opacity md:hidden",
+          isOpen ? "opacity-100" : "pointer-events-none opacity-0",
+        ].join(" ")}
+        onClick={onClose}
+      />
+
+      <aside
+        className={[
+          "fixed inset-y-0 left-0 z-40 flex h-screen w-72 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-300",
+          isOpen ? "translate-x-0" : "-translate-x-full",
+          "md:static md:z-auto md:flex md:w-72 md:translate-x-0",
+        ].join(" ")}
+      >
+        <div className="flex items-start justify-between p-5">
+          <div className="pr-4">
+            <div className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
+              Proteomics CoPYlot
+            </div>
           </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 md:hidden"
+            aria-label="Close sidebar"
+          >
+            ✕
+          </button>
         </div>
-      </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <nav className="space-y-2">
-          {items.map((item) => {
-            const active = item.key === activeSection;
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+          <nav className="space-y-2">
+            {items.map((item) => {
+              const active = item.key === activeSection;
 
-            return (
-              <button
-                key={item.key}
-                onClick={() => onChange(item.key)}
-                className={[
-                  "w-full rounded-xl px-4 py-3 text-left text-sm transition",
-                  active
-                    ? "bg-slate-900 text-white shadow"
-                    : "text-slate-700 hover:bg-slate-100",
-                ].join(" ")}
-              >
-                {item.label}
-              </button>
-            );
-          })}
-        </nav>
-      </div>
-    </aside>
+              return (
+                <button
+                  key={item.key}
+                  onClick={() => {
+                    onChange(item.key);
+                    onClose();
+                  }}
+                  className={[
+                    "w-full rounded-xl px-4 py-3 text-left text-sm transition",
+                    active
+                      ? "bg-slate-900 text-white shadow"
+                      : "text-slate-700 hover:bg-slate-100",
+                  ].join(" ")}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </aside>
+    </>
   );
 }
