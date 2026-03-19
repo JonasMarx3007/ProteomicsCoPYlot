@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes_annotations import router as annotations_router
+from app.api.routes_data_tools import router as data_tools_router
 from app.api.routes_datasets import router as datasets_router
+from app.api.routes_plots import router as plots_router
+from app.api.routes_qc import router as qc_router
 
 app = FastAPI(title="Proteomics CoPYlot API")
 
@@ -17,6 +21,10 @@ app.add_middleware(
 )
 
 app.include_router(datasets_router)
+app.include_router(annotations_router)
+app.include_router(data_tools_router)
+app.include_router(qc_router)
+app.include_router(plots_router)
 
 
 @app.get("/")
