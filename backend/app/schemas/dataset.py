@@ -1,14 +1,37 @@
-from typing import Literal, Any
+from typing import Any, Literal
+
 from pydantic import BaseModel
 
-DatasetKind = Literal["protein", "phospho"]
+DatasetKind = Literal["protein", "phospho", "peptide"]
+TableDatasetKind = Literal["protein", "phospho"]
+
 
 class DatasetPreviewResponse(BaseModel):
-    datasetId: str
     filename: str
-    kind: DatasetKind
+    kind: TableDatasetKind
     format: str
     rows: int
     columns: int
     columnNames: list[str]
     preview: list[dict[str, Any]]
+
+
+class PeptidePathResponse(BaseModel):
+    filename: str
+    kind: Literal["peptide"]
+    format: str
+    path: str
+    rows: int
+    columns: int
+    columnNames: list[str]
+    preview: list[dict[str, Any]]
+
+
+class CurrentDatasetsResponse(BaseModel):
+    protein: DatasetPreviewResponse | None
+    phospho: DatasetPreviewResponse | None
+    peptide: PeptidePathResponse | None
+
+
+class PeptidePathRequest(BaseModel):
+    path: str

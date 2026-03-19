@@ -5,11 +5,22 @@ import type {
   PeptidePathResponse,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+async function parseJson(response: Response) {
+  const text = await response.text();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("Backend returned invalid JSON");
+  }
+}
 
 export async function uploadDataset(
   file: File,
-  kind: "protein" | "phospho"
+  kind: Extract<DatasetKind, "protein" | "phospho">
 ): Promise<DatasetPreviewResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -20,18 +31,19 @@ export async function uploadDataset(
     body: form,
   });
 
-  const data = await response.json();
+  const data = await parseJson(response);
 
   if (!response.ok) {
-    throw new Error(data.detail || "Upload failed");
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Upload failed"
+    );
   }
 
-  return data;
+  return data as DatasetPreviewResponse;
 }
 
-export async function savePeptidePath(
-  path: string
-): Promise<PeptidePathResponse> {
+export async function savePeptidePath(path: string): Promise<PeptidePathResponse> {
   const response = await fetch(`${API_BASE}/api/datasets/peptide-path`, {
     method: "POST",
     headers: {
@@ -40,22 +52,28 @@ export async function savePeptidePath(
     body: JSON.stringify({ path }),
   });
 
-  const data = await response.json();
+  const data = await parseJson(response);
 
   if (!response.ok) {
-    throw new Error(data.detail || "Saving peptide path failed");
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Saving peptide path failed"
+    );
   }
 
-  return data;
+  return data as PeptidePathResponse;
 }
 
 export async function getCurrentDatasets(): Promise<CurrentDatasetsResponse> {
   const response = await fetch(`${API_BASE}/api/datasets/current`);
-  const data = await response.json();
+  const data = await parseJson(response);
 
   if (!response.ok) {
-    throw new Error(data.detail || "Failed to load current datasets");
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load current datasets"
+    );
   }
 
-  return data;
+  return data as CurrentDatasetsResponse;
 }
