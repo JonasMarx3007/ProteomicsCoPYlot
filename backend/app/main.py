@@ -14,3 +14,8 @@ app.add_middleware(
 )
 
 app.include_router(datasets_router)
+
+
+@app.get("/")
+async def root():
+    return {"message": "Backend is running"}
