@@ -34,8 +34,8 @@ export default function Sidebar({
     <>
       <div
         className={[
-          "fixed inset-0 z-30 bg-slate-900/40 transition-opacity md:hidden",
-          isOpen ? "opacity-100" : "pointer-events-none opacity-0",
+          "fixed inset-0 z-30 bg-slate-900/40 transition-opacity duration-300",
+          isOpen ? "opacity-100 md:hidden" : "pointer-events-none opacity-0",
         ].join(" ")}
         onClick={onClose}
       />
@@ -44,12 +44,11 @@ export default function Sidebar({
         className={[
           "fixed inset-y-0 left-0 z-40 flex h-screen w-72 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-300",
           isOpen ? "translate-x-0" : "-translate-x-full",
-          "md:static md:z-auto md:flex md:w-72 md:translate-x-0",
         ].join(" ")}
       >
         <div className="flex items-start justify-between p-5">
           <div className="pr-4">
-            <div className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
+            <div className="text-2xl font-bold tracking-tight text-slate-900">
               Proteomics CoPYlot
             </div>
           </div>
@@ -57,7 +56,7 @@ export default function Sidebar({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 md:hidden"
+            className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
             aria-label="Close sidebar"
           >
             ✕
@@ -72,10 +71,7 @@ export default function Sidebar({
               return (
                 <button
                   key={item.key}
-                  onClick={() => {
-                    onChange(item.key);
-                    onClose();
-                  }}
+                  onClick={() => onChange(item.key)}
                   className={[
                     "w-full rounded-xl px-4 py-3 text-left text-sm transition",
                     active
