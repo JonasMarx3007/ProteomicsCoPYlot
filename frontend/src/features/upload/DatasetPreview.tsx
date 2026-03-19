@@ -6,16 +6,15 @@ type DatasetPreviewProps = {
 
 export default function DatasetPreview({ dataset }: DatasetPreviewProps) {
   return (
-    <div className="space-y-6 min-w-0">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <StatCard label="Dataset ID" value={dataset.datasetId} />
+    <div className="min-w-0 space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Filename" value={dataset.filename} />
         <StatCard label="Kind" value={dataset.kind} />
         <StatCard label="Rows" value={String(dataset.rows)} />
         <StatCard label="Columns" value={String(dataset.columns)} />
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm min-w-0">
+      <div className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-4">
           <h2 className="text-lg font-semibold">Preview</h2>
           <p className="text-sm text-slate-500">
@@ -30,9 +29,11 @@ export default function DatasetPreview({ dataset }: DatasetPreviewProps) {
                 {dataset.columnNames.map((col) => (
                   <th
                     key={col}
-                    className="whitespace-nowrap border-b border-slate-200 px-4 py-3 text-left font-medium text-slate-700"
+                    className="border-b border-slate-200 px-4 py-3 text-left font-medium text-slate-700 align-top"
                   >
-                    {col}
+                    <div className="max-w-[220px] whitespace-pre-line break-words leading-5">
+                      {wrapEveryNCharacters(col, 20)}
+                    </div>
                   </th>
                 ))}
               </tr>
@@ -60,7 +61,7 @@ export default function DatasetPreview({ dataset }: DatasetPreviewProps) {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-w-0">
+    <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
         {label}
       </div>
@@ -69,4 +70,15 @@ function StatCard({ label, value }: { label: string; value: string }) {
       </div>
     </div>
   );
+}
+
+function wrapEveryNCharacters(text: string, chunkSize: number): string {
+  if (!text) return "";
+
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.slice(i, i + chunkSize));
+  }
+
+  return chunks.join("\n");
 }
