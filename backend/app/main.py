@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+from app.api.routes_datasets import router as datasets_router
+
+app = FastAPI(title="Proteomics CoPYlot API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -11,10 +13,4 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"message": "Backend is working"}
-
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
+app.include_router(datasets_router)
