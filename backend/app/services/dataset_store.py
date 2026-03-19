@@ -6,12 +6,13 @@ from typing import Literal
 import pandas as pd
 
 DatasetKind = Literal["protein", "phospho", "peptide"]
+TableDatasetKind = Literal["protein", "phospho"]
 
 
 @dataclass
 class StoredTableDataset:
     filename: str
-    kind: Literal["protein", "phospho"]
+    kind: TableDatasetKind
     frame: pd.DataFrame
 
 
@@ -30,13 +31,11 @@ _CURRENT_DATASETS: dict[str, StoredTableDataset | StoredPeptideDataset | None] =
 
 
 def save_table_dataset(
-    filename: str, kind: Literal["protein", "phospho"], frame: pd.DataFrame
+    filename: str,
+    kind: TableDatasetKind,
+    frame: pd.DataFrame,
 ) -> StoredTableDataset:
-    stored = StoredTableDataset(
-        filename=filename,
-        kind=kind,
-        frame=frame,
-    )
+    stored = StoredTableDataset(filename=filename, kind=kind, frame=frame)
     _CURRENT_DATASETS[kind] = stored
     return stored
 
