@@ -10,3 +10,16 @@ export type DatasetPreviewResponse = {
   columnNames: string[];
   preview: Record<string, unknown>[];
 };
+
+export type SidebarSection =
+  | "data"
+  | "qc"
+  | "stats"
+  | "peptide"
+  | "singleProtein"
+  | "phospho"
+  | "comparison"
+  | "summary"
+  | "external";
+
+export type DataTab = "upload" | "meta";
