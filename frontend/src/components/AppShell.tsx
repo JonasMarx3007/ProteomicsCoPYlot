@@ -30,7 +30,7 @@ export default function AppShell({
         {topBar ? <div className="shrink-0">{topBar}</div> : null}
 
         <main className="min-w-0 flex-1 overflow-auto p-4 sm:p-6">
-          <div className="mx-auto w-full max-w-[1600px]">{children}</div>
+          <div className="w-full">{children}</div>
         </main>
       </div>
     </div>
