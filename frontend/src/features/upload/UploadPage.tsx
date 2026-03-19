@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getCurrentDatasets,
   savePeptidePath,
@@ -19,7 +19,6 @@ type UploadPageProps = {
 
 export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
   const [kind, setKind] = useState<DatasetKind>("protein");
-  const [result, setResult] = useState<DatasetPreviewResponse | null>(null);
   const [current, setCurrent] = useState<CurrentDatasetsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +26,7 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
   async function refreshCurrentDatasets() {
     const data = await getCurrentDatasets();
     setCurrent(data);
+    return data;
   }
 
   useEffect(() => {
@@ -35,6 +35,15 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
     });
   }, []);
 
+  const displayedDataset = useMemo(() => {
+    if (!current || kind === "peptide") return null;
+    return current[kind];
+  }, [current, kind]);
+
+  useEffect(() => {
+    onDatasetUploaded?.(displayedDataset);
+  }, [displayedDataset, onDatasetUploaded]);
+
   async function handleFileSubmit(
     file: File,
     uploadKind: "protein" | "phospho"
@@ -42,10 +51,11 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
     try {
       setLoading(true);
       setError(null);
-      const uploaded = await uploadDataset(file, uploadKind);
-      setResult(uploaded);
-      onDatasetUploaded?.(uploaded);
-      await refreshCurrentDatasets();
+
+      await uploadDataset(file, uploadKind);
+      const updated = await refreshCurrentDatasets();
+
+      onDatasetUploaded?.(updated[uploadKind]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -57,10 +67,11 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
     try {
       setLoading(true);
       setError(null);
+
       await savePeptidePath(path);
-      setResult(null);
-      onDatasetUploaded?.(null);
       await refreshCurrentDatasets();
+
+      onDatasetUploaded?.(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Saving path failed");
     } finally {
@@ -70,8 +81,6 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
 
   return (
     <div className="space-y-6">
-      <CurrentDatasetsPanel current={current} />
-
       <UploadForm
         kind={kind}
         loading={loading}
@@ -80,21 +89,29 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
         onPeptideSubmit={handlePeptideSubmit}
       />
 
+      <CurrentDatasetsPanel current={current} />
+
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {kind !== "peptide" && result ? (
-        <DatasetPreview dataset={result} />
+      {kind !== "peptide" && displayedDataset ? (
+        <DatasetPreview dataset={displayedDataset} />
       ) : kind === "peptide" ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
-          Peptide datasets store only the absolute file path. No preview is shown.
+        <div className="rounded-2xl border border-slate-200 bg-white p-6">
+          <h2 className="text-lg font-semibold text-slate-900">Preview</h2>
+          <p className="mt-2 text-sm text-slate-500">
+            Peptide datasets store only the absolute file path. No preview is shown.
+          </p>
         </div>
       ) : (
-        <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
-          No dataset uploaded yet.
+        <div className="rounded-2xl border border-slate-200 bg-white p-6">
+          <h2 className="text-lg font-semibold text-slate-900">Preview</h2>
+          <p className="mt-2 text-sm text-slate-500">
+            No {kind} dataset uploaded yet.
+          </p>
         </div>
       )}
     </div>
