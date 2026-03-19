@@ -22,9 +22,6 @@ export default function AppShell({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
           <div className="text-lg font-semibold">Proteomics CoPYlot</div>
-          <div className="text-sm text-slate-500">
-            Python backend · React frontend
-          </div>
         </header>
 
         {topBar ? <div className="shrink-0">{topBar}</div> : null}
