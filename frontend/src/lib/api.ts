@@ -2,15 +2,18 @@ import type {
   AnnotationGenerateRequest,
   AnnotationKind,
   AnnotationResultResponse,
+  CompletenessTablesResponse,
   DistributionSummaryResponse,
   CurrentDatasetsResponse,
   DatasetPreviewResponse,
   DatasetKind,
   ImputationResultResponse,
   ImputationRunRequest,
+  MetadataUploadResponse,
   PeptidePathResponse,
   QcSummaryResponse,
   QcPlotOptionsResponse,
+  QcTableResponse,
   VerificationSummaryResponse,
 } from "./types";
 
@@ -125,6 +128,63 @@ export async function getCurrentAnnotation(
   return data as AnnotationResultResponse;
 }
 
+export async function uploadAnnotationMetadata(
+  file: File,
+  kind: AnnotationKind
+): Promise<MetadataUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", kind);
+
+  const response = await fetch(`${API_BASE}/api/annotations/metadata/upload`, {
+    method: "POST",
+    body: form,
+  });
+
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to upload metadata"
+    );
+  }
+
+  return data as MetadataUploadResponse;
+}
+
+export async function getUploadedAnnotationMetadata(
+  kind: AnnotationKind
+): Promise<MetadataUploadResponse | null> {
+  const response = await fetch(`${API_BASE}/api/annotations/metadata/current/${kind}`);
+  const data = await parseJson(response);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load uploaded metadata"
+    );
+  }
+
+  return data as MetadataUploadResponse;
+}
+
+export async function clearUploadedAnnotationMetadata(kind: AnnotationKind): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/annotations/metadata/current/${kind}`, {
+    method: "DELETE",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to clear uploaded metadata"
+    );
+  }
+}
+
 export async function runImputation(
   payload: ImputationRunRequest
 ): Promise<ImputationResultResponse> {
@@ -143,6 +203,28 @@ export async function runImputation(
     );
   }
   return data as ImputationResultResponse;
+}
+
+export async function downloadImputationCsv(
+  payload: ImputationRunRequest
+): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/data-tools/imputation/download`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to download imputed CSV"
+    );
+  }
+
+  return response.blob();
 }
 
 export async function getDistributionSummary(
@@ -173,6 +255,21 @@ export async function getVerificationSummary(
   return data as VerificationSummaryResponse;
 }
 
+export async function getCompletenessTables(
+  kind: AnnotationKind,
+  params?: Record<string, string | number | boolean>
+): Promise<CompletenessTablesResponse> {
+  const response = await fetch(buildPlotUrl(`/api/data-tools/completeness/${kind}/tables`, params));
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load completeness tables"
+    );
+  }
+  return data as CompletenessTablesResponse;
+}
+
 export async function getQcSummary(kind: AnnotationKind): Promise<QcSummaryResponse> {
   const response = await fetch(`${API_BASE}/api/qc/summary/${kind}`);
   const data = await parseJson(response);
@@ -195,6 +292,27 @@ export async function getQcPlotOptions(kind: AnnotationKind): Promise<QcPlotOpti
     );
   }
   return data as QcPlotOptionsResponse;
+}
+
+export async function getQcTable(
+  kind: AnnotationKind,
+  tab: "coverage" | "boxplot" | "cv",
+  params?: Record<string, string | number | boolean>
+): Promise<QcTableResponse> {
+  let path = `/api/plots/qc/${kind}/${tab}-table`;
+  if (tab === "coverage") path = `/api/plots/qc/${kind}/coverage-table`;
+  if (tab === "boxplot") path = `/api/plots/qc/${kind}/boxplot-table`;
+  if (tab === "cv") path = `/api/plots/qc/${kind}/cv-table`;
+
+  const response = await fetch(buildPlotUrl(path, params));
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load QC table"
+    );
+  }
+  return data as QcTableResponse;
 }
 
 export function buildPlotUrl(path: string, params?: Record<string, string | number | boolean>) {

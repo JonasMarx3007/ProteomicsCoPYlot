@@ -7,3 +7,4 @@ openpyxl
 python-multipart
 matplotlib
 scipy
+plotly

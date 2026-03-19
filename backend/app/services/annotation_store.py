@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
 
 import pandas as pd
 
-from app.schemas.annotation import AnnotationFilterConfig, AnnotationKind
+from app.schemas.annotation import (
+    AnnotationFilterConfig,
+    AnnotationKind,
+    MetadataSource,
+)
 
 
 @dataclass
@@ -17,6 +20,7 @@ class StoredAnnotation:
     log2_data: pd.DataFrame
     filtered_data: pd.DataFrame
     is_log2_transformed: bool
+    metadata_source: MetadataSource
     filter_config: AnnotationFilterConfig
     auto_detected: bool
     warnings: list[str]
@@ -36,6 +40,7 @@ def save_annotation(
     log2_data: pd.DataFrame,
     filtered_data: pd.DataFrame,
     is_log2_transformed: bool,
+    metadata_source: MetadataSource,
     filter_config: AnnotationFilterConfig,
     auto_detected: bool,
     warnings: list[str],
@@ -47,6 +52,7 @@ def save_annotation(
         log2_data=log2_data.copy(),
         filtered_data=filtered_data.copy(),
         is_log2_transformed=is_log2_transformed,
+        metadata_source=metadata_source,
         filter_config=filter_config,
         auto_detected=auto_detected,
         warnings=list(warnings),
@@ -58,4 +64,3 @@ def save_annotation(
 
 def get_annotation(kind: AnnotationKind) -> StoredAnnotation | None:
     return _ANNOTATIONS.get(kind)
-

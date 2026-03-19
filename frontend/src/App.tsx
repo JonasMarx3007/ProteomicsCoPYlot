@@ -3,11 +3,12 @@ import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import UploadPage from "./features/upload/UploadPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
+import CompletenessPage from "./features/data/CompletenessPage";
 import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
 import QCPipelinePage from "./features/qc/QCPipelinePage";
-import type { DataTab, QcTab, SidebarSection } from "./lib/types";
+import type { CompletenessTab, DataTab, QcTab, SidebarSection } from "./lib/types";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -27,10 +28,17 @@ const qcTabs: { key: QcTab; label: string }[] = [
   { key: "correlation", label: "Correlation Plot" },
 ];
 
+const completenessTabs: { key: CompletenessTab; label: string }[] = [
+  { key: "missingPlot", label: "Missing Value Plot" },
+  { key: "heatmap", label: "Missing Value Heatmap" },
+  { key: "tables", label: "Tables" },
+];
+
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
   const [activeQcTab, setActiveQcTab] = useState<QcTab>("coverage");
+  const [activeCompletenessTab, setActiveCompletenessTab] = useState<CompletenessTab>("missingPlot");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -57,10 +65,24 @@ export default function App() {
       );
     }
 
+    if (activeSection === "completeness") {
+      return (
+        <TopTabs
+          tabs={completenessTabs}
+          activeTab={activeCompletenessTab}
+          onChange={setActiveCompletenessTab}
+        />
+      );
+    }
+
     return null;
-  }, [activeSection, activeDataTab, activeQcTab]);
+  }, [activeSection, activeDataTab, activeQcTab, activeCompletenessTab]);
 
   function renderContent() {
+    if (activeSection === "completeness") {
+      return <CompletenessPage activeTab={activeCompletenessTab} />;
+    }
+
     if (activeSection === "qc") {
       return <QCPipelinePage activeTab={activeQcTab} />;
     }
@@ -116,6 +138,8 @@ function sectionTitle(section: SidebarSection): string {
       return "Data";
     case "qc":
       return "QC Pipeline";
+    case "completeness":
+      return "Completeness";
     case "stats":
       return "Statistical Analysis";
     case "peptide":

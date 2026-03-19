@@ -64,9 +64,15 @@ export default function DistributionPage() {
       {summary ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
-            <div className="mt-2 text-sm text-slate-700">
-              Source used: <span className="font-medium">{summary.sourceUsed}</span>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
+              <a
+                href={qqPlotUrl}
+                download={`qqnorm_${kind}.png`}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
             </div>
             {summary.warnings.length > 0 ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
