@@ -2,48 +2,88 @@ import { useEffect, useMemo, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import UploadPage from "./features/upload/UploadPage";
-import MetaPage from "./features/metadata/MetaPage";
-import type {
-  DataTab,
-  DatasetPreviewResponse,
-  SidebarSection,
-} from "./lib/types";
+import AnnotationPage from "./features/metadata/AnnotationPage";
+import ImputationPage from "./features/data/ImputationPage";
+import DistributionPage from "./features/data/DistributionPage";
+import VerificationPage from "./features/data/VerificationPage";
+import QCPipelinePage from "./features/qc/QCPipelinePage";
+import type { DataTab, QcTab, SidebarSection } from "./lib/types";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
-  { key: "meta", label: "Meta" },
+  { key: "annotation", label: "Annotation" },
+  { key: "imputation", label: "Imputation" },
+  { key: "distribution", label: "Distribution" },
+  { key: "verification", label: "Verification" },
+];
+
+const qcTabs: { key: QcTab; label: string }[] = [
+  { key: "coverage", label: "Coverage Plot" },
+  { key: "histogram", label: "Histogram Intensity" },
+  { key: "boxplot", label: "Boxplot Intensity" },
+  { key: "cv", label: "Cov Plot" },
+  { key: "pca", label: "Principal Component Analysis" },
+  { key: "abundance", label: "Abundance Plot" },
+  { key: "correlation", label: "Correlation Plot" },
 ];
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
-  const [currentDataset, setCurrentDataset] =
-    useState<DatasetPreviewResponse | null>(null);
+  const [activeQcTab, setActiveQcTab] = useState<QcTab>("coverage");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
   }, []);
 
   const topBar = useMemo(() => {
-    if (activeSection !== "data") return null;
+    if (activeSection === "data") {
+      return (
+        <TopTabs
+          tabs={dataTabs}
+          activeTab={activeDataTab}
+          onChange={setActiveDataTab}
+        />
+      );
+    }
 
-    return (
-      <TopTabs
-        tabs={dataTabs}
-        activeTab={activeDataTab}
-        onChange={setActiveDataTab}
-      />
-    );
-  }, [activeSection, activeDataTab]);
+    if (activeSection === "qc") {
+      return (
+        <TopTabs
+          tabs={qcTabs}
+          activeTab={activeQcTab}
+          onChange={setActiveQcTab}
+        />
+      );
+    }
+
+    return null;
+  }, [activeSection, activeDataTab, activeQcTab]);
 
   function renderContent() {
+    if (activeSection === "qc") {
+      return <QCPipelinePage activeTab={activeQcTab} />;
+    }
+
     if (activeSection === "data") {
       if (activeDataTab === "upload") {
-        return <UploadPage onDatasetUploaded={setCurrentDataset} />;
+        return <UploadPage />;
       }
 
-      if (activeDataTab === "meta") {
-        return <MetaPage dataset={currentDataset} />;
+      if (activeDataTab === "annotation") {
+        return <AnnotationPage />;
+      }
+
+      if (activeDataTab === "imputation") {
+        return <ImputationPage />;
+      }
+
+      if (activeDataTab === "distribution") {
+        return <DistributionPage />;
+      }
+
+      if (activeDataTab === "verification") {
+        return <VerificationPage />;
       }
     }
 
