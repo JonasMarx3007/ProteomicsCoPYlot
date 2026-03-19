@@ -26,8 +26,8 @@ export default function UploadForm({
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-[220px_1fr_auto] md:items-end">
-        <div>
+      <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)_auto] lg:items-end">
+        <div className="min-w-0">
           <label className="mb-2 block text-sm font-medium text-slate-700">
             Dataset type
           </label>
@@ -41,7 +41,7 @@ export default function UploadForm({
           </select>
         </div>
 
-        <div>
+        <div className="min-w-0">
           <label className="mb-2 block text-sm font-medium text-slate-700">
             File
           </label>
@@ -52,14 +52,16 @@ export default function UploadForm({
             className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
           />
           {file && (
-            <div className="mt-2 text-sm text-slate-500">{file.name}</div>
+            <div className="mt-2 truncate text-sm text-slate-500">
+              {file.name}
+            </div>
           )}
         </div>
 
         <button
           onClick={onSubmit}
           disabled={!file || loading}
-          className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
         >
           {loading ? "Uploading..." : "Upload"}
         </button>

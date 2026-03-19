@@ -16,20 +16,22 @@ export default function AppShell({
   children,
 }: AppShellProps) {
   return (
-    <div className="flex min-h-screen bg-slate-50 text-slate-900">
+    <div className="flex min-h-screen w-full bg-slate-50 text-slate-900">
       <Sidebar activeSection={activeSection} onChange={onSectionChange} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-slate-200 bg-white px-6 py-4">
+        <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
           <div className="text-lg font-semibold">Proteomics CoPYlot</div>
           <div className="text-sm text-slate-500">
             Python backend · React frontend
           </div>
         </header>
 
-        {topBar}
+        {topBar ? <div className="shrink-0">{topBar}</div> : null}
 
-        <main className="flex-1 p-6">{children}</main>
+        <main className="min-w-0 flex-1 overflow-auto p-4 sm:p-6">
+          <div className="mx-auto w-full max-w-[1600px]">{children}</div>
+        </main>
       </div>
     </div>
   );
