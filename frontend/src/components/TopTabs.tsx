@@ -15,8 +15,8 @@ export default function TopTabs<T extends string>({
   onChange,
 }: TopTabsProps<T>) {
   return (
-    <div className="border-b border-slate-200 bg-white px-6">
-      <div className="flex gap-2">
+    <div className="border-b border-slate-200 bg-white px-4 sm:px-6">
+      <div className="flex flex-wrap gap-2">
         {tabs.map((tab) => {
           const active = tab.key === activeTab;
 
