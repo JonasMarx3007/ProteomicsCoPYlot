@@ -16,6 +16,7 @@ from app.services.dataset_store import (
     save_peptide_path,
     save_table_dataset,
 )
+from app.services.metadata_upload_store import clear_uploaded_metadata
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -63,6 +64,7 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
 
     stored = save_table_dataset(file.filename, kind, df)
+    clear_uploaded_metadata(kind)
     return _table_preview_response(stored)
 
 

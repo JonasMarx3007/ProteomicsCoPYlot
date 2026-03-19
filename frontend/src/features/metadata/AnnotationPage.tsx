@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  clearUploadedAnnotationMetadata,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
+  getUploadedAnnotationMetadata,
+  uploadAnnotationMetadata,
 } from "../../lib/api";
 import type {
   AnnotationFilterConfig,
@@ -10,6 +13,7 @@ import type {
   AnnotationResultResponse,
   ConditionAssignment,
   CurrentDatasetsResponse,
+  MetadataUploadResponse,
 } from "../../lib/types";
 
 type ConditionDraft = {
@@ -19,7 +23,7 @@ type ConditionDraft = {
 };
 
 const DEFAULT_FILTER: AnnotationFilterConfig = {
-  minPresent: 3,
+  minPresent: 0,
   mode: "per_group",
 };
 
@@ -36,6 +40,10 @@ export default function AnnotationPage() {
   const [result, setResult] = useState<AnnotationResultResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [metadataFile, setMetadataFile] = useState<File | null>(null);
+  const [uploadedMetadata, setUploadedMetadata] = useState<MetadataUploadResponse | null>(null);
+  const [uploadingMetadata, setUploadingMetadata] = useState(false);
+  const [clearingMetadata, setClearingMetadata] = useState(false);
 
   const activeDataset = currentDatasets?.[kind] ?? null;
   const availableColumns = activeDataset?.columnNames ?? [];
@@ -59,6 +67,14 @@ export default function AnnotationPage() {
       })
       .catch(() => {
         setResult(null);
+      });
+  }, [kind]);
+
+  useEffect(() => {
+    getUploadedAnnotationMetadata(kind)
+      .then((metadata) => setUploadedMetadata(metadata))
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load uploaded metadata");
       });
   }, [kind]);
 
@@ -123,6 +139,38 @@ export default function AnnotationPage() {
     }
   }
 
+  async function handleMetadataUpload() {
+    if (!metadataFile) {
+      setError("Please choose a metadata file first.");
+      return;
+    }
+
+    try {
+      setUploadingMetadata(true);
+      setError(null);
+      const uploaded = await uploadAnnotationMetadata(metadataFile, kind);
+      setUploadedMetadata(uploaded);
+      setMetadataFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to upload metadata");
+    } finally {
+      setUploadingMetadata(false);
+    }
+  }
+
+  async function handleClearUploadedMetadata() {
+    try {
+      setClearingMetadata(true);
+      setError(null);
+      await clearUploadedAnnotationMetadata(kind);
+      setUploadedMetadata(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear uploaded metadata");
+    } finally {
+      setClearingMetadata(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -169,6 +217,50 @@ export default function AnnotationPage() {
             />
             Dataset is already log2 transformed
           </label>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-700">Uploaded Metadata (Optional)</div>
+          <p className="mt-1 text-sm text-slate-600">
+            If a metadata file is uploaded for this level, it overrides UI condition mapping during annotation generation.
+          </p>
+          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Metadata file</label>
+              <input
+                type="file"
+                accept=".csv,.tsv,.txt,.xlsx,.parquet"
+                onChange={(e) => setMetadataFile(e.target.files?.[0] ?? null)}
+                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleMetadataUpload}
+              disabled={!metadataFile || uploadingMetadata}
+              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {uploadingMetadata ? "Uploading..." : "Upload Metadata"}
+            </button>
+            <button
+              type="button"
+              onClick={handleClearUploadedMetadata}
+              disabled={!uploadedMetadata || clearingMetadata}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {clearingMetadata ? "Clearing..." : "Clear Uploaded Metadata"}
+            </button>
+          </div>
+
+          {uploadedMetadata ? (
+            <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              Using uploaded metadata file: {uploadedMetadata.filename} ({uploadedMetadata.rows} rows)
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              No uploaded metadata for this dataset level.
+            </div>
+          )}
         </div>
       </section>
 
@@ -308,6 +400,7 @@ export default function AnnotationPage() {
               <SummaryCard label="Metadata Rows" value={String(result.metadataRows)} />
               <SummaryCard label="Conditions" value={String(result.conditionCount)} />
               <SummaryCard label="Filtered Rows" value={String(result.filteredRows)} />
+              <SummaryCard label="Metadata Source" value={result.metadataSource} />
             </div>
 
             {result.warnings.length > 0 && (
@@ -321,16 +414,31 @@ export default function AnnotationPage() {
             <h3 className="text-lg font-semibold text-slate-900">Metadata Preview</h3>
             <div className="mt-4">
               <PreviewTable
+                title="metadata_preview"
                 rows={result.metadataPreview}
                 emptyText="No metadata rows available."
               />
             </div>
           </section>
 
+          {uploadedMetadata ? (
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">Uploaded Metadata Preview</h3>
+              <div className="mt-4">
+                <PreviewTable
+                  title="uploaded_metadata_preview"
+                  rows={uploadedMetadata.preview}
+                  emptyText="No uploaded metadata preview available."
+                />
+              </div>
+            </section>
+          ) : null}
+
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Filtered Data Preview</h3>
             <div className="mt-4">
               <PreviewTable
+                title="filtered_data_preview"
                 rows={result.filteredPreview}
                 emptyText="No filtered rows available."
               />
@@ -358,9 +466,11 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function PreviewTable({
+  title,
   rows,
   emptyText,
 }: {
+  title: string;
   rows: Record<string, unknown>[];
   emptyText: string;
 }) {
@@ -381,42 +491,60 @@ function PreviewTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200">
-      <table className="min-w-full table-fixed border-collapse text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-              {columns.map((column) => {
-                const value = row[column];
-                const text = value == null ? "" : String(value);
-                return (
-                  <td
-                    key={`${rowIndex}-${column}`}
-                    className="border-b border-slate-100 px-3 py-2 text-slate-600"
-                    title={text}
-                  >
-                    <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {text}
-                    </div>
-                  </td>
-                );
-              })}
+    <div className="space-y-3">
+      <a
+        href={`data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(rows, columns))}`}
+        download={`${title}.csv`}
+        className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+      >
+        Download CSV
+      </a>
+      <div className="overflow-x-auto rounded-xl border border-slate-200">
+        <table className="min-w-full table-fixed border-collapse text-sm">
+          <thead className="bg-slate-50">
+            <tr>
+              {columns.map((column) => (
+                <th
+                  key={column}
+                  className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
+                >
+                  {column}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
+                {columns.map((column) => {
+                  const value = row[column];
+                  const text = value == null ? "" : String(value);
+                  return (
+                    <td
+                      key={`${rowIndex}-${column}`}
+                      className="border-b border-slate-100 px-3 py-2 text-slate-600"
+                      title={text}
+                    >
+                      <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
+                        {text}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
+}
+
+function rowsToCsv(rows: Record<string, unknown>[], columns: string[]): string {
+  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const lines = [
+    columns.join(","),
+    ...rows.map((row) => columns.map((column) => escape(row[column])).join(",")),
+  ];
+  return lines.join("\n");
 }

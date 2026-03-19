@@ -70,14 +70,32 @@ export default function VerificationPage() {
       {summary ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">First-Digit Analysis</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold text-slate-900">First-Digit Analysis</h3>
+              <a
+                href={firstDigitUrl}
+                download={`verification_first_digit_${kind}.png`}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
             <div className="mt-4">
               <img src={firstDigitUrl} alt="First digit verification plot" className="w-full rounded-xl border border-slate-200" />
             </div>
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Duplicate Pattern Structure</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold text-slate-900">Duplicate Pattern Structure</h3>
+              <a
+                href={duplicateUrl}
+                download={`verification_duplicate_${kind}.png`}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
             <div className="mt-4">
               <img src={duplicateUrl} alt="Duplicate pattern verification plot" className="w-full rounded-xl border border-slate-200" />
             </div>

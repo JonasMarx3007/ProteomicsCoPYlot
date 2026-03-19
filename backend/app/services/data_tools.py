@@ -169,6 +169,23 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
     )
 
 
+def imputed_dataframe(payload: ImputationRunRequest) -> pd.DataFrame:
+    _, source_data, _ = _best_imputation_source(payload.kind)
+    sample_columns = _get_sample_columns(payload.kind, source_data)
+    if not sample_columns:
+        raise ValueError(f"No sample columns found for {payload.kind} dataset.")
+
+    diagnostics = impute_values_with_diagnostics(
+        data=source_data,
+        sample_columns=sample_columns,
+        q=payload.qValue,
+        adj_std=payload.adjustStd,
+        seed=payload.seed,
+        sample_wise=payload.sampleWise,
+    )
+    return diagnostics.imputed_data
+
+
 def distribution_summary(kind: AnnotationKind) -> DistributionSummaryResponse:
     source_used, data, warnings = _best_distribution_source(kind)
     sample_columns = _get_sample_columns(kind, data)

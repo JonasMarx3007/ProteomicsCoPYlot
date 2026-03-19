@@ -60,9 +60,19 @@ export type AnnotationResultResponse = {
   filteredColumns: number;
   filteredPreview: Record<string, unknown>[];
   isLog2Transformed: boolean;
+  metadataSource: "manual" | "auto" | "uploaded";
   filter: AnnotationFilterConfig | null;
   autoDetected: boolean;
   warnings: string[];
+};
+
+export type MetadataUploadResponse = {
+  kind: AnnotationKind;
+  filename: string;
+  rows: number;
+  columns: number;
+  createdAt: string;
+  preview: Record<string, unknown>[];
 };
 
 export type DataSource = "filtered" | "log2" | "raw";
@@ -162,6 +172,15 @@ export type VerificationSummaryResponse = {
   numericValueCount: number;
 };
 
+export type CompletenessTablesResponse = {
+  kind: AnnotationKind;
+  overallMissingPercent: number;
+  outlierThreshold: number;
+  outliers: string[];
+  sampleSummary: Record<string, unknown>[];
+  featureSummary: Record<string, unknown>[];
+};
+
 export type SampleMetricPoint = {
   sample: string;
   value: number;
@@ -191,8 +210,13 @@ export type QcPlotOptionsResponse = {
   conditions: string[];
 };
 
+export type QcTableResponse = {
+  rows: Record<string, unknown>[];
+};
+
 export type SidebarSection =
   | "data"
+  | "completeness"
   | "qc"
   | "stats"
   | "peptide"
@@ -217,3 +241,5 @@ export type QcTab =
   | "pca"
   | "abundance"
   | "correlation";
+
+export type CompletenessTab = "missingPlot" | "heatmap" | "tables";

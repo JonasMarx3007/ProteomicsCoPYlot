@@ -33,9 +33,25 @@ def _get_plt():
         ) from exc
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150) -> bytes:
+def _get_plotly():
+    try:
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        return px, go
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "plotly is required for interactive plots. Install it with: "
+            "pip install plotly"
+        ) from exc
+
+
+def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=max(72, int(dpi)), bbox_inches="tight")
+    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
+    if tight:
+        save_kwargs["bbox_inches"] = "tight"
+    fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
@@ -45,8 +61,44 @@ def _cm_to_inch(value_cm: float) -> float:
     return max(1.0, float(value_cm) / 2.54)
 
 
+def _cm_to_px(value_cm: float) -> int:
+    return max(240, int(round(float(value_cm) * (96.0 / 2.54))))
+
+
 def _make_fig(plt, width_cm: float, height_cm: float):
     return plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
+
+
+def _plotly_html(fig) -> str:
+    body = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displaylogo": False, "responsive": True},
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        "#plot-root{width:100%;height:100%;}"
+        ".js-plotly-plot,.plotly-graph-div{width:100%!important;}"
+        "</style>"
+        "</head><body>"
+        "<div id='plot-root'>"
+        f"{body}"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "function resizePlot(){"
+        "var el=document.querySelector('.js-plotly-plot');"
+        "if(el && window.Plotly){window.Plotly.Plots.resize(el);}"
+        "}"
+        "window.addEventListener('load', resizePlot);"
+        "window.addEventListener('resize', resizePlot);"
+        "setTimeout(resizePlot, 80);"
+        "})();"
+        "</script>"
+        "</body></html>"
+    )
 
 
 def _imputation_source(kind: AnnotationKind):
@@ -523,7 +575,7 @@ def qc_coverage_plot(
     if ymax > 0:
         ax.set_ylim(0, ymax * 1.1)
 
-    return _to_png_bytes(fig, plt, dpi=dpi)
+    return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
 
 def qc_intensity_histogram_plot(
@@ -840,20 +892,7 @@ def qc_cv_plot(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def qc_pca_plot(
-    kind: AnnotationKind,
-    header: bool = True,
-    legend: bool = True,
-    plot_dim: str = "2D",
-    add_ellipses: bool = False,
-    dot_size: int = 5,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-) -> bytes:
-    from matplotlib.patches import Ellipse
-
-    plt = _get_plt()
+def _pca_projection(kind: AnnotationKind, plot_dim: str = "2D") -> tuple[pd.DataFrame, np.ndarray]:
     frame = _log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
@@ -885,6 +924,25 @@ def qc_pca_plot(
     pca_scores["sample"] = transposed_expr.index.astype(str)
     condition_map = meta.set_index("sample")["condition"].astype(str).to_dict()
     pca_scores["condition"] = pca_scores["sample"].map(condition_map).fillna("sample")
+    return pca_scores, explained
+
+
+def qc_pca_plot(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    plot_dim: str = "2D",
+    add_ellipses: bool = False,
+    dot_size: int = 5,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from matplotlib.patches import Ellipse
+
+    plt = _get_plt()
+    pca_scores, explained = _pca_projection(kind, plot_dim=plot_dim)
+    n_components = 3 if str(plot_dim).upper() == "3D" else 2
 
     conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
     color_map = _condition_colors(plt, conditions)
@@ -955,6 +1013,142 @@ def qc_pca_plot(
 
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
+
+
+def qc_pca_interactive_html(
+    kind: AnnotationKind,
+    header: bool = True,
+    legend: bool = True,
+    plot_dim: str = "2D",
+    add_ellipses: bool = False,
+    dot_size: int = 8,
+    width_cm: float = 20,
+    height_cm: float = 10,
+) -> str:
+    px, go = _get_plotly()
+    pca_scores, explained = _pca_projection(kind, plot_dim=plot_dim)
+    plot_3d = str(plot_dim).upper() == "3D"
+
+    height_px = _cm_to_px(height_cm)
+    conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
+
+    if plot_3d:
+        fig = px.scatter_3d(
+            pca_scores,
+            x="PC1",
+            y="PC2",
+            z="PC3",
+            color="condition",
+            hover_data={"sample": True, "condition": True},
+            opacity=0.85,
+        )
+        fig.update_traces(marker=dict(size=max(2, int(dot_size))))
+        fig.update_layout(
+            height=height_px,
+            autosize=True,
+            showlegend=legend,
+            title="3D PCA Plot" if header else None,
+            scene=dict(
+                xaxis=dict(title=f"PC1 - {explained[0]:.2f}%"),
+                yaxis=dict(title=f"PC2 - {explained[1]:.2f}%"),
+                zaxis=dict(title=f"PC3 - {explained[2]:.2f}%"),
+            ),
+        )
+        return _plotly_html(fig)
+
+    fig = px.scatter(
+        pca_scores,
+        x="PC1",
+        y="PC2",
+        color="condition",
+        hover_data={"sample": True, "condition": True},
+        opacity=0.85,
+    )
+    fig.update_traces(marker=dict(size=max(2, int(dot_size))))
+    fig.update_layout(
+        height=height_px,
+        autosize=True,
+        showlegend=legend,
+        title="PCA Plot" if header else None,
+        xaxis=dict(title=f"PC1 - {explained[0]:.2f}% variance", zeroline=False),
+        yaxis=dict(title=f"PC2 - {explained[1]:.2f}% variance", zeroline=False),
+    )
+
+    if add_ellipses:
+        for cond in conditions:
+            subset = pca_scores[pca_scores["condition"] == cond]
+            if len(subset) <= 2:
+                continue
+            points = subset[["PC1", "PC2"]].to_numpy()
+            center, axes, angle = _minimum_enclosing_ellipse(points)
+            t = np.linspace(0, 2 * np.pi, 200)
+            ellipse = np.array([axes[0] * np.cos(t), axes[1] * np.sin(t)])
+            rotation = np.array(
+                [
+                    [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
+                    [np.sin(np.radians(angle)), np.cos(np.radians(angle))],
+                ]
+            )
+            ellipse_rot = rotation @ ellipse
+            ellipse_x = ellipse_rot[0] + center[0]
+            ellipse_y = ellipse_rot[1] + center[1]
+            fig.add_trace(
+                go.Scatter(
+                    x=ellipse_x,
+                    y=ellipse_y,
+                    mode="lines",
+                    fill="toself",
+                    line=dict(width=1),
+                    showlegend=False,
+                    hoverinfo="skip",
+                    opacity=0.18,
+                )
+            )
+
+    return _plotly_html(fig)
+
+
+def _abundance_rank_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str], str]:
+    frame = _verification_frame(kind).replace(0, np.nan)
+    sample_columns = _get_sample_columns(kind, frame)
+    if not sample_columns:
+        raise ValueError("No sample columns available for abundance plot.")
+
+    _, _, _, workflow = _feature_context(frame)
+    if workflow == "Feature":
+        workflow = "Protein" if kind == "protein" else "Phosphosite"
+    key_col = "ProteinNames" if workflow == "Protein" else "PTM_Collapse_key"
+    if key_col not in frame.columns:
+        key_col = frame.columns[0]
+
+    meta = _metadata_for_kind(kind, frame, sample_columns).copy()
+    unique_conditions = meta["condition"].astype(str).dropna().unique().tolist()
+    if not unique_conditions:
+        raise ValueError("No conditions available for abundance plot.")
+
+    data_filtered = frame[[key_col] + sample_columns].copy()
+    mean_intensities = pd.DataFrame({key_col: data_filtered[key_col]})
+    for cond in unique_conditions:
+        cols = meta.loc[meta["condition"] == cond, "sample"].tolist()
+        means = data_filtered[cols].apply(pd.to_numeric, errors="coerce").mean(axis=1, skipna=True)
+        mean_intensities[cond] = np.log10(means + 1)
+
+    if len(unique_conditions) > 1:
+        keep_mask = mean_intensities[unique_conditions].isna().sum(axis=1) < (len(unique_conditions) - 1)
+        mean_intensities = mean_intensities.loc[keep_mask]
+    else:
+        mean_intensities = mean_intensities.dropna(subset=[unique_conditions[0]])
+
+    long_intensities = mean_intensities.melt(
+        id_vars=[key_col], var_name="Condition", value_name="log10Intensity"
+    )
+    long_intensities = long_intensities.dropna(subset=["log10Intensity"])
+    long_intensities["Rank"] = (
+        long_intensities.groupby("Condition")["log10Intensity"]
+        .rank(ascending=False, method="first")
+    )
+    long_intensities["Feature"] = long_intensities[key_col].astype(str)
+    return long_intensities, unique_conditions, workflow
 
 
 def qc_abundance_plot(
@@ -1037,47 +1231,125 @@ def qc_abundance_plot(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
+def qc_abundance_interactive_html(
+    kind: AnnotationKind,
+    condition: str = "All Conditions",
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+) -> str:
+    px, _ = _get_plotly()
+    long_intensities, unique_conditions, workflow = _abundance_rank_frame(kind)
+    height_px = _cm_to_px(height_cm)
+
+    if condition != "All Conditions":
+        if condition not in unique_conditions:
+            raise ValueError(f"Condition '{condition}' not found.")
+        long_intensities = long_intensities[long_intensities["Condition"] == condition]
+
+    fig = px.scatter(
+        long_intensities,
+        x="Rank",
+        y="log10Intensity",
+        color="Condition",
+        hover_data={"Feature": True, "Condition": True, "Rank": True, "log10Intensity": ":.4f"},
+        opacity=0.85,
+    )
+    fig.update_traces(marker=dict(size=6))
+    fig.update_layout(
+        height=height_px,
+        autosize=True,
+        showlegend=legend,
+        title=f"Abundance plot - {workflow}" if header else None,
+        xaxis_title=f"{workflow} Rank",
+        yaxis_title=f"log10 {workflow} Intensity",
+    )
+    return _plotly_html(fig)
+
+
 def qc_correlation_plot(
     kind: AnnotationKind,
     method: str = "Matrix",
     include_id: bool = False,
     full_range: bool = False,
-    width_cm: float = 10,
-    height_cm: float = 8,
-    dpi: int = 100,
+    width_cm: float = 20,
+    height_cm: float = 16,
+    dpi: int = 400,
 ) -> bytes:
     from matplotlib.patches import Ellipse
-    from scipy.cluster.hierarchy import leaves_list, linkage
-    from scipy.spatial.distance import squareform
+
+    try:
+        from scipy.cluster.hierarchy import leaves_list, linkage
+        from scipy.spatial.distance import squareform
+
+        has_scipy = True
+    except ModuleNotFoundError:
+        has_scipy = False
 
     plt = _get_plt()
     frame = _verification_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
+        fallback_cols = (
+            frame.apply(pd.to_numeric, errors="coerce")
+            .dropna(axis=1, how="all")
+            .columns.astype(str)
+            .tolist()
+        )
+        sample_columns = [col for col in fallback_cols if col in frame.columns]
+    if len(sample_columns) < 2:
         raise ValueError("At least two sample columns are required for correlation plot.")
 
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
+    meta["sample"] = meta["sample"].astype(str)
     meta["id"] = meta["sample"].astype(str).apply(_extract_id_or_number)
-    meta["sample_index"] = meta.groupby("condition").cumcount() + 1
+    meta["new_sample"] = meta.groupby("condition").cumcount() + 1
     if include_id:
         meta["new_sample"] = meta.apply(
-            lambda row: f"{row['condition']}_{row['sample_index']} ({row['id']})",
+            lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})",
             axis=1,
         )
     else:
-        meta["new_sample"] = meta.apply(lambda row: f"{row['condition']}_{row['sample_index']}", axis=1)
+        meta["new_sample"] = meta.apply(
+            lambda row: f"{row['condition']}_{row['new_sample']}",
+            axis=1,
+        )
 
     rename_map = dict(zip(meta["sample"], meta["new_sample"]))
-    data_filtered = frame[sample_columns].rename(columns=rename_map).apply(pd.to_numeric, errors="coerce")
-    ordered_labels = meta["new_sample"].tolist()
-    data_filtered = data_filtered[ordered_labels]
+    annotated_columns = meta["new_sample"].tolist()
+    data_filtered = (
+        frame[sample_columns]
+        .rename(columns=rename_map)
+        .reindex(columns=annotated_columns)
+        .apply(pd.to_numeric, errors="coerce")
+    )
+    data_filtered = data_filtered.dropna(axis=1, how="all")
+    if data_filtered.shape[1] < 2:
+        raise ValueError("At least two non-empty sample columns are required for correlation plot.")
 
-    corr = data_filtered.corr(method="pearson")
-    dist = (1 - corr).fillna(1.0)
-    np.fill_diagonal(dist.values, 0.0)
-    linkage_matrix = linkage(squareform(dist.values, checks=False), method="complete")
-    ordered_idx = leaves_list(linkage_matrix)
-    ordered_corr = corr.iloc[ordered_idx, ordered_idx]
+    correlation_matrix = data_filtered.corr(method="pearson")
+    if correlation_matrix.shape[0] < 2:
+        raise ValueError("Correlation matrix could not be computed from selected sample columns.")
+
+    ordered_corr = correlation_matrix
+    if has_scipy and len(correlation_matrix) > 1:
+        distance_matrix = 1 - correlation_matrix
+        distance_matrix = distance_matrix.fillna(1.0).clip(lower=0.0, upper=2.0)
+        distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
+        distance_np = distance_matrix.to_numpy(copy=True)
+        np.fill_diagonal(distance_np, 0.0)
+        try:
+            linkage_matrix = linkage(
+                squareform(distance_np, checks=False),
+                method="complete",
+            )
+            ordered_idx = leaves_list(linkage_matrix)
+            ordered_corr = correlation_matrix.iloc[ordered_idx, ordered_idx]
+        except Exception:
+            ordered_corr = correlation_matrix
+
+    ordered_corr = ordered_corr.fillna(0.0)
 
     if full_range:
         vmin, vmax = -1.0, 1.0
@@ -1088,7 +1360,15 @@ def qc_correlation_plot(
             vmin, vmax = -1.0, 1.0
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
-    if str(method).lower() == "ellipse":
+    method_normalized = str(method).strip().lower()
+    if method_normalized == "matrix":
+        cax = ax.matshow(ordered_corr, cmap="coolwarm", vmin=vmin, vmax=vmax)
+        ax.set_xticks(range(len(ordered_corr.columns)))
+        ax.set_yticks(range(len(ordered_corr.index)))
+        ax.set_xticklabels(ordered_corr.columns.tolist(), rotation=90, ha="center", va="bottom", fontsize=7)
+        ax.set_yticklabels(ordered_corr.index.tolist(), fontsize=7)
+        fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
+    elif method_normalized == "ellipse":
         n = len(ordered_corr)
         ax.set_xlim(0, n)
         ax.set_ylim(0, n)
@@ -1113,15 +1393,8 @@ def qc_correlation_plot(
 
         sm = plt.cm.ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=-1, vmax=1))
         fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title("Correlation Plot (Ellipse)")
     else:
-        cax = ax.matshow(ordered_corr, cmap="coolwarm", vmin=vmin, vmax=vmax)
-        ax.set_xticks(range(len(ordered_corr.columns)))
-        ax.set_yticks(range(len(ordered_corr.index)))
-        ax.set_xticklabels(ordered_corr.columns.tolist(), rotation=90, ha="center", va="bottom", fontsize=7)
-        ax.set_yticklabels(ordered_corr.index.tolist(), fontsize=7)
-        fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title("Correlation Plot (Matrix)")
+        raise ValueError("method must be 'Matrix' or 'Ellipse'")
 
     ax.set_xlabel("Samples")
     ax.set_ylabel("Samples")
