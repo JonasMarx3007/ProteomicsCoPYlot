@@ -1,6 +1,9 @@
 fastapi
 uvicorn[standard]
 pandas
+numpy
 pyarrow
 openpyxl
 python-multipart
+matplotlib
+scipy
