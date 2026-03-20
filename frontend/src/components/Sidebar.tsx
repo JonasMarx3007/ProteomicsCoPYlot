@@ -60,7 +60,7 @@ export default function Sidebar({
             className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
             aria-label="Close sidebar"
           >
-            ✕
+            X
           </button>
         </div>
 
