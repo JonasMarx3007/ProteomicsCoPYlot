@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildPlotUrl, downloadImputationCsv, runImputation } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
 
 export default function ImputationPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [qValue, setQValue] = useState(0.01);
   const [adjustStd, setAdjustStd] = useState(1);
   const [seed, setSeed] = useState(1337);
@@ -14,6 +16,11 @@ export default function ImputationPage() {
   const [downloadingCsv, setDownloadingCsv] = useState(false);
 
   async function fetchPreview() {
+    if (!availableKinds.includes(kind)) {
+      setResult(null);
+      setError("Please upload a protein or phospho dataset first.");
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -37,8 +44,16 @@ export default function ImputationPage() {
   }
 
   useEffect(() => {
+    if (availableKinds.length === 0) {
+      setResult(null);
+      return;
+    }
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+      return;
+    }
     fetchPreview();
-  }, [kind, qValue, adjustStd, seed, sampleWise]);
+  }, [kind, qValue, adjustStd, seed, sampleWise, availableKinds]);
 
   const plotParams = useMemo(
     () => ({
@@ -93,12 +108,9 @@ export default function ImputationPage() {
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <SelectField
             label="Dataset level"
-            value={kind}
+            value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
-            options={[
-              { value: "protein", label: "Protein" },
-              { value: "phospho", label: "Phospho" },
-            ]}
+            options={kindOptions}
           />
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
@@ -145,7 +157,13 @@ export default function ImputationPage() {
         )}
       </section>
 
-      {result ? (
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable imputation plots.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 && result ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Summary</h3>

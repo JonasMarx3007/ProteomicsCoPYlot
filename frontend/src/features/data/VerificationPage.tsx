@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
 import { buildPlotUrl, getVerificationSummary } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, VerificationSummaryResponse } from "../../lib/types";
 
 export default function VerificationPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<VerificationSummaryResponse | null>(null);
 
   async function loadSummary() {
+    if (!availableKinds.includes(kind)) {
+      setSummary(null);
+      setError("Please upload a protein or phospho dataset first.");
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -22,8 +29,16 @@ export default function VerificationPage() {
   }
 
   useEffect(() => {
+    if (availableKinds.length === 0) {
+      setSummary(null);
+      return;
+    }
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+      return;
+    }
     loadSummary();
-  }, [kind]);
+  }, [kind, availableKinds]);
 
   const firstDigitUrl = buildPlotUrl(`/api/plots/verification/${kind}/first-digit.png`);
   const duplicateUrl = buildPlotUrl(`/api/plots/verification/${kind}/duplicate-pattern.png`);
@@ -39,12 +54,20 @@ export default function VerificationPage() {
               Dataset level
             </label>
             <select
-              value={kind}
+              value={kindOptions.length === 0 ? "" : kind}
               onChange={(e) => setKind(e.target.value as AnnotationKind)}
-              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+              disabled={kindOptions.length === 0}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
-              <option value="protein">Protein</option>
-              <option value="phospho">Phospho</option>
+              {kindOptions.length === 0 ? (
+                <option value="">No dataset available</option>
+              ) : (
+                kindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              )}
             </select>
           </div>
 
@@ -67,7 +90,13 @@ export default function VerificationPage() {
         )}
       </section>
 
-      {summary ? (
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable verification plots.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 && summary ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">

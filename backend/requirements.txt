@@ -7,4 +7,6 @@ openpyxl
 python-multipart
 matplotlib
 scipy
+seaborn
+matplotlib-venn
 plotly

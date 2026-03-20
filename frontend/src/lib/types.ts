@@ -379,6 +379,62 @@ export type SimulationResultResponse = {
   warnings: string[];
 };
 
+export type SingleProteinOptionsResponse = {
+  proteins: string[];
+  conditions: string[];
+  proteinCount: number;
+  conditionCount: number;
+};
+
+export type SingleProteinTableResponse = {
+  rows: Record<string, unknown>[];
+};
+
+export type PhosphoOptionsResponse = {
+  conditions: string[];
+  features: string[];
+};
+
+export type PhosphoTableResponse = {
+  rows: Record<string, unknown>[];
+};
+
+export type ComparisonTab = "pearson" | "venn";
+
+export type ComparisonOptionsResponse = {
+  samples: string[];
+  conditions: string[];
+  sampleCount: number;
+  conditionCount: number;
+};
+
+export type ComparisonTableResponse = {
+  rows: Record<string, unknown>[];
+};
+
+export type ExternalTab = "peptideCollapse";
+
+export type PeptideCollapseRequest = {
+  inputPath: string;
+  outputPath: string | null;
+  cutoff: number;
+  collapseVersion: "newest" | "legacy";
+};
+
+export type PeptideCollapseResponse = {
+  success: boolean;
+  inputPath: string;
+  outputPath: string | null;
+  cutoff: number;
+  collapseVersion: "newest" | "legacy";
+  rows: number | null;
+  columns: number | null;
+  columnNames: string[];
+  preview: Record<string, unknown>[];
+  logs: string;
+  error: string | null;
+};
+
 export type SidebarSection =
   | "data"
   | "completeness"
@@ -409,3 +465,5 @@ export type QcTab =
   | "correlation";
 
 export type CompletenessTab = "missingPlot" | "heatmap" | "tables";
+export type SingleProteinTab = "boxplot" | "lineplot" | "heatmap";
+export type PhosphoTab = "phosphositePlot" | "coverage" | "distribution" | "sty";
