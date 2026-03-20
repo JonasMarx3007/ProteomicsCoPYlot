@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
 import { buildPlotUrl, getDistributionSummary } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
 export default function DistributionPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DistributionSummaryResponse | null>(null);
 
   async function loadSummary() {
+    if (!availableKinds.includes(kind)) {
+      setSummary(null);
+      setError("Please upload a protein or phospho dataset first.");
+      return;
+    }
     try {
       setLoading(true);
       setError(null);
@@ -22,8 +29,16 @@ export default function DistributionPage() {
   }
 
   useEffect(() => {
+    if (availableKinds.length === 0) {
+      setSummary(null);
+      return;
+    }
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+      return;
+    }
     loadSummary();
-  }, [kind]);
+  }, [kind, availableKinds]);
 
   const qqPlotUrl = buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`);
 
@@ -35,12 +50,9 @@ export default function DistributionPage() {
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <SelectField
             label="Dataset level"
-            value={kind}
+            value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
-            options={[
-              { value: "protein", label: "Protein" },
-              { value: "phospho", label: "Phospho" },
-            ]}
+            options={kindOptions}
           />
           <div className="self-end">
             <button
@@ -61,7 +73,13 @@ export default function DistributionPage() {
         )}
       </section>
 
-      {summary ? (
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable distribution plots.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 && summary ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">

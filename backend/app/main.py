@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_annotations import router as annotations_router
 from app.api.routes_data_tools import router as data_tools_router
 from app.api.routes_datasets import router as datasets_router
+from app.api.routes_external import router as external_router
 from app.api.routes_plots import router as plots_router
 from app.api.routes_qc import router as qc_router
 from app.api.routes_peptide import router as peptide_router
@@ -29,6 +30,7 @@ app.include_router(stats_router)
 app.include_router(qc_router)
 app.include_router(peptide_router)
 app.include_router(plots_router)
+app.include_router(external_router)
 
 
 @app.get("/")
