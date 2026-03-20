@@ -36,7 +36,6 @@ import StyPlotPage from "./features/phospho/StyPlotPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
 import SummaryTablesPage from "./features/summary/SummaryTablesPage";
-import SummaryLogPage from "./features/summary/SummaryLogPage";
 import SummaryTextPage from "./features/summary/SummaryTextPage";
 import SummaryReportPage from "./features/summary/SummaryReportPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
@@ -118,7 +117,6 @@ const externalTabs: { key: ExternalTab; label: string }[] = [
 
 const summaryTabs: { key: SummaryTab; label: string }[] = [
   { key: "tables", label: "Tables" },
-  { key: "log", label: "Log" },
   { key: "text", label: "Text" },
   { key: "report", label: "Report" },
 ];
@@ -371,10 +369,6 @@ export default function App() {
     if (activeSection === "summary") {
       if (activeSummaryTab === "tables") {
         return <SummaryTablesPage />;
-      }
-
-      if (activeSummaryTab === "log") {
-        return <SummaryLogPage />;
       }
 
       if (activeSummaryTab === "text") {

@@ -414,7 +414,7 @@ export type ComparisonTableResponse = {
 
 export type ExternalTab = "peptideCollapse";
 
-export type SummaryTab = "tables" | "log" | "text" | "report";
+export type SummaryTab = "tables" | "text" | "report";
 
 export type SummaryTableBlock = {
   key: string;
@@ -423,11 +423,6 @@ export type SummaryTableBlock = {
   rowCount: number;
   available: boolean;
   message: string | null;
-};
-
-export type SummaryLogRow = {
-  variable: string;
-  value: string;
 };
 
 export type SummarySectionInfo = {
@@ -439,7 +434,6 @@ export type SummarySectionInfo = {
 
 export type SummaryOverviewResponse = {
   tables: SummaryTableBlock[];
-  logRows: SummaryLogRow[];
   availableSections: SummarySectionInfo[];
   warnings: string[];
   suggestedFilename: string;
@@ -456,7 +450,6 @@ export type SummaryReportRequest = {
   introduction: string;
   notes: Record<string, SummarySectionNote>;
   includeMetadataTables: boolean;
-  includeLogAppendix: boolean;
 };
 
 export type PeptideCollapseRequest = {

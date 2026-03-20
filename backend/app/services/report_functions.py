@@ -1,25 +1,25 @@
 from __future__ import annotations
 
+import base64
 import io
+import html
 import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from textwrap import wrap
 from typing import Callable
 
 import pandas as pd
 
 from app.schemas.stats import VolcanoRequest
 from app.schemas.summary import (
-    SummaryLogRow,
     SummaryOverviewResponse,
     SummaryReportRequest,
     SummarySectionInfo,
     SummaryTableBlock,
 )
 from app.services.annotation_store import get_annotation
-from app.services.dataset_store import get_all_current_datasets, get_current_dataset
+from app.services.dataset_store import get_current_dataset
 from app.services.functions import (
     completeness_missing_value_plot,
     qc_abundance_plot,
@@ -45,9 +45,8 @@ from app.services.phospho_tools import (
 )
 from app.services.stats_tools import run_volcano, statistical_options
 
-A4_SIZE = (8.27, 11.69)
 DEFAULT_REPORT_TITLE = "Proteomics CoPYlot Summary Report"
-DEFAULT_REPORT_FILENAME = "proteomicscopylot_summary_report.pdf"
+DEFAULT_REPORT_FILENAME = "proteomicscopylot_summary_report.html"
 
 
 @dataclass(frozen=True)
@@ -83,8 +82,8 @@ def _report_filename(title: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", title.strip()).strip("._")
     if not cleaned:
         cleaned = "proteomicscopylot_summary_report"
-    if not cleaned.lower().endswith(".pdf"):
-        cleaned = f"{cleaned}.pdf"
+    if not cleaned.lower().endswith(".html"):
+        cleaned = f"{cleaned}.html"
     return cleaned
 
 
@@ -138,65 +137,6 @@ def _summary_table_blocks() -> list[SummaryTableBlock]:
             message=peptide_message,
         ),
     ]
-
-
-def _append_log_row(rows: list[SummaryLogRow], variable: str, value: object) -> None:
-    rows.append(SummaryLogRow(variable=variable, value=str(value)))
-
-
-def _summary_log_rows() -> list[SummaryLogRow]:
-    current = get_all_current_datasets()
-    rows: list[SummaryLogRow] = []
-
-    for kind in ("protein", "phospho"):
-        stored = current.get(kind)
-        annotation = get_annotation(kind)  # type: ignore[arg-type]
-        uploaded = get_uploaded_metadata(kind)  # type: ignore[arg-type]
-
-        _append_log_row(rows, f"{kind}_dataset_loaded", stored is not None)
-        if stored is not None and hasattr(stored, "filename") and hasattr(stored, "frame"):
-            _append_log_row(rows, f"{kind}_filename", stored.filename)
-            _append_log_row(rows, f"{kind}_rows", len(stored.frame))
-            _append_log_row(rows, f"{kind}_columns", len(stored.frame.columns))
-
-        _append_log_row(rows, f"{kind}_uploaded_metadata_loaded", uploaded is not None)
-        if uploaded is not None:
-            _append_log_row(rows, f"{kind}_uploaded_metadata_filename", uploaded.filename)
-            _append_log_row(rows, f"{kind}_uploaded_metadata_rows", len(uploaded.frame))
-
-        _append_log_row(rows, f"{kind}_annotation_ready", annotation is not None)
-        if annotation is not None:
-            _append_log_row(rows, f"{kind}_metadata_rows", len(annotation.metadata))
-            _append_log_row(rows, f"{kind}_sample_count", int(annotation.metadata["sample"].nunique()))
-            _append_log_row(rows, f"{kind}_condition_count", int(annotation.metadata["condition"].nunique()))
-            _append_log_row(rows, f"{kind}_metadata_source", annotation.metadata_source)
-            _append_log_row(rows, f"{kind}_auto_detected", annotation.auto_detected)
-            _append_log_row(rows, f"{kind}_is_log2_transformed", annotation.is_log2_transformed)
-            _append_log_row(rows, f"{kind}_filter_min_present", annotation.filter_config.minPresent)
-            _append_log_row(rows, f"{kind}_filter_mode", annotation.filter_config.mode)
-            _append_log_row(rows, f"{kind}_log2_rows", len(annotation.log2_data))
-            _append_log_row(rows, f"{kind}_filtered_rows", len(annotation.filtered_data))
-            _append_log_row(rows, f"{kind}_warning_count", len(annotation.warnings))
-            gene_names_available = (
-                "GeneNames" in annotation.filtered_data.columns
-                or "GeneNames" in annotation.log2_data.columns
-                or "GeneNames" in annotation.source_data.columns
-            )
-            _append_log_row(rows, f"{kind}_gene_names_available", gene_names_available)
-
-    peptide = current.get("peptide")
-    peptide_metadata = get_peptide_metadata()
-    _append_log_row(rows, "peptide_dataset_loaded", peptide is not None)
-    if peptide is not None and hasattr(peptide, "path"):
-        _append_log_row(rows, "peptide_path", peptide.path)
-    _append_log_row(rows, "peptide_metadata_loaded", peptide_metadata is not None)
-    if peptide_metadata is not None:
-        _append_log_row(rows, "peptide_metadata_filename", peptide_metadata.filename)
-        _append_log_row(rows, "peptide_metadata_rows", len(peptide_metadata.frame))
-
-    _append_log_row(rows, "available_report_sections", len(_available_sections()))
-    return sorted(rows, key=lambda row: row.variable)
-
 
 def _has_table_dataset(kind: str) -> bool:
     return get_current_dataset(kind) is not None
@@ -502,7 +442,6 @@ def build_summary_overview() -> SummaryOverviewResponse:
 
     return SummaryOverviewResponse(
         tables=_summary_table_blocks(),
-        logRows=_summary_log_rows(),
         availableSections=[
             SummarySectionInfo(
                 key=spec.key,
@@ -517,224 +456,372 @@ def build_summary_overview() -> SummaryOverviewResponse:
     )
 
 
-def _draw_paragraph(
-    fig,
-    text: str,
-    *,
-    top: float,
-    x: float = 0.08,
-    width: int = 98,
-    fontsize: int = 10,
-    color: str = "#334155",
-) -> float:
+def _html_text_block(text: str, *, css_class: str = "report-copy") -> str:
     cleaned = _sanitize_text(text)
     if not cleaned:
-        return top
-
-    lines: list[str] = []
+        return ""
+    parts = []
     for paragraph in cleaned.splitlines():
-        wrapped = wrap(paragraph.strip() or " ", width=width)
-        lines.extend(wrapped or [" "])
-        lines.append("")
-    if lines and not lines[-1]:
-        lines.pop()
-
-    fig.text(x, top, "\n".join(lines), ha="left", va="top", fontsize=fontsize, color=color)
-    return top - (0.024 * max(1, len(lines)))
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        parts.append(f'<p class="{css_class}">{html.escape(paragraph)}</p>')
+    return "".join(parts)
 
 
-def _add_title_page(pdf, plt, *, title: str, author: str) -> None:
-    fig = plt.figure(figsize=A4_SIZE)
-    fig.patch.set_facecolor("white")
-    fig.text(0.08, 0.9, title, fontsize=24, fontweight="bold", color="#0f172a")
-    fig.text(0.08, 0.84, f"Author: {author}", fontsize=12, color="#334155")
-    fig.text(0.08, 0.8, f"Date: {datetime.now().strftime('%Y-%m-%d')}", fontsize=12, color="#334155")
-    fig.text(0.08, 0.76, "Generated with Proteomics CoPYlot", fontsize=12, color="#475569")
-    fig.text(
-        0.08,
-        0.62,
-        "This report combines the currently available translated pipelines into a single PDF appendix.",
-        fontsize=12,
-        color="#334155",
-    )
-    fig.text(0.08, 0.1, "Proteomics CoPYlot", fontsize=10, color="#94a3b8")
-    pdf.savefig(fig)
-    plt.close(fig)
+def _png_data_url(image_bytes: bytes) -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
-def _add_text_page(pdf, plt, *, title: str, body: str) -> None:
-    fig = plt.figure(figsize=A4_SIZE)
-    fig.patch.set_facecolor("white")
-    fig.text(0.08, 0.95, title, fontsize=18, fontweight="bold", color="#0f172a")
-    _draw_paragraph(fig, body, top=0.9, width=100, fontsize=11)
-    pdf.savefig(fig)
-    plt.close(fig)
+def _table_html(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return '<div class="empty-state">No rows available.</div>'
+
+    safe = frame.copy()
+    safe.columns = [str(column) for column in safe.columns]
+    safe = safe.fillna("")
+    for column in safe.columns:
+        safe[column] = safe[column].map(lambda value: "" if value is None else str(value).replace("\n", " "))
+    return safe.to_html(index=False, escape=True, classes="report-table", border=0)
 
 
-def _add_contents_page(
-    pdf,
-    plt,
-    *,
-    sections: list[ReportSectionSpec],
-    include_metadata: bool,
-    include_log: bool,
-) -> None:
-    lines = []
-    for index, spec in enumerate(sections, start=1):
-        lines.append(f"{index}. {spec.group} - {spec.title}")
+def _section_anchor(spec: ReportSectionSpec) -> str:
+    return f"section-{spec.key}"
+
+
+def _render_title_block(*, title: str, author: str) -> str:
+    author_line = f"<p><strong>Author:</strong> {html.escape(author)}</p>" if author else ""
+    return f"""
+    <section class="hero">
+      <div class="hero-card">
+        <div class="hero-kicker">Proteomics CoPYlot</div>
+        <h1>{html.escape(title)}</h1>
+        {author_line}
+        <p><strong>Date:</strong> {datetime.now().strftime("%Y-%m-%d")}</p>
+      </div>
+    </section>
+    """
+
+
+def _render_contents_block(*, sections: list[ReportSectionSpec], include_metadata: bool) -> str:
+    items: list[str] = []
+    for spec in sections:
+        items.append(
+            f'<li><a href="#{_section_anchor(spec)}">{html.escape(spec.group)} - {html.escape(spec.title)}</a></li>'
+        )
     if include_metadata:
-        lines.append(f"{len(lines) + 1}. Appendix - Metadata Tables")
-    if include_log:
-        lines.append(f"{len(lines) + 1}. Appendix - System Log")
-    body = "\n".join(lines) if lines else "No report sections are available yet."
-    _add_text_page(pdf, plt, title="Table of Contents", body=body)
+        items.append('<li><a href="#metadata-appendix">Appendix - Metadata Tables</a></li>')
+    if not items:
+        items.append("<li>No report sections are available yet.</li>")
+
+    return f"""
+    <section class="report-panel">
+      <h2>Table of Contents</h2>
+      <ol class="toc-list">
+        {''.join(items)}
+      </ol>
+    </section>
+    """
 
 
-def _add_image_page(
-    pdf,
-    plt,
+def _render_introduction_block(text: str) -> str:
+    cleaned = _sanitize_text(text)
+    if not cleaned:
+        return ""
+    return f"""
+    <section class="report-panel">
+      <div class="section-label">Summary</div>
+      <h2>Introduction</h2>
+      {_html_text_block(cleaned)}
+    </section>
+    """
+
+
+def _render_section_block(
+    spec: ReportSectionSpec,
     *,
-    title: str,
-    description: str,
     image_bytes: bytes,
     above_note: str,
     below_note: str,
-) -> None:
-    fig = plt.figure(figsize=A4_SIZE)
-    fig.patch.set_facecolor("white")
-    fig.text(0.08, 0.96, title, fontsize=18, fontweight="bold", color="#0f172a")
-    _draw_paragraph(fig, description, top=0.92, width=100, fontsize=10)
-    if above_note.strip():
-        _draw_paragraph(fig, above_note, top=0.83, width=100, fontsize=9, color="#475569")
-
-    image = plt.imread(io.BytesIO(image_bytes), format="png")
-    bottom = 0.18 if below_note.strip() else 0.1
-    ax = fig.add_axes([0.08, bottom, 0.84, 0.58])
-    ax.imshow(image)
-    ax.axis("off")
-
-    if below_note.strip():
-        _draw_paragraph(fig, below_note, top=0.14, width=100, fontsize=9, color="#475569")
-
-    pdf.savefig(fig)
-    plt.close(fig)
+) -> str:
+    return f"""
+    <section class="report-panel" id="{_section_anchor(spec)}">
+      <div class="section-label">{html.escape(spec.group)}</div>
+      <h2>{html.escape(spec.title)}</h2>
+      {_html_text_block(spec.description)}
+      {_html_text_block(above_note, css_class="report-note")}
+      <div class="plot-frame">
+        <img src="{_png_data_url(image_bytes)}" alt="{html.escape(spec.title)}" />
+      </div>
+      {_html_text_block(below_note, css_class="report-note")}
+    </section>
+    """
 
 
-def _table_page_slices(frame: pd.DataFrame, rows_per_page: int = 24) -> list[pd.DataFrame]:
-    if frame.empty:
-        return [frame]
-    return [frame.iloc[start:start + rows_per_page].copy() for start in range(0, len(frame), rows_per_page)]
-
-
-def _truncate_cell(value: object, limit: int = 48) -> str:
-    text = "" if value is None else str(value)
-    text = text.replace("\n", " ")
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit - 3]}..."
-
-
-def _add_table_pages(pdf, plt, *, title: str, frame: pd.DataFrame) -> None:
-    safe = frame.copy()
-    if safe.empty:
-        _add_text_page(pdf, plt, title=title, body="No rows available.")
-        return
-
-    safe.columns = [str(column) for column in safe.columns]
-    safe = safe.fillna("")
-    safe = safe.applymap(_truncate_cell)
-    page_chunks = _table_page_slices(safe)
-
-    for index, chunk in enumerate(page_chunks, start=1):
-        fig = plt.figure(figsize=A4_SIZE)
-        fig.patch.set_facecolor("white")
-        heading = title if len(page_chunks) == 1 else f"{title} ({index}/{len(page_chunks)})"
-        fig.text(0.08, 0.95, heading, fontsize=18, fontweight="bold", color="#0f172a")
-        ax = fig.add_axes([0.05, 0.06, 0.9, 0.84])
-        ax.axis("off")
-        table = ax.table(
-            cellText=chunk.values.tolist(),
-            colLabels=chunk.columns.tolist(),
-            loc="center",
-            cellLoc="left",
-            colLoc="left",
+def _render_metadata_block(blocks: list[SummaryTableBlock]) -> str:
+    rendered_blocks: list[str] = []
+    for block in blocks:
+        if not block.available:
+            continue
+        frame = pd.DataFrame(block.rows)
+        rendered_blocks.append(
+            f"""
+            <section class="report-panel">
+              <div class="section-label">Appendix</div>
+              <h2>{html.escape(block.title)}</h2>
+              <div class="table-wrap">
+                {_table_html(frame)}
+              </div>
+            </section>
+            """
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(7 if len(chunk.columns) <= 8 else 6)
-        table.scale(1, 1.35)
-        pdf.savefig(fig)
-        plt.close(fig)
+
+    if not rendered_blocks:
+        rendered_blocks.append(
+            """
+            <section class="report-panel">
+              <div class="section-label">Appendix</div>
+              <h2>Metadata Tables</h2>
+              <div class="empty-state">No metadata tables are available yet.</div>
+            </section>
+            """
+        )
+
+    return f'<div id="metadata-appendix">{"".join(rendered_blocks)}</div>'
 
 
-def generate_summary_pdf(payload: SummaryReportRequest) -> tuple[bytes, str]:
-    plt = _get_plt()
+def _render_warning_block(warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+    items = "".join(f"<li>{html.escape(warning)}</li>" for warning in warnings)
+    return f"""
+    <section class="report-panel warning-panel">
+      <div class="section-label">Notes</div>
+      <h2>Report Notes</h2>
+      <ul class="warning-list">{items}</ul>
+    </section>
+    """
+
+
+def generate_summary_html(payload: SummaryReportRequest) -> tuple[bytes, str]:
     title = _sanitize_text(payload.title, DEFAULT_REPORT_TITLE)
     author = _sanitize_text(payload.author, "Unknown Author")
     notes = payload.notes or {}
     sections = _available_sections()
     warnings: list[str] = []
+    rendered_sections: list[str] = []
 
-    buffer = io.BytesIO()
-    from matplotlib.backends.backend_pdf import PdfPages
-
-    with PdfPages(buffer) as pdf:
-        _add_title_page(pdf, plt, title=title, author=author)
-
-        if _sanitize_text(payload.introduction):
-            _add_text_page(pdf, plt, title="Introduction", body=payload.introduction)
-
-        _add_contents_page(
-            pdf,
-            plt,
-            sections=sections,
-            include_metadata=payload.includeMetadataTables,
-            include_log=payload.includeLogAppendix,
-        )
-
-        if not sections:
-            _add_text_page(
-                pdf,
-                plt,
-                title="No Sections Available",
-                body="Load datasets and generate annotations where needed to populate the summary report.",
-            )
-
-        for spec in sections:
-            note = notes.get(spec.key)
-            above = note.above if note is not None else ""
-            below = note.below if note is not None else ""
-            try:
-                _add_image_page(
-                    pdf,
-                    plt,
-                    title=f"{spec.group} - {spec.title}",
-                    description=spec.description,
+    for spec in sections:
+        note = notes.get(spec.key)
+        above = note.above if note is not None else ""
+        below = note.below if note is not None else ""
+        try:
+            rendered_sections.append(
+                _render_section_block(
+                    spec,
                     image_bytes=spec.render(),
                     above_note=above,
                     below_note=below,
                 )
-            except Exception as exc:
-                warnings.append(f"Skipped {spec.group} - {spec.title}: {exc}")
-
-        if payload.includeMetadataTables:
-            for block in _summary_table_blocks():
-                if block.available:
-                    _add_table_pages(pdf, plt, title=block.title, frame=pd.DataFrame(block.rows))
-
-        if payload.includeLogAppendix:
-            log_frame = pd.DataFrame(
-                [{"Variable": row.variable, "Value": row.value} for row in _summary_log_rows()]
             )
-            _add_table_pages(pdf, plt, title="System Log", frame=log_frame)
+        except Exception as exc:
+            warnings.append(f"Skipped {spec.group} - {spec.title}: {exc}")
 
-        if warnings:
-            _add_text_page(pdf, plt, title="Report Notes", body="\n".join(warnings))
+    if not rendered_sections:
+        rendered_sections.append(
+            """
+            <section class="report-panel">
+              <div class="section-label">Summary</div>
+              <h2>No Sections Available</h2>
+              <div class="empty-state">
+                Load datasets and generate annotations where needed to populate the summary report.
+              </div>
+            </section>
+            """
+        )
 
-        info = pdf.infodict()
-        info["Title"] = title
-        info["Author"] = author
-        info["Creator"] = "Proteomics CoPYlot"
-        info["CreationDate"] = datetime.now()
+    metadata_html = ""
+    if payload.includeMetadataTables:
+        metadata_html = _render_metadata_block(_summary_table_blocks())
 
-    buffer.seek(0)
-    return buffer.getvalue(), _report_filename(title)
+    html_report = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{html.escape(title)}</title>
+    <style>
+      :root {{
+        color-scheme: light;
+        --page-bg: #f4f7fb;
+        --card-bg: #ffffff;
+        --border: #d9e1ea;
+        --text: #102033;
+        --muted: #526273;
+        --accent: #1d4ed8;
+        --accent-soft: #dbeafe;
+        --warning-bg: #fff7ed;
+        --warning-border: #fdba74;
+      }}
+      * {{
+        box-sizing: border-box;
+      }}
+      body {{
+        margin: 0;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background:
+          radial-gradient(circle at top right, rgba(29, 78, 216, 0.1), transparent 28rem),
+          linear-gradient(180deg, #f8fbff 0%, var(--page-bg) 100%);
+        color: var(--text);
+      }}
+      .page {{
+        width: min(1100px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 64px;
+      }}
+      .hero-card,
+      .report-panel {{
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      }}
+      .hero-card {{
+        padding: 32px;
+      }}
+      .hero-kicker,
+      .section-label {{
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }}
+      .hero h1 {{
+        margin: 16px 0 20px;
+        font-size: clamp(32px, 5vw, 46px);
+        line-height: 1.05;
+      }}
+      .hero p {{
+        margin: 8px 0;
+        color: var(--muted);
+      }}
+      .report-panel {{
+        margin-top: 24px;
+        padding: 24px;
+      }}
+      .report-panel h2 {{
+        margin: 14px 0 12px;
+        font-size: 28px;
+        line-height: 1.15;
+      }}
+      .report-copy,
+      .report-note {{
+        margin: 12px 0;
+        line-height: 1.65;
+      }}
+      .report-copy {{
+        color: var(--muted);
+      }}
+      .report-note {{
+        color: #334155;
+      }}
+      .toc-list,
+      .warning-list {{
+        margin: 16px 0 0;
+        padding-left: 22px;
+      }}
+      .toc-list li,
+      .warning-list li {{
+        margin: 10px 0;
+        line-height: 1.5;
+      }}
+      .toc-list a {{
+        color: var(--accent);
+        text-decoration: none;
+      }}
+      .toc-list a:hover {{
+        text-decoration: underline;
+      }}
+      .plot-frame {{
+        margin-top: 18px;
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: #fbfdff;
+      }}
+      .plot-frame img {{
+        display: block;
+        width: 100%;
+        height: auto;
+      }}
+      .table-wrap {{
+        margin-top: 16px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+      }}
+      table.report-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }}
+      table.report-table th,
+      table.report-table td {{
+        padding: 10px 12px;
+        border-bottom: 1px solid #e5ebf2;
+        text-align: left;
+        vertical-align: top;
+        white-space: nowrap;
+      }}
+      table.report-table th {{
+        position: sticky;
+        top: 0;
+        background: #eff6ff;
+      }}
+      .empty-state {{
+        padding: 18px;
+        border: 1px dashed var(--border);
+        border-radius: 16px;
+        background: #f8fafc;
+        color: var(--muted);
+      }}
+      .warning-panel {{
+        background: var(--warning-bg);
+        border-color: var(--warning-border);
+      }}
+      @media print {{
+        body {{
+          background: white;
+        }}
+        .page {{
+          width: 100%;
+          padding: 0;
+        }}
+        .hero-card,
+        .report-panel {{
+          box-shadow: none;
+          break-inside: avoid;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      {_render_title_block(title=title, author=author)}
+      {_render_introduction_block(payload.introduction)}
+      {_render_contents_block(sections=sections, include_metadata=payload.includeMetadataTables)}
+      {''.join(rendered_sections)}
+      {metadata_html}
+      {_render_warning_block(warnings)}
+    </main>
+  </body>
+</html>
+"""
+
+    return html_report.encode("utf-8"), _report_filename(title)
