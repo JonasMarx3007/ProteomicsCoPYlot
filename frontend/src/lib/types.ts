@@ -75,6 +75,37 @@ export type MetadataUploadResponse = {
   preview: Record<string, unknown>[];
 };
 
+export type PeptideMetadataResponse = {
+  filename: string;
+  rows: number;
+  columns: number;
+  createdAt: string;
+  preview: Record<string, unknown>[];
+};
+
+export type PeptideOverviewResponse = {
+  filename: string;
+  path: string;
+  rows: number;
+  columns: number;
+  columnNames: string[];
+  availableProteins: string[];
+  metadataLoaded: boolean;
+  metadataFilename: string | null;
+  warnings: string[];
+};
+
+export type PeptideSpecies = "human" | "mouse";
+
+export type PeptideCoverageResponse = {
+  protein: string;
+  species: PeptideSpecies;
+  coveragePercent: number;
+  matchingPeptideCount: number;
+  sequenceText: string;
+  warnings: string[];
+};
+
 export type DataSource = "filtered" | "log2" | "raw";
 
 export type ImputationRunRequest = {
@@ -172,6 +203,29 @@ export type VerificationSummaryResponse = {
   numericValueCount: number;
 };
 
+export type IdTranslationRequest = {
+  kind: AnnotationKind;
+  column: string;
+  inputDb: string | null;
+  outputDb: string;
+  autoDetectInput: boolean;
+};
+
+export type IdTranslationResponse = {
+  kind: AnnotationKind;
+  sourceColumn: string;
+  outputColumn: string;
+  inputDb: string;
+  outputDb: string;
+  translatedCount: number;
+  totalRows: number;
+  preview: Record<string, unknown>[];
+  availableColumns: string[];
+  availableDatabases: string[];
+  downloadFilename: string;
+  warnings: string[];
+};
+
 export type CompletenessTablesResponse = {
   kind: AnnotationKind;
   overallMissingPercent: number;
@@ -214,6 +268,117 @@ export type QcTableResponse = {
   rows: Record<string, unknown>[];
 };
 
+export type StatsIdentifier = "workflow" | "genes";
+export type StatsTestType = "unpaired" | "paired";
+export type StatsTab =
+  | "volcano"
+  | "volcanoControl"
+  | "gsea"
+  | "pathwayHeatmap"
+  | "simulation";
+
+export type PeptideTab =
+  | "rtPlot"
+  | "modification"
+  | "missedCleavage"
+  | "sequenceCoverage";
+
+export type StatisticalOptionsResponse = {
+  kind: AnnotationKind;
+  sourceUsed: DataSource;
+  availableConditions: string[];
+  availableIdentifiers: { key: StatsIdentifier; label: string }[];
+  warnings: string[];
+};
+
+export type VolcanoRequest = {
+  kind: AnnotationKind;
+  condition1: string;
+  condition2: string;
+  identifier: StatsIdentifier;
+  pValueThreshold: number;
+  log2fcThreshold: number;
+  testType: StatsTestType;
+  useUncorrected: boolean;
+  highlightTerms: string[];
+};
+
+export type VolcanoControlRequest = VolcanoRequest & {
+  condition1Control: string;
+  condition2Control: string;
+};
+
+export type VolcanoResultResponse = {
+  kind: AnnotationKind;
+  sourceUsed: DataSource;
+  labelColumn: string;
+  totalRows: number;
+  upregulatedCount: number;
+  downregulatedCount: number;
+  notSignificantCount: number;
+  rows: Record<string, unknown>[];
+  warnings: string[];
+};
+
+export type EnrichmentRequest = {
+  kind: AnnotationKind;
+  condition1: string;
+  condition2: string;
+  pValueThreshold: number;
+  log2fcThreshold: number;
+  testType: StatsTestType;
+  useUncorrected: boolean;
+  topN: number;
+  minTermSize: number;
+  maxTermSize: number;
+};
+
+export type EnrichmentTerm = {
+  source: string;
+  termId: string;
+  name: string;
+  termSize: number;
+  intersectionSize: number;
+  hitPercent: number;
+  pValue: number;
+  adjPValue: number;
+  intersectingGenes: string[];
+};
+
+export type EnrichmentResultResponse = {
+  kind: AnnotationKind;
+  sourceUsed: DataSource;
+  upGenes: string[];
+  downGenes: string[];
+  upTerms: EnrichmentTerm[];
+  downTerms: EnrichmentTerm[];
+  warnings: string[];
+};
+
+export type PathwayOptionsResponse = {
+  pathways: string[];
+};
+
+export type SimulationRequest = {
+  kind: AnnotationKind;
+  condition1: string;
+  condition2: string;
+  pValueThreshold: number;
+  log2fcThreshold: number;
+  varianceMultiplier: number;
+  sampleSizeOverride: number;
+};
+
+export type SimulationResultResponse = {
+  kind: AnnotationKind;
+  sourceUsed: DataSource;
+  totalRows: number;
+  upregulatedCount: number;
+  downregulatedCount: number;
+  notSignificantCount: number;
+  warnings: string[];
+};
+
 export type SidebarSection =
   | "data"
   | "completeness"
@@ -231,7 +396,8 @@ export type DataTab =
   | "annotation"
   | "imputation"
   | "distribution"
-  | "verification";
+  | "verification"
+  | "translator";
 
 export type QcTab =
   | "coverage"
