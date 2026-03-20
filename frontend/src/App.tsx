@@ -35,6 +35,10 @@ import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistribut
 import StyPlotPage from "./features/phospho/StyPlotPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
+import SummaryTablesPage from "./features/summary/SummaryTablesPage";
+import SummaryLogPage from "./features/summary/SummaryLogPage";
+import SummaryTextPage from "./features/summary/SummaryTextPage";
+import SummaryReportPage from "./features/summary/SummaryReportPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
 import type {
   ComparisonTab,
@@ -46,6 +50,7 @@ import type {
   QcTab,
   SidebarSection,
   SingleProteinTab,
+  SummaryTab,
   StatsTab,
 } from "./lib/types";
 
@@ -111,6 +116,13 @@ const externalTabs: { key: ExternalTab; label: string }[] = [
   { key: "peptideCollapse", label: "Peptide Collapse Function" },
 ];
 
+const summaryTabs: { key: SummaryTab; label: string }[] = [
+  { key: "tables", label: "Tables" },
+  { key: "log", label: "Log" },
+  { key: "text", label: "Text" },
+  { key: "report", label: "Report" },
+];
+
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
@@ -121,6 +133,7 @@ export default function App() {
   const [activeSingleProteinTab, setActiveSingleProteinTab] = useState<SingleProteinTab>("boxplot");
   const [activePhosphoTab, setActivePhosphoTab] = useState<PhosphoTab>("phosphositePlot");
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
+  const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
 
   useEffect(() => {
@@ -208,6 +221,16 @@ export default function App() {
       );
     }
 
+    if (activeSection === "summary") {
+      return (
+        <TopTabs
+          tabs={summaryTabs}
+          activeTab={activeSummaryTab}
+          onChange={setActiveSummaryTab}
+        />
+      );
+    }
+
     if (activeSection === "external") {
       return (
         <TopTabs
@@ -229,6 +252,7 @@ export default function App() {
     activeSingleProteinTab,
     activePhosphoTab,
     activeComparisonTab,
+    activeSummaryTab,
     activeExternalTab,
   ]);
 
@@ -342,6 +366,22 @@ export default function App() {
         return <PearsonCorrelationPage />;
       }
       return <VennDiagramPage />;
+    }
+
+    if (activeSection === "summary") {
+      if (activeSummaryTab === "tables") {
+        return <SummaryTablesPage />;
+      }
+
+      if (activeSummaryTab === "log") {
+        return <SummaryLogPage />;
+      }
+
+      if (activeSummaryTab === "text") {
+        return <SummaryTextPage />;
+      }
+
+      return <SummaryReportPage />;
     }
 
     if (activeSection === "external") {
