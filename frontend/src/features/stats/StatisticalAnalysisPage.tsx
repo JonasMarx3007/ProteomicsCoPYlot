@@ -8,6 +8,7 @@ import {
   runVolcanoAnalysis,
   runVolcanoControlAnalysis,
 } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type {
   AnnotationKind,
   EnrichmentRequest,
@@ -28,17 +29,24 @@ type Props = {
   activeTab: StatsTab;
 };
 
-const kindOptions = [
-  { value: "protein", label: "Protein" },
-  { value: "phospho", label: "Phospho" },
-];
-
 export default function StatisticalAnalysisPage({ activeTab }: Props) {
-  if (activeTab === "volcano") return <VolcanoPanel control={false} />;
-  if (activeTab === "volcanoControl") return <VolcanoPanel control />;
-  if (activeTab === "gsea") return <GseaPanel />;
-  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel />;
-  return <SimulationPanel />;
+  const { kindOptions } = useCurrentDatasetsSnapshot();
+
+  if (kindOptions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <SectionCard title="Statistical Analysis">
+          <InfoSection message="Upload a protein or phospho dataset in the Data tab to enable statistical plots." />
+        </SectionCard>
+      </div>
+    );
+  }
+
+  if (activeTab === "volcano") return <VolcanoPanel control={false} kindOptions={kindOptions} />;
+  if (activeTab === "volcanoControl") return <VolcanoPanel control kindOptions={kindOptions} />;
+  if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} />;
+  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} />;
+  return <SimulationPanel kindOptions={kindOptions} />;
 }
 
 function conditionOptions(options: StatisticalOptionsResponse | null) {
@@ -342,7 +350,13 @@ function InfoSection({ message }: { message: string }) {
   );
 }
 
-function VolcanoPanel({ control }: { control: boolean }) {
+function VolcanoPanel({
+  control,
+  kindOptions,
+}: {
+  control: boolean;
+  kindOptions: { value: string; label: string }[];
+}) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState("");
@@ -358,7 +372,21 @@ function VolcanoPanel({ control }: { control: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<VolcanoResultResponse | null>(null);
 
+  const kindAvailable = kindOptions.some((option) => option.value === kind);
+
   useEffect(() => {
+    if (kindOptions.length === 0) return;
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value as AnnotationKind);
+    }
+  }, [kindOptions, kind]);
+
+  useEffect(() => {
+    if (!kindAvailable) {
+      setOptions(null);
+      setResult(null);
+      return;
+    }
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
@@ -369,9 +397,10 @@ function VolcanoPanel({ control }: { control: boolean }) {
         setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
-  }, [kind]);
+  }, [kind, kindAvailable]);
 
   const canRun = Boolean(
+    kindAvailable &&
     condition1 &&
       condition2 &&
       condition1 !== condition2 &&
@@ -528,7 +557,11 @@ function VolcanoPanel({ control }: { control: boolean }) {
   );
 }
 
-function GseaPanel() {
+function GseaPanel({
+  kindOptions,
+}: {
+  kindOptions: { value: string; label: string }[];
+}) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState("");
@@ -543,7 +576,21 @@ function GseaPanel() {
   const [result, setResult] = useState<EnrichmentResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const kindAvailable = kindOptions.some((option) => option.value === kind);
+
   useEffect(() => {
+    if (kindOptions.length === 0) return;
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value as AnnotationKind);
+    }
+  }, [kindOptions, kind]);
+
+  useEffect(() => {
+    if (!kindAvailable) {
+      setOptions(null);
+      setResult(null);
+      return;
+    }
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
@@ -551,10 +598,10 @@ function GseaPanel() {
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
-  }, [kind]);
+  }, [kind, kindAvailable]);
 
   const geneNamesAvailable = hasGeneNameSupport(options);
-  const canRun = Boolean(geneNamesAvailable && condition1 && condition2 && condition1 !== condition2);
+  const canRun = Boolean(kindAvailable && geneNamesAvailable && condition1 && condition2 && condition1 !== condition2);
 
   useEffect(() => {
     if (!geneNamesAvailable || !canRun) {
@@ -657,7 +704,11 @@ function GseaPanel() {
   );
 }
 
-function PathwayHeatmapPanel() {
+function PathwayHeatmapPanel({
+  kindOptions,
+}: {
+  kindOptions: { value: string; label: string }[];
+}) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [pathways, setPathways] = useState<PathwayOptionsResponse | null>(null);
@@ -674,15 +725,27 @@ function PathwayHeatmapPanel() {
   const [dpi, setDpi] = useState(300);
   const [error, setError] = useState<string | null>(null);
   const geneNamesAvailable = hasGeneNameSupport(options);
+  const kindAvailable = kindOptions.some((option) => option.value === kind);
 
   useEffect(() => {
+    if (kindOptions.length === 0) return;
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value as AnnotationKind);
+    }
+  }, [kindOptions, kind]);
+
+  useEffect(() => {
+    if (!kindAvailable) {
+      setOptions(null);
+      return;
+    }
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
         setSelectedConditions((current) => (current.length ? current.filter((item) => data.availableConditions.includes(item)) : data.availableConditions));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
-  }, [kind]);
+  }, [kind, kindAvailable]);
 
   useEffect(() => {
     getPathwayOptions()
@@ -734,7 +797,11 @@ function PathwayHeatmapPanel() {
   );
 }
 
-function SimulationPanel() {
+function SimulationPanel({
+  kindOptions,
+}: {
+  kindOptions: { value: string; label: string }[];
+}) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState("");
@@ -745,8 +812,21 @@ function SimulationPanel() {
   const [sampleSizeOverride, setSampleSizeOverride] = useState(0);
   const [result, setResult] = useState<SimulationResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const kindAvailable = kindOptions.some((option) => option.value === kind);
 
   useEffect(() => {
+    if (kindOptions.length === 0) return;
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value as AnnotationKind);
+    }
+  }, [kindOptions, kind]);
+
+  useEffect(() => {
+    if (!kindAvailable) {
+      setOptions(null);
+      setResult(null);
+      return;
+    }
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
@@ -754,9 +834,9 @@ function SimulationPanel() {
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
-  }, [kind]);
+  }, [kind, kindAvailable]);
 
-  const canRun = Boolean(condition1 && condition2 && condition1 !== condition2);
+  const canRun = Boolean(kindAvailable && condition1 && condition2 && condition1 !== condition2);
 
   useEffect(() => {
     if (!canRun) {

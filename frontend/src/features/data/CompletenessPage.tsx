@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getCompletenessTables } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, CompletenessTab, CompletenessTablesResponse } from "../../lib/types";
 
 type Props = {
@@ -8,6 +9,7 @@ type Props = {
 
 export default function CompletenessPage({ activeTab }: Props) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
@@ -36,6 +38,11 @@ export default function CompletenessPage({ activeTab }: Props) {
   });
 
   async function loadTables() {
+    if (!availableKinds.includes(kind)) {
+      setTableData(null);
+      setTableError("Please upload a protein or phospho dataset first.");
+      return;
+    }
     try {
       setTableLoading(true);
       setTableError(null);
@@ -53,9 +60,20 @@ export default function CompletenessPage({ activeTab }: Props) {
   }
 
   useEffect(() => {
+    if (availableKinds.length === 0) {
+      setTableData(null);
+      return;
+    }
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+    }
+  }, [availableKinds, kind]);
+
+  useEffect(() => {
     if (activeTab !== "tables") return;
+    if (!availableKinds.includes(kind)) return;
     loadTables();
-  }, [activeTab, kind, tables.includeId, tables.outlierThreshold]);
+  }, [activeTab, kind, tables.includeId, tables.outlierThreshold, availableKinds]);
 
   const plotView = useMemo(() => {
     if (activeTab === "missingPlot") {
@@ -103,22 +121,37 @@ export default function CompletenessPage({ activeTab }: Props) {
             <select
               value={kind}
               onChange={(e) => setKind(e.target.value as AnnotationKind)}
+              disabled={kindOptions.length === 0}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
             >
-              <option value="protein">Protein</option>
-              <option value="phospho">Phospho</option>
+              {kindOptions.length === 0 ? (
+                <option value="">No dataset available</option>
+              ) : (
+                kindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>
-
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable completeness plots.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
+      ) : null}
 
-      {plotView ? (
+      {kindOptions.length > 0 && plotView ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">{plotView.title}</h3>
@@ -148,7 +181,7 @@ export default function CompletenessPage({ activeTab }: Props) {
         </section>
       ) : null}
 
-      {activeTab === "tables" ? (
+      {kindOptions.length > 0 && activeTab === "tables" ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Missing Value Tables</h3>

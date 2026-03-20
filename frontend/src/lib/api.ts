@@ -2,6 +2,8 @@ import type {
   AnnotationGenerateRequest,
   AnnotationKind,
   AnnotationResultResponse,
+  ComparisonOptionsResponse,
+  ComparisonTableResponse,
   CompletenessTablesResponse,
   DistributionSummaryResponse,
   CurrentDatasetsResponse,
@@ -15,12 +17,18 @@ import type {
   ImputationRunRequest,
   MetadataUploadResponse,
   PathwayOptionsResponse,
+  PeptideCollapseRequest,
+  PeptideCollapseResponse,
+  PhosphoOptionsResponse,
+  PhosphoTableResponse,
   PeptideCoverageResponse,
   PeptideMetadataResponse,
   PeptideOverviewResponse,
   PeptidePathResponse,
   PeptideSpecies,
   QcSummaryResponse,
+  SingleProteinOptionsResponse,
+  SingleProteinTableResponse,
   QcPlotOptionsResponse,
   QcTableResponse,
   SimulationRequest,
@@ -562,6 +570,130 @@ export async function runSimulationAnalysis(
     );
   }
   return data as SimulationResultResponse;
+}
+
+export async function getSingleProteinOptions(
+  kind: AnnotationKind,
+  tab: "boxplot" | "lineplot" | "heatmap"
+): Promise<SingleProteinOptionsResponse> {
+  const response = await fetch(
+    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab })
+  );
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load single-protein options"
+    );
+  }
+  return data as SingleProteinOptionsResponse;
+}
+
+export async function getSingleProteinTable(
+  kind: AnnotationKind,
+  tab: "boxplot" | "lineplot" | "heatmap",
+  params?: Record<string, string | number | boolean>
+): Promise<SingleProteinTableResponse> {
+  const response = await fetch(
+    buildPlotUrl(`/api/plots/single-protein/${kind}/${tab}-table`, params)
+  );
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load single-protein table"
+    );
+  }
+  return data as SingleProteinTableResponse;
+}
+
+export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/plots/phospho/options`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load phospho options"
+    );
+  }
+  return data as PhosphoOptionsResponse;
+}
+
+export async function getPhosphoTable(
+  tab: "phosphositePlot" | "coverage" | "distribution" | "sty",
+  params?: Record<string, string | number | boolean>
+): Promise<PhosphoTableResponse> {
+  let path = "/api/plots/phospho/phosphosite-plot-table";
+  if (tab === "coverage") path = "/api/plots/phospho/coverage-table";
+  if (tab === "distribution") path = "/api/plots/phospho/distribution-table";
+  if (tab === "sty") path = "/api/plots/phospho/sty-table";
+
+  const response = await fetch(buildPlotUrl(path, params));
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load phospho table"
+    );
+  }
+  return data as PhosphoTableResponse;
+}
+
+export async function getComparisonOptions(
+  kind: AnnotationKind
+): Promise<ComparisonOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/plots/comparison/${kind}/options`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load comparison options"
+    );
+  }
+  return data as ComparisonOptionsResponse;
+}
+
+export async function getComparisonTable(
+  kind: AnnotationKind,
+  tab: "pearson" | "venn",
+  params?: Record<string, string | number | boolean>
+): Promise<ComparisonTableResponse> {
+  const path =
+    tab === "pearson"
+      ? `/api/plots/comparison/${kind}/pearson-table`
+      : `/api/plots/comparison/${kind}/venn-table`;
+
+  const response = await fetch(buildPlotUrl(path, params));
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load comparison table"
+    );
+  }
+  return data as ComparisonTableResponse;
+}
+
+export async function runPeptideCollapse(
+  payload: PeptideCollapseRequest
+): Promise<PeptideCollapseResponse> {
+  const response = await fetch(`${API_BASE}/api/external/peptide-collapse/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run peptide collapse"
+    );
+  }
+
+  return data as PeptideCollapseResponse;
 }
 
 export function buildPlotUrl(path: string, params?: Record<string, string | number | boolean>) {

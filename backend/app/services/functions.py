@@ -636,3 +636,250 @@ def qc_correlation_plot(
         height_cm=height_cm,
         dpi=dpi,
     )
+
+
+# Single Protein Pipeline
+def single_protein_boxplot_plot(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: list[str],
+    outliers: bool = False,
+    dots: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.single_protein_tools import single_protein_boxplot_plot as _impl
+
+    return _impl(
+        kind=kind,
+        protein=protein,
+        conditions=conditions,
+        outliers=outliers,
+        dots=dots,
+        header=header,
+        legend=legend,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def single_protein_lineplot_plot(
+    kind: AnnotationKind,
+    proteins: list[str],
+    conditions: list[str],
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.single_protein_tools import single_protein_lineplot_plot as _impl
+
+    return _impl(
+        kind=kind,
+        proteins=proteins,
+        conditions=conditions,
+        include_id=include_id,
+        header=header,
+        legend=legend,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def single_protein_heatmap_plot(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: list[str],
+    include_id: bool = False,
+    header: bool = True,
+    filter_m1: bool = True,
+    cluster_rows: bool = False,
+    cluster_cols: bool = False,
+    value_type: str = "log2",
+    cmap_name: str = "plasma",
+    width_cm: float = 20,
+    height_cm: float = 12,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.single_protein_tools import single_protein_heatmap_plot as _impl
+
+    return _impl(
+        kind=kind,
+        protein=protein,
+        conditions=conditions,
+        include_id=include_id,
+        header=header,
+        filter_m1=filter_m1,
+        cluster_rows=cluster_rows,
+        cluster_cols=cluster_cols,
+        value_type=value_type,
+        cmap_name=cmap_name,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+# Phospho-specific Pipeline
+def phosphosite_plot_png(
+    cutoff: float = 0.0,
+    color: str = "#87CEEB",
+    width_cm: float = 15,
+    height_cm: float = 10,
+    dpi: int = 100,
+) -> bytes:
+    from app.services.phospho_tools import phosphosite_plot_png as _impl
+
+    return _impl(
+        cutoff=cutoff,
+        color=color,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def phospho_coverage_png(
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    mode: str = "Normal",
+    color_class_i: str = "#2563eb",
+    color_not_class_i: str = "#f59e0b",
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+    conditions: list[str] | None = None,
+) -> bytes:
+    from app.services.phospho_tools import phospho_coverage_png as _impl
+
+    return _impl(
+        include_id=include_id,
+        header=header,
+        legend=legend,
+        mode=mode,
+        color_class_i=color_class_i,
+        color_not_class_i=color_not_class_i,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+        conditions=conditions,
+    )
+
+
+def phospho_distribution_png(
+    cutoff: float = 0.0,
+    header: bool = True,
+    color: str = "#87CEEB",
+    width_cm: float = 20,
+    height_cm: float = 15,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.phospho_tools import phospho_distribution_png as _impl
+
+    return _impl(
+        cutoff=cutoff,
+        header=header,
+        color=color,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def phospho_sty_png(
+    header: bool = True,
+    width_cm: float = 17.78,
+    height_cm: float = 11.43,
+    dpi: int = 140,
+) -> bytes:
+    from app.services.phospho_tools import phospho_sty_png as _impl
+
+    return _impl(
+        header=header,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+# Comparison Pipeline
+def comparison_pearson_png(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    color: str = "#1f77b4",
+    dot_size: float = 60,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 12,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.comparison_tools import pearson_correlation_png as _impl
+
+    return _impl(
+        kind=kind,
+        mode=mode,
+        sample1=sample1,
+        sample2=sample2,
+        condition1=condition1,
+        condition2=condition2,
+        alias1=alias1,
+        alias2=alias2,
+        color=color,
+        dot_size=dot_size,
+        header=header,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def comparison_venn_png(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    first: str = "",
+    second: str = "",
+    third: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    alias3: str = "",
+    color1: str = "#1f77b4",
+    color2: str = "#ff7f0e",
+    color3: str = "#2ca02c",
+    header: bool = True,
+    width_cm: float = 15,
+    height_cm: float = 12,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.comparison_tools import venn_png as _impl
+
+    return _impl(
+        kind=kind,
+        mode=mode,
+        first=first,
+        second=second,
+        third=third,
+        alias1=alias1,
+        alias2=alias2,
+        alias3=alias3,
+        color1=color1,
+        color2=color2,
+        color3=color3,
+        header=header,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )

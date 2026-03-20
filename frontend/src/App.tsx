@@ -3,15 +3,51 @@ import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import UploadPage from "./features/upload/UploadPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
-import CompletenessPage from "./features/data/CompletenessPage";
 import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
 import IdTranslatorPage from "./features/data/IdTranslatorPage";
-import PeptideLevelPage from "./features/peptide/PeptideLevelPage";
-import QCPipelinePage from "./features/qc/QCPipelinePage";
-import StatisticalAnalysisPage from "./features/stats/StatisticalAnalysisPage";
-import type { CompletenessTab, DataTab, PeptideTab, QcTab, SidebarSection, StatsTab } from "./lib/types";
+import MissingValuePlotPage from "./features/completeness/MissingValuePlotPage";
+import MissingValueHeatmapPage from "./features/completeness/MissingValueHeatmapPage";
+import CompletenessTablesPage from "./features/completeness/CompletenessTablesPage";
+import CoveragePlotPage from "./features/qc/CoveragePlotPage";
+import HistogramIntensityPage from "./features/qc/HistogramIntensityPage";
+import BoxplotIntensityPage from "./features/qc/BoxplotIntensityPage";
+import CovPlotPage from "./features/qc/CovPlotPage";
+import PrincipalComponentAnalysisPage from "./features/qc/PrincipalComponentAnalysisPage";
+import AbundancePlotPage from "./features/qc/AbundancePlotPage";
+import CorrelationPlotPage from "./features/qc/CorrelationPlotPage";
+import VolcanoPlotPage from "./features/stats/VolcanoPlotPage";
+import VolcanoPlotControlPage from "./features/stats/VolcanoPlotControlPage";
+import GseaPage from "./features/stats/GseaPage";
+import PathwayHeatmapPage from "./features/stats/PathwayHeatmapPage";
+import SimulationPage from "./features/stats/SimulationPage";
+import RtPlotPage from "./features/peptide/RtPlotPage";
+import ModificationPlotPage from "./features/peptide/ModificationPlotPage";
+import MissedCleavagePlotPage from "./features/peptide/MissedCleavagePlotPage";
+import SequenceCoveragePage from "./features/peptide/SequenceCoveragePage";
+import ProteinBoxplotPage from "./features/single-protein/ProteinBoxplotPage";
+import ProteinLineplotPage from "./features/single-protein/ProteinLineplotPage";
+import PhosphositesOnProteinHeatmapPage from "./features/single-protein/PhosphositesOnProteinHeatmapPage";
+import PhosphositePlotPage from "./features/phospho/PhosphositePlotPage";
+import PhosphositeCoveragePage from "./features/phospho/PhosphositeCoveragePage";
+import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistributionPage";
+import StyPlotPage from "./features/phospho/StyPlotPage";
+import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
+import VennDiagramPage from "./features/comparison/VennDiagramPage";
+import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
+import type {
+  ComparisonTab,
+  CompletenessTab,
+  DataTab,
+  ExternalTab,
+  PhosphoTab,
+  PeptideTab,
+  QcTab,
+  SidebarSection,
+  SingleProteinTab,
+  StatsTab,
+} from "./lib/types";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -53,6 +89,28 @@ const peptideTabs: { key: PeptideTab; label: string }[] = [
   { key: "sequenceCoverage", label: "Sequence Coverage" },
 ];
 
+const singleProteinTabs: { key: SingleProteinTab; label: string }[] = [
+  { key: "boxplot", label: "Protein Boxplot" },
+  { key: "lineplot", label: "Protein Lineplot" },
+  { key: "heatmap", label: "Phosphosites on Protein Heatmap" },
+];
+
+const phosphoTabs: { key: PhosphoTab; label: string }[] = [
+  { key: "phosphositePlot", label: "Phosphosite Plot" },
+  { key: "coverage", label: "Phosphosite Coverage Plot" },
+  { key: "distribution", label: "Phosphosite Distribution" },
+  { key: "sty", label: "STY Plot" },
+];
+
+const comparisonTabs: { key: ComparisonTab; label: string }[] = [
+  { key: "pearson", label: "Pearson Correlation" },
+  { key: "venn", label: "Venn Diagram" },
+];
+
+const externalTabs: { key: ExternalTab; label: string }[] = [
+  { key: "peptideCollapse", label: "Peptide Collapse Function" },
+];
+
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
@@ -60,6 +118,10 @@ export default function App() {
   const [activeCompletenessTab, setActiveCompletenessTab] = useState<CompletenessTab>("missingPlot");
   const [activeStatsTab, setActiveStatsTab] = useState<StatsTab>("volcano");
   const [activePeptideTab, setActivePeptideTab] = useState<PeptideTab>("rtPlot");
+  const [activeSingleProteinTab, setActiveSingleProteinTab] = useState<SingleProteinTab>("boxplot");
+  const [activePhosphoTab, setActivePhosphoTab] = useState<PhosphoTab>("phosphositePlot");
+  const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
+  const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -116,24 +178,176 @@ export default function App() {
       );
     }
 
+    if (activeSection === "singleProtein") {
+      return (
+        <TopTabs
+          tabs={singleProteinTabs}
+          activeTab={activeSingleProteinTab}
+          onChange={setActiveSingleProteinTab}
+        />
+      );
+    }
+
+    if (activeSection === "phospho") {
+      return (
+        <TopTabs
+          tabs={phosphoTabs}
+          activeTab={activePhosphoTab}
+          onChange={setActivePhosphoTab}
+        />
+      );
+    }
+
+    if (activeSection === "comparison") {
+      return (
+        <TopTabs
+          tabs={comparisonTabs}
+          activeTab={activeComparisonTab}
+          onChange={setActiveComparisonTab}
+        />
+      );
+    }
+
+    if (activeSection === "external") {
+      return (
+        <TopTabs
+          tabs={externalTabs}
+          activeTab={activeExternalTab}
+          onChange={setActiveExternalTab}
+        />
+      );
+    }
+
     return null;
-  }, [activeSection, activeDataTab, activeQcTab, activeCompletenessTab, activeStatsTab, activePeptideTab]);
+  }, [
+    activeSection,
+    activeDataTab,
+    activeQcTab,
+    activeCompletenessTab,
+    activeStatsTab,
+    activePeptideTab,
+    activeSingleProteinTab,
+    activePhosphoTab,
+    activeComparisonTab,
+    activeExternalTab,
+  ]);
 
   function renderContent() {
     if (activeSection === "completeness") {
-      return <CompletenessPage activeTab={activeCompletenessTab} />;
+      if (activeCompletenessTab === "missingPlot") {
+        return <MissingValuePlotPage />;
+      }
+
+      if (activeCompletenessTab === "heatmap") {
+        return <MissingValueHeatmapPage />;
+      }
+
+      return <CompletenessTablesPage />;
     }
 
     if (activeSection === "qc") {
-      return <QCPipelinePage activeTab={activeQcTab} />;
+      if (activeQcTab === "coverage") {
+        return <CoveragePlotPage />;
+      }
+
+      if (activeQcTab === "histogram") {
+        return <HistogramIntensityPage />;
+      }
+
+      if (activeQcTab === "boxplot") {
+        return <BoxplotIntensityPage />;
+      }
+
+      if (activeQcTab === "cv") {
+        return <CovPlotPage />;
+      }
+
+      if (activeQcTab === "pca") {
+        return <PrincipalComponentAnalysisPage />;
+      }
+
+      if (activeQcTab === "abundance") {
+        return <AbundancePlotPage />;
+      }
+
+      return <CorrelationPlotPage />;
     }
 
     if (activeSection === "stats") {
-      return <StatisticalAnalysisPage activeTab={activeStatsTab} />;
+      if (activeStatsTab === "volcano") {
+        return <VolcanoPlotPage />;
+      }
+
+      if (activeStatsTab === "volcanoControl") {
+        return <VolcanoPlotControlPage />;
+      }
+
+      if (activeStatsTab === "gsea") {
+        return <GseaPage />;
+      }
+
+      if (activeStatsTab === "pathwayHeatmap") {
+        return <PathwayHeatmapPage />;
+      }
+
+      return <SimulationPage />;
     }
 
     if (activeSection === "peptide") {
-      return <PeptideLevelPage activeTab={activePeptideTab} />;
+      if (activePeptideTab === "rtPlot") {
+        return <RtPlotPage />;
+      }
+
+      if (activePeptideTab === "modification") {
+        return <ModificationPlotPage />;
+      }
+
+      if (activePeptideTab === "missedCleavage") {
+        return <MissedCleavagePlotPage />;
+      }
+
+      return <SequenceCoveragePage />;
+    }
+
+    if (activeSection === "singleProtein") {
+      if (activeSingleProteinTab === "boxplot") {
+        return <ProteinBoxplotPage />;
+      }
+
+      if (activeSingleProteinTab === "lineplot") {
+        return <ProteinLineplotPage />;
+      }
+
+      return <PhosphositesOnProteinHeatmapPage />;
+    }
+
+    if (activeSection === "phospho") {
+      if (activePhosphoTab === "phosphositePlot") {
+        return <PhosphositePlotPage />;
+      }
+
+      if (activePhosphoTab === "coverage") {
+        return <PhosphositeCoveragePage />;
+      }
+
+      if (activePhosphoTab === "distribution") {
+        return <PhosphositeDistributionPage />;
+      }
+
+      return <StyPlotPage />;
+    }
+
+    if (activeSection === "comparison") {
+      if (activeComparisonTab === "pearson") {
+        return <PearsonCorrelationPage />;
+      }
+      return <VennDiagramPage />;
+    }
+
+    if (activeSection === "external") {
+      if (activeExternalTab === "peptideCollapse") {
+        return <PeptideCollapsePage />;
+      }
     }
 
     if (activeSection === "data") {

@@ -47,6 +47,20 @@ export default function AnnotationPage() {
 
   const activeDataset = currentDatasets?.[kind] ?? null;
   const availableColumns = activeDataset?.columnNames ?? [];
+  const availableKinds = useMemo<AnnotationKind[]>(() => {
+    const kinds: AnnotationKind[] = [];
+    if (currentDatasets?.protein) kinds.push("protein");
+    if (currentDatasets?.phospho) kinds.push("phospho");
+    return kinds;
+  }, [currentDatasets]);
+  const kindOptions = useMemo(
+    () =>
+      availableKinds.map((value) => ({
+        value,
+        label: value === "protein" ? "Protein" : "Phospho",
+      })),
+    [availableKinds]
+  );
 
   useEffect(() => {
     getCurrentDatasets()
@@ -55,6 +69,13 @@ export default function AnnotationPage() {
         setError(err instanceof Error ? err.message : "Failed to load datasets");
       });
   }, []);
+
+  useEffect(() => {
+    if (availableKinds.length === 0) return;
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+    }
+  }, [availableKinds, kind]);
 
   useEffect(() => {
     getCurrentAnnotation(kind)
@@ -140,6 +161,10 @@ export default function AnnotationPage() {
   }
 
   async function handleMetadataUpload() {
+    if (!activeDataset) {
+      setError(`No ${kind} dataset loaded. Upload data first.`);
+      return;
+    }
     if (!metadataFile) {
       setError("Please choose a metadata file first.");
       return;
@@ -182,12 +207,20 @@ export default function AnnotationPage() {
               Dataset level
             </label>
             <select
-              value={kind}
+              value={kindOptions.length === 0 ? "" : kind}
               onChange={(e) => setKind(e.target.value as AnnotationKind)}
-              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+              disabled={kindOptions.length === 0}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
-              <option value="protein">Protein</option>
-              <option value="phospho">Phospho</option>
+              {kindOptions.length === 0 ? (
+                <option value="">No dataset available</option>
+              ) : (
+                kindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              )}
             </select>
           </div>
 
@@ -219,6 +252,12 @@ export default function AnnotationPage() {
           </label>
         </div>
 
+        {kindOptions.length === 0 ? (
+          <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+            Upload a protein or phospho dataset in the Data tab before uploading metadata.
+          </div>
+        ) : null}
+
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <div className="text-sm font-medium text-slate-700">Uploaded Metadata (Optional)</div>
           <p className="mt-1 text-sm text-slate-600">
@@ -231,13 +270,14 @@ export default function AnnotationPage() {
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
                 onChange={(e) => setMetadataFile(e.target.files?.[0] ?? null)}
-                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                disabled={!activeDataset}
+                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
               />
             </div>
             <button
               type="button"
               onClick={handleMetadataUpload}
-              disabled={!metadataFile || uploadingMetadata}
+              disabled={!activeDataset || !metadataFile || uploadingMetadata}
               className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {uploadingMetadata ? "Uploading..." : "Upload Metadata"}
@@ -245,7 +285,7 @@ export default function AnnotationPage() {
             <button
               type="button"
               onClick={handleClearUploadedMetadata}
-              disabled={!uploadedMetadata || clearingMetadata}
+              disabled={!activeDataset || !uploadedMetadata || clearingMetadata}
               className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {clearingMetadata ? "Clearing..." : "Clear Uploaded Metadata"}

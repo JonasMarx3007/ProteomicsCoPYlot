@@ -40,6 +40,12 @@ export default function IdTranslatorPage() {
   const [error, setError] = useState<string | null>(null);
 
   const activeDataset = datasets?.[kind] ?? null;
+  const kindOptions = useMemo(() => {
+    const options: { value: AnnotationKind; label: string }[] = [];
+    if (datasets?.protein) options.push({ value: "protein", label: "Protein" });
+    if (datasets?.phospho) options.push({ value: "phospho", label: "Phospho" });
+    return options;
+  }, [datasets]);
   const columns = activeDataset?.columnNames ?? [];
   const databaseOptions = result?.availableDatabases ?? DEFAULT_DATABASES;
 
@@ -50,6 +56,16 @@ export default function IdTranslatorPage() {
         setError(err instanceof Error ? err.message : "Failed to load datasets");
       });
   }, []);
+
+  useEffect(() => {
+    if (kindOptions.length === 0) {
+      setResult(null);
+      return;
+    }
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value);
+    }
+  }, [kindOptions, kind]);
 
   useEffect(() => {
     setColumn((current) => {
@@ -121,10 +137,8 @@ export default function IdTranslatorPage() {
             label="Dataset level"
             value={kind}
             onChange={(value) => setKind(value as AnnotationKind)}
-            options={[
-              { value: "protein", label: "Protein" },
-              { value: "phospho", label: "Phospho" },
-            ]}
+            options={kindOptions}
+            disabled={kindOptions.length === 0}
           />
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
             <div className="font-medium text-slate-700">Current dataset</div>
@@ -203,7 +217,13 @@ export default function IdTranslatorPage() {
         ) : null}
       </section>
 
-      {result ? (
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable ID translation.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 && result ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Translation Summary</h3>

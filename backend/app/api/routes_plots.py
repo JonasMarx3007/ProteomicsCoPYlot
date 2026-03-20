@@ -12,12 +12,18 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
+    comparison_pearson_png,
+    comparison_venn_png,
     completeness_missing_value_heatmap,
     completeness_missing_value_plot,
     distribution_qqnorm_plot,
     imputation_after_plot,
     imputation_before_plot,
     imputation_overall_fit_plot,
+    phospho_coverage_png,
+    phospho_distribution_png,
+    phospho_sty_png,
+    phosphosite_plot_png,
     qc_abundance_plot,
     qc_abundance_interactive_html,
     qc_boxplot_plot,
@@ -27,8 +33,29 @@ from app.services.functions import (
     qc_intensity_histogram_plot,
     qc_pca_plot,
     qc_pca_interactive_html,
+    single_protein_boxplot_plot,
+    single_protein_heatmap_plot,
+    single_protein_lineplot_plot,
     verification_duplicate_pattern_plot,
     verification_first_digit_plot,
+)
+from app.services.single_protein_tools import (
+    single_protein_boxplot_table,
+    single_protein_heatmap_table,
+    single_protein_lineplot_table,
+    single_protein_options,
+)
+from app.services.comparison_tools import (
+    comparison_options,
+    pearson_correlation_table,
+    venn_table,
+)
+from app.services.phospho_tools import (
+    phospho_coverage_table,
+    phospho_distribution_table,
+    phospho_options,
+    phospho_sty_table,
+    phosphosite_plot_table,
 )
 from app.services.table_functions import (
     qc_boxplot_table,
@@ -306,6 +333,10 @@ async def peptide_missed_cleavage_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render peptide missed-cleavage plot: {e}") from e
+
+
+def _csv_values(raw: str) -> list[str]:
+    return [value.strip() for value in str(raw).split(",") if value.strip()]
 
 
 @router.get("/imputation/{kind}/before-missing.png")
@@ -767,3 +798,542 @@ async def qc_correlation_route(
         ) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render QC plot: {e}") from e
+
+
+@router.get("/single-protein/{kind}/options")
+async def single_protein_options_route(
+    kind: AnnotationKind,
+    tab: str = "boxplot",
+) -> dict[str, list[str] | int]:
+    try:
+        return single_protein_options(kind=kind, tab=tab)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load single-protein options: {e}") from e
+
+
+@router.get("/single-protein/{kind}/boxplot.png")
+async def single_protein_boxplot_route(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: str = "",
+    outliers: bool = False,
+    dots: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 10,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            single_protein_boxplot_plot(
+                kind=kind,
+                protein=protein,
+                conditions=_csv_values(conditions),
+                outliers=outliers,
+                dots=dots,
+                header=header,
+                legend=legend,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render single-protein boxplot: {e}") from e
+
+
+@router.get("/single-protein/{kind}/lineplot.png")
+async def single_protein_lineplot_route(
+    kind: AnnotationKind,
+    proteins: str = "",
+    conditions: str = "",
+    includeId: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 10,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            single_protein_lineplot_plot(
+                kind=kind,
+                proteins=_csv_values(proteins),
+                conditions=_csv_values(conditions),
+                include_id=includeId,
+                header=header,
+                legend=legend,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render single-protein lineplot: {e}") from e
+
+
+@router.get("/single-protein/{kind}/heatmap.png")
+async def single_protein_heatmap_route(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: str = "",
+    includeId: bool = False,
+    header: bool = True,
+    filterM1: bool = True,
+    clusterRows: bool = False,
+    clusterCols: bool = False,
+    valueType: str = "log2",
+    cmap: str = "plasma",
+    widthCm: float = 20,
+    heightCm: float = 12,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            single_protein_heatmap_plot(
+                kind=kind,
+                protein=protein,
+                conditions=_csv_values(conditions),
+                include_id=includeId,
+                header=header,
+                filter_m1=filterM1,
+                cluster_rows=clusterRows,
+                cluster_cols=clusterCols,
+                value_type=valueType,
+                cmap_name=cmap,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render single-protein heatmap: {e}") from e
+
+
+@router.get("/single-protein/{kind}/boxplot-table")
+async def single_protein_boxplot_table_route(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: str = "",
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            single_protein_boxplot_table(
+                kind=kind,
+                protein=protein,
+                conditions=_csv_values(conditions),
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load single-protein boxplot table: {e}") from e
+
+
+@router.get("/single-protein/{kind}/lineplot-table")
+async def single_protein_lineplot_table_route(
+    kind: AnnotationKind,
+    proteins: str = "",
+    conditions: str = "",
+    includeId: bool = False,
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            single_protein_lineplot_table(
+                kind=kind,
+                proteins=_csv_values(proteins),
+                conditions=_csv_values(conditions),
+                include_id=includeId,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load single-protein lineplot table: {e}") from e
+
+
+@router.get("/single-protein/{kind}/heatmap-table")
+async def single_protein_heatmap_table_route(
+    kind: AnnotationKind,
+    protein: str,
+    conditions: str = "",
+    includeId: bool = False,
+    filterM1: bool = True,
+    clusterRows: bool = False,
+    clusterCols: bool = False,
+    valueType: str = "log2",
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            single_protein_heatmap_table(
+                kind=kind,
+                protein=protein,
+                conditions=_csv_values(conditions),
+                include_id=includeId,
+                filter_m1=filterM1,
+                cluster_rows=clusterRows,
+                cluster_cols=clusterCols,
+                value_type=valueType,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load single-protein heatmap table: {e}") from e
+
+
+@router.get("/phospho/options")
+async def phospho_options_route() -> dict[str, list[str]]:
+    try:
+        return phospho_options()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load phospho options: {e}") from e
+
+
+@router.get("/phospho/phosphosite-plot.png")
+async def phosphosite_plot_route(
+    cutoff: float = 0.0,
+    color: str = "#87CEEB",
+    widthCm: float = 15,
+    heightCm: float = 10,
+    dpi: int = 100,
+) -> Response:
+    try:
+        return _png_response(
+            phosphosite_plot_png(
+                cutoff=cutoff,
+                color=color,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render phosphosite plot: {e}") from e
+
+
+@router.get("/phospho/phosphosite-plot-table")
+async def phosphosite_plot_table_route(
+    cutoff: float = 0.0,
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(phosphosite_plot_table(cutoff=cutoff))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load phosphosite table: {e}") from e
+
+
+@router.get("/phospho/coverage.png")
+async def phospho_coverage_route(
+    includeId: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    mode: str = "Normal",
+    colorClassI: str = "#2563eb",
+    colorNotClassI: str = "#f59e0b",
+    widthCm: float = 20,
+    heightCm: float = 10,
+    dpi: int = 300,
+    conditions: str = "",
+) -> Response:
+    try:
+        return _png_response(
+            phospho_coverage_png(
+                include_id=includeId,
+                header=header,
+                legend=legend,
+                mode=mode,
+                color_class_i=colorClassI,
+                color_not_class_i=colorNotClassI,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+                conditions=_csv_values(conditions),
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render phospho coverage plot: {e}") from e
+
+
+@router.get("/phospho/coverage-table")
+async def phospho_coverage_table_route(
+    includeId: bool = False,
+    mode: str = "Normal",
+    conditions: str = "",
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            phospho_coverage_table(
+                include_id=includeId,
+                mode=mode,
+                conditions=_csv_values(conditions),
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load phospho coverage table: {e}") from e
+
+
+@router.get("/phospho/distribution.png")
+async def phospho_distribution_route(
+    cutoff: float = 0.0,
+    header: bool = True,
+    color: str = "#87CEEB",
+    widthCm: float = 20,
+    heightCm: float = 15,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            phospho_distribution_png(
+                cutoff=cutoff,
+                header=header,
+                color=color,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render phospho distribution plot: {e}") from e
+
+
+@router.get("/phospho/distribution-table")
+async def phospho_distribution_table_route(
+    cutoff: float = 0.0,
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(phospho_distribution_table(cutoff=cutoff))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load phospho distribution table: {e}") from e
+
+
+@router.get("/phospho/sty.png")
+async def phospho_sty_route(
+    header: bool = True,
+    widthCm: float = 17.78,
+    heightCm: float = 11.43,
+    dpi: int = 140,
+) -> Response:
+    try:
+        return _png_response(
+            phospho_sty_png(
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render STY plot: {e}") from e
+
+
+@router.get("/phospho/sty-table")
+async def phospho_sty_table_route() -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(phospho_sty_table())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load STY table: {e}") from e
+
+
+@router.get("/comparison/{kind}/options")
+async def comparison_options_route(
+    kind: AnnotationKind,
+) -> dict[str, list[str] | int]:
+    try:
+        return comparison_options(kind=kind)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load comparison options: {e}") from e
+
+
+@router.get("/comparison/{kind}/pearson.png")
+async def comparison_pearson_route(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    color: str = "#1f77b4",
+    dotSize: float = 60,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 12,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            comparison_pearson_png(
+                kind=kind,
+                mode=mode,
+                sample1=sample1,
+                sample2=sample2,
+                condition1=condition1,
+                condition2=condition2,
+                alias1=alias1,
+                alias2=alias2,
+                color=color,
+                dot_size=dotSize,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render Pearson correlation: {e}") from e
+
+
+@router.get("/comparison/{kind}/pearson-table")
+async def comparison_pearson_table_route(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            pearson_correlation_table(
+                kind=kind,
+                mode=mode,
+                sample1=sample1,
+                sample2=sample2,
+                condition1=condition1,
+                condition2=condition2,
+                alias1=alias1,
+                alias2=alias2,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load Pearson table: {e}") from e
+
+
+@router.get("/comparison/{kind}/venn.png")
+async def comparison_venn_route(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    first: str = "",
+    second: str = "",
+    third: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    alias3: str = "",
+    color1: str = "#1f77b4",
+    color2: str = "#ff7f0e",
+    color3: str = "#2ca02c",
+    header: bool = True,
+    widthCm: float = 15,
+    heightCm: float = 12,
+    dpi: int = 300,
+) -> Response:
+    try:
+        return _png_response(
+            comparison_venn_png(
+                kind=kind,
+                mode=mode,
+                first=first,
+                second=second,
+                third=third,
+                alias1=alias1,
+                alias2=alias2,
+                alias3=alias3,
+                color1=color1,
+                color2=color2,
+                color3=color3,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render Venn diagram: {e}") from e
+
+
+@router.get("/comparison/{kind}/venn-table")
+async def comparison_venn_table_route(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    first: str = "",
+    second: str = "",
+    third: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    alias3: str = "",
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            venn_table(
+                kind=kind,
+                mode=mode,
+                first=first,
+                second=second,
+                third=third,
+                alias1=alias1,
+                alias2=alias2,
+                alias3=alias3,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load Venn table: {e}") from e

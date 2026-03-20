@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getQcPlotOptions, getQcTable } from "../../lib/api";
+import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, QcTab } from "../../lib/types";
 
 type Props = {
@@ -13,6 +14,7 @@ type QcTableRequest = {
 
 export default function QCPipelinePage({ activeTab }: Props) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
@@ -89,6 +91,20 @@ export default function QCPipelinePage({ activeTab }: Props) {
   });
 
   useEffect(() => {
+    if (availableKinds.length === 0) {
+      setConditionOptions([]);
+      return;
+    }
+    if (!availableKinds.includes(kind)) {
+      setKind(availableKinds[0]);
+    }
+  }, [availableKinds, kind]);
+
+  useEffect(() => {
+    if (!availableKinds.includes(kind)) {
+      setConditionOptions([]);
+      return;
+    }
     let cancelled = false;
     getQcPlotOptions(kind)
       .then((payload) => {
@@ -103,7 +119,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [kind]);
+  }, [kind, availableKinds]);
 
   useEffect(() => {
     setAbundance((prev) => {
@@ -142,6 +158,12 @@ export default function QCPipelinePage({ activeTab }: Props) {
   }, [activeTab, coverage.summary, box.mode]);
 
   useEffect(() => {
+    if (!availableKinds.includes(kind)) {
+      setTableRows([]);
+      setTableError(null);
+      setTableLoading(false);
+      return;
+    }
     if (!tableRequest) {
       setTableRows([]);
       setTableError(null);
@@ -171,9 +193,10 @@ export default function QCPipelinePage({ activeTab }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [kind, tableRequest]);
+  }, [kind, tableRequest, availableKinds]);
 
   const plotView = useMemo(() => {
+    if (!availableKinds.includes(kind)) return null;
     if (activeTab === "coverage") {
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, coverage) };
     }
@@ -207,7 +230,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, params) };
     }
     return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, correlation) };
-  }, [activeTab, kind, coverage, hist, box, cv, pca, abundance, correlation]);
+  }, [activeTab, kind, coverage, hist, box, cv, pca, abundance, correlation, availableKinds]);
 
   const interactiveHeightPx = useMemo(() => {
     if (activeTab === "pca" && pca.type === "Interactive") {
@@ -250,33 +273,50 @@ export default function QCPipelinePage({ activeTab }: Props) {
         <div className="mt-4 max-w-xs">
           <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
           <select
-            value={kind}
+            value={kindOptions.length === 0 ? "" : kind}
             onChange={(e) => setKind(e.target.value as AnnotationKind)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+            disabled={kindOptions.length === 0}
+            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
           >
-            <option value="protein">Protein</option>
-            <option value="phospho">Phospho</option>
+            {kindOptions.length === 0 ? (
+              <option value="">No dataset available</option>
+            ) : (
+              kindOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))
+            )}
           </select>
         </div>
       </section>
 
+      {kindOptions.length === 0 ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
+          Upload a protein or phospho dataset in the Data tab to enable QC plotting.
+        </section>
+      ) : null}
+
+      {kindOptions.length > 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
+      ) : null}
 
+      {kindOptions.length > 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">{tabTitle(activeTab)}</h3>
-          {plotView.mode === "image" ? (
+          {plotView?.mode === "image" ? (
             <a
-              href={plotView.url}
+              href={plotView?.url}
               download={`qc_${activeTab}_${kind}.png`}
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
             >
               Download Plot
             </a>
-          ) : (
+          ) : plotView ? (
             <a
               href={plotView.url}
               target="_blank"
@@ -285,21 +325,21 @@ export default function QCPipelinePage({ activeTab }: Props) {
             >
               Open Interactive Plot
             </a>
-          )}
+          ) : null}
         </div>
         <div className="mt-4">
-          {plotView.mode === "image" ? (
+          {plotView?.mode === "image" ? (
             <img
-              key={plotView.url}
-              src={plotView.url}
+              key={plotView?.url}
+              src={plotView?.url}
               alt={`${tabTitle(activeTab)} plot`}
               className="w-full rounded-xl border border-slate-200"
               onLoad={() => setImageError(null)}
               onError={() => {
-                handleImageError(plotView.url);
+                if (plotView?.url) handleImageError(plotView.url);
               }}
             />
-          ) : (
+          ) : plotView ? (
             <iframe
               key={plotView.url}
               src={plotView.url}
@@ -308,6 +348,10 @@ export default function QCPipelinePage({ activeTab }: Props) {
               style={{ height: `${interactiveHeightPx}px` }}
               onLoad={() => setImageError(null)}
             />
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+              No plot available for the selected dataset.
+            </div>
           )}
         </div>
         {imageError ? (
@@ -316,8 +360,9 @@ export default function QCPipelinePage({ activeTab }: Props) {
           </div>
         ) : null}
       </section>
+      ) : null}
 
-      {tableRequest ? (
+      {kindOptions.length > 0 && tableRequest ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>

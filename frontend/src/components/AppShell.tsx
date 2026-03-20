@@ -43,7 +43,7 @@ export default function AppShell({
       >
         {topBar ? <div className="shrink-0">{topBar}</div> : null}
 
-        <main className="min-w-0 p-4 sm:p-6">
+        <main lang="en-US" className="min-w-0 p-4 sm:p-6">
           <div className="w-full">{children}</div>
         </main>
       </div>
