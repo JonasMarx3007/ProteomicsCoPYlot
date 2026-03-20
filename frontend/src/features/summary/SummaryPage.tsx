@@ -22,7 +22,6 @@ const defaultDraft: SummaryDraft = {
   introduction: "",
   notes: {},
   includeMetadataTables: true,
-  includeLogAppendix: true,
 };
 
 export default function SummaryPage({ activeTab }: Props) {
@@ -31,7 +30,7 @@ export default function SummaryPage({ activeTab }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<SummaryDraft>(() => loadDraft());
   const [selectedSection, setSelectedSection] = useState("");
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [reportUrl, setReportUrl] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
 
@@ -68,11 +67,11 @@ export default function SummaryPage({ activeTab }: Props) {
 
   useEffect(() => {
     return () => {
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl);
+      if (reportUrl) {
+        URL.revokeObjectURL(reportUrl);
       }
     };
-  }, [pdfUrl]);
+  }, [reportUrl]);
 
   const selectedSectionInfo = useMemo(
     () => overview?.availableSections.find((section) => section.key === selectedSection) ?? null,
@@ -94,10 +93,6 @@ export default function SummaryPage({ activeTab }: Props) {
 
   if (activeTab === "tables") {
     return renderTablesTab();
-  }
-
-  if (activeTab === "log") {
-    return renderLogTab();
   }
 
   if (activeTab === "text") {
@@ -126,44 +121,6 @@ export default function SummaryPage({ activeTab }: Props) {
             )}
           </SectionCard>
         ))}
-      </div>
-    );
-  }
-
-  function renderLogTab() {
-    const logRows = (overview?.logRows ?? []).map((row) => ({
-      Variable: row.variable,
-      Value: row.value,
-    }));
-    const csvHref =
-      logRows.length > 0
-        ? `data:text/csv;charset=utf-8,${encodeURIComponent(
-            rowsToCsv(logRows, ["Variable", "Value"])
-          )}`
-        : null;
-
-    return (
-      <div className="space-y-6">
-        <SectionCard title="System Log">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-slate-600">
-              Current datasets, metadata state, and translated app status.
-            </div>
-            {csvHref ? (
-              <a
-                href={csvHref}
-                download="summary_log.csv"
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download CSV
-              </a>
-            ) : null}
-          </div>
-          <div className="mt-4">
-            <PreviewTable rows={logRows} emptyText="No log rows available yet." />
-          </div>
-          <Notice error={error} warnings={overview?.warnings} />
-        </SectionCard>
       </div>
     );
   }
@@ -228,7 +185,6 @@ export default function SummaryPage({ activeTab }: Props) {
   function renderReportTab() {
     const sectionCount = overview?.availableSections.length ?? 0;
     const availableTableCount = (overview?.tables ?? []).filter((table) => table.available).length;
-    const logCount = overview?.logRows.length ?? 0;
     const filename = sanitizeFilename(draft.title || overview?.suggestedFilename || "summary_report");
 
     return (
@@ -237,7 +193,6 @@ export default function SummaryPage({ activeTab }: Props) {
           items={[
             { label: "Report Sections", value: String(sectionCount) },
             { label: "Metadata Tables", value: String(availableTableCount) },
-            { label: "Log Entries", value: String(logCount) },
           ]}
         />
 
@@ -263,13 +218,6 @@ export default function SummaryPage({ activeTab }: Props) {
                 setDraft((current) => ({ ...current, includeMetadataTables: checked }))
               }
             />
-            <CheckboxField
-              label="Include system log appendix"
-              checked={draft.includeLogAppendix}
-              onChange={(checked) =>
-                setDraft((current) => ({ ...current, includeLogAppendix: checked }))
-              }
-            />
           </div>
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
@@ -280,12 +228,12 @@ export default function SummaryPage({ activeTab }: Props) {
                   setGenerating(true);
                   setReportError(null);
                   const blob = await downloadSummaryReport(draft);
-                  setPdfUrl((current) => {
+                  setReportUrl((current) => {
                     if (current) URL.revokeObjectURL(current);
                     return URL.createObjectURL(blob);
                   });
                 } catch (err) {
-                  setPdfUrl((current) => {
+                  setReportUrl((current) => {
                     if (current) URL.revokeObjectURL(current);
                     return null;
                   });
@@ -299,16 +247,16 @@ export default function SummaryPage({ activeTab }: Props) {
               className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
               disabled={generating}
             >
-              {generating ? "Generating PDF..." : "Generate PDF Report"}
+              {generating ? "Generating HTML..." : "Generate HTML Report"}
             </button>
 
-            {pdfUrl ? (
+            {reportUrl ? (
               <a
-                href={pdfUrl}
+                href={reportUrl}
                 download={filename}
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
               >
-                Download PDF
+                Download HTML
               </a>
             ) : null}
           </div>
@@ -316,16 +264,16 @@ export default function SummaryPage({ activeTab }: Props) {
           <Notice error={error ?? reportError} warnings={overview?.warnings} />
         </SectionCard>
 
-        <SectionCard title="PDF Preview">
-          {pdfUrl ? (
+        <SectionCard title="HTML Preview">
+          {reportUrl ? (
             <iframe
-              src={pdfUrl}
-              title="Summary PDF Preview"
+              src={reportUrl}
+              title="Summary HTML Preview"
               className="w-full rounded-xl border border-slate-200"
               style={{ height: 900 }}
             />
           ) : (
-            <InfoSection message="Generate the PDF report to preview it here." />
+            <InfoSection message="Generate the HTML report to preview it here." />
           )}
         </SectionCard>
       </div>
@@ -357,10 +305,20 @@ function loadDraft(): SummaryDraft {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultDraft;
     const parsed = JSON.parse(raw) as Partial<SummaryDraft>;
+    const title = typeof parsed.title === "string" ? parsed.title : defaultDraft.title;
+    const author = typeof parsed.author === "string" ? parsed.author : defaultDraft.author;
+    const introduction =
+      typeof parsed.introduction === "string" ? parsed.introduction : defaultDraft.introduction;
+    const includeMetadataTables =
+      typeof parsed.includeMetadataTables === "boolean"
+        ? parsed.includeMetadataTables
+        : defaultDraft.includeMetadataTables;
     return {
-      ...defaultDraft,
-      ...parsed,
+      title,
+      author,
+      introduction,
       notes: parsed.notes ?? {},
+      includeMetadataTables,
     };
   } catch {
     return defaultDraft;
@@ -370,24 +328,7 @@ function loadDraft(): SummaryDraft {
 function sanitizeFilename(value: string) {
   const cleaned = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   const base = cleaned || "proteomicscopylot_summary_report";
-  return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
-}
-
-function rowsToCsv(rows: Record<string, unknown>[], columns: string[]) {
-  const header = columns.join(",");
-  const body = rows.map((row) =>
-    columns
-      .map((column) => {
-        const raw = row[column];
-        const text = raw == null ? "" : String(raw);
-        if (text.includes(",") || text.includes('"') || text.includes("\n")) {
-          return `"${text.replace(/"/g, '""')}"`;
-        }
-        return text;
-      })
-      .join(",")
-  );
-  return [header, ...body].join("\n");
+  return base.toLowerCase().endsWith(".html") ? base : `${base}.html`;
 }
 
 function collectColumns(rows: Record<string, unknown>[]) {
