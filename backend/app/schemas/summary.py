@@ -14,11 +14,6 @@ class SummaryTableBlock(BaseModel):
     message: str | None = None
 
 
-class SummaryLogRow(BaseModel):
-    variable: str
-    value: str
-
-
 class SummarySectionInfo(BaseModel):
     key: str
     title: str
@@ -33,10 +28,9 @@ class SummarySectionNote(BaseModel):
 
 class SummaryOverviewResponse(BaseModel):
     tables: list[SummaryTableBlock] = Field(default_factory=list)
-    logRows: list[SummaryLogRow] = Field(default_factory=list)
     availableSections: list[SummarySectionInfo] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    suggestedFilename: str = "proteomicscopylot_summary_report.pdf"
+    suggestedFilename: str = "proteomicscopylot_summary_report.html"
 
 
 class SummaryReportRequest(BaseModel):
@@ -45,4 +39,3 @@ class SummaryReportRequest(BaseModel):
     introduction: str = ""
     notes: dict[str, SummarySectionNote] = Field(default_factory=dict)
     includeMetadataTables: bool = True
-    includeLogAppendix: bool = True
