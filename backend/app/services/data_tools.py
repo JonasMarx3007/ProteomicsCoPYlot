@@ -9,6 +9,8 @@ from app.schemas.data_tools import (
     CurvePoint,
     DataSource,
     DistributionSummaryResponse,
+    IdTranslationRequest,
+    IdTranslationResponse,
     DuplicateFrequencyPoint,
     FirstDigitPoint,
     HistogramBin,
@@ -20,6 +22,8 @@ from app.schemas.data_tools import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_current_dataset
+from app.services.id_translation import export_id_translation as export_id_translation_service
+from app.services.id_translation import run_id_translation as run_id_translation_service
 from app.services.functions import (
     choose_best_source,
     comparative_histogram,
@@ -261,3 +265,11 @@ def verification_summary(kind: AnnotationKind) -> VerificationSummaryResponse:
         ],
         numericValueCount=int(observed.size),
     )
+
+
+def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
+    return run_id_translation_service(payload)
+
+
+def export_id_translation(payload: IdTranslationRequest) -> tuple[str, bytes, str]:
+    return export_id_translation_service(payload)

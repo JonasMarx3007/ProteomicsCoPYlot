@@ -4,6 +4,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, Response
 
 from app.schemas.annotation import AnnotationKind
+from app.schemas.stats import (
+    EnrichmentRequest,
+    SimulationRequest,
+    VolcanoControlRequest,
+    VolcanoRequest,
+)
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
     completeness_missing_value_heatmap,
@@ -29,6 +35,18 @@ from app.services.table_functions import (
     qc_coverage_table,
     qc_cv_table,
 )
+from app.services.stats_tools import (
+    gsea_plot_png,
+    pathway_heatmap_png,
+    simulation_html,
+    volcano_control_html,
+    volcano_html,
+)
+from app.services.peptide_tools import (
+    peptide_missed_cleavage_plot,
+    peptide_modification_plot,
+    peptide_rt_plot,
+)
 
 router = APIRouter(prefix="/api/plots", tags=["plots"])
 
@@ -40,6 +58,254 @@ def _png_response(content: bytes) -> Response:
 def _table_rows(df) -> dict[str, list[dict[str, object]]]:
     safe_df = df.fillna("")
     return {"rows": safe_df.to_dict(orient="records")}
+
+
+@router.get("/stats/{kind}/volcano.html", response_class=HTMLResponse)
+async def stats_volcano_route(
+    kind: AnnotationKind,
+    condition1: str,
+    condition2: str,
+    identifier: str = "workflow",
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    highlightTerms: str = "",
+) -> HTMLResponse:
+    try:
+        payload = VolcanoRequest(
+            kind=kind,
+            condition1=condition1,
+            condition2=condition2,
+            identifier=identifier,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            testType=testType,
+            useUncorrected=useUncorrected,
+            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
+        )
+        return HTMLResponse(content=volcano_html(payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render volcano plot: {e}") from e
+
+
+@router.get("/stats/{kind}/volcano-control.html", response_class=HTMLResponse)
+async def stats_volcano_control_route(
+    kind: AnnotationKind,
+    condition1: str,
+    condition2: str,
+    condition1Control: str,
+    condition2Control: str,
+    identifier: str = "workflow",
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    highlightTerms: str = "",
+) -> HTMLResponse:
+    try:
+        payload = VolcanoControlRequest(
+            kind=kind,
+            condition1=condition1,
+            condition2=condition2,
+            condition1Control=condition1Control,
+            condition2Control=condition2Control,
+            identifier=identifier,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            testType=testType,
+            useUncorrected=useUncorrected,
+            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
+        )
+        return HTMLResponse(content=volcano_control_html(payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render control volcano plot: {e}") from e
+
+
+@router.get("/stats/{kind}/gsea/{direction}.png")
+async def stats_gsea_route(
+    kind: AnnotationKind,
+    direction: str,
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    topN: int = 10,
+    minTermSize: int = 20,
+    maxTermSize: int = 300,
+) -> Response:
+    try:
+        payload = EnrichmentRequest(
+            kind=kind,
+            condition1=condition1,
+            condition2=condition2,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            testType=testType,
+            useUncorrected=useUncorrected,
+            topN=topN,
+            minTermSize=minTermSize,
+            maxTermSize=maxTermSize,
+        )
+        return _png_response(gsea_plot_png(payload, direction=direction))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render GSEA plot: {e}") from e
+
+
+@router.get("/stats/{kind}/pathway-heatmap.png")
+async def stats_pathway_heatmap_route(
+    kind: AnnotationKind,
+    pathway: str,
+    conditions: str = "",
+    valueType: str = "z",
+    includeId: bool = True,
+    header: bool = True,
+    removeEmpty: bool = True,
+    clusterRows: bool = False,
+    clusterCols: bool = False,
+    widthCm: float = 20,
+    heightCm: float = 12,
+    dpi: int = 300,
+) -> Response:
+    try:
+        condition_list = [value.strip() for value in conditions.split(",") if value.strip()]
+        return _png_response(
+            pathway_heatmap_png(
+                kind=kind,
+                pathway=pathway,
+                conditions=condition_list,
+                value_type=valueType,
+                include_id=includeId,
+                header=header,
+                remove_empty=removeEmpty,
+                cluster_rows=clusterRows,
+                cluster_cols=clusterCols,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render pathway heatmap: {e}") from e
+
+
+@router.get("/stats/{kind}/simulation.html", response_class=HTMLResponse)
+async def stats_simulation_route(
+    kind: AnnotationKind,
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    varianceMultiplier: float = 1.0,
+    sampleSizeOverride: int = 0,
+) -> HTMLResponse:
+    try:
+        payload = SimulationRequest(
+            kind=kind,
+            condition1=condition1,
+            condition2=condition2,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            varianceMultiplier=varianceMultiplier,
+            sampleSizeOverride=sampleSizeOverride,
+        )
+        return HTMLResponse(content=simulation_html(payload))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render simulation plot: {e}") from e
+
+
+@router.get("/peptide/rt.png")
+async def peptide_rt_route(
+    method: str = "Hexbin Plot",
+    addLine: bool = False,
+    bins: int = 1000,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 15,
+    dpi: int = 100,
+) -> Response:
+    try:
+        return _png_response(
+            peptide_rt_plot(
+                method=method,
+                add_line=addLine,
+                bins=bins,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render peptide RT plot: {e}") from e
+
+
+@router.get("/peptide/modification.png")
+async def peptide_modification_route(
+    includeId: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    widthCm: float = 25,
+    heightCm: float = 15,
+    dpi: int = 100,
+) -> Response:
+    try:
+        return _png_response(
+            peptide_modification_plot(
+                include_id=includeId,
+                header=header,
+                legend=legend,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render peptide modification plot: {e}") from e
+
+
+@router.get("/peptide/missed-cleavage.png")
+async def peptide_missed_cleavage_route(
+    includeId: bool = False,
+    text: bool = True,
+    textSize: int = 8,
+    header: bool = True,
+    widthCm: float = 25,
+    heightCm: float = 15,
+    dpi: int = 100,
+) -> Response:
+    try:
+        return _png_response(
+            peptide_missed_cleavage_plot(
+                include_id=includeId,
+                text=text,
+                text_size=textSize,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render peptide missed-cleavage plot: {e}") from e
 
 
 @router.get("/imputation/{kind}/before-missing.png")

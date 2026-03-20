@@ -7,13 +7,28 @@ import type {
   CurrentDatasetsResponse,
   DatasetPreviewResponse,
   DatasetKind,
+  EnrichmentRequest,
+  EnrichmentResultResponse,
+  IdTranslationRequest,
+  IdTranslationResponse,
   ImputationResultResponse,
   ImputationRunRequest,
   MetadataUploadResponse,
+  PathwayOptionsResponse,
+  PeptideCoverageResponse,
+  PeptideMetadataResponse,
+  PeptideOverviewResponse,
   PeptidePathResponse,
+  PeptideSpecies,
   QcSummaryResponse,
   QcPlotOptionsResponse,
   QcTableResponse,
+  SimulationRequest,
+  SimulationResultResponse,
+  StatisticalOptionsResponse,
+  VolcanoControlRequest,
+  VolcanoResultResponse,
+  VolcanoRequest,
   VerificationSummaryResponse,
 } from "./types";
 
@@ -88,6 +103,92 @@ export async function getCurrentDatasets(): Promise<CurrentDatasetsResponse> {
   }
 
   return data as CurrentDatasetsResponse;
+}
+
+export async function getPeptideOverview(): Promise<PeptideOverviewResponse> {
+  const response = await fetch(`${API_BASE}/api/peptide/overview`);
+  const data = await parseJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load peptide overview"
+    );
+  }
+
+  return data as PeptideOverviewResponse;
+}
+
+export async function uploadPeptideMetadata(file: File): Promise<PeptideMetadataResponse> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/peptide/metadata/upload`, {
+    method: "POST",
+    body: form,
+  });
+
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to upload peptide metadata"
+    );
+  }
+
+  return data as PeptideMetadataResponse;
+}
+
+export async function getCurrentPeptideMetadata(): Promise<PeptideMetadataResponse | null> {
+  const response = await fetch(`${API_BASE}/api/peptide/metadata/current`);
+  const data = await parseJson(response);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load peptide metadata"
+    );
+  }
+
+  return data as PeptideMetadataResponse;
+}
+
+export async function clearCurrentPeptideMetadata(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/peptide/metadata/current`, {
+    method: "DELETE",
+  });
+  const data = await parseJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to clear peptide metadata"
+    );
+  }
+}
+
+export async function getPeptideSequenceCoverage(
+  species: PeptideSpecies,
+  protein: string,
+  chunkSize: number
+): Promise<PeptideCoverageResponse> {
+  const response = await fetch(
+    buildPlotUrl("/api/peptide/sequence-coverage", { species, protein, chunkSize })
+  );
+  const data = await parseJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to calculate peptide sequence coverage"
+    );
+  }
+
+  return data as PeptideCoverageResponse;
 }
 
 export async function generateAnnotation(
@@ -255,6 +356,48 @@ export async function getVerificationSummary(
   return data as VerificationSummaryResponse;
 }
 
+export async function runIdTranslation(
+  payload: IdTranslationRequest
+): Promise<IdTranslationResponse> {
+  const response = await fetch(`${API_BASE}/api/data-tools/id-translation/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to translate IDs"
+    );
+  }
+  return data as IdTranslationResponse;
+}
+
+export async function downloadIdTranslation(
+  payload: IdTranslationRequest
+): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/data-tools/id-translation/download`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to download translated table"
+    );
+  }
+
+  return response.blob();
+}
+
 export async function getCompletenessTables(
   kind: AnnotationKind,
   params?: Record<string, string | number | boolean>
@@ -313,6 +456,112 @@ export async function getQcTable(
     );
   }
   return data as QcTableResponse;
+}
+
+export async function getStatisticalOptions(
+  kind: AnnotationKind
+): Promise<StatisticalOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/options/${kind}`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load statistical options"
+    );
+  }
+  return data as StatisticalOptionsResponse;
+}
+
+export async function runVolcanoAnalysis(
+  payload: VolcanoRequest
+): Promise<VolcanoResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/volcano/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run volcano analysis"
+    );
+  }
+  return data as VolcanoResultResponse;
+}
+
+export async function runVolcanoControlAnalysis(
+  payload: VolcanoControlRequest
+): Promise<VolcanoResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/volcano-control/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run control volcano analysis"
+    );
+  }
+  return data as VolcanoResultResponse;
+}
+
+export async function runEnrichmentAnalysis(
+  payload: EnrichmentRequest
+): Promise<EnrichmentResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/gsea/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run enrichment analysis"
+    );
+  }
+  return data as EnrichmentResultResponse;
+}
+
+export async function getPathwayOptions(): Promise<PathwayOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/pathways`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load pathway options"
+    );
+  }
+  return data as PathwayOptionsResponse;
+}
+
+export async function runSimulationAnalysis(
+  payload: SimulationRequest
+): Promise<SimulationResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/simulation/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run simulation"
+    );
+  }
+  return data as SimulationResultResponse;
 }
 
 export function buildPlotUrl(path: string, params?: Record<string, string | number | boolean>) {

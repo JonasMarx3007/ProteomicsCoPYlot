@@ -29,10 +29,10 @@ export default function AppShell({
       <button
         type="button"
         onClick={() => setSidebarOpen((prev) => !prev)}
-        className="fixed bottom-4 left-4 z-50 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50"
+        className="fixed bottom-4 left-4 z-50 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition hover:bg-slate-50"
         aria-label="Toggle sidebar"
       >
-        ☰
+        Menu
       </button>
 
       <div

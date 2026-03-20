@@ -7,8 +7,11 @@ import CompletenessPage from "./features/data/CompletenessPage";
 import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
+import IdTranslatorPage from "./features/data/IdTranslatorPage";
+import PeptideLevelPage from "./features/peptide/PeptideLevelPage";
 import QCPipelinePage from "./features/qc/QCPipelinePage";
-import type { CompletenessTab, DataTab, QcTab, SidebarSection } from "./lib/types";
+import StatisticalAnalysisPage from "./features/stats/StatisticalAnalysisPage";
+import type { CompletenessTab, DataTab, PeptideTab, QcTab, SidebarSection, StatsTab } from "./lib/types";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -16,6 +19,7 @@ const dataTabs: { key: DataTab; label: string }[] = [
   { key: "imputation", label: "Imputation" },
   { key: "distribution", label: "Distribution" },
   { key: "verification", label: "Verification" },
+  { key: "translator", label: "ID Translator" },
 ];
 
 const qcTabs: { key: QcTab; label: string }[] = [
@@ -34,11 +38,28 @@ const completenessTabs: { key: CompletenessTab; label: string }[] = [
   { key: "tables", label: "Tables" },
 ];
 
+const statsTabs: { key: StatsTab; label: string }[] = [
+  { key: "volcano", label: "Volcano Plot" },
+  { key: "volcanoControl", label: "Volcano Plot Control" },
+  { key: "gsea", label: "GSEA" },
+  { key: "pathwayHeatmap", label: "Pathway Heatmap" },
+  { key: "simulation", label: "Simulation" },
+];
+
+const peptideTabs: { key: PeptideTab; label: string }[] = [
+  { key: "rtPlot", label: "RT Plot" },
+  { key: "modification", label: "Modification Plot" },
+  { key: "missedCleavage", label: "Missed Cleavage Plot" },
+  { key: "sequenceCoverage", label: "Sequence Coverage" },
+];
+
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
   const [activeQcTab, setActiveQcTab] = useState<QcTab>("coverage");
   const [activeCompletenessTab, setActiveCompletenessTab] = useState<CompletenessTab>("missingPlot");
+  const [activeStatsTab, setActiveStatsTab] = useState<StatsTab>("volcano");
+  const [activePeptideTab, setActivePeptideTab] = useState<PeptideTab>("rtPlot");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -75,8 +96,28 @@ export default function App() {
       );
     }
 
+    if (activeSection === "stats") {
+      return (
+        <TopTabs
+          tabs={statsTabs}
+          activeTab={activeStatsTab}
+          onChange={setActiveStatsTab}
+        />
+      );
+    }
+
+    if (activeSection === "peptide") {
+      return (
+        <TopTabs
+          tabs={peptideTabs}
+          activeTab={activePeptideTab}
+          onChange={setActivePeptideTab}
+        />
+      );
+    }
+
     return null;
-  }, [activeSection, activeDataTab, activeQcTab, activeCompletenessTab]);
+  }, [activeSection, activeDataTab, activeQcTab, activeCompletenessTab, activeStatsTab, activePeptideTab]);
 
   function renderContent() {
     if (activeSection === "completeness") {
@@ -85,6 +126,14 @@ export default function App() {
 
     if (activeSection === "qc") {
       return <QCPipelinePage activeTab={activeQcTab} />;
+    }
+
+    if (activeSection === "stats") {
+      return <StatisticalAnalysisPage activeTab={activeStatsTab} />;
+    }
+
+    if (activeSection === "peptide") {
+      return <PeptideLevelPage activeTab={activePeptideTab} />;
     }
 
     if (activeSection === "data") {
@@ -106,6 +155,10 @@ export default function App() {
 
       if (activeDataTab === "verification") {
         return <VerificationPage />;
+      }
+
+      if (activeDataTab === "translator") {
+        return <IdTranslatorPage />;
       }
     }
 

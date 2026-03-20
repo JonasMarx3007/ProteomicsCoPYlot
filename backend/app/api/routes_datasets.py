@@ -17,6 +17,7 @@ from app.services.dataset_store import (
     save_table_dataset,
 )
 from app.services.metadata_upload_store import clear_uploaded_metadata
+from app.services.peptide_metadata_store import clear_peptide_metadata
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -74,6 +75,7 @@ async def set_peptide_path(payload: PeptidePathRequest) -> PeptidePathResponse:
         raise HTTPException(status_code=400, detail="Path must not be empty")
 
     stored = save_peptide_path(payload.path)
+    clear_peptide_metadata()
     return _peptide_response(stored)
 
 

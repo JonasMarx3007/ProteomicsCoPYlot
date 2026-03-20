@@ -8,6 +8,8 @@ from fastapi.responses import StreamingResponse
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import (
     DistributionSummaryResponse,
+    IdTranslationRequest,
+    IdTranslationResponse,
     ImputationResultResponse,
     ImputationRunRequest,
     VerificationSummaryResponse,
@@ -15,7 +17,9 @@ from app.schemas.data_tools import (
 from app.schemas.completeness import CompletenessTablesResponse
 from app.services.data_tools import (
     distribution_summary,
+    export_id_translation,
     imputed_dataframe,
+    run_id_translation,
     run_imputation,
     verification_summary,
 )
@@ -96,3 +100,29 @@ async def completeness_tables_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Completeness analysis failed: {e}") from e
+
+
+@router.post("/id-translation/run", response_model=IdTranslationResponse)
+async def id_translation_route(payload: IdTranslationRequest) -> IdTranslationResponse:
+    try:
+        return run_id_translation(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ID translation failed: {e}") from e
+
+
+@router.post("/id-translation/download")
+async def download_id_translation_route(payload: IdTranslationRequest) -> StreamingResponse:
+    try:
+        filename, content, media_type = export_id_translation(payload)
+        buffer = io.BytesIO(content)
+        return StreamingResponse(
+            buffer,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ID translation download failed: {e}") from e

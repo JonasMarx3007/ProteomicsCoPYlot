@@ -73,6 +73,29 @@ class VerificationSummaryResponse(BaseModel):
     numericValueCount: int
 
 
+class IdTranslationRequest(BaseModel):
+    kind: AnnotationKind
+    column: str
+    inputDb: str | None = None
+    outputDb: str
+    autoDetectInput: bool = False
+
+
+class IdTranslationResponse(BaseModel):
+    kind: AnnotationKind
+    sourceColumn: str
+    outputColumn: str
+    inputDb: str
+    outputDb: str
+    translatedCount: int
+    totalRows: int
+    preview: list[dict[str, Any]]
+    availableColumns: list[str]
+    availableDatabases: list[str]
+    downloadFilename: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ImputationRunRequest(BaseModel):
     kind: AnnotationKind
     qValue: float = Field(default=0.01, ge=0.0, le=1.0)
