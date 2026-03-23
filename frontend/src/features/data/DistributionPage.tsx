@@ -106,7 +106,7 @@ export default function DistributionPage() {
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">QQ Norm Reference</h3>
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="mt-4 grid gap-4 grid-cols-1">
               <img
                 src={qqReferenceImageUrl}
                 alt="QQ norm reference"
