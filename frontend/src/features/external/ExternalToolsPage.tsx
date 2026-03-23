@@ -89,10 +89,7 @@ function PeptideCollapseTool() {
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Localization cutoff</span>
             <input
-              type="number"
-              min={0}
-              max={1}
-              step={0.01}
+              type="text"
               lang="en-US"
               inputMode="decimal"
               value={Number.isFinite(cutoff) ? cutoff : 0}

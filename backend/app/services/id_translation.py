@@ -11,6 +11,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import IdTranslationRequest, IdTranslationResponse
 from app.services.dataset_store import get_current_dataset
+from app.services.dataset_store import save_table_dataset
 
 UNIPROT_ALL_ACCESSIONS = "UniProt All Accessions"
 VIRTUAL_COL_UNIPROT_ALL = "__uniprot_all_accessions__"
@@ -275,7 +276,12 @@ def _download_details(original_filename: str) -> tuple[str, str]:
 
 def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
     translated, filename, input_db, output_column, warnings = translated_dataframe(payload)
+    save_table_dataset(filename=filename, kind=payload.kind, frame=translated)
     download_filename, _ = _download_details(filename)
+    persisted_warnings = list(warnings)
+    persisted_warnings.append(
+        f"Applied translated column(s) to active {payload.kind} dataset. Re-run annotation to propagate into filtered/log2 data."
+    )
     return IdTranslationResponse(
         kind=payload.kind,
         sourceColumn=payload.column,
@@ -288,7 +294,7 @@ def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
         availableColumns=[str(col) for col in translated.columns],
         availableDatabases=available_database_labels(),
         downloadFilename=download_filename,
-        warnings=warnings,
+        warnings=persisted_warnings,
     )
 
 

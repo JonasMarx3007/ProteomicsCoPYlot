@@ -362,9 +362,10 @@ export default function AnnotationPage() {
               Keep rows with at least N values
             </label>
             <input
-              type="number"
-              min={0}
-              value={filterConfig.minPresent}
+              type="text"
+              lang="en-US"
+              inputMode="decimal"
+              value={String(filterConfig.minPresent)}
               onChange={(e) =>
                 setFilterConfig((prev) => ({
                   ...prev,

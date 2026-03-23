@@ -328,7 +328,7 @@ function NumberField({
     <div>
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
-        type="number"
+        type="text"
         lang="en-US"
         inputMode="decimal"
         value={draft}

@@ -596,11 +596,12 @@ function CommittedNumberField({
   }, [value]);
 
   const commit = () => {
-    if (!draft.trim()) {
+    const normalized = draft.trim().replace(",", ".");
+    if (!normalized) {
       setDraft(formatNumberValue(value));
       return;
     }
-    const nextValue = Number(draft);
+    const nextValue = Number(normalized);
     if (!Number.isFinite(nextValue)) {
       setDraft(formatNumberValue(value));
       return;
@@ -613,9 +614,11 @@ function CommittedNumberField({
     <div>
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
-        type="number"
+        type="text"
+        lang="en-US"
+        inputMode="decimal"
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => setDraft(e.target.value.replace(",", "."))}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") {

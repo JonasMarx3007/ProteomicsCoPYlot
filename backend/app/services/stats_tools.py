@@ -733,12 +733,14 @@ def pathway_heatmap_png(
         color_label = "log2 Intensity"
 
     meta_filtered = meta_filtered.reset_index(drop=True)
-    meta_filtered["display"] = [
-        f"{cond}_{idx + 1}\n({sample})" if include_id else f"{cond}_{idx + 1}"
-        for idx, (cond, sample) in enumerate(
-            zip(meta_filtered["condition"].astype(str), meta_filtered["sample"].astype(str))
-        )
-    ]
+    # Keep pathway heatmap sample labels aligned with the app-wide convention:
+    # condition + running number, without original sample names.
+    meta_filtered["condition"] = meta_filtered["condition"].astype(str)
+    meta_filtered["sample_index"] = meta_filtered.groupby("condition").cumcount() + 1
+    meta_filtered["display"] = meta_filtered.apply(
+        lambda row: f"{row['condition']}_{int(row['sample_index'])}",
+        axis=1,
+    )
     label_map = dict(zip(meta_filtered["sample"].astype(str), meta_filtered["display"]))
     heatmap_data = heatmap_data.rename(columns=label_map)
 
