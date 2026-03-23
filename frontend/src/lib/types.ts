@@ -414,8 +414,6 @@ export type ComparisonTableResponse = {
 
 export type ExternalTab = "peptideCollapse";
 
-export type SummaryTab = "tables" | "text" | "report";
-
 export type SummaryTableBlock = {
   key: string;
   title: string;
@@ -444,7 +442,7 @@ export type SummarySectionNote = {
   below: string;
 };
 
-export type SummaryReportRequest = {
+export type SummaryLegacyReportRequest = {
   title: string;
   author: string;
   introduction: string;
