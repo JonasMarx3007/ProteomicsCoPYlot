@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { DatasetKind } from "../../lib/types";
 
 type UploadFormProps = {
@@ -21,6 +21,11 @@ export default function UploadForm({
 
   const isTableKind = kind === "protein" || kind === "phospho";
   const isPeptide = kind === "peptide";
+
+  useEffect(() => {
+    setFile(null);
+    setPeptidePath("");
+  }, [kind]);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -55,6 +60,7 @@ export default function UploadForm({
                 File
               </label>
               <input
+                key={`upload-file-${kind}`}
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}

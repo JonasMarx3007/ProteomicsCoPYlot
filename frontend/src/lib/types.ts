@@ -435,6 +435,34 @@ export type PeptideCollapseResponse = {
   error: string | null;
 };
 
+export type SummaryMetadataTable = {
+  kind: AnnotationKind;
+  available: boolean;
+  rows: number;
+  columns: number;
+  columnNames: string[];
+  table: Record<string, unknown>[];
+};
+
+export type SummaryTablesResponse = {
+  protein: SummaryMetadataTable;
+  phospho: SummaryMetadataTable;
+};
+
+export type SummaryReportRequest = {
+  title: string;
+  author: string;
+  textEntries: Record<string, string>;
+};
+
+export type SummaryReportResponse = {
+  fileName: string;
+  html: string;
+  warnings: string[];
+};
+
+export type SummaryTab = "tables" | "text" | "report";
+
 export type SidebarSection =
   | "data"
   | "completeness"
