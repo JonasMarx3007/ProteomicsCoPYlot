@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  clearUploadedAnnotationMetadata,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
@@ -43,7 +42,6 @@ export default function AnnotationPage() {
   const [metadataFile, setMetadataFile] = useState<File | null>(null);
   const [uploadedMetadata, setUploadedMetadata] = useState<MetadataUploadResponse | null>(null);
   const [uploadingMetadata, setUploadingMetadata] = useState(false);
-  const [clearingMetadata, setClearingMetadata] = useState(false);
 
   const activeDataset = currentDatasets?.[kind] ?? null;
   const availableColumns = activeDataset?.columnNames ?? [];
@@ -97,6 +95,10 @@ export default function AnnotationPage() {
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load uploaded metadata");
       });
+  }, [kind]);
+
+  useEffect(() => {
+    setMetadataFile(null);
   }, [kind]);
 
   function addCondition() {
@@ -183,19 +185,6 @@ export default function AnnotationPage() {
     }
   }
 
-  async function handleClearUploadedMetadata() {
-    try {
-      setClearingMetadata(true);
-      setError(null);
-      await clearUploadedAnnotationMetadata(kind);
-      setUploadedMetadata(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to clear uploaded metadata");
-    } finally {
-      setClearingMetadata(false);
-    }
-  }
-
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -263,10 +252,11 @@ export default function AnnotationPage() {
           <p className="mt-1 text-sm text-slate-600">
             If a metadata file is uploaded for this level, it overrides UI condition mapping during annotation generation.
           </p>
-          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
+          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Metadata file</label>
               <input
+                key={`annotation-metadata-${kind}`}
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
                 onChange={(e) => setMetadataFile(e.target.files?.[0] ?? null)}
@@ -281,14 +271,6 @@ export default function AnnotationPage() {
               className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {uploadingMetadata ? "Uploading..." : "Upload Metadata"}
-            </button>
-            <button
-              type="button"
-              onClick={handleClearUploadedMetadata}
-              disabled={!activeDataset || !uploadedMetadata || clearingMetadata}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {clearingMetadata ? "Clearing..." : "Clear Uploaded Metadata"}
             </button>
           </div>
 
@@ -539,7 +521,7 @@ function PreviewTable({
       >
         Download CSV
       </a>
-      <div className="overflow-x-auto rounded-xl border border-slate-200">
+      <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
         <table className="min-w-full table-fixed border-collapse text-sm">
           <thead className="bg-slate-50">
             <tr>
