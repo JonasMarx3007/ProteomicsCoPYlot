@@ -123,9 +123,13 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
           : conditions.find((value) => value !== condition1) ?? "";
       return { ...prev, sample1, sample2, condition1, condition2 };
     });
+  }, [options]);
+
+  useEffect(() => {
+    if (!options) return;
+    const pool = venn.mode === "Single" ? options.samples ?? [] : options.conditions ?? [];
 
     setVenn((prev) => {
-      const pool = prev.mode === "Single" ? samples : conditions;
       const first = pool.includes(prev.first) ? prev.first : pool[0] ?? "";
       const second =
         pool.includes(prev.second) && prev.second !== first
@@ -137,7 +141,7 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
           : "";
       return { ...prev, first, second, third };
     });
-  }, [options]);
+  }, [options, venn.mode]);
 
   const pearsonReady = useMemo(() => {
     if (pearson.mode === "Single") {
