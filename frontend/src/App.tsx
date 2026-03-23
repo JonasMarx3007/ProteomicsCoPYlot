@@ -35,9 +35,6 @@ import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistribut
 import StyPlotPage from "./features/phospho/StyPlotPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
-import SummaryTablesPage from "./features/summary/SummaryTablesPage";
-import SummaryTextPage from "./features/summary/SummaryTextPage";
-import SummaryReportPage from "./features/summary/SummaryReportPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
 import TablesPage from "./features/summary/TablesPage";
 import TextPage from "./features/summary/TextPage";
@@ -136,7 +133,6 @@ export default function App() {
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
-  const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -383,30 +379,20 @@ export default function App() {
 
     if (activeSection === "summary") {
       if (activeSummaryTab === "tables") {
-        return <SummaryTablesPage />;
+        return <TablesPage />;
       }
 
       if (activeSummaryTab === "text") {
-        return <SummaryTextPage />;
+        return <TextPage />;
       }
 
-      return <SummaryReportPage />;
+      return <ReportPage />;
     }
 
     if (activeSection === "external") {
       if (activeExternalTab === "peptideCollapse") {
         return <PeptideCollapsePage />;
       }
-    }
-
-    if (activeSection === "summary") {
-      if (activeSummaryTab === "tables") {
-        return <TablesPage />;
-      }
-      if (activeSummaryTab === "text") {
-        return <TextPage />;
-      }
-      return <ReportPage />;
     }
 
     if (activeSection === "data") {
