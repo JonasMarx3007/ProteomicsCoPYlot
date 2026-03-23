@@ -36,6 +36,9 @@ import StyPlotPage from "./features/phospho/StyPlotPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
+import TablesPage from "./features/summary/TablesPage";
+import TextPage from "./features/summary/TextPage";
+import ReportPage from "./features/summary/ReportPage";
 import type {
   ComparisonTab,
   CompletenessTab,
@@ -46,6 +49,7 @@ import type {
   QcTab,
   SidebarSection,
   SingleProteinTab,
+  SummaryTab,
   StatsTab,
 } from "./lib/types";
 
@@ -111,6 +115,12 @@ const externalTabs: { key: ExternalTab; label: string }[] = [
   { key: "peptideCollapse", label: "Peptide Collapse Function" },
 ];
 
+const summaryTabs: { key: SummaryTab; label: string }[] = [
+  { key: "tables", label: "Tables" },
+  { key: "text", label: "Text" },
+  { key: "report", label: "Report" },
+];
+
 export default function App() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
@@ -122,6 +132,7 @@ export default function App() {
   const [activePhosphoTab, setActivePhosphoTab] = useState<PhosphoTab>("phosphositePlot");
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
+  const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -218,6 +229,16 @@ export default function App() {
       );
     }
 
+    if (activeSection === "summary") {
+      return (
+        <TopTabs
+          tabs={summaryTabs}
+          activeTab={activeSummaryTab}
+          onChange={setActiveSummaryTab}
+        />
+      );
+    }
+
     return null;
   }, [
     activeSection,
@@ -230,6 +251,7 @@ export default function App() {
     activePhosphoTab,
     activeComparisonTab,
     activeExternalTab,
+    activeSummaryTab,
   ]);
 
   function renderContent() {
@@ -348,6 +370,16 @@ export default function App() {
       if (activeExternalTab === "peptideCollapse") {
         return <PeptideCollapsePage />;
       }
+    }
+
+    if (activeSection === "summary") {
+      if (activeSummaryTab === "tables") {
+        return <TablesPage />;
+      }
+      if (activeSummaryTab === "text") {
+        return <TextPage />;
+      }
+      return <ReportPage />;
     }
 
     if (activeSection === "data") {

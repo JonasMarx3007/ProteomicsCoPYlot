@@ -188,7 +188,7 @@ function PeptideCollapseTool() {
                 No preview available.
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
                 <table className="min-w-full divide-y divide-slate-200">
                   <thead className="bg-slate-50">
                     <tr>

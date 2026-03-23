@@ -9,6 +9,7 @@ from app.api.routes_plots import router as plots_router
 from app.api.routes_qc import router as qc_router
 from app.api.routes_peptide import router as peptide_router
 from app.api.routes_stats import router as stats_router
+from app.api.routes_summary import router as summary_router
 
 app = FastAPI(title="Proteomics CoPYlot API")
 
@@ -31,6 +32,7 @@ app.include_router(qc_router)
 app.include_router(peptide_router)
 app.include_router(plots_router)
 app.include_router(external_router)
+app.include_router(summary_router)
 
 
 @app.get("/")

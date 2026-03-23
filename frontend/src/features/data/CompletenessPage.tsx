@@ -473,7 +473,7 @@ function PreviewTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200">
+    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
       <table className="min-w-full table-fixed border-collapse text-sm">
         <thead className="bg-slate-50">
           <tr>

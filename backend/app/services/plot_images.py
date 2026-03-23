@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import colorsys
 import io
 import math
 import re
@@ -179,9 +180,55 @@ def _sample_label(sample: str, condition: str, index: int, include_id: bool) -> 
     return f"{condition}_{index + 1}\n({sid})"
 
 
-def _condition_colors(plt, conditions: list[str]) -> dict[str, tuple[float, float, float, float] | tuple[float, float, float]]:
-    cmap = plt.cm.get_cmap("tab10", max(1, len(conditions)))
-    return {cond: cmap(i) for i, cond in enumerate(conditions)}
+_BASE_CONDITION_COLORS = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+    "#aec7e8",
+    "#ffbb78",
+    "#98df8a",
+    "#ff9896",
+    "#c5b0d5",
+    "#c49c94",
+    "#f7b6d2",
+    "#c7c7c7",
+    "#dbdb8d",
+    "#9edae5",
+]
+
+
+def _normalized_conditions(conditions: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for condition in conditions:
+        normalized = str(condition).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _generated_color_hex(index: int) -> str:
+    if index < len(_BASE_CONDITION_COLORS):
+        return _BASE_CONDITION_COLORS[index]
+    hue = (index * 0.618033988749895) % 1.0
+    saturation = 0.62 if index % 2 == 0 else 0.78
+    value = 0.88 if (index // 2) % 2 == 0 else 0.72
+    red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value)
+    return f"#{int(red * 255):02x}{int(green * 255):02x}{int(blue * 255):02x}"
+
+
+def _condition_colors(_plt, conditions: list[str]) -> dict[str, str]:
+    ordered = _normalized_conditions(conditions)
+    return {condition: _generated_color_hex(i) for i, condition in enumerate(ordered)}
 
 
 def _feature_context(frame: pd.DataFrame) -> tuple[str, str, int | None, str]:
@@ -1031,6 +1078,7 @@ def qc_pca_interactive_html(
 
     height_px = _cm_to_px(height_cm)
     conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
+    color_map = _condition_colors(None, conditions)
 
     if plot_3d:
         fig = px.scatter_3d(
@@ -1039,6 +1087,7 @@ def qc_pca_interactive_html(
             y="PC2",
             z="PC3",
             color="condition",
+            color_discrete_map=color_map,
             hover_data={"sample": True, "condition": True},
             opacity=0.85,
         )
@@ -1061,6 +1110,7 @@ def qc_pca_interactive_html(
         x="PC1",
         y="PC2",
         color="condition",
+        color_discrete_map=color_map,
         hover_data={"sample": True, "condition": True},
         opacity=0.85,
     )
@@ -1098,7 +1148,8 @@ def qc_pca_interactive_html(
                     y=ellipse_y,
                     mode="lines",
                     fill="toself",
-                    line=dict(width=1),
+                    line=dict(width=1, color=color_map.get(cond, "#6b7280")),
+                    fillcolor=color_map.get(cond, "#6b7280"),
                     showlegend=False,
                     hoverinfo="skip",
                     opacity=0.18,
@@ -1247,12 +1298,15 @@ def qc_abundance_interactive_html(
         if condition not in unique_conditions:
             raise ValueError(f"Condition '{condition}' not found.")
         long_intensities = long_intensities[long_intensities["Condition"] == condition]
+    visible_conditions = long_intensities["Condition"].astype(str).dropna().unique().tolist()
+    color_map = _condition_colors(None, visible_conditions)
 
     fig = px.scatter(
         long_intensities,
         x="Rank",
         y="log10Intensity",
         color="Condition",
+        color_discrete_map=color_map,
         hover_data={"Feature": True, "Condition": True, "Rank": True, "log10Intensity": ":.4f"},
         opacity=0.85,
     )

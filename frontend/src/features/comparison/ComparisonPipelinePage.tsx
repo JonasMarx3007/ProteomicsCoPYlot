@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { buildPlotUrl, getComparisonOptions, getComparisonTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { AnnotationKind, ComparisonOptionsResponse, ComparisonTab } from "../../lib/types";
@@ -429,17 +429,17 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
     if (activeTab === "pearson") {
       const pool = pearson.mode === "Single" ? samples : conditions;
       return (
-        <OptionsLayout
-          fields={[
+        <div className="space-y-4">
+          <div className="max-w-xs">
             <SelectField
-              key="mode"
               label="Mode"
               value={pearson.mode}
               options={["Single", "Condition"]}
               onChange={(value) => setPearson({ ...pearson, mode: value })}
-            />,
+            />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
             <SelectField
-              key="first"
               label={pearson.mode === "Single" ? "Sample 1" : "Condition 1"}
               value={pearson.mode === "Single" ? pearson.sample1 : pearson.condition1}
               options={pool}
@@ -448,9 +448,8 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
                   ? setPearson({ ...pearson, sample1: value })
                   : setPearson({ ...pearson, condition1: value })
               }
-            />,
+            />
             <SelectField
-              key="second"
               label={pearson.mode === "Single" ? "Sample 2" : "Condition 2"}
               value={pearson.mode === "Single" ? pearson.sample2 : pearson.condition2}
               options={pool}
@@ -459,102 +458,135 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
                   ? setPearson({ ...pearson, sample2: value })
                   : setPearson({ ...pearson, condition2: value })
               }
-            />,
-            <TextField key="alias1" label="Alias 1 (optional)" value={pearson.alias1} onChange={(value) => setPearson({ ...pearson, alias1: value })} />,
-            <TextField key="alias2" label="Alias 2 (optional)" value={pearson.alias2} onChange={(value) => setPearson({ ...pearson, alias2: value })} />,
-            <ColorField key="color" label="Dot Color" value={pearson.color} onChange={(value) => setPearson({ ...pearson, color: value })} />,
-            <NumericField key="dotSize" label="Dot Size" value={pearson.dotSize} onChange={(value) => setPearson({ ...pearson, dotSize: Math.max(1, value) })} step={1} />,
-          ]}
-          toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={pearson.header} onChange={(value) => setPearson({ ...pearson, header: value })} />,
-          ]}
-          sizeRow={
-            <SizeRow
-              widthCm={pearson.widthCm}
-              heightCm={pearson.heightCm}
-              dpi={pearson.dpi}
-              onWidthChange={(value) => setPearson({ ...pearson, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setPearson({ ...pearson, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setPearson({ ...pearson, dpi: Math.max(72, Math.round(value)) })}
             />
-          }
-        />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <TextField
+              label="Alias 1 (optional)"
+              value={pearson.alias1}
+              onChange={(value) => setPearson({ ...pearson, alias1: value })}
+            />
+            <TextField
+              label="Alias 2 (optional)"
+              value={pearson.alias2}
+              onChange={(value) => setPearson({ ...pearson, alias2: value })}
+            />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <NumericField
+              label="Dot Size"
+              value={pearson.dotSize}
+              onChange={(value) => setPearson({ ...pearson, dotSize: Math.max(1, value) })}
+              step={1}
+            />
+            <ColorField
+              label="Dot Color"
+              value={pearson.color}
+              onChange={(value) => setPearson({ ...pearson, color: value })}
+            />
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Checkbox
+              label="Toggle Header"
+              checked={pearson.header}
+              onChange={(value) => setPearson({ ...pearson, header: value })}
+            />
+          </div>
+          <SizeRow
+            widthCm={pearson.widthCm}
+            heightCm={pearson.heightCm}
+            dpi={pearson.dpi}
+            onWidthChange={(value) => setPearson({ ...pearson, widthCm: Math.max(1, value) })}
+            onHeightChange={(value) => setPearson({ ...pearson, heightCm: Math.max(1, value) })}
+            onDpiChange={(value) => setPearson({ ...pearson, dpi: Math.max(72, Math.round(value)) })}
+          />
+        </div>
       );
     }
 
     const vennPool = venn.mode === "Single" ? samples : conditions;
     return (
-      <OptionsLayout
-        fields={[
+      <div className="space-y-4">
+        <div className="max-w-xs">
           <SelectField
-            key="mode"
             label="Mode"
             value={venn.mode}
             options={["Single", "Condition"]}
             onChange={(value) => setVenn({ ...venn, mode: value })}
-          />,
+          />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
           <SelectField
-            key="first"
             label={venn.mode === "Single" ? "Sample 1" : "Condition 1"}
             value={venn.first}
             options={vennPool}
             onChange={(value) => setVenn({ ...venn, first: value })}
-          />,
+          />
           <SelectField
-            key="second"
             label={venn.mode === "Single" ? "Sample 2" : "Condition 2"}
             value={venn.second}
             options={vennPool}
             onChange={(value) => setVenn({ ...venn, second: value })}
-          />,
+          />
           <SelectField
-            key="third"
             label={venn.mode === "Single" ? "Sample 3 (optional)" : "Condition 3 (optional)"}
             value={venn.third}
             options={["", ...vennPool]}
             onChange={(value) => setVenn({ ...venn, third: value })}
-          />,
-          <TextField key="alias1" label="Alias 1 (optional)" value={venn.alias1} onChange={(value) => setVenn({ ...venn, alias1: value })} />,
-          <TextField key="alias2" label="Alias 2 (optional)" value={venn.alias2} onChange={(value) => setVenn({ ...venn, alias2: value })} />,
-          <TextField key="alias3" label="Alias 3 (optional)" value={venn.alias3} onChange={(value) => setVenn({ ...venn, alias3: value })} />,
-          <ColorField key="color1" label="Color 1" value={venn.color1} onChange={(value) => setVenn({ ...venn, color1: value })} />,
-          <ColorField key="color2" label="Color 2" value={venn.color2} onChange={(value) => setVenn({ ...venn, color2: value })} />,
-          <ColorField key="color3" label="Color 3" value={venn.color3} onChange={(value) => setVenn({ ...venn, color3: value })} />,
-        ]}
-        toggles={[
-          <Checkbox key="header" label="Toggle Header" checked={venn.header} onChange={(value) => setVenn({ ...venn, header: value })} />,
-        ]}
-        sizeRow={
-          <SizeRow
-            widthCm={venn.widthCm}
-            heightCm={venn.heightCm}
-            dpi={venn.dpi}
-            onWidthChange={(value) => setVenn({ ...venn, widthCm: Math.max(1, value) })}
-            onHeightChange={(value) => setVenn({ ...venn, heightCm: Math.max(1, value) })}
-            onDpiChange={(value) => setVenn({ ...venn, dpi: Math.max(72, Math.round(value)) })}
           />
-        }
-      />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <TextField
+            label="Alias 1 (optional)"
+            value={venn.alias1}
+            onChange={(value) => setVenn({ ...venn, alias1: value })}
+          />
+          <TextField
+            label="Alias 2 (optional)"
+            value={venn.alias2}
+            onChange={(value) => setVenn({ ...venn, alias2: value })}
+          />
+          <TextField
+            label="Alias 3 (optional)"
+            value={venn.alias3}
+            onChange={(value) => setVenn({ ...venn, alias3: value })}
+          />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <ColorField
+            label="Color 1"
+            value={venn.color1}
+            onChange={(value) => setVenn({ ...venn, color1: value })}
+          />
+          <ColorField
+            label="Color 2"
+            value={venn.color2}
+            onChange={(value) => setVenn({ ...venn, color2: value })}
+          />
+          <ColorField
+            label="Color 3"
+            value={venn.color3}
+            onChange={(value) => setVenn({ ...venn, color3: value })}
+          />
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Checkbox
+            label="Toggle Header"
+            checked={venn.header}
+            onChange={(value) => setVenn({ ...venn, header: value })}
+          />
+        </div>
+        <SizeRow
+          widthCm={venn.widthCm}
+          heightCm={venn.heightCm}
+          dpi={venn.dpi}
+          onWidthChange={(value) => setVenn({ ...venn, widthCm: Math.max(1, value) })}
+          onHeightChange={(value) => setVenn({ ...venn, heightCm: Math.max(1, value) })}
+          onDpiChange={(value) => setVenn({ ...venn, dpi: Math.max(72, Math.round(value)) })}
+        />
+      </div>
     );
   }
-}
-
-function OptionsLayout({
-  fields,
-  toggles,
-  sizeRow,
-}: {
-  fields: ReactNode[];
-  toggles: ReactNode[];
-  sizeRow: ReactNode;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-2">{fields}</div>
-      <div className="flex flex-wrap gap-3">{toggles}</div>
-      <div>{sizeRow}</div>
-    </div>
-  );
 }
 
 function SizeRow({
@@ -720,7 +752,7 @@ function PreviewTable({
 
   const columns = collectColumns(rows);
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200">
+    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
       <table className="min-w-full divide-y divide-slate-200">
         <thead className="bg-slate-50">
           <tr>

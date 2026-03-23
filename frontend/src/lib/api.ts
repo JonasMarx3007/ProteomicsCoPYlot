@@ -34,6 +34,9 @@ import type {
   SimulationRequest,
   SimulationResultResponse,
   StatisticalOptionsResponse,
+  SummaryReportRequest,
+  SummaryReportResponse,
+  SummaryTablesResponse,
   VolcanoControlRequest,
   VolcanoResultResponse,
   VolcanoRequest,
@@ -694,6 +697,38 @@ export async function runPeptideCollapse(
   }
 
   return data as PeptideCollapseResponse;
+}
+
+export async function getSummaryTables(): Promise<SummaryTablesResponse> {
+  const response = await fetch(`${API_BASE}/api/summary/tables`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load summary tables"
+    );
+  }
+  return data as SummaryTablesResponse;
+}
+
+export async function generateSummaryReport(
+  payload: SummaryReportRequest
+): Promise<SummaryReportResponse> {
+  const response = await fetch(`${API_BASE}/api/summary/report`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to generate summary report"
+    );
+  }
+  return data as SummaryReportResponse;
 }
 
 export function buildPlotUrl(path: string, params?: Record<string, string | number | boolean>) {

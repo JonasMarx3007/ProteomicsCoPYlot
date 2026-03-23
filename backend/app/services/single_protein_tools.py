@@ -486,9 +486,8 @@ def single_protein_boxplot_plot(
         ax.axis("off")
         return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
-    condition_color = {
-        label: plt.cm.tab10(index % 10) for index, label in enumerate(labels)
-    }
+    color_map = plt.cm.get_cmap("tab20", max(1, len(labels)))
+    condition_color = {label: color_map(index) for index, label in enumerate(labels)}
     box = ax.boxplot(intensities, patch_artist=True, showfliers=outliers)
     for patch, label in zip(box["boxes"], labels):
         patch.set_facecolor(condition_color[label])

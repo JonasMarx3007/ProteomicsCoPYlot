@@ -478,7 +478,7 @@ export default function PeptideLevelPage({ activeTab }: Props) {
                     </a>
                   ) : null}
                 </div>
-                <pre className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-700">
+                <pre className="mt-4 max-h-[28rem] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-700">
                   {coverageResult.sequenceText}
                 </pre>
               </SectionCard>
@@ -726,7 +726,7 @@ function PreviewTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200">
+    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
       <table className="min-w-full table-fixed text-sm">
         <thead className="bg-slate-50">
           <tr>
