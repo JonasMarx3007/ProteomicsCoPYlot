@@ -262,7 +262,6 @@ export default function App() {
     activeComparisonTab,
     activeSummaryTab,
     activeExternalTab,
-    activeSummaryTab,
   ]);
 
   function renderContent() {

@@ -41,6 +41,8 @@ export default function DistributionPage() {
   }, [kind, availableKinds]);
 
   const qqPlotUrl = buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`);
+  const qqReferenceImageUrl = "/assets/qqnorm.jpg";
+  const qqReferenceTextUrl = "/assets/qqnorm_txt.jpg";
 
   return (
     <div className="space-y-6">
@@ -99,6 +101,22 @@ export default function DistributionPage() {
             ) : null}
             <div className="mt-4">
               <img src={qqPlotUrl} alt="QQ norm plot" className="w-full rounded-xl border border-slate-200" />
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">QQ Norm Reference</h3>
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+              <img
+                src={qqReferenceImageUrl}
+                alt="QQ norm reference"
+                className="w-full rounded-xl border border-slate-200"
+              />
+              <img
+                src={qqReferenceTextUrl}
+                alt="QQ norm reference text"
+                className="w-full rounded-xl border border-slate-200"
+              />
             </div>
           </section>
         </>

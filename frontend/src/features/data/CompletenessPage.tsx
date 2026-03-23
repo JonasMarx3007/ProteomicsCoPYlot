@@ -416,8 +416,10 @@ function NumericField({
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
         type="number"
+        lang="en-US"
+        inputMode="decimal"
         value={value}
-        onChange={(e) => onChange(globalThis.Number(e.target.value))}
+        onChange={(e) => onChange(globalThis.Number(e.target.value.replace(",", ".")))}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       />
     </div>

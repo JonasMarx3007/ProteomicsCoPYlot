@@ -31,7 +31,9 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
 
   useEffect(() => {
     refreshCurrentDatasets().catch((err) => {
-      setError(err instanceof Error ? err.message : "Failed to load datasets");
+      // Do not show a blocking error on passive initial load.
+      setCurrent({ protein: null, phospho: null, peptide: null });
+      console.warn(err);
     });
   }, []);
 

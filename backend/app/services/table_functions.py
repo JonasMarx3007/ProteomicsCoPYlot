@@ -115,6 +115,8 @@ def prepare_coverage_summary_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     data = data.replace(0, np.nan).copy()
     meta = meta.copy()
     meta["sample"] = meta["sample"].astype(str)
+    meta["condition"] = meta["condition"].astype(str)
+    condition_order = meta["condition"].dropna().unique().tolist()
     meta["id"] = meta["sample"].apply(_extract_id_or_number)
     meta["new_sample"] = meta.groupby("condition").cumcount() + 1
     meta["new_sample"] = meta.apply(
@@ -133,18 +135,26 @@ def prepare_coverage_summary_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     data_annotated = melted.merge(meta[["new_sample", "condition"]], left_on="Sample", right_on="new_sample")
 
     sample_summary = (
-        data_annotated.groupby("Sample")
+        data_annotated.groupby("Sample", sort=False)
         .agg(Value=("Value", "sum"), condition=("condition", "first"))
         .reset_index()
     )
     condition_summary = (
-        sample_summary.groupby("condition")
+        sample_summary.groupby("condition", sort=False)
         .agg(mean=("Value", "mean"), min=("Value", "min"), max=("Value", "max"), sd=("Value", "std"))
         .reset_index()
     )
 
     numeric_cols = ["mean", "min", "max", "sd"]
     condition_summary[numeric_cols] = condition_summary[numeric_cols].round(2)
+    if condition_order:
+        condition_summary["condition"] = pd.Categorical(
+            condition_summary["condition"],
+            categories=condition_order,
+            ordered=True,
+        )
+        condition_summary = condition_summary.sort_values("condition").reset_index(drop=True)
+        condition_summary["condition"] = condition_summary["condition"].astype(str)
     return condition_summary
 
 
@@ -181,7 +191,7 @@ def prepare_boxplot_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     summary_df = pd.DataFrame(summary_list)
     if summary_df.empty:
         return summary_df
-    return summary_df.sort_values("mean", ascending=False).reset_index(drop=True)
+    return summary_df.reset_index(drop=True)
 
 
 def prepare_boxplot_single_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
@@ -226,7 +236,7 @@ def prepare_boxplot_single_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool
     summary_df = pd.DataFrame(summary_list)
     if summary_df.empty:
         return summary_df
-    return summary_df.sort_values("mean", ascending=False).reset_index(drop=True)
+    return summary_df.reset_index(drop=True)
 
 
 def prepare_cov_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
@@ -267,7 +277,7 @@ def prepare_cov_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     summary_df = pd.DataFrame(summary_list)
     if summary_df.empty:
         return summary_df
-    return summary_df.sort_values("mean", ascending=False).reset_index(drop=True)
+    return summary_df.reset_index(drop=True)
 
 
 def qc_coverage_table(kind: AnnotationKind, summary: bool = False) -> pd.DataFrame:

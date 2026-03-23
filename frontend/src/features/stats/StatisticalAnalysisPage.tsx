@@ -9,6 +9,11 @@ import {
   runVolcanoControlAnalysis,
 } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  addVolcanoReportEntry,
+  listVolcanoReportEntries,
+  removeVolcanoReportEntry,
+} from "../../lib/reportState";
 import type {
   AnnotationKind,
   EnrichmentRequest,
@@ -23,6 +28,7 @@ import type {
   VolcanoControlRequest,
   VolcanoResultResponse,
   VolcanoRequest,
+  SummaryVolcanoEntry,
 } from "../../lib/types";
 
 type Props = {
@@ -76,6 +82,13 @@ function formatNumberInputValue(value: number) {
   return Number.isFinite(value) ? String(value) : "";
 }
 
+function parseNumberDraft(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function NumberField({ label, value, onChange, step = 1 }: { label: string; value: number; onChange: (value: number) => void; step?: number }) {
   const [draft, setDraft] = useState(() => formatNumberInputValue(value));
 
@@ -84,17 +97,13 @@ function NumberField({ label, value, onChange, step = 1 }: { label: string; valu
   }, [value]);
 
   const commit = () => {
-    if (!draft.trim()) {
+    const nextValue = parseNumberDraft(draft);
+    if (nextValue == null) {
       setDraft(formatNumberInputValue(value));
       return;
     }
-    const nextValue = Number(draft);
-    if (Number.isFinite(nextValue)) {
-      onChange(nextValue);
-      setDraft(formatNumberInputValue(nextValue));
-      return;
-    }
-    setDraft(formatNumberInputValue(value));
+    onChange(nextValue);
+    setDraft(formatNumberInputValue(nextValue));
   };
 
   return (
@@ -102,8 +111,10 @@ function NumberField({ label, value, onChange, step = 1 }: { label: string; valu
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
         type="number"
+        lang="en-US"
+        inputMode="decimal"
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => setDraft(e.target.value.replace(",", "."))}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
@@ -224,6 +235,7 @@ function SummarySection({ items, warnings }: { items: { label: string; value: st
 }
 
 function PlotFrame({ title, url, height }: { title: string; url: string; height: number }) {
+  const resolvedHeight = Math.max(height, 760);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -232,7 +244,7 @@ function PlotFrame({ title, url, height }: { title: string; url: string; height:
           Open Plot
         </a>
       </div>
-      <iframe src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height }} />
+      <iframe src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height: resolvedHeight }} />
     </section>
   );
 }
@@ -371,6 +383,8 @@ function VolcanoPanel({
   const [highlightText, setHighlightText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<VolcanoResultResponse | null>(null);
+  const [reportLogMessage, setReportLogMessage] = useState<string | null>(null);
+  const [reportLogVersion, setReportLogVersion] = useState(0);
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
 
@@ -408,6 +422,67 @@ function VolcanoPanel({
         new Set([condition1, condition1Control, condition2, condition2Control].filter(Boolean)).size === 4)
   );
   const highlightTerms = useMemo(() => highlightText.split(/\s+/).map((term) => term.trim()).filter(Boolean), [highlightText]);
+  const currentReportEntry = useMemo<SummaryVolcanoEntry>(
+    () => ({
+      kind,
+      control,
+      condition1,
+      condition2,
+      condition1Control: control ? condition1Control : null,
+      condition2Control: control ? condition2Control : null,
+      identifier,
+      pValueThreshold,
+      log2fcThreshold,
+      testType,
+      useUncorrected,
+      highlightTerms,
+    }),
+    [
+      kind,
+      control,
+      condition1,
+      condition2,
+      condition1Control,
+      condition2Control,
+      identifier,
+      pValueThreshold,
+      log2fcThreshold,
+      testType,
+      useUncorrected,
+      highlightTerms,
+    ]
+  );
+  const reportEntryCount = useMemo(
+    () =>
+      listVolcanoReportEntries().filter(
+        (entry) => !entry.control && entry.kind === kind
+      ).length,
+    [kind, reportLogVersion]
+  );
+
+  function handleAddToReport() {
+    if (!canRun) {
+      setReportLogMessage("Please choose valid conditions before adding this volcano plot.");
+      return;
+    }
+    const added = addVolcanoReportEntry(currentReportEntry);
+    setReportLogVersion((value) => value + 1);
+    setReportLogMessage(
+      added
+        ? "Volcano plot added to report list."
+        : "This volcano configuration is already in the report list."
+    );
+  }
+
+  function handleRemoveFromReport() {
+    const removed = removeVolcanoReportEntry(currentReportEntry);
+    setReportLogVersion((value) => value + 1);
+    setReportLogMessage(
+      removed > 0
+        ? `Removed ${removed} volcano entr${removed === 1 ? "y" : "ies"} from report list.`
+        : "No matching volcano entry found in report list."
+    );
+  }
 
   useEffect(() => {
     if (!canRun) {
@@ -535,6 +610,33 @@ function VolcanoPanel({
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
         </div>
 
+        {!control ? (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleAddToReport}
+                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+              >
+                Add Volcano To Report
+              </button>
+              <button
+                type="button"
+                onClick={handleRemoveFromReport}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Remove Volcano From Report
+              </button>
+              <span className="text-sm text-slate-600">
+                Saved entries for {kind}: {reportEntryCount}
+              </span>
+            </div>
+            {reportLogMessage ? (
+              <div className="mt-3 text-sm text-slate-700">{reportLogMessage}</div>
+            ) : null}
+          </div>
+        ) : null}
+
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
       {!canRun && options ? (
@@ -549,7 +651,7 @@ function VolcanoPanel({
       {result ? (
         <>
           <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={result.warnings} />
-          <PlotFrame title="Volcano Plot" url={plotUrl} height={540} />
+          <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
           <TableSection title="Result Table" rows={result.rows} filename={`volcano_${kind}.csv`} />
         </>
       ) : null}
@@ -899,9 +1001,11 @@ function SimulationPanel({
           <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
           <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
         </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
           <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <NumberField label="Variance multiplier" value={varianceMultiplier} onChange={setVarianceMultiplier} step={0.05} />
           <NumberField label="Sample size override" value={sampleSizeOverride} onChange={(value) => setSampleSizeOverride(Math.max(0, Math.round(value)))} />
         </div>

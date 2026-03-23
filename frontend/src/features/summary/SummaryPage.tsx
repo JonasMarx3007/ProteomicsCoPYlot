@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { generateSummaryReport, getSummaryTables } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { getSummaryReportContext } from "../../lib/reportState";
 import type {
   SummaryTab,
   SummaryMetadataTable,
@@ -123,6 +124,7 @@ export default function SummaryPage({ activeTab }: Props) {
         title: reportTitle,
         author: reportAuthor,
         textEntries,
+        reportContext: getSummaryReportContext(),
       });
       setReportResult(response);
     } catch (err) {
@@ -342,7 +344,7 @@ export default function SummaryPage({ activeTab }: Props) {
                   title="Summary Report"
                   srcDoc={reportResult.html}
                   className="w-full rounded-xl border border-slate-200"
-                  style={{ height: "840px" }}
+                  style={{ height: "1240px" }}
                 />
               </div>
             </section>

@@ -688,7 +688,7 @@ function NumericField({
         inputMode="decimal"
         step={step}
         value={Number.isFinite(value) ? value : 0}
-        onChange={(event) => onChange(Number(event.target.value))}
+        onChange={(event) => onChange(Number(event.target.value.replace(",", ".")))}
         className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-900"
       />
     </label>

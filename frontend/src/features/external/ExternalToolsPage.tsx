@@ -96,7 +96,9 @@ function PeptideCollapseTool() {
               lang="en-US"
               inputMode="decimal"
               value={Number.isFinite(cutoff) ? cutoff : 0}
-              onChange={(event) => setCutoff(clampCutoff(Number(event.target.value)))}
+              onChange={(event) =>
+                setCutoff(clampCutoff(parseDecimalInput(event.target.value, cutoff)))
+              }
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
             />
           </label>
@@ -278,4 +280,11 @@ function clampCutoff(value: number) {
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
+}
+
+function parseDecimalInput(raw: string, fallback: number) {
+  const normalized = raw.trim().replace(",", ".");
+  if (!normalized) return fallback;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }

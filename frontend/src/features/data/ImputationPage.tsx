@@ -105,23 +105,24 @@ export default function ImputationPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Impute Data</h2>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 max-w-xs">
           <SelectField
             label="Dataset level"
             value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
             options={kindOptions}
           />
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={sampleWise}
-                onChange={(e) => setSampleWise(e.target.checked)}
-              />
-              Sample-wise imputation
-            </label>
-          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={sampleWise}
+              onChange={(e) => setSampleWise(e.target.checked)}
+            />
+            Sample-wise imputation
+          </label>
         </div>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
@@ -302,14 +303,44 @@ function NumberField({
   onChange: (value: number) => void;
   step?: number;
 }) {
+  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
+
+  useEffect(() => {
+    setDraft(Number.isFinite(value) ? String(value) : "");
+  }, [value]);
+
+  const commit = () => {
+    const normalized = draft.trim().replace(",", ".");
+    if (!normalized) {
+      setDraft(Number.isFinite(value) ? String(value) : "");
+      return;
+    }
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed)) {
+      setDraft(Number.isFinite(value) ? String(value) : "");
+      return;
+    }
+    onChange(parsed);
+    setDraft(String(parsed));
+  };
+
   return (
     <div>
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
         type="number"
-        value={value}
+        lang="en-US"
+        inputMode="decimal"
+        value={draft}
         step={step}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => setDraft(e.target.value.replace(",", "."))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+        }}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       />
     </div>

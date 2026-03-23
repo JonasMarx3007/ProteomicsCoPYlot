@@ -92,8 +92,8 @@ export default function AnnotationPage() {
   useEffect(() => {
     getUploadedAnnotationMetadata(kind)
       .then((metadata) => setUploadedMetadata(metadata))
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load uploaded metadata");
+      .catch(() => {
+        setUploadedMetadata(null);
       });
   }, [kind]);
 
@@ -368,7 +368,7 @@ export default function AnnotationPage() {
               onChange={(e) =>
                 setFilterConfig((prev) => ({
                   ...prev,
-                  minPresent: Number(e.target.value) || 0,
+                  minPresent: Number(e.target.value.replace(",", ".")) || 0,
                 }))
               }
               className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -442,19 +442,6 @@ export default function AnnotationPage() {
               />
             </div>
           </section>
-
-          {uploadedMetadata ? (
-            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h3 className="text-lg font-semibold text-slate-900">Uploaded Metadata Preview</h3>
-              <div className="mt-4">
-                <PreviewTable
-                  title="uploaded_metadata_preview"
-                  rows={uploadedMetadata.preview}
-                  emptyText="No uploaded metadata preview available."
-                />
-              </div>
-            </section>
-          ) : null}
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Filtered Data Preview</h3>
