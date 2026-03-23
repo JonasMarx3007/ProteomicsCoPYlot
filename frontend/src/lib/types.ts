@@ -489,12 +489,33 @@ export type SummaryReportRequest = {
   title: string;
   author: string;
   textEntries: Record<string, string>;
+  reportContext?: SummaryReportContext;
 };
 
 export type SummaryReportResponse = {
   fileName: string;
   html: string;
   warnings: string[];
+};
+
+export type SummaryVolcanoEntry = {
+  kind: AnnotationKind;
+  control: boolean;
+  condition1: string;
+  condition2: string;
+  condition1Control?: string | null;
+  condition2Control?: string | null;
+  identifier: StatsIdentifier;
+  pValueThreshold: number;
+  log2fcThreshold: number;
+  testType: StatsTestType;
+  useUncorrected: boolean;
+  highlightTerms: string[];
+};
+
+export type SummaryReportContext = {
+  qcSettings?: Record<string, Record<string, unknown>>;
+  volcanoEntries?: SummaryVolcanoEntry[];
 };
 
 export type SummaryTab = "tables" | "text" | "report";

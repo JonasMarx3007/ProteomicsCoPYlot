@@ -28,6 +28,18 @@ def _get_plt():
         ) from exc
 
 
+def _get_sns():
+    try:
+        import seaborn as sns
+
+        return sns
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "seaborn is required for heatmap rendering. Install it with: "
+            "pip install seaborn"
+        ) from exc
+
+
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
@@ -185,24 +197,25 @@ def completeness_missing_value_heatmap(
     dpi: int = 300,
 ) -> bytes:
     plt = _get_plt()
+    sns = _get_sns()
     frame, meta = _frame_and_meta(kind)
     data_filtered, _ = _filtered_data(frame, meta, include_id=include_id)
-    missing_mask = data_filtered.isna().to_numpy(dtype=float)
 
     fig, ax = plt.subplots(
         figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)),
         dpi=max(72, int(dpi)),
     )
-    ax.imshow(missing_mask, aspect="auto", interpolation="nearest", cmap="viridis")
+
+    # Keep seaborn heatmap rendering aligned with the legacy CoPYlot look.
+    sns.heatmap(data_filtered.isna(), cbar=False, cmap="viridis", ax=ax)
+
     if header:
         ax.set_title("Missing Values Heatmap")
     ax.set_xlabel("Sample")
-    ax.set_ylabel("Feature Number")
-    ax.set_xticks(np.arange(len(data_filtered.columns)))
-    ax.set_xticklabels(data_filtered.columns.tolist(), rotation=90, fontsize=7)
-    ax.set_yticks([])
+    ax.set_ylabel("Protein Numbers")
+    ax.tick_params(axis="x", rotation=90, labelsize=7)
     plt.tight_layout()
-    return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+    return _to_png_bytes(fig, plt, dpi=dpi, tight=True)
 
 
 def completeness_sample_summary_table(
