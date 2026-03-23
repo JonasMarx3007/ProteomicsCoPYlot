@@ -35,6 +35,9 @@ import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistribut
 import StyPlotPage from "./features/phospho/StyPlotPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
+import SummaryTablesPage from "./features/summary/SummaryTablesPage";
+import SummaryTextPage from "./features/summary/SummaryTextPage";
+import SummaryReportPage from "./features/summary/SummaryReportPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
 import TablesPage from "./features/summary/TablesPage";
 import TextPage from "./features/summary/TextPage";
@@ -131,6 +134,7 @@ export default function App() {
   const [activeSingleProteinTab, setActiveSingleProteinTab] = useState<SingleProteinTab>("boxplot");
   const [activePhosphoTab, setActivePhosphoTab] = useState<PhosphoTab>("phosphositePlot");
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
+  const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
 
@@ -219,6 +223,16 @@ export default function App() {
       );
     }
 
+    if (activeSection === "summary") {
+      return (
+        <TopTabs
+          tabs={summaryTabs}
+          activeTab={activeSummaryTab}
+          onChange={setActiveSummaryTab}
+        />
+      );
+    }
+
     if (activeSection === "external") {
       return (
         <TopTabs
@@ -250,6 +264,7 @@ export default function App() {
     activeSingleProteinTab,
     activePhosphoTab,
     activeComparisonTab,
+    activeSummaryTab,
     activeExternalTab,
     activeSummaryTab,
   ]);
@@ -364,6 +379,18 @@ export default function App() {
         return <PearsonCorrelationPage />;
       }
       return <VennDiagramPage />;
+    }
+
+    if (activeSection === "summary") {
+      if (activeSummaryTab === "tables") {
+        return <SummaryTablesPage />;
+      }
+
+      if (activeSummaryTab === "text") {
+        return <SummaryTextPage />;
+      }
+
+      return <SummaryReportPage />;
     }
 
     if (activeSection === "external") {

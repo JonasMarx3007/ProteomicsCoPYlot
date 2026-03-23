@@ -414,6 +414,44 @@ export type ComparisonTableResponse = {
 
 export type ExternalTab = "peptideCollapse";
 
+export type SummaryTab = "tables" | "text" | "report";
+
+export type SummaryTableBlock = {
+  key: string;
+  title: string;
+  rows: Record<string, unknown>[];
+  rowCount: number;
+  available: boolean;
+  message: string | null;
+};
+
+export type SummarySectionInfo = {
+  key: string;
+  title: string;
+  group: string;
+  description: string;
+};
+
+export type SummaryOverviewResponse = {
+  tables: SummaryTableBlock[];
+  availableSections: SummarySectionInfo[];
+  warnings: string[];
+  suggestedFilename: string;
+};
+
+export type SummarySectionNote = {
+  above: string;
+  below: string;
+};
+
+export type SummaryReportRequest = {
+  title: string;
+  author: string;
+  introduction: string;
+  notes: Record<string, SummarySectionNote>;
+  includeMetadataTables: boolean;
+};
+
 export type PeptideCollapseRequest = {
   inputPath: string;
   outputPath: string | null;
