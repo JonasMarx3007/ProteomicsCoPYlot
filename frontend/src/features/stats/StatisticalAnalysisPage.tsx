@@ -110,7 +110,7 @@ function NumberField({ label, value, onChange, step = 1 }: { label: string; valu
     <div>
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
-        type="number"
+        type="text"
         lang="en-US"
         inputMode="decimal"
         value={draft}
@@ -260,15 +260,6 @@ function ImageSection({ title, url }: { title: string; url: string }) {
       </div>
       <img src={url} alt={title} className="w-full rounded-xl border border-slate-200" />
     </section>
-  );
-}
-
-function SplitImageSection({ leftTitle, leftUrl, rightTitle, rightUrl }: { leftTitle: string; leftUrl: string; rightTitle: string; rightUrl: string }) {
-  return (
-    <div className="grid gap-6 xl:grid-cols-2">
-      <ImageSection title={leftTitle} url={leftUrl} />
-      <ImageSection title={rightTitle} url={rightUrl} />
-    </div>
   );
 }
 
@@ -795,7 +786,30 @@ function GseaPanel({
       {result ? (
         <>
           <SummarySection items={[{ label: "Up Genes", value: String(result.upGenes.length) }, { label: "Down Genes", value: String(result.downGenes.length) }, { label: "Up Terms", value: String(result.upTerms.length) }, { label: "Down Terms", value: String(result.downTerms.length) }]} warnings={result.warnings} />
-          <SplitImageSection leftTitle="Upregulated Terms" leftUrl={upPlotUrl} rightTitle="Downregulated Terms" rightUrl={downPlotUrl} />
+          <div className="grid gap-6 xl:grid-cols-2">
+            {result.upGenes.length > 0 && result.upTerms.length > 0 ? (
+              <ImageSection title="Upregulated Terms" url={upPlotUrl} />
+            ) : (
+              <InfoSection
+                message={
+                  result.upGenes.length === 0
+                    ? "Upregulated gene list is empty. Upregulated GSEA plot is not generated."
+                    : "No upregulated enrichment terms found for the selected parameters."
+                }
+              />
+            )}
+            {result.downGenes.length > 0 && result.downTerms.length > 0 ? (
+              <ImageSection title="Downregulated Terms" url={downPlotUrl} />
+            ) : (
+              <InfoSection
+                message={
+                  result.downGenes.length === 0
+                    ? "Downregulated gene list is empty. Downregulated GSEA plot is not generated."
+                    : "No downregulated enrichment terms found for the selected parameters."
+                }
+              />
+            )}
+          </div>
           <GeneListSection title="Upregulated Genes" genes={result.upGenes} filename={`gsea_up_${kind}.txt`} />
           <GeneListSection title="Downregulated Genes" genes={result.downGenes} filename={`gsea_down_${kind}.txt`} />
           <TableSection title="Upregulated Terms" rows={result.upTerms as unknown as Record<string, unknown>[]} filename={`gsea_up_${kind}.csv`} />
@@ -817,7 +831,6 @@ function PathwayHeatmapPanel({
   const [pathway, setPathway] = useState("");
   const [selectedConditions, setSelectedConditions] = useState<string[]>([]);
   const [valueType, setValueType] = useState<"log2" | "z">("z");
-  const [includeId, setIncludeId] = useState(true);
   const [header, setHeader] = useState(true);
   const [removeEmpty, setRemoveEmpty] = useState(true);
   const [clusterRows, setClusterRows] = useState(false);
@@ -858,7 +871,18 @@ function PathwayHeatmapPanel({
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load pathway options"));
   }, []);
 
-  const heatmapUrl = buildPlotUrl(`/api/plots/stats/${kind}/pathway-heatmap.png`, { pathway, conditions: selectedConditions.join(","), valueType, includeId, header, removeEmpty, clusterRows, clusterCols, widthCm, heightCm, dpi });
+  const heatmapUrl = buildPlotUrl(`/api/plots/stats/${kind}/pathway-heatmap.png`, {
+    pathway,
+    conditions: selectedConditions.join(","),
+    valueType,
+    header,
+    removeEmpty,
+    clusterRows,
+    clusterCols,
+    widthCm,
+    heightCm,
+    dpi,
+  });
 
   return (
     <div className="space-y-6">
@@ -884,7 +908,6 @@ function PathwayHeatmapPanel({
         </div>
         <div className="mt-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <CheckboxField label="Include sample IDs" checked={includeId} onChange={setIncludeId} />
             <CheckboxField label="Show gene labels" checked={header} onChange={setHeader} />
             <CheckboxField label="Remove empty genes" checked={removeEmpty} onChange={setRemoveEmpty} />
             <CheckboxField label="Cluster rows" checked={clusterRows} onChange={setClusterRows} />
