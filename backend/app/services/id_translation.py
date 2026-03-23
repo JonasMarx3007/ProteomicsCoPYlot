@@ -195,6 +195,17 @@ def translate_cell(cell: object, index: dict[str, list[str]]) -> tuple[str, bool
     return ";".join(sorted(out_values)), True
 
 
+def _translated_values(cells: list[object], index: dict[str, list[str]]) -> tuple[list[str], int]:
+    values: list[str] = []
+    translated_count = 0
+    for cell in cells:
+        value, ok = translate_cell(cell, index)
+        values.append(value)
+        if ok:
+            translated_count += 1
+    return values, translated_count
+
+
 def translated_dataframe(payload: IdTranslationRequest) -> tuple[pd.DataFrame, str, str, str, list[str]]:
     if payload.outputDb not in DB_TO_COL:
         raise ValueError(f"Unsupported output database: {payload.outputDb}")
@@ -237,13 +248,20 @@ def translated_dataframe(payload: IdTranslationRequest) -> tuple[pd.DataFrame, s
     index = build_index(db_df, effective_input, payload.outputDb)
     output_column = OUT_LABEL_TO_COLNAME.get(payload.outputDb, payload.outputDb.replace(" ", "") + "Names")
 
-    translated_values: list[str] = []
-    for cell in frame[payload.column].tolist():
-        value, _ = translate_cell(cell, index)
-        translated_values.append(value)
+    source_cells = frame[payload.column].tolist()
+    translated_values, _ = _translated_values(source_cells, index)
 
     translated = frame.copy()
     translated.loc[:, output_column] = translated_values
+
+    if "GeneNames" not in translated.columns and output_column != "GeneNames":
+        gene_name_index = build_index(db_df, effective_input, "HGNC Symbol")
+        gene_name_values, gene_name_hits = _translated_values(source_cells, gene_name_index)
+        if gene_name_hits > 0:
+            translated.loc[:, "GeneNames"] = gene_name_values
+            warnings.append(
+                "Added GeneNames column (HGNC Symbol) so downstream gene-name based analyses can run."
+            )
     return translated, filename, effective_input, output_column, warnings
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getQcPlotOptions, getQcTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { saveQcReportSettings } from "../../lib/reportState";
 import type { AnnotationKind, QcTab } from "../../lib/types";
 
 type Props = {
@@ -89,6 +90,19 @@ export default function QCPipelinePage({ activeTab }: Props) {
     heightCm: 16,
     dpi: 400,
   });
+
+  useEffect(() => {
+    if (!availableKinds.includes(kind)) return;
+    saveQcReportSettings(kind, {
+      coverage,
+      hist,
+      box,
+      cv,
+      pca,
+      abundance,
+      correlation,
+    });
+  }, [kind, availableKinds, coverage, hist, box, cv, pca, abundance, correlation]);
 
   useEffect(() => {
     if (availableKinds.length === 0) {
@@ -239,7 +253,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
     if (activeTab === "abundance" && abundance.type === "Interactive") {
       return cmToIframeHeight(abundance.heightCm);
     }
-    return 620;
+    return 760;
   }, [activeTab, pca.type, pca.heightCm, abundance.type, abundance.heightCm]);
 
   const tableCsvUrl = useMemo(() => {
@@ -724,8 +738,10 @@ function NumericField({
       <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
       <input
         type="number"
+        lang="en-US"
+        inputMode="decimal"
         value={value}
-        onChange={(e) => onChange(globalThis.Number(e.target.value))}
+        onChange={(e) => onChange(globalThis.Number(e.target.value.replace(",", ".")))}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       />
     </div>
@@ -839,5 +855,5 @@ function rowsToCsv(rows: Record<string, unknown>[], columns: string[]): string {
 
 function cmToIframeHeight(heightCm: number): number {
   const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (10 * 96) / 2.54;
-  return Math.max(420, Math.round(basePx + 72));
+  return Math.max(760, Math.round(basePx + 220));
 }
