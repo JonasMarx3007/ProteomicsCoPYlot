@@ -72,9 +72,12 @@ export default function IdTranslatorPage() {
       if (columns.includes(current)) return current;
       return columns[0] ?? "";
     });
+  }, [kind, columns]);
+
+  useEffect(() => {
     setResult(null);
     setError(null);
-  }, [kind, columns]);
+  }, [kind]);
 
   const canRun = Boolean(activeDataset && column && outputDb && (autoDetectInput || inputDb));
 
@@ -97,6 +100,12 @@ export default function IdTranslatorPage() {
       const response = await runIdTranslation(requestPayload);
       setResult(response);
       setInputDb(response.inputDb);
+      try {
+        const current = await getCurrentDatasets();
+        setDatasets(current);
+      } catch {
+        // Keep translation preview/result even if dataset snapshot refresh fails transiently.
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to translate IDs");
     } finally {
@@ -129,7 +138,8 @@ export default function IdTranslatorPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">ID Translator</h2>
         <p className="mt-2 text-sm text-slate-600">
-          Translate identifiers in a loaded protein or phospho table and append the mapped values as a new column.
+          Translate identifiers in a loaded protein or phospho table, append mapped values as new column(s), and write
+          the result back to the active dataset for downstream annotation.
         </p>
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">

@@ -628,15 +628,50 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
+  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
+
+  useEffect(() => {
+    setDraft(Number.isFinite(value) ? String(value) : "");
+  }, [value]);
+
+  const commit = () => {
+    const normalized = draft.trim().replace(",", ".");
+    if (!normalized) {
+      setDraft(Number.isFinite(value) ? String(value) : "");
+      return;
+    }
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed)) {
+      setDraft(Number.isFinite(value) ? String(value) : "");
+      return;
+    }
+    onChange(parsed);
+    setDraft(String(parsed));
+  };
+
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
       <input
-        type="number"
+        type="text"
         lang="en-US"
         inputMode="decimal"
-        value={Number.isFinite(value) ? value : 0}
-        onChange={(event) => onChange(Number(event.target.value.replace(",", ".")))}
+        value={draft}
+        onChange={(event) => {
+          const normalized = event.target.value.replace(",", ".");
+          setDraft(normalized);
+          const parsed = Number(normalized);
+          if (Number.isFinite(parsed)) {
+            onChange(parsed);
+          }
+        }}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+        }}
         className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-900"
       />
     </label>
