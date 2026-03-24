@@ -13,6 +13,7 @@ export function availableAnnotationKinds(
   const kinds: AnnotationKind[] = [];
   if (datasets?.protein) kinds.push("protein");
   if (datasets?.phospho) kinds.push("phospho");
+  if (datasets?.phosprot) kinds.push("phosprot");
   return kinds;
 }
 
@@ -21,7 +22,12 @@ export function annotationKindOptions(
 ): AnnotationKindOption[] {
   return kinds.map((kind) => ({
     value: kind,
-    label: kind === "protein" ? "Protein" : "Phospho",
+    label:
+      kind === "protein"
+        ? "Protein"
+        : kind === "phospho"
+          ? "Phospho"
+          : "Phosphoprotein",
   }));
 }
 

@@ -7,8 +7,10 @@ from app.schemas.annotation import (
     AnnotationFilterConfig,
     AnnotationGenerateRequest,
     AnnotationKind,
-    MetadataUploadResponse,
     AnnotationResultResponse,
+    MetadataAnnotationKind,
+    MetadataUploadResponse,
+    PhosprotAggregateRequest,
 )
 from app.services.annotation_processor import (
     compute_annotation,
@@ -22,6 +24,7 @@ from app.services.metadata_upload_store import (
     get_uploaded_metadata,
     save_uploaded_metadata,
 )
+from app.services.phosprot_tools import aggregate_from_phospho, upload_phosprot
 
 router = APIRouter(prefix="/api/annotations", tags=["annotations"])
 
@@ -68,7 +71,7 @@ def _metadata_upload_response(stored) -> MetadataUploadResponse:
 @router.post("/metadata/upload", response_model=MetadataUploadResponse)
 async def upload_annotation_metadata(
     file: UploadFile = File(...),
-    kind: AnnotationKind = Form(...),
+    kind: MetadataAnnotationKind = Form(...),
 ) -> MetadataUploadResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
@@ -86,7 +89,7 @@ async def upload_annotation_metadata(
 
 
 @router.get("/metadata/current/{kind}", response_model=MetadataUploadResponse)
-async def get_current_uploaded_metadata(kind: AnnotationKind) -> MetadataUploadResponse:
+async def get_current_uploaded_metadata(kind: MetadataAnnotationKind) -> MetadataUploadResponse:
     stored = get_uploaded_metadata(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No uploaded metadata stored for {kind} dataset")
@@ -94,7 +97,7 @@ async def get_current_uploaded_metadata(kind: AnnotationKind) -> MetadataUploadR
 
 
 @router.delete("/metadata/current/{kind}")
-async def clear_current_uploaded_metadata(kind: AnnotationKind) -> dict[str, object]:
+async def clear_current_uploaded_metadata(kind: MetadataAnnotationKind) -> dict[str, object]:
     clear_uploaded_metadata(kind)
     return {"kind": kind, "cleared": True}
 
@@ -110,7 +113,11 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
 
     filter_config = payload.filter or AnnotationFilterConfig()
 
-    uploaded_metadata = get_uploaded_metadata(payload.kind)
+    uploaded_metadata = (
+        get_uploaded_metadata(payload.kind)
+        if payload.kind in ("protein", "phospho")
+        else None
+    )
 
     try:
         if uploaded_metadata is not None:
@@ -158,4 +165,46 @@ async def get_current_annotation(kind: AnnotationKind) -> AnnotationResultRespon
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
 
+    return _response_from_stored(stored)
+
+
+@router.post("/phosprot/aggregate", response_model=AnnotationResultResponse)
+async def aggregate_phosprot_annotation(
+    payload: PhosprotAggregateRequest,
+) -> AnnotationResultResponse:
+    try:
+        stored = aggregate_from_phospho(mode=payload.mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to aggregate phosphoprotein dataset: {e}",
+        ) from e
+    return _response_from_stored(stored)
+
+
+@router.post("/phosprot/upload", response_model=AnnotationResultResponse)
+async def upload_phosprot_annotation(
+    file: UploadFile = File(...),
+    isLog2Transformed: bool = Form(False),
+) -> AnnotationResultResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+
+    try:
+        _ = get_extension(file.filename)
+        frame = read_dataframe(file.filename, file.file)
+        stored = upload_phosprot(
+            frame=frame,
+            filename=file.filename,
+            is_log2_transformed=isLog2Transformed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload phosphoprotein dataset: {e}",
+        ) from e
     return _response_from_stored(stored)

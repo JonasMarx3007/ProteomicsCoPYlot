@@ -20,7 +20,7 @@ export default function CurrentDatasetsPanel({ current }: Props) {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <CurrentCard
           title="Protein"
           content={
@@ -39,6 +39,17 @@ export default function CurrentDatasetsPanel({ current }: Props) {
               <TableDatasetInfo dataset={current.phospho} />
             ) : (
               <EmptyState text="No phospho dataset loaded" />
+            )
+          }
+        />
+
+        <CurrentCard
+          title="Phosphoprotein"
+          content={
+            current?.phosprot ? (
+              <TableDatasetInfo dataset={current.phosprot} />
+            ) : (
+              <EmptyState text="No phosphoprotein dataset loaded" />
             )
           }
         />

@@ -1,5 +1,6 @@
-export type DatasetKind = "protein" | "phospho" | "peptide";
-export type AnnotationKind = Extract<DatasetKind, "protein" | "phospho">;
+export type DatasetKind = "protein" | "phospho" | "phosprot" | "peptide";
+export type AnnotationKind = Extract<DatasetKind, "protein" | "phospho" | "phosprot">;
+export type MetadataAnnotationKind = Extract<AnnotationKind, "protein" | "phospho">;
 export type FilterMode = "per_group" | "in_at_least_one_group";
 
 export type DatasetPreviewResponse = {
@@ -26,6 +27,7 @@ export type PeptidePathResponse = {
 export type CurrentDatasetsResponse = {
   protein: DatasetPreviewResponse | null;
   phospho: DatasetPreviewResponse | null;
+  phosprot: DatasetPreviewResponse | null;
   peptide: PeptidePathResponse | null;
 };
 
@@ -46,6 +48,12 @@ export type AnnotationGenerateRequest = {
   filter: AnnotationFilterConfig;
 };
 
+export type PhosprotAggregationMode =
+  | "sum_mean_impute"
+  | "sum_propagate_na"
+  | "sum_ignore_na"
+  | "mean";
+
 export type AnnotationResultResponse = {
   kind: AnnotationKind;
   sourceRows: number;
@@ -60,14 +68,14 @@ export type AnnotationResultResponse = {
   filteredColumns: number;
   filteredPreview: Record<string, unknown>[];
   isLog2Transformed: boolean;
-  metadataSource: "manual" | "auto" | "uploaded";
+  metadataSource: "manual" | "auto" | "uploaded" | "shared_phospho";
   filter: AnnotationFilterConfig | null;
   autoDetected: boolean;
   warnings: string[];
 };
 
 export type MetadataUploadResponse = {
-  kind: AnnotationKind;
+  kind: MetadataAnnotationKind;
   filename: string;
   rows: number;
   columns: number;
@@ -498,6 +506,11 @@ export type SummaryReportResponse = {
   warnings: string[];
 };
 
+export type ConditionPaletteResponse = {
+  kind: AnnotationKind;
+  palette: Record<string, string>;
+};
+
 export type SummaryVolcanoEntry = {
   kind: AnnotationKind;
   control: boolean;
@@ -538,7 +551,8 @@ export type DataTab =
   | "imputation"
   | "distribution"
   | "verification"
-  | "translator";
+  | "translator"
+  | "conditionPalette";
 
 export type QcTab =
   | "coverage"

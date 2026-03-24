@@ -30,6 +30,7 @@ class StoredAnnotation:
 _ANNOTATIONS: dict[AnnotationKind, StoredAnnotation | None] = {
     "protein": None,
     "phospho": None,
+    "phosprot": None,
 }
 
 

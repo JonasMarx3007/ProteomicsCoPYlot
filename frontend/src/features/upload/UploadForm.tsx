@@ -5,7 +5,7 @@ type UploadFormProps = {
   kind: DatasetKind;
   loading: boolean;
   onKindChange: (kind: DatasetKind) => void;
-  onFileSubmit: (file: File, kind: "protein" | "phospho") => void;
+  onFileSubmit: (file: File, kind: "protein" | "phospho" | "phosprot") => void;
   onPeptideSubmit: (path: string) => void;
 };
 
@@ -19,7 +19,7 @@ export default function UploadForm({
   const [file, setFile] = useState<File | null>(null);
   const [peptidePath, setPeptidePath] = useState("");
 
-  const isTableKind = kind === "protein" || kind === "phospho";
+  const isTableKind = kind === "protein" || kind === "phospho" || kind === "phosprot";
   const isPeptide = kind === "peptide";
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export default function UploadForm({
       <div className="mb-4">
         <h2 className="text-lg font-semibold">Upload Dataset</h2>
         <p className="text-sm text-slate-500">
-          Protein and phospho datasets are uploaded and previewed. Peptide stores
+          Protein, phospho, and phosphoprotein datasets are uploaded and previewed. Peptide stores
           only the absolute file path.
         </p>
       </div>
@@ -49,6 +49,7 @@ export default function UploadForm({
           >
             <option value="protein">Protein</option>
             <option value="phospho">Phospho</option>
+            <option value="phosprot">Phosphoprotein</option>
             <option value="peptide">Peptide</option>
           </select>
         </div>

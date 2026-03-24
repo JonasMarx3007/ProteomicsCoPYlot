@@ -96,6 +96,15 @@ class IdTranslationResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ConditionPaletteUpdateRequest(BaseModel):
+    palette: dict[str, str] = Field(default_factory=dict)
+
+
+class ConditionPaletteResponse(BaseModel):
+    kind: AnnotationKind
+    palette: dict[str, str] = Field(default_factory=dict)
+
+
 class ImputationRunRequest(BaseModel):
     kind: AnnotationKind
     qValue: float = Field(default=0.01, ge=0.0, le=1.0)

@@ -5,25 +5,25 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from app.schemas.annotation import AnnotationKind
+from app.schemas.annotation import MetadataAnnotationKind
 
 
 @dataclass
 class StoredUploadedMetadata:
-    kind: AnnotationKind
+    kind: MetadataAnnotationKind
     filename: str
     frame: pd.DataFrame
     created_at: str
 
 
-_UPLOADED_METADATA: dict[AnnotationKind, StoredUploadedMetadata | None] = {
+_UPLOADED_METADATA: dict[MetadataAnnotationKind, StoredUploadedMetadata | None] = {
     "protein": None,
     "phospho": None,
 }
 
 
 def save_uploaded_metadata(
-    kind: AnnotationKind,
+    kind: MetadataAnnotationKind,
     filename: str,
     frame: pd.DataFrame,
 ) -> StoredUploadedMetadata:
@@ -37,10 +37,9 @@ def save_uploaded_metadata(
     return stored
 
 
-def get_uploaded_metadata(kind: AnnotationKind) -> StoredUploadedMetadata | None:
+def get_uploaded_metadata(kind: MetadataAnnotationKind) -> StoredUploadedMetadata | None:
     return _UPLOADED_METADATA.get(kind)
 
 
-def clear_uploaded_metadata(kind: AnnotationKind) -> None:
+def clear_uploaded_metadata(kind: MetadataAnnotationKind) -> None:
     _UPLOADED_METADATA[kind] = None
-

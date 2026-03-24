@@ -4,9 +4,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-AnnotationKind = Literal["protein", "phospho"]
+AnnotationKind = Literal["protein", "phospho", "phosprot"]
+MetadataAnnotationKind = Literal["protein", "phospho"]
 FilterMode = Literal["per_group", "in_at_least_one_group"]
-MetadataSource = Literal["manual", "auto", "uploaded"]
+MetadataSource = Literal["manual", "auto", "uploaded", "shared_phospho"]
+PhosprotAggregationMode = Literal[
+    "sum_mean_impute",
+    "sum_propagate_na",
+    "sum_ignore_na",
+    "mean",
+]
 
 
 class ConditionAssignment(BaseModel):
@@ -47,9 +54,13 @@ class AnnotationResultResponse(BaseModel):
 
 
 class MetadataUploadResponse(BaseModel):
-    kind: AnnotationKind
+    kind: MetadataAnnotationKind
     filename: str
     rows: int
     columns: int
     createdAt: str
     preview: list[dict[str, Any]]
+
+
+class PhosprotAggregateRequest(BaseModel):
+    mode: PhosprotAggregationMode = "sum_mean_impute"

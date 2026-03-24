@@ -89,7 +89,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
       setOptionsError(
         activeTab === "heatmap"
           ? "Upload a phospho dataset to use this tab."
-          : "Upload a protein or phospho dataset to use this tab."
+          : "Upload a protein, phospho, or phosphoprotein dataset to use this tab."
       );
       return;
     }
@@ -351,7 +351,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
           {activeTab === "heatmap"
             ? "Upload a phospho dataset in the Data tab to render this heatmap."
-            : "Upload a protein or phospho dataset in the Data tab to render single-protein plots."}
+            : "Upload a protein, phospho, or phosphoprotein dataset in the Data tab to render single-protein plots."}
         </section>
       ) : null}
 

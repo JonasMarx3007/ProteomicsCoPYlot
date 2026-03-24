@@ -7,6 +7,8 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import (
+    ConditionPaletteResponse,
+    ConditionPaletteUpdateRequest,
     DistributionSummaryResponse,
     IdTranslationRequest,
     IdTranslationResponse,
@@ -18,7 +20,9 @@ from app.schemas.completeness import CompletenessTablesResponse
 from app.services.data_tools import (
     distribution_summary,
     export_id_translation,
+    get_condition_palette_config,
     imputed_dataframe,
+    update_condition_palette_config,
     run_id_translation,
     run_imputation,
     verification_summary,
@@ -126,3 +130,26 @@ async def download_id_translation_route(payload: IdTranslationRequest) -> Stream
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ID translation download failed: {e}") from e
+
+
+@router.get("/condition-colors/{kind}", response_model=ConditionPaletteResponse)
+async def get_condition_colors_route(kind: AnnotationKind) -> ConditionPaletteResponse:
+    try:
+        return get_condition_palette_config(kind)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load condition colors: {e}") from e
+
+
+@router.post("/condition-colors/{kind}", response_model=ConditionPaletteResponse)
+async def set_condition_colors_route(
+    kind: AnnotationKind,
+    payload: ConditionPaletteUpdateRequest,
+) -> ConditionPaletteResponse:
+    try:
+        return update_condition_palette_config(kind, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save condition colors: {e}") from e
