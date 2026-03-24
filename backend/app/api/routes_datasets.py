@@ -51,7 +51,7 @@ def _peptide_response(stored) -> PeptidePathResponse:
 @router.post("/upload", response_model=DatasetPreviewResponse)
 async def upload_dataset(
     file: UploadFile = File(...),
-    kind: Literal["protein", "phospho"] = Form(...),
+    kind: Literal["protein", "phospho", "phosprot"] = Form(...),
 ) -> DatasetPreviewResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
@@ -65,7 +65,8 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
 
     stored = save_table_dataset(file.filename, kind, df)
-    clear_uploaded_metadata(kind)
+    if kind in ("protein", "phospho"):
+        clear_uploaded_metadata(kind)
     return _table_preview_response(stored)
 
 
@@ -85,10 +86,12 @@ async def get_current_datasets() -> CurrentDatasetsResponse:
 
     protein = current["protein"]
     phospho = current["phospho"]
+    phosprot = current["phosprot"]
     peptide = current["peptide"]
 
     return CurrentDatasetsResponse(
         protein=_table_preview_response(protein) if protein else None,
         phospho=_table_preview_response(phospho) if phospho else None,
+        phosprot=_table_preview_response(phosprot) if phosprot else None,
         peptide=_peptide_response(peptide) if peptide else None,
     )

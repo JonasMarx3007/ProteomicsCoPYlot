@@ -307,7 +307,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
 
       {kindOptions.length === 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
-          Upload a protein or phospho dataset in the Data tab to enable QC plotting.
+          Upload a protein, phospho, or phosphoprotein dataset in the Data tab to enable QC plotting.
         </section>
       ) : null}
 

@@ -2,8 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-DatasetKind = Literal["protein", "phospho", "peptide"]
-TableDatasetKind = Literal["protein", "phospho"]
+DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
+TableDatasetKind = Literal["protein", "phospho", "phosprot"]
 
 
 class DatasetPreviewResponse(BaseModel):
@@ -30,6 +30,7 @@ class PeptidePathResponse(BaseModel):
 class CurrentDatasetsResponse(BaseModel):
     protein: DatasetPreviewResponse | None
     phospho: DatasetPreviewResponse | None
+    phosprot: DatasetPreviewResponse | None
     peptide: PeptidePathResponse | None
 
 

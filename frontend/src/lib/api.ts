@@ -5,6 +5,7 @@ import type {
   ComparisonOptionsResponse,
   ComparisonTableResponse,
   CompletenessTablesResponse,
+  ConditionPaletteResponse,
   DistributionSummaryResponse,
   CurrentDatasetsResponse,
   DatasetPreviewResponse,
@@ -16,6 +17,7 @@ import type {
   ImputationResultResponse,
   ImputationRunRequest,
   MetadataUploadResponse,
+  MetadataAnnotationKind,
   PathwayOptionsResponse,
   PeptideCollapseRequest,
   PeptideCollapseResponse,
@@ -27,6 +29,7 @@ import type {
   PeptidePathResponse,
   PeptideSpecies,
   QcSummaryResponse,
+  PhosprotAggregationMode,
   SingleProteinOptionsResponse,
   SingleProteinTableResponse,
   QcPlotOptionsResponse,
@@ -58,7 +61,7 @@ async function parseJson(response: Response) {
 
 export async function uploadDataset(
   file: File,
-  kind: Extract<DatasetKind, "protein" | "phospho">
+  kind: Extract<DatasetKind, "protein" | "phospho" | "phosprot">
 ): Promise<DatasetPreviewResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -242,7 +245,7 @@ export async function getCurrentAnnotation(
 
 export async function uploadAnnotationMetadata(
   file: File,
-  kind: AnnotationKind
+  kind: MetadataAnnotationKind
 ): Promise<MetadataUploadResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -265,7 +268,7 @@ export async function uploadAnnotationMetadata(
 }
 
 export async function getUploadedAnnotationMetadata(
-  kind: AnnotationKind
+  kind: MetadataAnnotationKind
 ): Promise<MetadataUploadResponse | null> {
   const response = await fetch(`${API_BASE}/api/annotations/metadata/current/${kind}`);
   const data = await parseJson(response);
@@ -284,7 +287,9 @@ export async function getUploadedAnnotationMetadata(
   return data as MetadataUploadResponse;
 }
 
-export async function clearUploadedAnnotationMetadata(kind: AnnotationKind): Promise<void> {
+export async function clearUploadedAnnotationMetadata(
+  kind: MetadataAnnotationKind
+): Promise<void> {
   const response = await fetch(`${API_BASE}/api/annotations/metadata/current/${kind}`, {
     method: "DELETE",
   });
@@ -407,6 +412,84 @@ export async function downloadIdTranslation(
   }
 
   return response.blob();
+}
+
+export async function aggregatePhosprot(
+  mode: PhosprotAggregationMode
+): Promise<AnnotationResultResponse> {
+  const response = await fetch(`${API_BASE}/api/annotations/phosprot/aggregate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ mode }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to aggregate phosphoprotein dataset"
+    );
+  }
+  return data as AnnotationResultResponse;
+}
+
+export async function uploadPhosprot(
+  file: File,
+  isLog2Transformed: boolean
+): Promise<AnnotationResultResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("isLog2Transformed", String(isLog2Transformed));
+
+  const response = await fetch(`${API_BASE}/api/annotations/phosprot/upload`, {
+    method: "POST",
+    body: form,
+  });
+
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to upload phosphoprotein dataset"
+    );
+  }
+  return data as AnnotationResultResponse;
+}
+
+export async function getConditionPalette(
+  kind: AnnotationKind
+): Promise<ConditionPaletteResponse> {
+  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load condition colors"
+    );
+  }
+  return data as ConditionPaletteResponse;
+}
+
+export async function setConditionPalette(
+  kind: AnnotationKind,
+  palette: Record<string, string>
+): Promise<ConditionPaletteResponse> {
+  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ palette }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to save condition colors"
+    );
+  }
+  return data as ConditionPaletteResponse;
 }
 
 export async function getCompletenessTables(

@@ -5,8 +5,8 @@ from typing import Literal
 
 import pandas as pd
 
-DatasetKind = Literal["protein", "phospho", "peptide"]
-TableDatasetKind = Literal["protein", "phospho"]
+DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
+TableDatasetKind = Literal["protein", "phospho", "phosprot"]
 
 
 @dataclass
@@ -26,6 +26,7 @@ class StoredPeptideDataset:
 _CURRENT_DATASETS: dict[str, StoredTableDataset | StoredPeptideDataset | None] = {
     "protein": None,
     "phospho": None,
+    "phosprot": None,
     "peptide": None,
 }
 
