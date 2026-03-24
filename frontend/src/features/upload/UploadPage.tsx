@@ -32,7 +32,7 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
   useEffect(() => {
     refreshCurrentDatasets().catch((err) => {
       // Do not show a blocking error on passive initial load.
-      setCurrent({ protein: null, phospho: null, peptide: null });
+      setCurrent({ protein: null, phospho: null, phosprot: null, peptide: null });
       console.warn(err);
     });
   }, []);
@@ -48,7 +48,7 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
 
   async function handleFileSubmit(
     file: File,
-    uploadKind: "protein" | "phospho"
+    uploadKind: "protein" | "phospho" | "phosprot"
   ) {
     try {
       setLoading(true);

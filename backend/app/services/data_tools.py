@@ -5,6 +5,8 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import (
+    ConditionPaletteResponse,
+    ConditionPaletteUpdateRequest,
     ComparativeHistogramBin,
     CurvePoint,
     DataSource,
@@ -21,6 +23,8 @@ from app.schemas.data_tools import (
     VerificationSummaryResponse,
 )
 from app.services.annotation_store import get_annotation
+from app.services.condition_palette_store import get_condition_palette
+from app.services.condition_palette_store import set_condition_palette
 from app.services.dataset_store import get_current_dataset
 from app.services.id_translation import export_id_translation as export_id_translation_service
 from app.services.id_translation import run_id_translation as run_id_translation_service
@@ -273,3 +277,21 @@ def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
 
 def export_id_translation(payload: IdTranslationRequest) -> tuple[str, bytes, str]:
     return export_id_translation_service(payload)
+
+
+def get_condition_palette_config(kind: AnnotationKind) -> ConditionPaletteResponse:
+    return ConditionPaletteResponse(
+        kind=kind,
+        palette=get_condition_palette(kind),
+    )
+
+
+def update_condition_palette_config(
+    kind: AnnotationKind,
+    payload: ConditionPaletteUpdateRequest,
+) -> ConditionPaletteResponse:
+    updated = set_condition_palette(kind, payload.palette)
+    return ConditionPaletteResponse(
+        kind=kind,
+        palette=updated,
+    )

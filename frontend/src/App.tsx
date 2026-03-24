@@ -7,6 +7,7 @@ import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
 import IdTranslatorPage from "./features/data/IdTranslatorPage";
+import ColorsPage from "./features/data/ColorsPage";
 import MissingValuePlotPage from "./features/completeness/MissingValuePlotPage";
 import MissingValueHeatmapPage from "./features/completeness/MissingValueHeatmapPage";
 import CompletenessTablesPage from "./features/completeness/CompletenessTablesPage";
@@ -60,6 +61,7 @@ const dataTabs: { key: DataTab; label: string }[] = [
   { key: "distribution", label: "Distribution" },
   { key: "verification", label: "Verification" },
   { key: "translator", label: "ID Translator" },
+  { key: "conditionPalette", label: "Colors" },
 ];
 
 const qcTabs: { key: QcTab; label: string }[] = [
@@ -417,6 +419,10 @@ export default function App() {
 
       if (activeDataTab === "translator") {
         return <IdTranslatorPage />;
+      }
+
+      if (activeDataTab === "conditionPalette") {
+        return <ColorsPage />;
       }
     }
 

@@ -42,7 +42,7 @@ export default function StatisticalAnalysisPage({ activeTab }: Props) {
     return (
       <div className="space-y-6">
         <SectionCard title="Statistical Analysis">
-          <InfoSection message="Upload a protein or phospho dataset in the Data tab to enable statistical plots." />
+          <InfoSection message="Upload a protein, phospho, or phosphoprotein dataset in the Data tab to enable statistical plots." />
         </SectionCard>
       </div>
     );

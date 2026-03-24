@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import colorsys
 import io
 import math
 import re
@@ -10,6 +9,7 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
+from app.services.condition_palette_store import build_condition_color_map
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
     choose_best_source,
@@ -196,30 +196,6 @@ def _sample_label(sample: str, condition: str, index: int, include_id: bool) -> 
     return f"{condition}_{index + 1}\n({sid})"
 
 
-_BASE_CONDITION_COLORS = [
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
-    "#aec7e8",
-    "#ffbb78",
-    "#98df8a",
-    "#ff9896",
-    "#c5b0d5",
-    "#c49c94",
-    "#f7b6d2",
-    "#c7c7c7",
-    "#dbdb8d",
-    "#9edae5",
-]
-
-
 def _normalized_conditions(conditions: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -232,19 +208,8 @@ def _normalized_conditions(conditions: list[str]) -> list[str]:
     return ordered
 
 
-def _generated_color_hex(index: int) -> str:
-    if index < len(_BASE_CONDITION_COLORS):
-        return _BASE_CONDITION_COLORS[index]
-    hue = (index * 0.618033988749895) % 1.0
-    saturation = 0.62 if index % 2 == 0 else 0.78
-    value = 0.88 if (index // 2) % 2 == 0 else 0.72
-    red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value)
-    return f"#{int(red * 255):02x}{int(green * 255):02x}{int(blue * 255):02x}"
-
-
-def _condition_colors(_plt, conditions: list[str]) -> dict[str, str]:
-    ordered = _normalized_conditions(conditions)
-    return {condition: _generated_color_hex(i) for i, condition in enumerate(ordered)}
+def _condition_colors(kind: AnnotationKind, _plt, conditions: list[str]) -> dict[str, str]:
+    return build_condition_color_map(kind, _normalized_conditions(conditions))
 
 
 def _feature_context(frame: pd.DataFrame) -> tuple[str, str, int | None, str]:
@@ -532,7 +497,7 @@ def qc_coverage_plot(
 
     title, y_label, red_line_value, _ = _feature_context(frame)
     conditions = meta["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(plt, conditions)
+    color_map = _condition_colors(kind, plt, conditions)
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
     if summary:
@@ -676,7 +641,7 @@ def qc_intensity_histogram_plot(
         xmin -= 1.0
         xmax += 1.0
     x_grid = np.linspace(xmin, xmax, 1000)
-    color_map = _condition_colors(plt, [condition for condition, _ in mean_intensities])
+    color_map = _condition_colors(kind, plt, [condition for condition, _ in mean_intensities])
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
     for condition, vals in mean_intensities:
@@ -730,7 +695,7 @@ def qc_boxplot_plot(
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
     conditions = meta["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(plt, conditions)
+    color_map = _condition_colors(kind, plt, conditions)
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
     if str(mode).lower() == "single":
@@ -906,7 +871,7 @@ def qc_cv_plot(
     if not cv_data:
         raise ValueError("No numeric values available for CV plot.")
 
-    color_map = _condition_colors(plt, valid_conditions)
+    color_map = _condition_colors(kind, plt, valid_conditions)
     fig, ax = _make_fig(plt, width_cm, height_cm)
     boxprops = dict(linewidth=1.5, color="black")
     whiskerprops = dict(linewidth=1.5, color="black")
@@ -1008,7 +973,7 @@ def qc_pca_plot(
     n_components = 3 if str(plot_dim).upper() == "3D" else 2
 
     conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(plt, conditions)
+    color_map = _condition_colors(kind, plt, conditions)
 
     if n_components == 3:
         fig = plt.figure(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
@@ -1094,7 +1059,7 @@ def qc_pca_interactive_html(
 
     height_px = _cm_to_px(height_cm)
     conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(None, conditions)
+    color_map = _condition_colors(kind, None, conditions)
 
     if plot_3d:
         fig = px.scatter_3d(
@@ -1258,7 +1223,7 @@ def qc_abundance_plot(
     else:
         mean_intensities = mean_intensities.dropna(subset=[unique_conditions[0]])
 
-    color_map = _condition_colors(plt, unique_conditions)
+    color_map = _condition_colors(kind, plt, unique_conditions)
     fig, ax = _make_fig(plt, width_cm, height_cm)
     if condition == "All Conditions":
         long_intensities = mean_intensities.melt(
@@ -1315,7 +1280,7 @@ def qc_abundance_interactive_html(
             raise ValueError(f"Condition '{condition}' not found.")
         long_intensities = long_intensities[long_intensities["Condition"] == condition]
     visible_conditions = long_intensities["Condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(None, visible_conditions)
+    color_map = _condition_colors(kind, None, visible_conditions)
 
     fig = px.scatter(
         long_intensities,

@@ -148,32 +148,59 @@ def _stats_source(kind: AnnotationKind) -> tuple[StatsSource, pd.DataFrame, pd.D
     ]
 
 
+def _first_available_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
+    for column in candidates:
+        if column in frame.columns:
+            return column
+    return None
+
+
+def _workflow_label_candidates(kind: AnnotationKind) -> list[str]:
+    if kind == "protein":
+        return ["ProteinNames"]
+    if kind == "phospho":
+        return ["PTM_Collapse_key"]
+    return ["Phosphoprotein", "ProteinNames", "PTM_Collapse_key"]
+
+
+def _gene_label_candidates(kind: AnnotationKind) -> list[str]:
+    if kind == "phosprot":
+        return ["Gene_group", "GeneNames"]
+    return ["GeneNames", "Gene_group"]
+
+
 def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[IdentifierOption]:
     options: list[IdentifierOption] = []
-    if kind == "protein":
-        if "ProteinNames" in frame.columns:
-            options.append(IdentifierOption(key="workflow", label="Protein Names"))
-        if "GeneNames" in frame.columns:
-            options.append(IdentifierOption(key="genes", label="Gene Names"))
-    else:
-        if "PTM_Collapse_key" in frame.columns:
-            options.append(IdentifierOption(key="workflow", label="Phosphosite Names"))
-        if "GeneNames" in frame.columns:
-            options.append(IdentifierOption(key="genes", label="Gene Names"))
+    workflow_column = _first_available_column(frame, _workflow_label_candidates(kind))
+    if workflow_column:
+        workflow_label_map = {
+            "ProteinNames": "Protein Names",
+            "PTM_Collapse_key": "Phosphosite Names",
+            "Phosphoprotein": "Phosphoprotein Names",
+        }
+        options.append(
+            IdentifierOption(
+                key="workflow",
+                label=workflow_label_map.get(workflow_column, "Workflow Names"),
+            )
+        )
+
+    genes_column = _first_available_column(frame, _gene_label_candidates(kind))
+    if genes_column:
+        options.append(
+            IdentifierOption(
+                key="genes",
+                label="Gene Group" if genes_column == "Gene_group" else "Gene Names",
+            )
+        )
     return options
 
 
 def _resolve_label_column(kind: AnnotationKind, identifier: StatsIdentifier, frame: pd.DataFrame) -> str:
-    if kind == "protein":
-        if identifier == "workflow" and "ProteinNames" in frame.columns:
-            return "ProteinNames"
-        if identifier == "genes" and "GeneNames" in frame.columns:
-            return "GeneNames"
-    else:
-        if identifier == "workflow" and "PTM_Collapse_key" in frame.columns:
-            return "PTM_Collapse_key"
-        if identifier == "genes" and "GeneNames" in frame.columns:
-            return "GeneNames"
+    candidates = _workflow_label_candidates(kind) if identifier == "workflow" else _gene_label_candidates(kind)
+    resolved = _first_available_column(frame, candidates)
+    if resolved:
+        return resolved
     raise ValueError("The selected identifier is not available for the current dataset.")
 
 
@@ -245,7 +272,15 @@ def _volcano_dataframe(
         ctrl1_cols = []
         ctrl2_cols = []
 
-    for extra in ("GeneNames", "ProteinNames", "PTM_Collapse_key"):
+    for extra in (
+        "GeneNames",
+        "Gene_group",
+        "ProteinNames",
+        "PTM_Collapse_key",
+        "Phosphoprotein",
+        "site_num",
+        "PTM_Collapse_keys",
+    ):
         if extra in frame.columns and extra not in selected_columns:
             selected_columns.append(extra)
 
@@ -522,7 +557,7 @@ def _different_genes(
     test_type: str,
     use_uncorrected: bool,
 ) -> tuple[StatsSource, list[str], list[str], list[str]]:
-    source_used, _, df, warnings = _volcano_dataframe(
+    source_used, gene_column, df, warnings = _volcano_dataframe(
         kind=kind,
         condition1=condition1,
         condition2=condition2,
@@ -532,16 +567,16 @@ def _different_genes(
         test_type=test_type,
         use_uncorrected=use_uncorrected,
     )
-    if "GeneNames" not in df.columns:
-        raise ValueError("GeneNames column is required for enrichment analysis.")
+    if gene_column not in df.columns:
+        raise ValueError("A gene label column is required for enrichment analysis.")
 
     up_genes = [
         _clean_feature_name(value)
-        for value in df.loc[df["significance"] == "Upregulated", "GeneNames"].tolist()
+        for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
     ]
     down_genes = [
         _clean_feature_name(value)
-        for value in df.loc[df["significance"] == "Downregulated", "GeneNames"].tolist()
+        for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
     ]
     up_genes = [gene for gene in up_genes if gene]
     down_genes = [gene for gene in down_genes if gene]
@@ -678,8 +713,9 @@ def pathway_heatmap_png(
 ) -> bytes:
     plt = _get_plt()
     _, frame, metadata, _ = _stats_source(kind)
-    if "GeneNames" not in frame.columns:
-        raise ValueError("GeneNames column is required for pathway heatmaps.")
+    gene_column = _first_available_column(frame, _gene_label_candidates(kind))
+    if gene_column is None:
+        raise ValueError("A gene label column is required for pathway heatmaps.")
 
     db = load_go_db()
     pathway_row = db.loc[db["description"].astype(str).str.lower() == pathway.strip().lower()]
@@ -699,7 +735,7 @@ def pathway_heatmap_png(
     value_frame = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
 
     gene_to_row: dict[str, pd.Series] = {}
-    for idx, gene_value in frame["GeneNames"].items():
+    for idx, gene_value in frame[gene_column].items():
         for token in _gene_tokens(gene_value):
             gene_to_row.setdefault(token.lower(), value_frame.loc[idx])
 
@@ -767,8 +803,8 @@ def pathway_heatmap_png(
 
 def _simulation_dataframe(payload: SimulationRequest) -> tuple[StatsSource, pd.DataFrame, list[str]]:
     source_used, frame, metadata, warnings = _stats_source(payload.kind)
-    label_column = "ProteinNames" if payload.kind == "protein" and "ProteinNames" in frame.columns else "PTM_Collapse_key"
-    if label_column not in frame.columns:
+    label_column = _first_available_column(frame, _workflow_label_candidates(payload.kind))
+    if label_column is None:
         raise ValueError("A workflow label column is required for simulation.")
 
     cols1 = metadata.loc[metadata["condition"] == payload.condition1, "sample"].astype(str).tolist()

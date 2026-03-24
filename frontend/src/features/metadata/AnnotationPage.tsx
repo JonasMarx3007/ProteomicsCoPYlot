@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  aggregatePhosprot,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
@@ -8,11 +9,12 @@ import {
 } from "../../lib/api";
 import type {
   AnnotationFilterConfig,
-  AnnotationKind,
   AnnotationResultResponse,
   ConditionAssignment,
   CurrentDatasetsResponse,
   MetadataUploadResponse,
+  MetadataAnnotationKind,
+  PhosprotAggregationMode,
 } from "../../lib/types";
 
 type ConditionDraft = {
@@ -27,7 +29,7 @@ const DEFAULT_FILTER: AnnotationFilterConfig = {
 };
 
 export default function AnnotationPage() {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [kind, setKind] = useState<MetadataAnnotationKind>("protein");
   const [currentDatasets, setCurrentDatasets] = useState<CurrentDatasetsResponse | null>(
     null
   );
@@ -42,11 +44,15 @@ export default function AnnotationPage() {
   const [metadataFile, setMetadataFile] = useState<File | null>(null);
   const [uploadedMetadata, setUploadedMetadata] = useState<MetadataUploadResponse | null>(null);
   const [uploadingMetadata, setUploadingMetadata] = useState(false);
+  const [phosprotResult, setPhosprotResult] = useState<AnnotationResultResponse | null>(null);
+  const [phosprotMode, setPhosprotMode] =
+    useState<PhosprotAggregationMode>("sum_mean_impute");
+  const [phosprotBusy, setPhosprotBusy] = useState(false);
 
   const activeDataset = currentDatasets?.[kind] ?? null;
   const availableColumns = activeDataset?.columnNames ?? [];
-  const availableKinds = useMemo<AnnotationKind[]>(() => {
-    const kinds: AnnotationKind[] = [];
+  const availableKinds = useMemo<MetadataAnnotationKind[]>(() => {
+    const kinds: MetadataAnnotationKind[] = [];
     if (currentDatasets?.protein) kinds.push("protein");
     if (currentDatasets?.phospho) kinds.push("phospho");
     return kinds;
@@ -60,12 +66,16 @@ export default function AnnotationPage() {
     [availableKinds]
   );
 
+  async function refreshCurrent() {
+    const datasets = await getCurrentDatasets();
+    setCurrentDatasets(datasets);
+    return datasets;
+  }
+
   useEffect(() => {
-    getCurrentDatasets()
-      .then(setCurrentDatasets)
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Failed to load datasets");
-      });
+    refreshCurrent().catch((err) => {
+      setError(err instanceof Error ? err.message : "Failed to load datasets");
+    });
   }, []);
 
   useEffect(() => {
@@ -88,6 +98,14 @@ export default function AnnotationPage() {
         setResult(null);
       });
   }, [kind]);
+
+  useEffect(() => {
+    getCurrentAnnotation("phosprot")
+      .then((stored) => setPhosprotResult(stored))
+      .catch(() => {
+        setPhosprotResult(null);
+      });
+  }, [currentDatasets?.phosprot?.filename]);
 
   useEffect(() => {
     getUploadedAnnotationMetadata(kind)
@@ -185,6 +203,30 @@ export default function AnnotationPage() {
     }
   }
 
+  async function handleAggregatePhosprot() {
+    try {
+      setPhosprotBusy(true);
+      setError(null);
+      const generated = await aggregatePhosprot(phosprotMode);
+      setPhosprotResult(generated);
+      await refreshCurrent();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to aggregate phosphoprotein data"
+      );
+    } finally {
+      setPhosprotBusy(false);
+    }
+  }
+
+  const canAggregatePhosprot =
+    kind === "phospho" &&
+    result !== null &&
+    result.metadataSource === "uploaded" &&
+    uploadedMetadata !== null;
+
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -197,7 +239,7 @@ export default function AnnotationPage() {
             </label>
             <select
               value={kindOptions.length === 0 ? "" : kind}
-              onChange={(e) => setKind(e.target.value as AnnotationKind)}
+              onChange={(e) => setKind(e.target.value as MetadataAnnotationKind)}
               disabled={kindOptions.length === 0}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
@@ -284,6 +326,7 @@ export default function AnnotationPage() {
             </div>
           )}
         </div>
+
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -454,6 +497,80 @@ export default function AnnotationPage() {
               />
             </div>
           </section>
+
+          {kind === "phospho" ? (
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">
+                Aggregate to Phosphoprotein
+              </h3>
+
+              {canAggregatePhosprot ? (
+                <>
+                  <p className="mt-2 text-sm text-slate-600">
+                    Aggregate the current uploaded and annotated phosphosite dataset to
+                    phosphoprotein level.
+                  </p>
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-slate-700">
+                        Aggregation mode
+                      </label>
+                      <select
+                        value={phosprotMode}
+                        onChange={(e) =>
+                          setPhosprotMode(e.target.value as PhosprotAggregationMode)
+                        }
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+                      >
+                        <option value="sum_mean_impute">sum_mean_impute</option>
+                        <option value="sum_propagate_na">sum_propagate_na</option>
+                        <option value="sum_ignore_na">sum_ignore_na</option>
+                        <option value="mean">mean</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAggregatePhosprot}
+                      disabled={!currentDatasets?.phospho || phosprotBusy}
+                      className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {phosprotBusy ? "Aggregating..." : "Aggregate to Phosphoprotein"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  Upload phospho metadata and generate phospho annotation first to enable
+                  aggregation.
+                </div>
+              )}
+
+              <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                {currentDatasets?.phosprot ? (
+                  <>
+                    Current phosphoprotein dataset: {currentDatasets.phosprot.filename} (
+                    {currentDatasets.phosprot.rows} rows)
+                  </>
+                ) : (
+                  "No phosphoprotein dataset loaded yet."
+                )}
+              </div>
+
+              {phosprotResult ? (
+                <div className="mt-3 space-y-3">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    Phosphoprotein annotation ready: {phosprotResult.filteredRows} filtered rows,{" "}
+                    {phosprotResult.conditionCount} conditions.
+                  </div>
+                  <PreviewTable
+                    title="phosprot_filtered_data_preview"
+                    rows={phosprotResult.filteredPreview}
+                    emptyText="No phosphoprotein filtered rows available."
+                  />
+                </div>
+              ) : null}
+            </section>
+          ) : null}
         </>
       ) : (
         <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
