@@ -53,6 +53,7 @@ from app.services.comparison_tools import (
 from app.services.phospho_tools import (
     ksea_plot_png,
     ksea_table,
+    phosprot_regulation_html,
     phosprot_regulation_png,
     phosprot_regulation_table,
     phospho_coverage_table,
@@ -1247,6 +1248,40 @@ async def phospho_phosprot_regulation_route(
         raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render phosprot regulation plot: {e}") from e
+
+
+@router.get("/phospho/phosprot-regulation.html", response_class=HTMLResponse)
+async def phospho_phosprot_regulation_html_route(
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    maxHoverSites: int = 20,
+    showPhosphosites: bool = True,
+    header: bool = True,
+) -> HTMLResponse:
+    try:
+        return HTMLResponse(
+            content=phosprot_regulation_html(
+                condition1=condition1,
+                condition2=condition2,
+                p_value_threshold=pValueThreshold,
+                log2fc_threshold=log2fcThreshold,
+                test_type=testType,
+                use_uncorrected=useUncorrected,
+                max_hover_sites=maxHoverSites,
+                show_phosphosites=showPhosphosites,
+                header=header,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render interactive phosprot regulation plot: {e}") from e
 
 
 @router.get("/phospho/phosprot-regulation-table")

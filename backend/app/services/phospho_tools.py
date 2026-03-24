@@ -26,6 +26,12 @@ def _get_plt():
         ) from exc
 
 
+def _get_plotly():
+    import plotly.express as px
+
+    return px
+
+
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
@@ -35,6 +41,50 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _plotly_html(fig) -> str:
+    body = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displaylogo": False, "responsive": True},
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        "#plot-root{width:100%;height:100%;}"
+        ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:420px;}"
+        "</style>"
+        "</head><body><div id='plot-root'>"
+        f"{body}"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "function firstPlot(){return document.querySelector('.js-plotly-plot,.plotly-graph-div');}"
+        "function resolveLayoutHeight(el){"
+        "if(!el){return 0;}"
+        "var value=0;"
+        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
+        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
+        "return Math.max(0,value);"
+        "}"
+        "function resizePlot(){"
+        "var el=firstPlot();"
+        "if(!(el && window.Plotly)){return;}"
+        "var viewportHeight=Math.max(420,(window.innerHeight||0)-8);"
+        "var layoutHeight=resolveLayoutHeight(el);"
+        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
+        "window.Plotly.relayout(el,{height:nextHeight}).catch(function(){});"
+        "window.Plotly.Plots.resize(el);"
+        "}"
+        "window.addEventListener('load', resizePlot);"
+        "window.addEventListener('resize', resizePlot);"
+        "setTimeout(resizePlot, 80);"
+        "setTimeout(resizePlot, 260);"
+        "})();"
+        "</script></body></html>"
+    )
 
 
 def _extract_id_or_number(sample: str) -> str:
@@ -592,6 +642,9 @@ def phosprot_regulation_table(
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
 ) -> pd.DataFrame:
+    if str(condition1).strip() == str(condition2).strip():
+        raise ValueError("Select two different conditions to plot.")
+
     frame, meta, _ = _phospho_context()
     label_col = "PTM_Collapse_key"
     group_col = "Protein_group"
@@ -700,6 +753,42 @@ def phosprot_regulation_table(
     return collapsed_df.sort_values("Protein_group").reset_index(drop=True)
 
 
+def _phosprot_regulation_figure(table: pd.DataFrame, header: bool = True):
+    px = _get_plotly()
+    fig = px.scatter(
+        table,
+        x="x",
+        y="y",
+        hover_data={
+            "Protein_group": True,
+            "Upregulated_count": True,
+            "Downregulated_count": True,
+            "Upregulated_sites": True,
+            "Downregulated_sites": True,
+        },
+        color="color_val",
+        color_continuous_scale=[(0, "blue"), (0.5, "grey"), (1, "red")],
+        labels={
+            "x": "Absolute Upregulated Sum (log2)",
+            "y": "Absolute Downregulated Sum (log2)",
+        },
+        opacity=0.7,
+    )
+    fig.update_traces(
+        marker=dict(size=8, line=dict(width=0.5, color="DarkSlateGrey")),
+        text=None,
+    )
+    fig.update_layout(
+        title="Protein-level Phosphosite Regulation" if header else "",
+        xaxis_title="Absolute Upregulated Sum (log2)",
+        yaxis_title="Absolute Downregulated Sum (log2)",
+        template="plotly_white",
+        coloraxis_colorbar=dict(title="Up - Down"),
+        margin=dict(l=40, r=20, t=60 if header else 30, b=40),
+    )
+    return fig
+
+
 def phosprot_regulation_png(
     *,
     condition1: str,
@@ -749,3 +838,31 @@ def phosprot_regulation_png(
         ax.set_title("Protein-level Phosphosite Regulation")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+def phosprot_regulation_html(
+    *,
+    condition1: str,
+    condition2: str,
+    p_value_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+    test_type: str = "unpaired",
+    use_uncorrected: bool = False,
+    max_hover_sites: int = 20,
+    show_phosphosites: bool = True,
+    header: bool = True,
+) -> str:
+    table = phosprot_regulation_table(
+        condition1=condition1,
+        condition2=condition2,
+        p_value_threshold=p_value_threshold,
+        log2fc_threshold=log2fc_threshold,
+        test_type=test_type,
+        use_uncorrected=use_uncorrected,
+        max_hover_sites=max_hover_sites,
+        show_phosphosites=show_phosphosites,
+    )
+    if table.empty:
+        raise ValueError("No phosphoprotein regulation rows available for the selected parameters.")
+    fig = _phosprot_regulation_figure(table, header=header)
+    return _plotly_html(fig)

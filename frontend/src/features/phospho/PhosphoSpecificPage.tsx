@@ -11,6 +11,7 @@ type PlotView = {
   title: string;
   url: string;
   filename: string;
+  type: "image" | "html";
 } | null;
 
 type TableRequest = {
@@ -147,18 +148,24 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     });
     setPhosprotRegulation((prev) => {
       const nextCondition1 = conditionOptions.includes(prev.condition1) ? prev.condition1 : conditionOptions[0];
-      const nextCondition2 = conditionOptions.includes(prev.condition2) && prev.condition2 !== nextCondition1
+      const nextCondition2 = conditionOptions.includes(prev.condition2)
         ? prev.condition2
-        : conditionOptions.find((value) => value !== nextCondition1) ?? nextCondition1;
+        : nextCondition1;
       return { ...prev, condition1: nextCondition1, condition2: nextCondition2 };
     });
   }, [options]);
+
+  const phosprotSelectionInvalid =
+    activeTab === "phosprotRegulation" &&
+    phosprotRegulation.condition1.trim() !== "" &&
+    phosprotRegulation.condition1 === phosprotRegulation.condition2;
 
   const plotView = useMemo<PlotView>(() => {
     if (activeTab === "phosphositePlot") {
       return {
         title: "Phosphosite Plot",
         filename: "phosphosite_plot.png",
+        type: "image",
         url: buildPlotUrl("/api/plots/phospho/phosphosite-plot.png", {
           cutoff: phosphositePlot.cutoff,
           color: phosphositePlot.color,
@@ -173,6 +180,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       return {
         title: "Phosphosite Coverage Plot",
         filename: "phosphosite_coverage_plot.png",
+        type: "image",
         url: buildPlotUrl("/api/plots/phospho/coverage.png", {
           includeId: coverage.includeId,
           header: coverage.header,
@@ -192,6 +200,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       return {
         title: "Phosphosite Distribution",
         filename: "phosphosite_distribution.png",
+        type: "image",
         url: buildPlotUrl("/api/plots/phospho/distribution.png", {
           cutoff: distribution.cutoff,
           header: distribution.header,
@@ -208,6 +217,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       return {
         title: "KSEA",
         filename: "ksea_plot.png",
+        type: "image",
         url: buildPlotUrl("/api/plots/phospho/ksea.png", {
           condition1: ksea.condition1,
           condition2: ksea.condition2,
@@ -225,10 +235,12 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 
     if (activeTab === "phosprotRegulation") {
       if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
+      if (phosprotRegulation.condition1 === phosprotRegulation.condition2) return null;
       return {
         title: "Phosprot Regulation",
-        filename: "phosprot_regulation.png",
-        url: buildPlotUrl("/api/plots/phospho/phosprot-regulation.png", {
+        filename: "phosprot_regulation.html",
+        type: "html",
+        url: buildPlotUrl("/api/plots/phospho/phosprot-regulation.html", {
           condition1: phosprotRegulation.condition1,
           condition2: phosprotRegulation.condition2,
           pValueThreshold: phosprotRegulation.pValueThreshold,
@@ -248,6 +260,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     return {
       title: "STY Plot",
       filename: "sty_plot.png",
+      type: "image",
       url: buildPlotUrl("/api/plots/phospho/sty.png", {
         header: sty.header,
         widthCm: sty.widthCm,
@@ -308,6 +321,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 
     if (activeTab === "phosprotRegulation") {
       if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
+      if (phosprotRegulation.condition1 === phosprotRegulation.condition2) return null;
       const params: Record<string, string | number | boolean> = {
         condition1: phosprotRegulation.condition1,
         condition2: phosprotRegulation.condition2,
@@ -440,18 +454,31 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
           <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-6 text-sm text-sky-800">
             No phospho dataset loaded. Plot preview is unavailable.
           </div>
+        ) : phosprotSelectionInvalid ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-6 text-sm text-amber-800">
+            Select two different conditions to render the phosprot regulation plot.
+          </div>
         ) : plotView ? (
           <div className="mt-4">
-            <img
-              key={plotView.url}
-              src={plotView.url}
-              alt={plotView.title}
-              className="w-full rounded-xl border border-slate-200"
-              onLoad={() => setImageError(null)}
-              onError={() => {
-                handleImageError(plotView.url);
-              }}
-            />
+            {plotView.type === "html" ? (
+              <iframe
+                key={plotView.url}
+                src={plotView.url}
+                title={plotView.title}
+                className="h-[40rem] w-full rounded-xl border border-slate-200"
+              />
+            ) : (
+              <img
+                key={plotView.url}
+                src={plotView.url}
+                alt={plotView.title}
+                className="w-full rounded-xl border border-slate-200"
+                onLoad={() => setImageError(null)}
+                onError={() => {
+                  handleImageError(plotView.url);
+                }}
+              />
+            )}
           </div>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -483,6 +510,10 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
           {!hasPhosphoDataset ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-6 text-sm text-sky-800">
               No phospho dataset loaded. Summary table is unavailable.
+            </div>
+          ) : phosprotSelectionInvalid ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-6 text-sm text-amber-800">
+              Select two different conditions to generate the phosprot regulation table.
             </div>
           ) : tableLoading ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -679,7 +710,6 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     }
 
     if (activeTab === "phosprotRegulation") {
-      const condition2Options = conditionOptions.filter((value) => value !== phosprotRegulation.condition1);
       return (
         <OptionsLayout
           fields={[
@@ -689,11 +719,13 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
               value={phosprotRegulation.condition1}
               options={conditionOptions}
               onChange={(value) => {
-                const fallback = conditionOptions.find((option) => option !== value) ?? value;
+                const keep = conditionOptions.includes(phosprotRegulation.condition2)
+                  ? phosprotRegulation.condition2
+                  : value;
                 setPhosprotRegulation({
                   ...phosprotRegulation,
                   condition1: value,
-                  condition2: phosprotRegulation.condition2 === value ? fallback : phosprotRegulation.condition2,
+                  condition2: keep,
                 });
               }}
             />,
@@ -701,7 +733,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
               key="condition2"
               label="Condition 2"
               value={phosprotRegulation.condition2}
-              options={condition2Options.length > 0 ? condition2Options : conditionOptions}
+              options={conditionOptions}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, condition2: value })}
             />,
             <NumericField
