@@ -66,6 +66,34 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     dpi: 140,
   });
 
+  const [ksea, setKsea] = useState({
+    condition1: "",
+    condition2: "",
+    pValueThreshold: 0.05,
+    log2fcThreshold: 1,
+    testType: "unpaired",
+    useUncorrected: false,
+    header: true,
+    widthCm: 20,
+    heightCm: 12,
+    dpi: 220,
+  });
+
+  const [phosprotRegulation, setPhosprotRegulation] = useState({
+    condition1: "",
+    condition2: "",
+    pValueThreshold: 0.05,
+    log2fcThreshold: 1,
+    testType: "unpaired",
+    useUncorrected: false,
+    maxHoverSites: 20,
+    showPhosphosites: true,
+    header: true,
+    widthCm: 20,
+    heightCm: 12,
+    dpi: 220,
+  });
+
   useEffect(() => {
     if (!hasPhosphoDataset) {
       setOptions(null);
@@ -102,6 +130,27 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       const filtered = prev.conditions.filter((value) => conditionOptions.includes(value));
       const nextConditions = filtered.length > 0 ? filtered : [...conditionOptions];
       return { ...prev, conditions: nextConditions };
+    });
+  }, [options]);
+
+  useEffect(() => {
+    const conditionOptions = options?.conditions ?? [];
+    if (conditionOptions.length < 2) {
+      return;
+    }
+    setKsea((prev) => {
+      const nextCondition1 = conditionOptions.includes(prev.condition1) ? prev.condition1 : conditionOptions[0];
+      const nextCondition2 = conditionOptions.includes(prev.condition2) && prev.condition2 !== nextCondition1
+        ? prev.condition2
+        : conditionOptions.find((value) => value !== nextCondition1) ?? nextCondition1;
+      return { ...prev, condition1: nextCondition1, condition2: nextCondition2 };
+    });
+    setPhosprotRegulation((prev) => {
+      const nextCondition1 = conditionOptions.includes(prev.condition1) ? prev.condition1 : conditionOptions[0];
+      const nextCondition2 = conditionOptions.includes(prev.condition2) && prev.condition2 !== nextCondition1
+        ? prev.condition2
+        : conditionOptions.find((value) => value !== nextCondition1) ?? nextCondition1;
+      return { ...prev, condition1: nextCondition1, condition2: nextCondition2 };
     });
   }, [options]);
 
@@ -154,6 +203,48 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       };
     }
 
+    if (activeTab === "ksea") {
+      if (!ksea.condition1 || !ksea.condition2) return null;
+      return {
+        title: "KSEA",
+        filename: "ksea_plot.png",
+        url: buildPlotUrl("/api/plots/phospho/ksea.png", {
+          condition1: ksea.condition1,
+          condition2: ksea.condition2,
+          pValueThreshold: ksea.pValueThreshold,
+          log2fcThreshold: ksea.log2fcThreshold,
+          testType: ksea.testType,
+          useUncorrected: ksea.useUncorrected,
+          header: ksea.header,
+          widthCm: ksea.widthCm,
+          heightCm: ksea.heightCm,
+          dpi: ksea.dpi,
+        }),
+      };
+    }
+
+    if (activeTab === "phosprotRegulation") {
+      if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
+      return {
+        title: "Phosprot Regulation",
+        filename: "phosprot_regulation.png",
+        url: buildPlotUrl("/api/plots/phospho/phosprot-regulation.png", {
+          condition1: phosprotRegulation.condition1,
+          condition2: phosprotRegulation.condition2,
+          pValueThreshold: phosprotRegulation.pValueThreshold,
+          log2fcThreshold: phosprotRegulation.log2fcThreshold,
+          testType: phosprotRegulation.testType,
+          useUncorrected: phosprotRegulation.useUncorrected,
+          maxHoverSites: phosprotRegulation.maxHoverSites,
+          showPhosphosites: phosprotRegulation.showPhosphosites,
+          header: phosprotRegulation.header,
+          widthCm: phosprotRegulation.widthCm,
+          heightCm: phosprotRegulation.heightCm,
+          dpi: phosprotRegulation.dpi,
+        }),
+      };
+    }
+
     return {
       title: "STY Plot",
       filename: "sty_plot.png",
@@ -164,7 +255,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
         dpi: sty.dpi,
       }),
     };
-  }, [activeTab, phosphositePlot, coverage, distribution, sty]);
+  }, [activeTab, phosphositePlot, coverage, distribution, sty, ksea, phosprotRegulation]);
 
   const tableRequest = useMemo<TableRequest>(() => {
     if (activeTab === "phosphositePlot") {
@@ -199,8 +290,51 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       };
     }
 
+    if (activeTab === "ksea") {
+      if (!ksea.condition1 || !ksea.condition2) return null;
+      const params: Record<string, string | number | boolean> = {
+        condition1: ksea.condition1,
+        condition2: ksea.condition2,
+        pValueThreshold: ksea.pValueThreshold,
+        log2fcThreshold: ksea.log2fcThreshold,
+        testType: ksea.testType,
+        useUncorrected: ksea.useUncorrected,
+      };
+      return {
+        tab: "ksea",
+        params,
+      };
+    }
+
+    if (activeTab === "phosprotRegulation") {
+      if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
+      const params: Record<string, string | number | boolean> = {
+        condition1: phosprotRegulation.condition1,
+        condition2: phosprotRegulation.condition2,
+        pValueThreshold: phosprotRegulation.pValueThreshold,
+        log2fcThreshold: phosprotRegulation.log2fcThreshold,
+        testType: phosprotRegulation.testType,
+        useUncorrected: phosprotRegulation.useUncorrected,
+        maxHoverSites: phosprotRegulation.maxHoverSites,
+        showPhosphosites: phosprotRegulation.showPhosphosites,
+      };
+      return {
+        tab: "phosprotRegulation",
+        params,
+      };
+    }
+
     return { tab: "sty" };
-  }, [activeTab, phosphositePlot.cutoff, coverage.includeId, coverage.mode, coverage.conditions, distribution.cutoff]);
+  }, [
+    activeTab,
+    phosphositePlot.cutoff,
+    coverage.includeId,
+    coverage.mode,
+    coverage.conditions,
+    distribution.cutoff,
+    ksea,
+    phosprotRegulation,
+  ]);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -484,6 +618,137 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       );
     }
 
+    if (activeTab === "ksea") {
+      const condition2Options = conditionOptions.filter((value) => value !== ksea.condition1);
+      return (
+        <OptionsLayout
+          fields={[
+            <SelectField
+              key="condition1"
+              label="Condition 1"
+              value={ksea.condition1}
+              options={conditionOptions}
+              onChange={(value) => {
+                const fallback = conditionOptions.find((option) => option !== value) ?? value;
+                setKsea({ ...ksea, condition1: value, condition2: ksea.condition2 === value ? fallback : ksea.condition2 });
+              }}
+            />,
+            <SelectField
+              key="condition2"
+              label="Condition 2"
+              value={ksea.condition2}
+              options={condition2Options.length > 0 ? condition2Options : conditionOptions}
+              onChange={(value) => setKsea({ ...ksea, condition2: value })}
+            />,
+            <NumericField
+              key="pValueThreshold"
+              label="P-value Threshold"
+              value={ksea.pValueThreshold}
+              onChange={(value) => setKsea({ ...ksea, pValueThreshold: Math.max(1e-12, Math.min(1, value)) })}
+            />,
+            <NumericField
+              key="log2fcThreshold"
+              label="log2 FC Threshold"
+              value={ksea.log2fcThreshold}
+              onChange={(value) => setKsea({ ...ksea, log2fcThreshold: Math.max(0, value) })}
+            />,
+            <SelectField
+              key="testType"
+              label="Test Type"
+              value={ksea.testType}
+              options={["unpaired", "paired"]}
+              onChange={(value) => setKsea({ ...ksea, testType: value })}
+            />,
+          ]}
+          toggles={[
+            <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={ksea.useUncorrected} onChange={(value) => setKsea({ ...ksea, useUncorrected: value })} />,
+            <Checkbox key="header" label="Toggle Header" checked={ksea.header} onChange={(value) => setKsea({ ...ksea, header: value })} />,
+          ]}
+          sizeRow={
+            <SizeRow
+              widthCm={ksea.widthCm}
+              heightCm={ksea.heightCm}
+              dpi={ksea.dpi}
+              onWidthChange={(value) => setKsea({ ...ksea, widthCm: Math.max(1, value) })}
+              onHeightChange={(value) => setKsea({ ...ksea, heightCm: Math.max(1, value) })}
+              onDpiChange={(value) => setKsea({ ...ksea, dpi: Math.max(72, Math.round(value)) })}
+            />
+          }
+        />
+      );
+    }
+
+    if (activeTab === "phosprotRegulation") {
+      const condition2Options = conditionOptions.filter((value) => value !== phosprotRegulation.condition1);
+      return (
+        <OptionsLayout
+          fields={[
+            <SelectField
+              key="condition1"
+              label="Condition 1"
+              value={phosprotRegulation.condition1}
+              options={conditionOptions}
+              onChange={(value) => {
+                const fallback = conditionOptions.find((option) => option !== value) ?? value;
+                setPhosprotRegulation({
+                  ...phosprotRegulation,
+                  condition1: value,
+                  condition2: phosprotRegulation.condition2 === value ? fallback : phosprotRegulation.condition2,
+                });
+              }}
+            />,
+            <SelectField
+              key="condition2"
+              label="Condition 2"
+              value={phosprotRegulation.condition2}
+              options={condition2Options.length > 0 ? condition2Options : conditionOptions}
+              onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, condition2: value })}
+            />,
+            <NumericField
+              key="pValueThreshold"
+              label="P-value Threshold"
+              value={phosprotRegulation.pValueThreshold}
+              onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, pValueThreshold: Math.max(1e-12, Math.min(1, value)) })}
+            />,
+            <NumericField
+              key="log2fcThreshold"
+              label="log2 FC Threshold"
+              value={phosprotRegulation.log2fcThreshold}
+              onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, log2fcThreshold: Math.max(0, value) })}
+            />,
+            <SelectField
+              key="testType"
+              label="Test Type"
+              value={phosprotRegulation.testType}
+              options={["unpaired", "paired"]}
+              onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, testType: value })}
+            />,
+            <NumericField
+              key="maxHoverSites"
+              label="Max Sites in Table"
+              value={phosprotRegulation.maxHoverSites}
+              onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, maxHoverSites: Math.max(1, Math.round(value)) })}
+            />,
+          ]}
+          toggles={[
+            <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={phosprotRegulation.useUncorrected} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, useUncorrected: value })} />,
+            <Checkbox key="showSites" label="Show Phosphosites in Table" checked={phosprotRegulation.showPhosphosites} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, showPhosphosites: value })} />,
+            <Checkbox key="header" label="Toggle Header" checked={phosprotRegulation.header} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, header: value })} />,
+          ]}
+          sizeRow={
+            <SizeRow
+              widthCm={phosprotRegulation.widthCm}
+              heightCm={phosprotRegulation.heightCm}
+              dpi={phosprotRegulation.dpi}
+              onWidthChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, widthCm: Math.max(1, value) })}
+              onHeightChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, heightCm: Math.max(1, value) })}
+              onDpiChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, dpi: Math.max(72, Math.round(value)) })}
+            />
+          }
+        />
+      );
+    }
+
     return (
       <OptionsLayout
         fields={[]}
@@ -508,7 +773,9 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 function plotTitle(tab: PhosphoTab): string {
   if (tab === "phosphositePlot") return "Phosphosite Plot";
   if (tab === "coverage") return "Phosphosite Coverage Plot";
+  if (tab === "ksea") return "KSEA";
   if (tab === "distribution") return "Phosphosite Distribution";
+  if (tab === "phosprotRegulation") return "Phosprot Regulation";
   return "STY Plot";
 }
 
