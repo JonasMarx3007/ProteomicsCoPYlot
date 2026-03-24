@@ -5,6 +5,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from scipy.stats import t
 
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
@@ -394,4 +395,357 @@ def phospho_sty_png(
         ax.text(idx, float(row["Count"]) + offset, f"{float(row['Percentage']):.1f}%", ha="center", va="bottom", fontsize=9, fontweight="bold")
 
     plt.tight_layout()
+    return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+def _bh_adjust(pvalues: np.ndarray) -> np.ndarray:
+    pvalues = np.asarray(pvalues, dtype=float)
+    if pvalues.size == 0:
+        return pvalues
+    order = np.argsort(pvalues)
+    ranked = pvalues[order]
+    adjusted = np.empty_like(ranked)
+    n = float(len(ranked))
+    running = 1.0
+    for idx in range(len(ranked) - 1, -1, -1):
+        rank = idx + 1.0
+        value = float(ranked[idx] * n / rank)
+        running = min(running, value)
+        adjusted[idx] = running
+    adjusted = np.clip(adjusted, 0.0, 1.0)
+    restored = np.empty_like(adjusted)
+    restored[order] = adjusted
+    return restored
+
+
+def _safe_neg_log10(values: np.ndarray) -> np.ndarray:
+    clipped = np.clip(np.asarray(values, dtype=float), 1e-300, 1.0)
+    return -np.log10(clipped)
+
+
+def _convert_to_centered(seq: object) -> str:
+    if not isinstance(seq, str):
+        return ""
+    match = re.search(r"\*", seq)
+    if not match:
+        return seq
+    star_index = match.start()
+    if star_index == 0:
+        return seq
+    mod_residue = seq[star_index - 1].upper()
+    clean_seq = seq[: star_index - 1] + mod_residue + seq[star_index + 1 :]
+    mod_pos = star_index - 1
+    left = clean_seq[:mod_pos]
+    right = clean_seq[mod_pos + 1 :]
+    left_tail = left[-6:] if len(left) >= 6 else "_" * (6 - len(left)) + left
+    right_tail = right[:6] if len(right) >= 6 else right + "_" * (6 - len(right))
+    return f"_{left_tail}{mod_residue}{right_tail}_"
+
+
+def _condition_columns(meta: pd.DataFrame, condition: str) -> list[str]:
+    return meta.loc[meta["condition"].astype(str) == str(condition), "sample"].astype(str).tolist()
+
+
+def ksea_table(
+    *,
+    condition1: str,
+    condition2: str,
+    p_value_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+    test_type: str = "unpaired",
+    use_uncorrected: bool = False,
+) -> pd.DataFrame:
+    frame, meta, _ = _phospho_context()
+    label_col = "UPD_seq"
+    if label_col not in frame.columns:
+        raise ValueError("Phospho dataset must contain UPD_seq for KSEA.")
+
+    cols1 = _condition_columns(meta, condition1)
+    cols2 = _condition_columns(meta, condition2)
+    if not cols1 or not cols2:
+        raise ValueError("Selected conditions do not have any annotated samples.")
+
+    df = frame[[label_col, *cols1, *cols2]].replace(0, np.nan).copy()
+    arr_x = df[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    arr_y = df[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+
+    n1_real = np.sum(~np.isnan(arr_x), axis=1)
+    n2_real = np.sum(~np.isnan(arr_y), axis=1)
+    valid_mask = (n1_real >= 2) & (n2_real >= 2)
+    if not np.any(valid_mask):
+        raise ValueError("No rows have enough replicate values for KSEA.")
+
+    df = df.loc[valid_mask].reset_index(drop=True)
+    arr_x = arr_x[valid_mask]
+    arr_y = arr_y[valid_mask]
+    n1 = n1_real[valid_mask].astype(float)
+    n2 = n2_real[valid_mask].astype(float)
+
+    mean1 = np.nanmean(arr_x, axis=1)
+    mean2 = np.nanmean(arr_y, axis=1)
+    log2fc = mean2 - mean1
+
+    paired = str(test_type).strip().lower() == "paired"
+    if paired:
+        diffs = arr_y - arr_x
+        min_len = np.minimum(n1, n2)
+        mean_diff = np.nanmean(diffs, axis=1)
+        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(min_len)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stat = mean_diff / se_diff
+        pvals = 2.0 * t.sf(np.abs(t_stat), min_len - 1.0)
+    else:
+        var1 = np.nanvar(arr_x, axis=1, ddof=1)
+        var2 = np.nanvar(arr_y, axis=1, ddof=1)
+        pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
+        se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stat = log2fc / se
+        pvals = 2.0 * t.sf(np.abs(t_stat), n1 + n2 - 2.0)
+
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
+    adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
+
+    significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[(adj_pvals < p_value_threshold) & (log2fc > log2fc_threshold)] = "Upregulated"
+    significance[(adj_pvals < p_value_threshold) & (log2fc < -log2fc_threshold)] = "Downregulated"
+
+    result = pd.DataFrame(
+        {
+            "UPD_seq": [_convert_to_centered(value) for value in df[label_col].tolist()],
+            "log2FC": log2fc,
+            "pval": pvals,
+            "adj_pval": adj_pvals,
+            "significance": significance,
+        }
+    )
+    result["neg_log10_adj_pval"] = _safe_neg_log10(result["adj_pval"].to_numpy(dtype=float))
+    return result
+
+
+def ksea_plot_png(
+    *,
+    condition1: str,
+    condition2: str,
+    p_value_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+    test_type: str = "unpaired",
+    use_uncorrected: bool = False,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 12,
+    dpi: int = 220,
+) -> bytes:
+    plt, _ = _get_plt()
+    table = ksea_table(
+        condition1=condition1,
+        condition2=condition2,
+        p_value_threshold=p_value_threshold,
+        log2fc_threshold=log2fc_threshold,
+        test_type=test_type,
+        use_uncorrected=use_uncorrected,
+    )
+    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    color_map = {
+        "Downregulated": "#2563eb",
+        "Not significant": "#94a3b8",
+        "Upregulated": "#dc2626",
+    }
+
+    for significance, color in color_map.items():
+        subset = table[table["significance"] == significance]
+        if subset.empty:
+            continue
+        ax.scatter(
+            subset["log2FC"].to_numpy(dtype=float),
+            subset["neg_log10_adj_pval"].to_numpy(dtype=float),
+            s=12,
+            c=color,
+            label=significance,
+            alpha=0.85,
+            edgecolors="none",
+        )
+
+    y_line = float(-np.log10(max(p_value_threshold, 1e-300)))
+    max_y = max(y_line, float(table["neg_log10_adj_pval"].max()) if not table.empty else y_line)
+    ax.axvline(float(log2fc_threshold), color="black", linestyle="--", linewidth=1)
+    ax.axvline(float(-log2fc_threshold), color="black", linestyle="--", linewidth=1)
+    ax.hlines(y_line, xmin=float(table["log2FC"].min()), xmax=float(table["log2FC"].max()), colors="black", linestyles="--", linewidth=1)
+    ax.set_ylim(bottom=0, top=max_y * 1.05 if max_y > 0 else 1)
+    ax.set_xlabel(f"log2 fold change ({condition2} - {condition1})")
+    ax.set_ylabel("-log10 adj. p-value" if not use_uncorrected else "-log10 p-value")
+    if header:
+        ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+def phosprot_regulation_table(
+    *,
+    condition1: str,
+    condition2: str,
+    p_value_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+    test_type: str = "unpaired",
+    use_uncorrected: bool = False,
+    max_hover_sites: int = 20,
+    show_phosphosites: bool = True,
+) -> pd.DataFrame:
+    frame, meta, _ = _phospho_context()
+    label_col = "PTM_Collapse_key"
+    group_col = "Protein_group"
+    required = [label_col, group_col]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(f"Phospho dataset is missing required columns: {missing}")
+
+    cols1 = _condition_columns(meta, condition1)
+    cols2 = _condition_columns(meta, condition2)
+    if not cols1 or not cols2:
+        raise ValueError("Selected conditions do not have any annotated samples.")
+
+    df = frame[[label_col, group_col, *cols1, *cols2]].replace(0, np.nan).copy()
+    arr_x = df[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    arr_y = df[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+
+    n1_real = np.sum(~np.isnan(arr_x), axis=1)
+    n2_real = np.sum(~np.isnan(arr_y), axis=1)
+    valid_mask = (n1_real >= 2) & (n2_real >= 2)
+    if not np.any(valid_mask):
+        raise ValueError("No rows have enough replicate values for phosphoprotein regulation.")
+
+    df = df.loc[valid_mask].reset_index(drop=True)
+    arr_x = arr_x[valid_mask]
+    arr_y = arr_y[valid_mask]
+    n1 = n1_real[valid_mask].astype(float)
+    n2 = n2_real[valid_mask].astype(float)
+
+    mean1 = np.nanmean(arr_x, axis=1)
+    mean2 = np.nanmean(arr_y, axis=1)
+    log2fc = mean2 - mean1
+
+    paired = str(test_type).strip().lower() == "paired"
+    if paired:
+        diffs = arr_y - arr_x
+        min_len = np.minimum(n1, n2)
+        mean_diff = np.nanmean(diffs, axis=1)
+        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(min_len)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stat = mean_diff / se_diff
+        pvals = 2.0 * t.sf(np.abs(t_stat), min_len - 1.0)
+    else:
+        var1 = np.nanvar(arr_x, axis=1, ddof=1)
+        var2 = np.nanvar(arr_y, axis=1, ddof=1)
+        pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
+        se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stat = log2fc / se
+        pvals = 2.0 * t.sf(np.abs(t_stat), n1 + n2 - 2.0)
+
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
+    adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
+
+    significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[(adj_pvals < p_value_threshold) & (log2fc > log2fc_threshold)] = "Upregulated"
+    significance[(adj_pvals < p_value_threshold) & (log2fc < -log2fc_threshold)] = "Downregulated"
+
+    volcano_df = pd.DataFrame(
+        {
+            group_col: df[group_col].astype(str).tolist(),
+            label_col: df[label_col].astype(str).tolist(),
+            "log2FC": log2fc,
+            "pval": pvals,
+            "adj_pval": adj_pvals,
+            "significance": significance,
+        }
+    )
+
+    all_samples = [*cols1, *cols2]
+
+    def truncate_sites(sites: list[str]) -> str:
+        if len(sites) > max_hover_sites:
+            return ";".join(sites[:max_hover_sites]) + f";... (+{len(sites) - max_hover_sites} more)"
+        return ";".join(sites)
+
+    rows: list[dict[str, object]] = []
+    for protein_group, group in volcano_df.groupby(group_col):
+        down_sites = group.loc[group["log2FC"] < 0, label_col].astype(str).tolist()
+        up_sites = group.loc[group["log2FC"] > 0, label_col].astype(str).tolist()
+        down_vals = frame.loc[frame[label_col].astype(str).isin(down_sites), all_samples].apply(pd.to_numeric, errors="coerce").fillna(0.0) if down_sites else pd.DataFrame()
+        up_vals = frame.loc[frame[label_col].astype(str).isin(up_sites), all_samples].apply(pd.to_numeric, errors="coerce").fillna(0.0) if up_sites else pd.DataFrame()
+        down_total = float(down_vals.to_numpy(dtype=float).sum()) if not down_vals.empty else 0.0
+        up_total = float(up_vals.to_numpy(dtype=float).sum()) if not up_vals.empty else 0.0
+        down_sum = float(np.log2(down_total)) if down_total > 0 else 0.0
+        up_sum = float(np.log2(up_total)) if up_total > 0 else 0.0
+
+        rows.append(
+            {
+                "Protein_group": str(protein_group),
+                "Downregulated_sites": truncate_sites(down_sites) if show_phosphosites else "",
+                "Upregulated_sites": truncate_sites(up_sites) if show_phosphosites else "",
+                "Downregulated_count": int(len(down_sites)),
+                "Upregulated_count": int(len(up_sites)),
+                "Downregulated_sum": down_sum,
+                "Upregulated_sum": up_sum,
+            }
+        )
+
+    collapsed_df = pd.DataFrame(rows)
+    if collapsed_df.empty:
+        return collapsed_df
+    collapsed_df["x"] = collapsed_df["Upregulated_sum"].abs()
+    collapsed_df["y"] = collapsed_df["Downregulated_sum"].abs()
+    collapsed_df["color_val"] = collapsed_df["x"] - collapsed_df["y"]
+    return collapsed_df.sort_values("Protein_group").reset_index(drop=True)
+
+
+def phosprot_regulation_png(
+    *,
+    condition1: str,
+    condition2: str,
+    p_value_threshold: float = 0.05,
+    log2fc_threshold: float = 1.0,
+    test_type: str = "unpaired",
+    use_uncorrected: bool = False,
+    max_hover_sites: int = 20,
+    show_phosphosites: bool = True,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 12,
+    dpi: int = 220,
+) -> bytes:
+    plt, _ = _get_plt()
+    table = phosprot_regulation_table(
+        condition1=condition1,
+        condition2=condition2,
+        p_value_threshold=p_value_threshold,
+        log2fc_threshold=log2fc_threshold,
+        test_type=test_type,
+        use_uncorrected=use_uncorrected,
+        max_hover_sites=max_hover_sites,
+        show_phosphosites=show_phosphosites,
+    )
+    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    if table.empty:
+        ax.text(0.5, 0.5, "No phosphoprotein regulation data available", ha="center", va="center")
+        ax.axis("off")
+        return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+    scatter = ax.scatter(
+        table["x"].to_numpy(dtype=float),
+        table["y"].to_numpy(dtype=float),
+        c=table["color_val"].to_numpy(dtype=float),
+        cmap="coolwarm",
+        s=20,
+        alpha=0.75,
+        edgecolors="none",
+    )
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("Up - Down")
+    ax.set_xlabel("Absolute Upregulated Sum (log2)")
+    ax.set_ylabel("Absolute Downregulated Sum (log2)")
+    if header:
+        ax.set_title("Protein-level Phosphosite Regulation")
+    fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)

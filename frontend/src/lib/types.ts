@@ -565,4 +565,10 @@ export type QcTab =
 
 export type CompletenessTab = "missingPlot" | "heatmap" | "tables";
 export type SingleProteinTab = "boxplot" | "lineplot" | "heatmap";
-export type PhosphoTab = "phosphositePlot" | "coverage" | "distribution" | "sty";
+export type PhosphoTab =
+  | "phosphositePlot"
+  | "coverage"
+  | "ksea"
+  | "distribution"
+  | "sty"
+  | "phosprotRegulation";
