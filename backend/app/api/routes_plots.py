@@ -51,6 +51,10 @@ from app.services.comparison_tools import (
     venn_table,
 )
 from app.services.phospho_tools import (
+    ksea_plot_png,
+    ksea_table,
+    phosprot_regulation_png,
+    phosprot_regulation_table,
     phospho_coverage_table,
     phospho_distribution_table,
     phospho_options,
@@ -1141,6 +1145,138 @@ async def phospho_distribution_table_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load phospho distribution table: {e}") from e
+
+
+@router.get("/phospho/ksea.png")
+async def phospho_ksea_route(
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 12,
+    dpi: int = 220,
+) -> Response:
+    try:
+        return _png_response(
+            ksea_plot_png(
+                condition1=condition1,
+                condition2=condition2,
+                p_value_threshold=pValueThreshold,
+                log2fc_threshold=log2fcThreshold,
+                test_type=testType,
+                use_uncorrected=useUncorrected,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render KSEA plot: {e}") from e
+
+
+@router.get("/phospho/ksea-table")
+async def phospho_ksea_table_route(
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            ksea_table(
+                condition1=condition1,
+                condition2=condition2,
+                p_value_threshold=pValueThreshold,
+                log2fc_threshold=log2fcThreshold,
+                test_type=testType,
+                use_uncorrected=useUncorrected,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load KSEA table: {e}") from e
+
+
+@router.get("/phospho/phosprot-regulation.png")
+async def phospho_phosprot_regulation_route(
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    maxHoverSites: int = 20,
+    showPhosphosites: bool = True,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 12,
+    dpi: int = 220,
+) -> Response:
+    try:
+        return _png_response(
+            phosprot_regulation_png(
+                condition1=condition1,
+                condition2=condition2,
+                p_value_threshold=pValueThreshold,
+                log2fc_threshold=log2fcThreshold,
+                test_type=testType,
+                use_uncorrected=useUncorrected,
+                max_hover_sites=maxHoverSites,
+                show_phosphosites=showPhosphosites,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render phosprot regulation plot: {e}") from e
+
+
+@router.get("/phospho/phosprot-regulation-table")
+async def phospho_phosprot_regulation_table_route(
+    condition1: str,
+    condition2: str,
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: str = "unpaired",
+    useUncorrected: bool = False,
+    maxHoverSites: int = 20,
+    showPhosphosites: bool = True,
+) -> dict[str, list[dict[str, object]]]:
+    try:
+        return _table_rows(
+            phosprot_regulation_table(
+                condition1=condition1,
+                condition2=condition2,
+                p_value_threshold=pValueThreshold,
+                log2fc_threshold=log2fcThreshold,
+                test_type=testType,
+                use_uncorrected=useUncorrected,
+                max_hover_sites=maxHoverSites,
+                show_phosphosites=showPhosphosites,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load phosprot regulation table: {e}") from e
 
 
 @router.get("/phospho/sty.png")

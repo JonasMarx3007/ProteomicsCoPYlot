@@ -426,11 +426,41 @@ def _volcano_figure(
             return False
         return any(_normalize_highlight_token(token) in normalized_highlights for token in _gene_tokens(value))
 
+    def truncate_ptm_text(value: object, max_chars: int = 100) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]} ..."
+
+    def build_hover_text(row: pd.Series) -> str:
+        raw_label = row.get(label_column, "")
+        label_text = "" if pd.isna(raw_label) else str(raw_label)
+        if label_column != "Phosphoprotein":
+            return label_text
+
+        parts = [label_text]
+        site_value = row.get("site_num")
+        if pd.notna(site_value):
+            try:
+                site_text = str(int(float(site_value)))
+            except Exception:
+                site_text = str(site_value)
+            parts[0] = f"{label_text} ({site_text} sites)"
+
+        ptm_value = row.get("PTM_Collapse_keys")
+        ptm_text = truncate_ptm_text(ptm_value)
+        if ptm_text:
+            parts.append(ptm_text)
+        return "<br>".join(parts)
+
     fig = go.Figure()
     for significance, color in color_mapping.items():
         subset = volcano_df[volcano_df["significance"] == significance].copy()
         if subset.empty:
             continue
+        subset["_hover"] = subset.apply(build_hover_text, axis=1)
         subset["highlighted"] = subset[label_column].apply(is_highlighted)
         for highlighted, size, suffix in ((False, 6, ""), (True, 10, " (highlighted)")):
             part = subset[subset["highlighted"] == highlighted]
@@ -446,7 +476,7 @@ def _volcano_figure(
                     mode="markers",
                     marker=marker,
                     name=f"{significance}{suffix}",
-                    text=part[label_column].astype(str),
+                    text=part["_hover"],
                     hovertemplate="%{text}<br>log2FC=%{x:.3f}<br>-log10 p=%{y:.3f}<extra></extra>",
                 )
             )

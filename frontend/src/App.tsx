@@ -34,6 +34,8 @@ import PhosphositePlotPage from "./features/phospho/PhosphositePlotPage";
 import PhosphositeCoveragePage from "./features/phospho/PhosphositeCoveragePage";
 import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistributionPage";
 import StyPlotPage from "./features/phospho/StyPlotPage";
+import KseaPage from "./features/phospho/KseaPage";
+import PhosprotRegulationPage from "./features/phospho/PhosprotRegulationPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
@@ -104,8 +106,10 @@ const singleProteinTabs: { key: SingleProteinTab; label: string }[] = [
 const phosphoTabs: { key: PhosphoTab; label: string }[] = [
   { key: "phosphositePlot", label: "Phosphosite Plot" },
   { key: "coverage", label: "Phosphosite Coverage Plot" },
+  { key: "ksea", label: "KSEA" },
   { key: "distribution", label: "Phosphosite Distribution" },
   { key: "sty", label: "STY Plot" },
+  { key: "phosprotRegulation", label: "Phosprot Regulation" },
 ];
 
 const comparisonTabs: { key: ComparisonTab; label: string }[] = [
@@ -364,8 +368,16 @@ export default function App() {
         return <PhosphositeCoveragePage />;
       }
 
+      if (activePhosphoTab === "ksea") {
+        return <KseaPage />;
+      }
+
       if (activePhosphoTab === "distribution") {
         return <PhosphositeDistributionPage />;
+      }
+
+      if (activePhosphoTab === "phosprotRegulation") {
+        return <PhosprotRegulationPage />;
       }
 
       return <StyPlotPage />;

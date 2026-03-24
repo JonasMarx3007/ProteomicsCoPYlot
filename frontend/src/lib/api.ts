@@ -706,13 +706,15 @@ export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
 }
 
 export async function getPhosphoTable(
-  tab: "phosphositePlot" | "coverage" | "distribution" | "sty",
+  tab: "phosphositePlot" | "coverage" | "ksea" | "distribution" | "sty" | "phosprotRegulation",
   params?: Record<string, string | number | boolean>
 ): Promise<PhosphoTableResponse> {
   let path = "/api/plots/phospho/phosphosite-plot-table";
   if (tab === "coverage") path = "/api/plots/phospho/coverage-table";
+  if (tab === "ksea") path = "/api/plots/phospho/ksea-table";
   if (tab === "distribution") path = "/api/plots/phospho/distribution-table";
   if (tab === "sty") path = "/api/plots/phospho/sty-table";
+  if (tab === "phosprotRegulation") path = "/api/plots/phospho/phosprot-regulation-table";
 
   const response = await fetch(buildPlotUrl(path, params));
   const data = await parseJson(response);
