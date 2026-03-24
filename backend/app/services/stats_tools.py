@@ -437,22 +437,41 @@ def _volcano_figure(
     def build_hover_text(row: pd.Series) -> str:
         raw_label = row.get(label_column, "")
         label_text = "" if pd.isna(raw_label) else str(raw_label)
-        if label_column != "Phosphoprotein":
-            return label_text
+        parts = [label_text] if label_text else []
+        phosphoprotein_value = row.get("Phosphoprotein")
+        has_phospho_context = pd.notna(row.get("site_num")) or pd.notna(row.get("PTM_Collapse_keys")) or pd.notna(phosphoprotein_value)
+        if has_phospho_context:
+            phosphoprotein_text = "" if pd.isna(phosphoprotein_value) else str(phosphoprotein_value)
+            site_value = row.get("site_num")
+            site_text = ""
+            if pd.notna(site_value):
+                try:
+                    site_text = str(int(float(site_value)))
+                except Exception:
+                    site_text = str(site_value)
 
-        parts = [label_text]
-        site_value = row.get("site_num")
-        if pd.notna(site_value):
-            try:
-                site_text = str(int(float(site_value)))
-            except Exception:
-                site_text = str(site_value)
-            parts[0] = f"{label_text} ({site_text} sites)"
+            if label_column == "Phosphoprotein":
+                if parts:
+                    if site_text:
+                        parts[0] = f"{parts[0]} ({site_text} sites)"
+                elif phosphoprotein_text:
+                    parts = [f"{phosphoprotein_text} ({site_text} sites)" if site_text else phosphoprotein_text]
+            else:
+                if phosphoprotein_text:
+                    phospho_line = f"Phosphoprotein: {phosphoprotein_text}"
+                    if site_text:
+                        phospho_line = f"{phospho_line} ({site_text} sites)"
+                    parts.append(phospho_line)
+                elif site_text:
+                    parts.append(f"Sites: {site_text}")
 
-        ptm_value = row.get("PTM_Collapse_keys")
-        ptm_text = truncate_ptm_text(ptm_value)
-        if ptm_text:
-            parts.append(ptm_text)
+            ptm_value = row.get("PTM_Collapse_keys")
+            ptm_text = truncate_ptm_text(ptm_value)
+            if ptm_text:
+                parts.append(ptm_text)
+
+        if not parts:
+            return ""
         return "<br>".join(parts)
 
     fig = go.Figure()
