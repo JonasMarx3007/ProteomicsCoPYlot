@@ -727,6 +727,40 @@ export async function getPhosphoTable(
   return data as PhosphoTableResponse;
 }
 
+export async function renderKseaVolcanoFromFiles(payload: {
+  fileSt: File;
+  fileTnc: File;
+  pValueThreshold: number;
+  header: boolean;
+  condition1: string;
+  condition2: string;
+  highlightGrk: boolean;
+}): Promise<string> {
+  const form = new FormData();
+  form.append("fileSt", payload.fileSt);
+  form.append("fileTnc", payload.fileTnc);
+  form.append("pValueThreshold", String(payload.pValueThreshold));
+  form.append("header", String(payload.header));
+  form.append("condition1", payload.condition1);
+  form.append("condition2", payload.condition2);
+  form.append("highlightGrk", String(payload.highlightGrk));
+
+  const response = await fetch(`${API_BASE}/api/plots/phospho/ksea-volcano.html`, {
+    method: "POST",
+    body: form,
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      throw new Error(parsed?.detail || "Failed to generate KSEA volcano");
+    } catch {
+      throw new Error(text || "Failed to generate KSEA volcano");
+    }
+  }
+  return text;
+}
+
 export async function getComparisonOptions(
   kind: AnnotationKind
 ): Promise<ComparisonOptionsResponse> {

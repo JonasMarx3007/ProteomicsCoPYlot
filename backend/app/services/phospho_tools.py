@@ -32,6 +32,12 @@ def _get_plotly():
     return px
 
 
+def _get_plotly_go():
+    import plotly.graph_objects as go
+
+    return go
+
+
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
@@ -629,6 +635,162 @@ def ksea_plot_png(
     ax.legend(loc="best")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+def _normalized_column_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+def _resolve_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    normalized_map = {_normalized_column_name(column): str(column) for column in df.columns}
+    for candidate in candidates:
+        hit = normalized_map.get(_normalized_column_name(candidate))
+        if hit:
+            return hit
+    return None
+
+
+def ksea_uploaded_volcano_html(
+    *,
+    st_results: pd.DataFrame,
+    tnc_results: pd.DataFrame,
+    p_value_threshold: float = 0.1,
+    header: bool = True,
+    condition1: str = "",
+    condition2: str = "",
+    highlight_grk: bool = False,
+) -> str:
+    go = _get_plotly_go()
+    df = pd.concat([st_results.copy(), tnc_results.copy()], ignore_index=True)
+    if df.empty:
+        raise ValueError("Uploaded KSEA result files are empty.")
+
+    log2_col = _resolve_column(
+        df,
+        [
+            "Log₂(Frequency Factor)",
+            "Log2(Frequency Factor)",
+            "Log2 Frequency Factor",
+            "Frequency Factor",
+        ],
+    )
+    pval_col = _resolve_column(
+        df,
+        [
+            "Adjusted p-value",
+            "Adjusted p value",
+            "Adjusted pvalue",
+            "Adjusted p",
+        ],
+    )
+    kinase_col = _resolve_column(df, ["Kinase", "Gene Name", "Gene"])
+    if not log2_col or not pval_col:
+        raise ValueError(
+            "Uploaded results must contain frequency-factor and adjusted p-value columns."
+        )
+    if not kinase_col:
+        kinase_col = log2_col
+
+    frame = pd.DataFrame(
+        {
+            "kinase": df[kinase_col].astype(str),
+            "log2ff": pd.to_numeric(df[log2_col], errors="coerce"),
+            "adj_pval": pd.to_numeric(df[pval_col], errors="coerce"),
+        }
+    ).dropna(subset=["log2ff", "adj_pval"])
+    if frame.empty:
+        raise ValueError("Uploaded KSEA result files do not contain usable numeric rows.")
+
+    frame["adj_pval"] = np.clip(frame["adj_pval"], 1e-300, 1.0)
+    frame["neg_log10_pval"] = -np.log10(frame["adj_pval"])
+
+    def classify(row: pd.Series) -> str:
+        if float(row["adj_pval"]) < p_value_threshold:
+            if float(row["log2ff"]) > 0:
+                return "Upregulated"
+            if float(row["log2ff"]) < 0:
+                return "Downregulated"
+        return "Not significant"
+
+    frame["regulation"] = frame.apply(classify, axis=1)
+    color_map = {
+        "Upregulated": "red",
+        "Downregulated": "blue",
+        "Not significant": "lightgrey",
+    }
+
+    is_grk = frame["kinase"].str.contains(r"\bGRK\d*\b", case=False, na=False)
+    frame_grk = frame[is_grk] if highlight_grk else pd.DataFrame(columns=frame.columns)
+    frame_main = frame[~is_grk]
+
+    fig = go.Figure()
+    for regulation in ["Upregulated", "Downregulated", "Not significant"]:
+        subset = frame_main[frame_main["regulation"] == regulation]
+        if subset.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=subset["log2ff"],
+                y=subset["neg_log10_pval"],
+                mode="markers",
+                marker=dict(
+                    color=color_map[regulation],
+                    size=10,
+                    line=dict(color="black", width=0.5),
+                ),
+                name=regulation,
+                text=subset["kinase"],
+                hovertemplate=(
+                    "Kinase: %{text}<br>Log2(Frequency Factor): %{x:.4f}<br>"
+                    "-log10(Adjusted p-value): %{y:.4f}<br>Regulation: "
+                    f"{regulation}<extra></extra>"
+                ),
+            )
+        )
+
+    if highlight_grk and not frame_grk.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=frame_grk["log2ff"],
+                y=frame_grk["neg_log10_pval"],
+                mode="markers",
+                marker=dict(
+                    color=frame_grk["regulation"].map(color_map).fillna("lightgrey"),
+                    size=12,
+                    line=dict(color="yellow", width=2),
+                ),
+                name="GRK",
+                text=frame_grk["kinase"],
+                hovertemplate=(
+                    "Kinase: %{text}<br>Log2(Frequency Factor): %{x:.4f}<br>"
+                    "-log10(Adjusted p-value): %{y:.4f}<extra></extra>"
+                ),
+            )
+        )
+
+    y_line = float(-np.log10(max(float(p_value_threshold), 1e-300)))
+    fig.add_hline(y=y_line, line_dash="dash", line_color="green")
+
+    title = ""
+    if header:
+        if condition1 and condition2:
+            title = f"KSEA Volcano Plot: {condition1} vs. {condition2}"
+        else:
+            title = "KSEA Volcano Plot"
+
+    x_label = "Log2(Frequency Factor)"
+    if condition1 and condition2:
+        x_label = f"Log2(Frequency Factor) ({condition2} - {condition1})"
+
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title="-log10(Adjusted p-value)",
+        template="plotly_white",
+        hovermode="closest",
+        margin=dict(l=40, r=20, t=60 if header else 30, b=40),
+    )
+    return _plotly_html(fig)
 
 
 def phosprot_regulation_table(

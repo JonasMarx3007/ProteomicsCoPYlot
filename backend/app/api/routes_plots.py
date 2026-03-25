@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
 from app.schemas.annotation import AnnotationKind
@@ -51,6 +51,7 @@ from app.services.comparison_tools import (
     venn_table,
 )
 from app.services.phospho_tools import (
+    ksea_uploaded_volcano_html,
     ksea_plot_png,
     ksea_table,
     phosprot_regulation_html,
@@ -62,6 +63,7 @@ from app.services.phospho_tools import (
     phospho_sty_table,
     phosphosite_plot_table,
 )
+from app.services.dataset_reader import read_dataframe
 from app.services.table_functions import (
     qc_boxplot_table,
     qc_coverage_table,
@@ -1208,6 +1210,41 @@ async def phospho_ksea_table_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load KSEA table: {e}") from e
+
+
+@router.post("/phospho/ksea-volcano.html", response_class=HTMLResponse)
+async def phospho_ksea_uploaded_volcano_route(
+    fileSt: UploadFile = File(...),
+    fileTnc: UploadFile = File(...),
+    pValueThreshold: float = Form(0.1),
+    header: bool = Form(True),
+    condition1: str = Form(""),
+    condition2: str = Form(""),
+    highlightGrk: bool = Form(False),
+) -> HTMLResponse:
+    if not fileSt.filename or not fileTnc.filename:
+        raise HTTPException(status_code=400, detail="Both KSEA result files are required.")
+
+    try:
+        df_st = read_dataframe(fileSt.filename, fileSt.file)
+        df_tnc = read_dataframe(fileTnc.filename, fileTnc.file)
+        return HTMLResponse(
+            content=ksea_uploaded_volcano_html(
+                st_results=df_st,
+                tnc_results=df_tnc,
+                p_value_threshold=pValueThreshold,
+                header=header,
+                condition1=condition1,
+                condition2=condition2,
+                highlight_grk=highlightGrk,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate KSEA volcano: {e}") from e
 
 
 @router.get("/phospho/phosprot-regulation.png")
