@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getCurrentDatasets } from "./api";
 import type { AnnotationKind, CurrentDatasetsResponse } from "./types";
+import { IS_VIEWER_MODE } from "./appMode";
 
 export type AnnotationKindOption = {
   value: AnnotationKind;
@@ -36,9 +37,11 @@ export function useCurrentDatasetsSnapshot() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       setError(null);
       const current = await getCurrentDatasets();
       setDatasets(current);
@@ -46,13 +49,25 @@ export function useCurrentDatasetsSnapshot() {
       setError(err instanceof Error ? err.message : "Failed to load current datasets");
       setDatasets(null);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (datasets !== null) return;
+    const timer = window.setTimeout(() => {
+      refresh(true).catch(() => {
+        // next retry is scheduled by this effect if datasets stays null
+      });
+    }, IS_VIEWER_MODE ? 500 : 2000);
+    return () => window.clearTimeout(timer);
+  }, [datasets, refresh]);
 
   const kinds = useMemo(() => availableAnnotationKinds(datasets), [datasets]);
   const options = useMemo(() => annotationKindOptions(kinds), [kinds]);

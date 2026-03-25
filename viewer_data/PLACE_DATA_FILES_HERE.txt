@@ -1,0 +1,10 @@
+Put viewer input data files in this folder (or update paths in viewer_config.json).
+If a config entry points only to `viewer_data/` (folder path), that dataset is treated as not provided and the related pipeline stays deactivated.
+
+Expected files by default:
+- protein_data.tsv
+- phospho_data.tsv
+- phosphoprotein_data.tsv
+- peptide_data.tsv
+- metadata_protein.csv
+- metadata_phospho.csv
