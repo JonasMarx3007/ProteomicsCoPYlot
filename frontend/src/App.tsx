@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
+import ManualEmbed from "./components/ManualEmbed";
 import UploadPage from "./features/upload/UploadPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
 import ImputationPage from "./features/data/ImputationPage";
@@ -144,6 +145,68 @@ export default function App() {
     document.title = "Proteomics CoPYlot";
   }, []);
 
+  const topManual = useMemo(() => {
+    if (activeSection === "data") {
+      if (activeDataTab === "verification") {
+        return { title: "Data Information Manual", path: "/manuals/DataInfoManual.pdf" };
+      }
+      return null;
+    }
+    if (activeSection === "qc") {
+      if (activeQcTab === "coverage") return { title: "Coverage Plot Manual", path: "/manuals/CoveragePlotManual.pdf" };
+      if (activeQcTab === "histogram") return { title: "Histogram Intensity Manual", path: "/manuals/HistogramIntensityManual.pdf" };
+      if (activeQcTab === "boxplot") return { title: "Boxplot Intensity Manual", path: "/manuals/BoxplotIntensityManual.pdf" };
+      if (activeQcTab === "cv") return { title: "Coefficient of Variation Plot Manual", path: "/manuals/CoefficientofVariationPlotManual.pdf" };
+      if (activeQcTab === "pca") return { title: "Principal Component Analysis Plot Manual", path: "/manuals/PrincipalComponentAnalysisPlotManual.pdf" };
+      if (activeQcTab === "abundance") return { title: "Abundance Plot Manual", path: "/manuals/AbundancePlotManual.pdf" };
+      if (activeQcTab === "correlation") return { title: "Correlation Plot Manual", path: "/manuals/CorrelationPlotManual.pdf" };
+      return null;
+    }
+    if (activeSection === "completeness") {
+      if (activeCompletenessTab === "missingPlot") return { title: "Missing Value Plot Manual", path: "/manuals/MissingValuePlotManual.pdf" };
+      if (activeCompletenessTab === "heatmap") return { title: "Missing Value Heatmap Manual", path: "/manuals/MissingValueHeatmapManual.pdf" };
+      if (activeCompletenessTab === "tables") return { title: "Missing Value Tables Manual", path: "/manuals/MissingValueTablesManual.pdf" };
+      return null;
+    }
+    if (activeSection === "stats") {
+      if (activeStatsTab === "volcano" || activeStatsTab === "volcanoControl") {
+        return { title: "Volcano Plot Manual", path: "/manuals/VolcanoPlotManual.pdf" };
+      }
+      return null;
+    }
+    if (activeSection === "singleProtein") {
+      if (activeSingleProteinTab === "boxplot") return { title: "Protein Boxplot Manual", path: "/manuals/ProteinBoxplotManual.pdf" };
+      if (activeSingleProteinTab === "lineplot") return { title: "Protein Lineplot Manual", path: "/manuals/ProteinLineplotManual.pdf" };
+      return null;
+    }
+    if (activeSection === "phospho") {
+      if (activePhosphoTab === "phosphositePlot") return { title: "Phosphosite Plot Manual", path: "/manuals/PhossitePlotManual.pdf" };
+      if (activePhosphoTab === "coverage") return { title: "Phosphosite Coverage Plot Manual", path: "/manuals/PhossiteCoveragePlotManual.pdf" };
+      if (activePhosphoTab === "distribution") return { title: "Phosphosite Distribution Manual", path: "/manuals/PhossiteDistributionPlotManual.pdf" };
+      if (activePhosphoTab === "phosprotRegulation") return { title: "Phosphoprotein Regulation Manual", path: "/manuals/PhosprotRegulationPlotManual.pdf" };
+      return null;
+    }
+    if (activeSection === "comparison") {
+      if (activeComparisonTab === "pearson") return { title: "Pearson Correlation Plot Manual", path: "/manuals/PearsonCorrelationPlotManual.pdf" };
+      if (activeComparisonTab === "venn") return { title: "Venn Diagram Manual", path: "/manuals/VennDiagramManual.pdf" };
+      return null;
+    }
+    return null;
+  }, [
+    activeSection,
+    activeDataTab,
+    activeQcTab,
+    activeCompletenessTab,
+    activeStatsTab,
+    activeSingleProteinTab,
+    activePhosphoTab,
+    activeComparisonTab,
+  ]);
+
+  const topManualButton = topManual ? (
+    <ManualEmbed pdfPath={topManual.path} title={topManual.title} buttonLabel="Manual" />
+  ) : null;
+
   const topBar = useMemo(() => {
     if (activeSection === "data") {
       return (
@@ -151,6 +214,7 @@ export default function App() {
           tabs={dataTabs}
           activeTab={activeDataTab}
           onChange={setActiveDataTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -161,6 +225,7 @@ export default function App() {
           tabs={qcTabs}
           activeTab={activeQcTab}
           onChange={setActiveQcTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -171,6 +236,7 @@ export default function App() {
           tabs={completenessTabs}
           activeTab={activeCompletenessTab}
           onChange={setActiveCompletenessTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -181,6 +247,7 @@ export default function App() {
           tabs={statsTabs}
           activeTab={activeStatsTab}
           onChange={setActiveStatsTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -191,6 +258,7 @@ export default function App() {
           tabs={peptideTabs}
           activeTab={activePeptideTab}
           onChange={setActivePeptideTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -201,6 +269,7 @@ export default function App() {
           tabs={singleProteinTabs}
           activeTab={activeSingleProteinTab}
           onChange={setActiveSingleProteinTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -211,6 +280,7 @@ export default function App() {
           tabs={phosphoTabs}
           activeTab={activePhosphoTab}
           onChange={setActivePhosphoTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -221,6 +291,7 @@ export default function App() {
           tabs={comparisonTabs}
           activeTab={activeComparisonTab}
           onChange={setActiveComparisonTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -231,6 +302,7 @@ export default function App() {
           tabs={summaryTabs}
           activeTab={activeSummaryTab}
           onChange={setActiveSummaryTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -241,6 +313,7 @@ export default function App() {
           tabs={externalTabs}
           activeTab={activeExternalTab}
           onChange={setActiveExternalTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -251,6 +324,7 @@ export default function App() {
           tabs={summaryTabs}
           activeTab={activeSummaryTab}
           onChange={setActiveSummaryTab}
+          rightContent={topManualButton}
         />
       );
     }
@@ -268,6 +342,7 @@ export default function App() {
     activeComparisonTab,
     activeSummaryTab,
     activeExternalTab,
+    topManualButton,
   ]);
 
   function renderContent() {

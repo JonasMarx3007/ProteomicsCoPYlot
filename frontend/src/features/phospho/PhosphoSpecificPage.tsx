@@ -455,8 +455,8 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
             No phospho dataset loaded. Plot preview is unavailable.
           </div>
         ) : phosprotSelectionInvalid ? (
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-6 text-sm text-amber-800">
-            Select two different conditions to render the phosprot regulation plot.
+          <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-6 text-sm text-sky-800">
+            Please select two different conditions to generate the plot.
           </div>
         ) : plotView ? (
           <div className="mt-4">
@@ -512,8 +512,8 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
               No phospho dataset loaded. Summary table is unavailable.
             </div>
           ) : phosprotSelectionInvalid ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-6 text-sm text-amber-800">
-              Select two different conditions to generate the phosprot regulation table.
+            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-6 text-sm text-sky-800">
+              Please select two different conditions to generate the table.
             </div>
           ) : tableLoading ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
