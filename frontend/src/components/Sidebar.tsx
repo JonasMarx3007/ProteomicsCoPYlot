@@ -23,6 +23,7 @@ type SidebarProps = {
   onChange: (section: SidebarSection) => void;
   isOpen: boolean;
   onClose: () => void;
+  sections?: SidebarSection[];
 };
 
 export default function Sidebar({
@@ -30,7 +31,12 @@ export default function Sidebar({
   onChange,
   isOpen,
   onClose,
+  sections,
 }: SidebarProps) {
+  const visibleItems = sections
+    ? items.filter((item) => sections.includes(item.key))
+    : items;
+
   return (
     <>
       <div
@@ -66,7 +72,7 @@ export default function Sidebar({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
           <nav className="space-y-2">
-            {items.map((item) => {
+            {visibleItems.map((item) => {
               const active = item.key === activeSection;
 
               return (

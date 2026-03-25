@@ -1,0 +1,18 @@
+{
+  "protein_file": "viewer_data/20241210_154937_20241018_JM_WP_8cells_ReportPG.tsv",
+  "phospho_file": "viewer_data/20250325_141041_20241018_JM_PP_8cells_Report_pp_collapsed.tsv",
+  "phosprot_file": "viewer_data/20250325_141041_20241018_JM_PP_8cells_Report_phosprot.csv",
+  "peptide_file": "viewer_data/",
+  "meta_file": "viewer_data/metadata_8cell_pg.csv",
+  "meta_phospho_file": "viewer_data/metadata_phos_8cell_pp.csv",
+  "collapse_mode": "sum_mean_impute",
+  "filter_min_protein": 3,
+  "filter_min_phospho": 3,
+  "filter_min_phosphoprotein": 3,
+  "filter_mode_protein": "in at least one group",
+  "filter_mode_phospho": "in at least one group",
+  "filter_mode_phosphoprotein": "in at least one group",
+  "log2_transform_protein": true,
+  "log2_transform_phospho": true,
+  "log2_transform_phosphoprotein": true
+}

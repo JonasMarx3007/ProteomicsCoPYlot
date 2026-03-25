@@ -10,6 +10,7 @@ from app.api.routes_qc import router as qc_router
 from app.api.routes_peptide import router as peptide_router
 from app.api.routes_stats import router as stats_router
 from app.api.routes_summary import router as summary_router
+from app.services.viewer_bootstrap import bootstrap_viewer_mode_if_enabled
 
 app = FastAPI(title="Proteomics CoPYlot API")
 
@@ -18,6 +19,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -33,6 +36,11 @@ app.include_router(peptide_router)
 app.include_router(plots_router)
 app.include_router(external_router)
 app.include_router(summary_router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    bootstrap_viewer_mode_if_enabled()
 
 
 @app.get("/")

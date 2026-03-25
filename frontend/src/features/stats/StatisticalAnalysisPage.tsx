@@ -14,6 +14,7 @@ import {
   listVolcanoReportEntries,
   removeVolcanoReportEntry,
 } from "../../lib/reportState";
+import { IS_VIEWER_MODE } from "../../lib/appMode";
 import type {
   AnnotationKind,
   EnrichmentRequest,
@@ -601,7 +602,7 @@ function VolcanoPanel({
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
         </div>
 
-        {!control ? (
+        {!control && !IS_VIEWER_MODE ? (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex flex-wrap items-center gap-2">
               <button
