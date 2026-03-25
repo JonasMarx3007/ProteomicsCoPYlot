@@ -1,4 +1,4 @@
-# Windows Install
+WINDOWS INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
 cd ProteomicsCoPYlot
 cd backend
@@ -6,15 +6,29 @@ py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 cd ..\frontend
 npm install
-
-# Windows Run Analysis
 cd ..
+
+WINDOWS RUN ANALYSIS
 run_app.bat
 
-# Windows Run Viewer
+WINDOWS RUN VIEWER
 run_viewer.bat
 
-# macOS Install
+WINDOWS PRODUCTION RUN
+cd frontend
+npm run build
+cd ..
+.\backend\.venv\Scripts\python.exe launch.py
+
+WINDOWS BUILD EXE TOOL ONLY (ONEFILE)
+.\build_exe_windows.ps1 -Target Tool
+output: .\dist\ProteomicsCoPYlot.exe
+
+WINDOWS BUILD EXE VIEWER ONLY (ONEFILE)
+.\build_exe_windows.ps1 -Target Viewer
+output: .\dist\DataViewer.exe
+
+MACOS INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
 cd ProteomicsCoPYlot
 cd backend
@@ -26,13 +40,19 @@ npm install
 cd ..
 chmod +x run_app_macos.sh run_viewer_macos.sh
 
-# macOS Run Analysis
+MACOS RUN ANALYSIS
 ./run_app_macos.sh
 
-# macOS Run Viewer
+MACOS RUN VIEWER
 ./run_viewer_macos.sh
 
-# Linux Install
+MACOS PRODUCTION RUN
+cd frontend
+npm run build
+cd ..
+./backend/.venv/bin/python3 launch.py
+
+LINUX INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
 cd ProteomicsCoPYlot
 cd backend
@@ -44,8 +64,14 @@ npm install
 cd ..
 chmod +x run_app_linux.sh run_viewer_linux.sh
 
-# Linux Run Analysis
+LINUX RUN ANALYSIS
 ./run_app_linux.sh
 
-# Linux Run Viewer
+LINUX RUN VIEWER
 ./run_viewer_linux.sh
+
+LINUX PRODUCTION RUN
+cd frontend
+npm run build
+cd ..
+./backend/.venv/bin/python3 launch.py

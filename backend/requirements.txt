@@ -10,3 +10,4 @@ scipy
 seaborn
 matplotlib-venn
 plotly
+pyinstaller
