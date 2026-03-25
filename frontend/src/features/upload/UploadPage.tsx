@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getCurrentDatasets,
   savePeptidePath,
   uploadDataset,
 } from "../../lib/api";
+import { IS_VIEWER_MODE } from "../../lib/appMode";
 import type {
   CurrentDatasetsResponse,
   DatasetKind,
@@ -15,19 +16,21 @@ import UploadForm from "./UploadForm";
 
 type UploadPageProps = {
   onDatasetUploaded?: (dataset: DatasetPreviewResponse | null) => void;
+  readOnly?: boolean;
 };
 
-export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
+export default function UploadPage({ onDatasetUploaded, readOnly = false }: UploadPageProps) {
   const [kind, setKind] = useState<DatasetKind>("protein");
   const [current, setCurrent] = useState<CurrentDatasetsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [viewerRefreshQueued, setViewerRefreshQueued] = useState(false);
 
-  async function refreshCurrentDatasets() {
+  const refreshCurrentDatasets = useCallback(async () => {
     const data = await getCurrentDatasets();
     setCurrent(data);
     return data;
-  }
+  }, []);
 
   useEffect(() => {
     refreshCurrentDatasets().catch((err) => {
@@ -35,7 +38,7 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
       setCurrent({ protein: null, phospho: null, phosprot: null, peptide: null });
       console.warn(err);
     });
-  }, []);
+  }, [refreshCurrentDatasets]);
 
   const displayedDataset = useMemo(() => {
     if (!current || kind === "peptide") return null;
@@ -45,6 +48,34 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
   useEffect(() => {
     onDatasetUploaded?.(displayedDataset);
   }, [displayedDataset, onDatasetUploaded]);
+
+  useEffect(() => {
+    if (!readOnly || !IS_VIEWER_MODE || viewerRefreshQueued) return;
+    if (current === null) {
+      setViewerRefreshQueued(true);
+      const timer = window.setTimeout(() => {
+        refreshCurrentDatasets().catch(() => {
+          // keep current fallback state if backend is still booting
+        });
+      }, 700);
+      return () => window.clearTimeout(timer);
+    }
+    const hasAnyDataset =
+      Boolean(current.protein) ||
+      Boolean(current.phospho) ||
+      Boolean(current.phosprot) ||
+      Boolean(current.peptide);
+    if (!hasAnyDataset) {
+      setViewerRefreshQueued(true);
+      const timer = window.setTimeout(() => {
+        refreshCurrentDatasets().catch(() => {
+          // keep current fallback state if backend is still booting
+        });
+      }, 700);
+      return () => window.clearTimeout(timer);
+    }
+    return;
+  }, [current, readOnly, viewerRefreshQueued, refreshCurrentDatasets]);
 
   async function handleFileSubmit(
     file: File,
@@ -83,13 +114,36 @@ export default function UploadPage({ onDatasetUploaded }: UploadPageProps) {
 
   return (
     <div className="space-y-6">
-      <UploadForm
-        kind={kind}
-        loading={loading}
-        onKindChange={setKind}
-        onFileSubmit={handleFileSubmit}
-        onPeptideSubmit={handlePeptideSubmit}
-      />
+      {readOnly ? (
+        <section className="space-y-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
+          <div className="text-sm text-sky-800">
+            Viewer mode is read-only. Data is loaded from <code>viewer_config.json</code>.
+          </div>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              Dataset level preview
+            </label>
+            <select
+              value={kind}
+              onChange={(e) => setKind(e.target.value as DatasetKind)}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 lg:max-w-sm"
+            >
+              <option value="protein">Protein</option>
+              <option value="phospho">Phospho</option>
+              <option value="phosprot">Phosphoprotein</option>
+              <option value="peptide">Peptide</option>
+            </select>
+          </div>
+        </section>
+      ) : (
+        <UploadForm
+          kind={kind}
+          loading={loading}
+          onKindChange={setKind}
+          onFileSubmit={handleFileSubmit}
+          onPeptideSubmit={handlePeptideSubmit}
+        />
+      )}
 
       <CurrentDatasetsPanel current={current} />
 

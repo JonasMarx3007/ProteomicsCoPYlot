@@ -5,6 +5,7 @@ import type { SidebarSection } from "../lib/types";
 type AppShellProps = {
   activeSection: SidebarSection;
   onSectionChange: (section: SidebarSection) => void;
+  sections?: SidebarSection[];
   topBar?: ReactNode;
   children: ReactNode;
 };
@@ -12,6 +13,7 @@ type AppShellProps = {
 export default function AppShell({
   activeSection,
   onSectionChange,
+  sections,
   topBar,
   children,
 }: AppShellProps) {
@@ -24,6 +26,7 @@ export default function AppShell({
         onChange={onSectionChange}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        sections={sections}
       />
 
       <button

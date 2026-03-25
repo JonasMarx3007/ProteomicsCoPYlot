@@ -4,6 +4,7 @@ import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
 import UploadPage from "./features/upload/UploadPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
+import AnnotationViewerPage from "./features/metadata/AnnotationViewerPage";
 import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
@@ -56,6 +57,8 @@ import type {
   SummaryTab,
   StatsTab,
 } from "./lib/types";
+import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
+import { IS_VIEWER_MODE } from "./lib/appMode";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -128,7 +131,25 @@ const summaryTabs: { key: SummaryTab; label: string }[] = [
   { key: "report", label: "Report" },
 ];
 
+const viewerDataTabs: { key: DataTab; label: string }[] = dataTabs.filter(
+  (tab) => tab.key === "upload" || tab.key === "annotation"
+);
+
+const allSidebarSections: SidebarSection[] = [
+  "data",
+  "completeness",
+  "qc",
+  "stats",
+  "peptide",
+  "singleProtein",
+  "phospho",
+  "comparison",
+  "summary",
+  "external",
+];
+
 export default function App() {
+  const { datasets, loading: datasetsLoading } = useCurrentDatasetsSnapshot();
   const [activeSection, setActiveSection] = useState<SidebarSection>("data");
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
   const [activeQcTab, setActiveQcTab] = useState<QcTab>("coverage");
@@ -144,6 +165,80 @@ export default function App() {
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
   }, []);
+
+  const visibleDataTabs = useMemo(
+    () => (IS_VIEWER_MODE ? viewerDataTabs : dataTabs),
+    []
+  );
+  const visibleStatsTabs = useMemo(
+    () =>
+      IS_VIEWER_MODE
+        ? statsTabs.filter((tab) => tab.key !== "simulation")
+        : statsTabs,
+    []
+  );
+  const visibleSummaryTabs = useMemo(
+    () =>
+      IS_VIEWER_MODE
+        ? summaryTabs.filter((tab) => tab.key === "tables")
+        : summaryTabs,
+    []
+  );
+  const visiblePhosphoTabs = useMemo(
+    () =>
+      IS_VIEWER_MODE
+        ? phosphoTabs.filter((tab) => tab.key !== "ksea")
+        : phosphoTabs,
+    []
+  );
+
+  const visibleSections = useMemo<SidebarSection[]>(() => {
+    if (!IS_VIEWER_MODE) return allSidebarSections;
+
+    const sections: SidebarSection[] = [
+      "data",
+      "completeness",
+      "qc",
+      "stats",
+    ];
+    if (datasets?.peptide) sections.push("peptide");
+    const hasPhosphoWorkflow = Boolean(datasets?.phospho || datasets?.phosprot);
+    // Keep phospho-specific visible while initial dataset loading is still unresolved,
+    // then apply strict data-based visibility once snapshot is available.
+    if (hasPhosphoWorkflow || datasetsLoading || datasets === null) sections.push("phospho");
+    sections.push("comparison", "summary");
+    return sections;
+  }, [datasets, datasetsLoading]);
+
+  useEffect(() => {
+    if (!visibleSections.includes(activeSection)) {
+      setActiveSection(visibleSections[0] ?? "data");
+    }
+  }, [activeSection, visibleSections]);
+
+  useEffect(() => {
+    if (!visibleDataTabs.some((tab) => tab.key === activeDataTab)) {
+      setActiveDataTab(visibleDataTabs[0]?.key ?? "upload");
+    }
+  }, [activeDataTab, visibleDataTabs]);
+
+  useEffect(() => {
+    if (!visibleStatsTabs.some((tab) => tab.key === activeStatsTab)) {
+      setActiveStatsTab(visibleStatsTabs[0]?.key ?? "volcano");
+    }
+  }, [activeStatsTab, visibleStatsTabs]);
+
+  useEffect(() => {
+    if (!visibleSummaryTabs.some((tab) => tab.key === activeSummaryTab)) {
+      setActiveSummaryTab(visibleSummaryTabs[0]?.key ?? "tables");
+    }
+  }, [activeSummaryTab, visibleSummaryTabs]);
+
+  useEffect(() => {
+    if (!visiblePhosphoTabs.some((tab) => tab.key === activePhosphoTab)) {
+      setActivePhosphoTab(visiblePhosphoTabs[0]?.key ?? "phosphositePlot");
+    }
+  }, [activePhosphoTab, visiblePhosphoTabs]);
 
   const topManual = useMemo(() => {
     if (activeSection === "data") {
@@ -211,7 +306,7 @@ export default function App() {
     if (activeSection === "data") {
       return (
         <TopTabs
-          tabs={dataTabs}
+          tabs={visibleDataTabs}
           activeTab={activeDataTab}
           onChange={setActiveDataTab}
           rightContent={topManualButton}
@@ -244,7 +339,7 @@ export default function App() {
     if (activeSection === "stats") {
       return (
         <TopTabs
-          tabs={statsTabs}
+          tabs={visibleStatsTabs}
           activeTab={activeStatsTab}
           onChange={setActiveStatsTab}
           rightContent={topManualButton}
@@ -277,7 +372,7 @@ export default function App() {
     if (activeSection === "phospho") {
       return (
         <TopTabs
-          tabs={phosphoTabs}
+          tabs={visiblePhosphoTabs}
           activeTab={activePhosphoTab}
           onChange={setActivePhosphoTab}
           rightContent={topManualButton}
@@ -299,7 +394,7 @@ export default function App() {
     if (activeSection === "summary") {
       return (
         <TopTabs
-          tabs={summaryTabs}
+          tabs={visibleSummaryTabs}
           activeTab={activeSummaryTab}
           onChange={setActiveSummaryTab}
           rightContent={topManualButton}
@@ -313,17 +408,6 @@ export default function App() {
           tabs={externalTabs}
           activeTab={activeExternalTab}
           onChange={setActiveExternalTab}
-          rightContent={topManualButton}
-        />
-      );
-    }
-
-    if (activeSection === "summary") {
-      return (
-        <TopTabs
-          tabs={summaryTabs}
-          activeTab={activeSummaryTab}
-          onChange={setActiveSummaryTab}
           rightContent={topManualButton}
         />
       );
@@ -343,6 +427,10 @@ export default function App() {
     activeSummaryTab,
     activeExternalTab,
     topManualButton,
+    visibleDataTabs,
+    visibleStatsTabs,
+    visibleSummaryTabs,
+    visiblePhosphoTabs,
   ]);
 
   function renderContent() {
@@ -403,6 +491,10 @@ export default function App() {
         return <PathwayHeatmapPage />;
       }
 
+      if (IS_VIEWER_MODE) {
+        return <VolcanoPlotPage />;
+      }
+
       return <SimulationPage />;
     }
 
@@ -444,6 +536,9 @@ export default function App() {
       }
 
       if (activePhosphoTab === "ksea") {
+        if (IS_VIEWER_MODE) {
+          return <PhosphositePlotPage />;
+        }
         return <KseaPage />;
       }
 
@@ -466,6 +561,10 @@ export default function App() {
     }
 
     if (activeSection === "summary") {
+      if (IS_VIEWER_MODE) {
+        return <TablesPage />;
+      }
+
       if (activeSummaryTab === "tables") {
         return <TablesPage />;
       }
@@ -485,11 +584,11 @@ export default function App() {
 
     if (activeSection === "data") {
       if (activeDataTab === "upload") {
-        return <UploadPage />;
+        return <UploadPage readOnly={IS_VIEWER_MODE} />;
       }
 
       if (activeDataTab === "annotation") {
-        return <AnnotationPage />;
+        return IS_VIEWER_MODE ? <AnnotationViewerPage /> : <AnnotationPage />;
       }
 
       if (activeDataTab === "imputation") {
@@ -529,6 +628,7 @@ export default function App() {
     <AppShell
       activeSection={activeSection}
       onSectionChange={setActiveSection}
+      sections={visibleSections}
       topBar={topBar}
     >
       {renderContent()}
