@@ -12,6 +12,8 @@ $BackendDir = Join-Path $RootDir "backend"
 $FrontendDir = Join-Path $RootDir "frontend"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $IconPath = Join-Path $RootDir "favicon.ico"
+$FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
+$FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
 
 if (-not (Test-Path $PythonExe)) {
   throw "Backend virtualenv not found. Expected: $PythonExe"
@@ -25,16 +27,32 @@ if (-not $SkipFrontendBuild) {
   Push-Location $FrontendDir
   try {
     cmd /c npm install
-    cmd /c npm run build
+    if ($FrontendTargetMode -eq "viewer") {
+      cmd /c "set VITE_APP_MODE=viewer&& npm run build"
+    }
+    else {
+      cmd /c "set VITE_APP_MODE=analysis&& npm run build"
+    }
   }
   finally {
     Pop-Location
   }
+
+  Set-Content -Path $FrontendModeMarker -Value $FrontendTargetMode -NoNewline
 }
 
 $FrontendIndex = Join-Path $FrontendDir "dist\index.html"
 if (-not (Test-Path $FrontendIndex)) {
   throw "Frontend build output missing. Expected: $FrontendIndex"
+}
+
+if (-not (Test-Path $FrontendModeMarker)) {
+  throw "Frontend mode marker missing. Rebuild frontend without -SkipFrontendBuild."
+}
+
+$CurrentFrontendMode = (Get-Content -Path $FrontendModeMarker -Raw).Trim().ToLowerInvariant()
+if ($CurrentFrontendMode -ne $FrontendTargetMode) {
+  throw "Frontend dist was built for mode '$CurrentFrontendMode' but target '$Target' requires '$FrontendTargetMode'. Rebuild without -SkipFrontendBuild."
 }
 
 & $PythonExe -m pip install --upgrade pip

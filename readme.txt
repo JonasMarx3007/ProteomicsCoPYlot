@@ -43,6 +43,10 @@ WINDOWS BUILD EXE VIEWER ONLY (ONEFILE)
 .\build_exe_windows.ps1 -Target Viewer
 output: .\dist\DataViewer.exe
 
+WINDOWS BUILD NOTE
+Tool and Viewer builds use different frontend modes.
+Switching target requires a rebuild without -SkipFrontendBuild.
+
 MACOS INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
 cd ProteomicsCoPYlot
