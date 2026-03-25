@@ -8,6 +8,15 @@ cd ..\frontend
 npm install
 cd ..
 
+WINDOWS TERMINAL NOTE (POWERSHELL VS CMD)
+PowerShell (inside project folder):
+.\build_exe_windows.ps1 -Target Tool
+.\build_exe_windows.ps1 -Target Viewer
+
+CMD (inside project folder):
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Tool
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Viewer
+
 WINDOWS RUN ANALYSIS
 run_app.bat
 
@@ -19,6 +28,12 @@ cd frontend
 npm run build
 cd ..
 .\backend\.venv\Scripts\python.exe launch.py
+
+WINDOWS PRODUCTION RUN VIEWER
+cd frontend
+npm run build
+cd ..
+.\backend\.venv\Scripts\python.exe launch.py --viewer --port 8001
 
 WINDOWS BUILD EXE TOOL ONLY (ONEFILE)
 .\build_exe_windows.ps1 -Target Tool
@@ -46,11 +61,17 @@ MACOS RUN ANALYSIS
 MACOS RUN VIEWER
 ./run_viewer_macos.sh
 
-MACOS PRODUCTION RUN
+MACOS PRODUCTION RUN (ANALYSIS)
 cd frontend
 npm run build
 cd ..
 ./backend/.venv/bin/python3 launch.py
+
+MACOS PRODUCTION RUN (VIEWER)
+cd frontend
+npm run build
+cd ..
+./backend/.venv/bin/python3 launch.py --viewer --port 8001
 
 LINUX INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
@@ -70,8 +91,14 @@ LINUX RUN ANALYSIS
 LINUX RUN VIEWER
 ./run_viewer_linux.sh
 
-LINUX PRODUCTION RUN
+LINUX PRODUCTION RUN (ANALYSIS)
 cd frontend
 npm run build
 cd ..
 ./backend/.venv/bin/python3 launch.py
+
+LINUX PRODUCTION RUN (VIEWER)
+cd frontend
+npm run build
+cd ..
+./backend/.venv/bin/python3 launch.py --viewer --port 8001
