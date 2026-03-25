@@ -94,8 +94,11 @@ def main() -> None:
         _open_browser_later(f"http://{args.host}:{args.port}")
 
     import uvicorn
+    from app.main import app as fastapi_app
 
-    uvicorn.run("app.main:app", host=args.host, port=args.port, log_level="info")
+    # Use direct app object import so bundled onefile executables do not rely on
+    # uvicorn's dynamic string import resolution at runtime.
+    uvicorn.run(fastapi_app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":
