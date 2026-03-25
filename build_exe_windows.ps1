@@ -11,9 +11,14 @@ $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RootDir "backend"
 $FrontendDir = Join-Path $RootDir "frontend"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
+$IconPath = Join-Path $RootDir "favicon.ico"
 
 if (-not (Test-Path $PythonExe)) {
   throw "Backend virtualenv not found. Expected: $PythonExe"
+}
+
+if (-not (Test-Path $IconPath)) {
+  throw "Application icon missing. Expected: $IconPath"
 }
 
 if (-not $SkipFrontendBuild) {
@@ -51,6 +56,7 @@ function Invoke-PyInstallerBuild {
     --noconfirm `
     --clean `
     --onefile `
+    --icon $IconPath `
     --name $Name `
     --paths "backend" `
     --hidden-import "uvicorn.logging" `
