@@ -393,7 +393,11 @@ export type SingleProteinOptionsResponse = {
   conditions: string[];
   proteinCount: number;
   conditionCount: number;
+  identifier: SingleProteinIdentifier;
+  availableIdentifiers: { key: SingleProteinIdentifier; label: string }[];
 };
+
+export type SingleProteinIdentifier = "workflow" | "genes";
 
 export type SingleProteinTableResponse = {
   rows: Record<string, unknown>[];

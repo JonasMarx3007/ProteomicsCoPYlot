@@ -19,6 +19,7 @@ from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import (
     completeness_missing_value_plot,
+    completeness_missing_value_plot_peptide,
     phospho_coverage_png,
     phosphosite_plot_png,
     qc_abundance_plot,
@@ -27,6 +28,7 @@ from app.services.functions import (
     qc_coverage_plot,
     qc_cv_plot,
     qc_intensity_histogram_plot,
+    qc_peptide_coverage_plot,
     qc_pca_plot,
     qc_pca_interactive_html,
 )
@@ -55,6 +57,15 @@ GENERAL_COMMENTS: dict[str, list[str]] = {
     ],
     "MissedCleavage": [
         "Sample processing methods in proteomic bottom-up experiments include a proteolytic digestion step for peptide generation. Missed cleavages of a given protein by a specific protease can occur, nevertheless the frequency of missed cleavages should be low and comparable in all samples.",
+    ],
+    "CoveragePep": [
+        "Numbers of peptide Identifications across all samples is a measure of non-missing measurements by replicate. Protein inference, identification and quantification are all based on reproducible peptide identification and the peptide's ion intensity.",
+        "Low peptide counts in a sample / MS-run may suggest a systematic flaw in the experiment (e.g. low protein input material, protein to peptide processing errors, technical problems during LC-MS data acquisition).",
+        "Ideally, numbers of peptide identifications in all samples are high and of similar count.",
+    ],
+    "MissingValuePep": [
+        "The amount of missing values can be affected by the biological condition or by technical factors during sample processing methods or MS-measurements and it can vary largely between experiments. For a healthy experiment we expect: the distribution of available measurements by replicate to be similar across replicates, especially within the same biological/experimental condition. An unusually low value in one or more replicates can be symptomatic of technical problems and should be taken into account when interpreting the final differential protein expression results after pairwise comparison.",
+        "A high frequency of zero missing peptides indicates reproducible identifications of given peptides in all samples, a prerequisite for protein quantification.",
     ],
     "CoverageProt": [
         "Identification of proteins is a measure of the number of non-missing measurements by replicate.",
@@ -492,9 +503,11 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         html_parts.extend(
             [
                 f"<p class='toc-group'>{peptide_block}. Peptide Level Plots</p>",
-                f"<p class='toc-item'>{peptide_block}.1 Retention Time Plot</p>",
-                f"<p class='toc-item'>{peptide_block}.2 Modification Plot</p>",
-                f"<p class='toc-item'>{peptide_block}.3 Missed Cleavage Plot</p>",
+                f"<p class='toc-item'>{peptide_block}.1 Coverage Plot - Peptide Level</p>",
+                f"<p class='toc-item'>{peptide_block}.2 Missing Value Plot - Peptide Level</p>",
+                f"<p class='toc-item'>{peptide_block}.3 Retention Time Plot</p>",
+                f"<p class='toc-item'>{peptide_block}.4 Modification Plot</p>",
+                f"<p class='toc-item'>{peptide_block}.5 Missed Cleavage Plot</p>",
             ]
         )
     if protein_block is not None:
@@ -538,6 +551,34 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{peptide_block}.1",
+            title="Coverage Plot - Peptide Level",
+            description=None,
+            general_comment_key="CoveragePep",
+            text_entries=text_entries,
+            text_key="CoveragePep",
+            content_html=_safe_png(
+                renderer=lambda: qc_peptide_coverage_plot(),
+                fallback_title="Peptide Coverage Plot",
+                warnings=warnings,
+            ),
+        )
+        _append_plot_section(
+            html_parts=html_parts,
+            section_id=f"{peptide_block}.2",
+            title="Missing Value Plot - Peptide Level",
+            description=None,
+            general_comment_key="MissingValuePep",
+            text_entries=text_entries,
+            text_key="MissingValuePep",
+            content_html=_safe_png(
+                renderer=lambda: completeness_missing_value_plot_peptide(),
+                fallback_title="Peptide Missing Value Plot",
+                warnings=warnings,
+            ),
+        )
+        _append_plot_section(
+            html_parts=html_parts,
+            section_id=f"{peptide_block}.3",
             title="Retention Time Plot",
             description=None,
             general_comment_key="RT",
@@ -551,7 +592,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         _append_plot_section(
             html_parts=html_parts,
-            section_id=f"{peptide_block}.2",
+            section_id=f"{peptide_block}.4",
             title="Modification Plot",
             description=None,
             general_comment_key="Modification",
@@ -565,7 +606,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         _append_plot_section(
             html_parts=html_parts,
-            section_id=f"{peptide_block}.3",
+            section_id=f"{peptide_block}.5",
             title="Missed Cleavage Plot",
             description=None,
             general_comment_key="MissedCleavage",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,8 @@ from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.runtime_cache import apply_cached_wrappers
+
+SingleProteinIdentifier = Literal["workflow", "genes"]
 
 
 def _get_plt():
@@ -90,6 +93,29 @@ def _analysis_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str], pd.D
 
 
 def _line_box_key_column(kind: AnnotationKind, frame: pd.DataFrame) -> str:
+    return _line_box_key_column_for_identifier(kind, frame, identifier="workflow")
+
+
+def _normalize_identifier(identifier: str) -> SingleProteinIdentifier:
+    normalized = str(identifier).strip().lower()
+    if normalized == "genes":
+        return "genes"
+    return "workflow"
+
+
+def _line_box_key_column_for_identifier(
+    kind: AnnotationKind,
+    frame: pd.DataFrame,
+    identifier: str = "workflow",
+) -> str:
+    resolved_identifier = _normalize_identifier(identifier)
+    if resolved_identifier == "genes":
+        gene_candidates = ["GeneNames", "Gene_group"]
+        for candidate in gene_candidates:
+            if candidate in frame.columns:
+                return candidate
+        raise ValueError("Gene names are not available for this dataset.")
+
     if kind == "protein":
         candidates = ["ProteinNames", "Protein", "Gene"]
     else:
@@ -138,6 +164,78 @@ def _feature_label(value: object, kind: AnnotationKind) -> str:
     return text
 
 
+def _gene_tokens(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [token.strip() for token in text.split(";") if token.strip()]
+
+
+def _feature_options(
+    frame: pd.DataFrame,
+    key_col: str,
+    kind: AnnotationKind,
+    identifier: SingleProteinIdentifier,
+) -> list[str]:
+    if identifier == "genes":
+        tokens: set[str] = set()
+        for value in frame[key_col].dropna().astype(str).tolist():
+            for token in _gene_tokens(value):
+                tokens.add(token)
+        return sorted(tokens)
+
+    values = (
+        frame[key_col]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[lambda series: series != ""]
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+    if kind == "protein":
+        # Keep workflow selection compact and human-readable.
+        values = sorted({value.split(";")[0].strip() for value in values if value})
+    return values
+
+
+def _feature_match_mask(
+    values: pd.Series,
+    selected: set[str],
+    kind: AnnotationKind,
+    identifier: SingleProteinIdentifier,
+) -> pd.Series:
+    text_values = values.astype(str)
+    if identifier == "genes":
+        def _has_gene(value: str) -> bool:
+            tokens = _gene_tokens(value)
+            return any(token in selected for token in tokens)
+
+        return text_values.apply(_has_gene)
+
+    if kind == "protein":
+        return text_values.str.split(";").str[0].str.strip().isin(selected)
+    return text_values.isin(selected)
+
+
+def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    workflow_label = "Protein Names" if kind == "protein" else "Workflow Names"
+    options.append({"key": "workflow", "label": workflow_label})
+
+    for candidate in ["GeneNames", "Gene_group"]:
+        if candidate in frame.columns:
+            options.append(
+                {
+                    "key": "genes",
+                    "label": "Gene Group" if candidate == "Gene_group" else "Gene Names",
+                }
+            )
+            break
+    return options
+
+
 def _select_conditions(meta: pd.DataFrame, conditions: list[str]) -> tuple[pd.DataFrame, list[str]]:
     available = meta["condition"].astype(str).dropna().tolist()
     unique_available = list(dict.fromkeys(available))
@@ -158,12 +256,14 @@ def _lineplot_long_table(
     proteins: list[str],
     conditions: list[str],
     include_id: bool,
+    identifier: str = "workflow",
 ) -> tuple[pd.DataFrame, list[str]]:
     if not proteins:
         raise ValueError("Please select at least one protein/site for the lineplot.")
 
     frame, sample_columns, meta = _analysis_frame(kind)
-    key_col = _line_box_key_column(kind, frame)
+    resolved_identifier = _normalize_identifier(identifier)
+    key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
     data = frame[[key_col] + sample_columns].copy()
 
     meta_filtered, selected_conditions = _select_conditions(meta, conditions)
@@ -174,7 +274,12 @@ def _lineplot_long_table(
         ordered_samples.extend(labeled.loc[labeled["condition"] == condition, "new_sample"].tolist())
 
     data = data.rename(columns=rename_map)
-    feature_rows = data[data[key_col].astype(str).isin([str(item) for item in proteins])].copy()
+    selected_set = {str(item).strip() for item in proteins if str(item).strip()}
+    if not selected_set:
+        raise ValueError("Please select at least one protein/site for the lineplot.")
+
+    mask = _feature_match_mask(data[key_col], selected_set, kind, resolved_identifier)
+    feature_rows = data[mask].copy()
     if feature_rows.empty:
         raise ValueError("No rows matched the selected proteins/sites.")
 
@@ -182,17 +287,33 @@ def _lineplot_long_table(
     if not available_plot_samples:
         raise ValueError("No sample columns available after condition filtering.")
 
-    melted = feature_rows[[key_col] + available_plot_samples].melt(
-        id_vars=key_col,
-        var_name="Sample",
-        value_name="Value",
-    )
+    if resolved_identifier == "genes":
+        feature_rows["__feature_tokens"] = feature_rows[key_col].astype(str).apply(
+            lambda value: [token for token in _gene_tokens(value) if token in selected_set]
+        )
+        feature_rows = feature_rows.explode("__feature_tokens")
+        feature_rows = feature_rows[feature_rows["__feature_tokens"].notna()].copy()
+        if feature_rows.empty:
+            raise ValueError("No rows matched the selected genes.")
+        melted = feature_rows[["__feature_tokens"] + available_plot_samples].melt(
+            id_vars="__feature_tokens",
+            var_name="Sample",
+            value_name="Value",
+        )
+        melted["Feature"] = melted["__feature_tokens"].astype(str)
+    else:
+        melted = feature_rows[[key_col] + available_plot_samples].melt(
+            id_vars=key_col,
+            var_name="Sample",
+            value_name="Value",
+        )
+        melted["Feature"] = melted[key_col].apply(lambda value: _feature_label(value, kind))
+
     melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce")
     melted = melted.dropna(subset=["Value"])
     if melted.empty:
         raise ValueError("Selected proteins/sites have no numeric values in the chosen conditions.")
 
-    melted["Feature"] = melted[key_col].apply(lambda value: _feature_label(value, kind))
     melted = melted.merge(
         labeled[["new_sample", "condition"]].rename(columns={"new_sample": "Sample", "condition": "Condition"}),
         on="Sample",
@@ -208,21 +329,20 @@ def _boxplot_data(
     kind: AnnotationKind,
     protein: str,
     conditions: list[str],
+    identifier: str = "workflow",
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray], pd.DataFrame]:
     if not str(protein).strip():
         raise ValueError("Please select one protein/site for the boxplot.")
 
     frame, sample_columns, meta = _analysis_frame(kind)
-    key_col = _line_box_key_column(kind, frame)
+    resolved_identifier = _normalize_identifier(identifier)
+    key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
     data = frame[[key_col] + sample_columns].copy()
     meta_filtered, _ = _select_conditions(meta, conditions)
 
-    selected_rows = data[data[key_col].astype(str) == str(protein)].copy()
-    if selected_rows.empty and kind == "protein":
-        protein_token = str(protein).split(";")[0].strip()
-        selected_rows = data[
-            data[key_col].astype(str).str.split(";").str[0].str.strip() == protein_token
-        ].copy()
+    selected_set = {str(protein).strip()}
+    mask = _feature_match_mask(data[key_col], selected_set, kind, resolved_identifier)
+    selected_rows = data[mask].copy()
     if selected_rows.empty:
         raise ValueError("No row matched the selected protein/site.")
 
@@ -362,26 +482,34 @@ def _heatmap_matrix(
     return matrix, cbar_label
 
 
-def single_protein_options(kind: AnnotationKind, tab: str = "boxplot") -> dict[str, list[str] | int]:
+def single_protein_options(
+    kind: AnnotationKind,
+    tab: str = "boxplot",
+    identifier: str = "workflow",
+) -> dict[str, object]:
     frame, _, meta = _analysis_frame(kind)
     tab_normalized = str(tab).lower()
+    available_identifiers = _identifier_options(kind, frame)
+    available_identifier_keys = [str(item["key"]) for item in available_identifiers]
+    resolved_identifier = _normalize_identifier(identifier)
+    if resolved_identifier not in available_identifier_keys:
+        resolved_identifier = _normalize_identifier(available_identifier_keys[0] if available_identifier_keys else "workflow")
+
     if tab_normalized == "heatmap":
         if kind != "phospho":
-            return {"proteins": [], "conditions": [], "proteinCount": 0, "conditionCount": 0}
+            return {
+                "proteins": [],
+                "conditions": [],
+                "proteinCount": 0,
+                "conditionCount": 0,
+                "identifier": "workflow",
+                "availableIdentifiers": available_identifiers,
+            }
         key_col = _heatmap_protein_group_column(frame)
     else:
-        key_col = _line_box_key_column(kind, frame)
+        key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
 
-    proteins = (
-        frame[key_col]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .loc[lambda series: series != ""]
-        .drop_duplicates()
-        .sort_values()
-        .tolist()
-    )
+    proteins = _feature_options(frame, key_col, kind, resolved_identifier)
     conditions = (
         meta["condition"]
         .dropna()
@@ -397,6 +525,8 @@ def single_protein_options(kind: AnnotationKind, tab: str = "boxplot") -> dict[s
         "conditions": conditions,
         "proteinCount": len(proteins),
         "conditionCount": len(conditions),
+        "identifier": resolved_identifier,
+        "availableIdentifiers": available_identifiers,
     }
 
 
@@ -405,8 +535,15 @@ def single_protein_lineplot_table(
     proteins: list[str],
     conditions: list[str],
     include_id: bool = False,
+    identifier: str = "workflow",
 ) -> pd.DataFrame:
-    table, _ = _lineplot_long_table(kind, proteins, conditions, include_id=include_id)
+    table, _ = _lineplot_long_table(
+        kind,
+        proteins,
+        conditions,
+        include_id=include_id,
+        identifier=identifier,
+    )
     result = table[["Feature", "Sample", "Condition", "Value"]].copy()
     result["Value"] = result["Value"].round(4)
     return result
@@ -417,6 +554,7 @@ def single_protein_lineplot_plot(
     proteins: list[str],
     conditions: list[str],
     include_id: bool = False,
+    identifier: str = "workflow",
     header: bool = True,
     legend: bool = True,
     width_cm: float = 20,
@@ -424,7 +562,13 @@ def single_protein_lineplot_plot(
     dpi: int = 300,
 ) -> bytes:
     plt = _get_plt()
-    table, ordered_samples = _lineplot_long_table(kind, proteins, conditions, include_id=include_id)
+    table, ordered_samples = _lineplot_long_table(
+        kind,
+        proteins,
+        conditions,
+        include_id=include_id,
+        identifier=identifier,
+    )
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     features = table["Feature"].drop_duplicates().tolist()
@@ -445,7 +589,8 @@ def single_protein_lineplot_plot(
     ax.set_xlabel("Sample")
     ax.set_ylabel("log2 intensity")
     if header:
-        workflow = "Protein" if kind == "protein" else "Phosphosite"
+        resolved_identifier = _normalize_identifier(identifier)
+        workflow = "Gene" if resolved_identifier == "genes" else ("Protein" if kind == "protein" else "Phosphosite")
         ax.set_title(f"{workflow} expression across samples")
     if legend:
         ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
@@ -461,8 +606,9 @@ def single_protein_boxplot_table(
     kind: AnnotationKind,
     protein: str,
     conditions: list[str],
+    identifier: str = "workflow",
 ) -> pd.DataFrame:
-    _, _, _, summary_df = _boxplot_data(kind, protein, conditions)
+    _, _, _, summary_df = _boxplot_data(kind, protein, conditions, identifier=identifier)
     return summary_df
 
 
@@ -470,6 +616,7 @@ def single_protein_boxplot_plot(
     kind: AnnotationKind,
     protein: str,
     conditions: list[str],
+    identifier: str = "workflow",
     outliers: bool = False,
     dots: bool = False,
     header: bool = True,
@@ -479,7 +626,12 @@ def single_protein_boxplot_plot(
     dpi: int = 300,
 ) -> bytes:
     plt = _get_plt()
-    intensities, labels, condition_values, _ = _boxplot_data(kind, protein, conditions)
+    intensities, labels, condition_values, _ = _boxplot_data(
+        kind,
+        protein,
+        conditions,
+        identifier=identifier,
+    )
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if not intensities:
@@ -509,7 +661,8 @@ def single_protein_boxplot_plot(
     ax.set_xlabel("Condition")
     ax.set_ylabel("log2 intensity")
     if header:
-        label = _feature_label(protein, kind)
+        resolved_identifier = _normalize_identifier(identifier)
+        label = str(protein).strip() if resolved_identifier == "genes" else _feature_label(protein, kind)
         ax.set_title(f"Measured {label} intensity values (log2)")
 
     if legend:

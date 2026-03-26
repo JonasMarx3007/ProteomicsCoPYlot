@@ -186,65 +186,12 @@ def _peptide_quantity_column(frame: pd.DataFrame) -> str:
 
 
 def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
-    file_col = _peptide_file_column(frame)
-    file_names = [
-        str(value)
-        for value in frame[file_col].dropna().astype(str).tolist()
-        if str(value).strip()
-    ]
-    ordered_files = list(dict.fromkeys(file_names))
-    if not ordered_files:
-        raise ValueError("Peptide dataset does not contain sample entries in the file-name column.")
+    # Reuse the exact metadata preparation used by peptide modification/missed-cleavage
+    # so peptide coverage follows the same shared proteome metadata behavior.
+    from app.services.peptide_tools import _prepare_metadata as _prepare_peptide_metadata
 
-    annotation = get_annotation("protein")
-    if annotation is not None and not annotation.metadata.empty and "sample" in annotation.metadata.columns:
-        meta = annotation.metadata.copy()
-        if "condition" not in meta.columns:
-            meta["condition"] = "sample"
-        meta = meta[["sample", "condition"]].copy()
-        meta["sample"] = meta["sample"].astype(str)
-        meta["condition"] = meta["condition"].astype(str)
-
-        id_to_file: dict[str, str] = {}
-        file_set = set(ordered_files)
-        for value in ordered_files:
-            id_to_file.setdefault(_extract_id_or_number(value), value)
-
-        matched_rows: list[dict[str, str]] = []
-        for _, row in meta.iterrows():
-            sample = str(row["sample"])
-            condition = str(row["condition"])
-            if sample in file_set:
-                matched_rows.append({"sample": sample, "condition": condition, "source_sample": sample})
-                continue
-            sample_id = _extract_id_or_number(sample)
-            mapped = id_to_file.get(sample_id)
-            if mapped is not None:
-                matched_rows.append({"sample": mapped, "condition": condition, "source_sample": sample})
-
-        if matched_rows:
-            resolved = pd.DataFrame(matched_rows)
-            resolved = resolved.drop_duplicates(subset=["sample"], keep="first").reset_index(drop=True)
-        else:
-            resolved = pd.DataFrame({"sample": ordered_files, "condition": ["sample"] * len(ordered_files)})
-            resolved["source_sample"] = resolved["sample"]
-    else:
-        resolved = pd.DataFrame({"sample": ordered_files, "condition": ["sample"] * len(ordered_files)})
-        resolved["source_sample"] = resolved["sample"]
-
-    resolved["id"] = resolved["source_sample"].astype(str).apply(_extract_id_or_number)
-    resolved["sample_index"] = resolved.groupby("condition").cumcount() + 1
-    if include_id:
-        resolved["label"] = resolved.apply(
-            lambda row: f"{row['condition']}_{row['sample_index']}\n({row['id']})",
-            axis=1,
-        )
-    else:
-        resolved["label"] = resolved.apply(
-            lambda row: f"{row['condition']}_{row['sample_index']}",
-            axis=1,
-        )
-    return resolved
+    meta = _prepare_peptide_metadata(frame, include_id=include_id).copy()
+    return meta.rename(columns={"new_sample": "label"})
 
 
 def _coverage_frame(kind: AnnotationKind):
@@ -776,7 +723,10 @@ def qc_peptide_coverage_plot(
 ) -> bytes:
     from matplotlib.patches import Rectangle
 
-    from app.services.peptide_tools import get_peptide_frame
+    from app.services.peptide_tools import (
+        _extract_id_or_number as _extract_peptide_id,
+        get_peptide_frame,
+    )
 
     plt = _get_plt()
     frame = get_peptide_frame()
@@ -794,8 +744,11 @@ def qc_peptide_coverage_plot(
     if pivot.empty:
         raise ValueError("No peptide entries are available for coverage plotting.")
 
+    pivot = pivot.copy()
+    pivot.columns = [_extract_peptide_id(column) for column in pivot.columns]
+
     labels = meta["label"].astype(str).tolist()
-    rename_map = dict(zip(meta["sample"].astype(str), labels))
+    rename_map = dict(zip(meta["id"].astype(str), labels))
     pivot = pivot.rename(columns=rename_map)
     selected = [label for label in labels if label in pivot.columns]
     if not selected:

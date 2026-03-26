@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from typing import BinaryIO
 
 import pandas as pd
@@ -33,17 +34,39 @@ def make_columns_unique(columns: list[str]) -> list[str]:
     return result
 
 
+def _normalize_colname(name: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
+
+
 def rename_cols(df: pd.DataFrame) -> pd.DataFrame:
-    rename_map = {
-        "Run": "File.Name",
-        "PG.ProteinNames": "ProteinNames",
-        "PG.ProteinGroups": "ProteinNames",
-        "Protein.IDs": "ProteinNames",
-        "PG.Genes": "GeneNames",
-        "Protein.Names": "ProteinNames",
-        "Protein IDs": "ProteinNames",
+    # Trim whitespace first to make downstream aliasing predictable.
+    renamed = df.copy()
+    renamed.columns = [str(col).strip() for col in renamed.columns]
+
+    alias_targets = {
+        "run": "File.Name",
+        "pgproteinnames": "ProteinNames",
+        "pgproteingroups": "ProteinNames",
+        "proteinids": "ProteinNames",
+        "proteinnames": "ProteinNames",
+        "genes": "GeneNames",
+        "genenames": "GeneNames",
+        "pggenes": "GeneNames",
     }
-    return df.rename(columns=rename_map)
+
+    current_columns = [str(col) for col in renamed.columns]
+    occupied = set(current_columns)
+    rename_map: dict[str, str] = {}
+    for column in current_columns:
+        target = alias_targets.get(_normalize_colname(column))
+        if not target or target == column:
+            continue
+        # Avoid creating unnecessary duplicate canonical columns.
+        if target in occupied:
+            continue
+        rename_map[column] = target
+        occupied.add(target)
+    return renamed.rename(columns=rename_map)
 
 
 def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:

@@ -9,6 +9,7 @@ import {
 } from "../../lib/plotDownload";
 import type {
   AnnotationKind,
+  SingleProteinIdentifier,
   SingleProteinOptionsResponse,
   SingleProteinTab,
 } from "../../lib/types";
@@ -42,6 +43,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const [box, setBox] = useState({
+    identifier: "workflow" as SingleProteinIdentifier,
     protein: "",
     conditions: [] as string[],
     outliers: false,
@@ -53,6 +55,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     dpi: 300,
   });
   const [line, setLine] = useState({
+    identifier: "workflow" as SingleProteinIdentifier,
     proteins: [] as string[],
     conditions: [] as string[],
     includeId: false,
@@ -78,6 +81,8 @@ export default function SingleProteinPage({ activeTab }: Props) {
   });
 
   const effectiveKind: AnnotationKind = activeTab === "heatmap" ? "phospho" : kind;
+  const activeIdentifier: SingleProteinIdentifier =
+    activeTab === "boxplot" ? box.identifier : activeTab === "lineplot" ? line.identifier : "workflow";
   const hasPhospho = availableKinds.includes("phospho");
   const hasRequiredDataset = activeTab === "heatmap" ? hasPhospho : availableKinds.includes(effectiveKind);
 
@@ -104,7 +109,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     let cancelled = false;
     setOptionsLoading(true);
     setOptionsError(null);
-    getSingleProteinOptions(effectiveKind, activeTab)
+    getSingleProteinOptions(effectiveKind, activeTab, activeIdentifier)
       .then((data) => {
         if (cancelled) return;
         setOptions(data);
@@ -122,7 +127,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, effectiveKind, hasRequiredDataset]);
+  }, [activeTab, effectiveKind, hasRequiredDataset, activeIdentifier]);
 
   useEffect(() => {
     if (!options) return;
@@ -131,23 +136,31 @@ export default function SingleProteinPage({ activeTab }: Props) {
 
     if (activeTab === "boxplot") {
       setBox((prev) => {
+        const validIdentifiers = new Set((options.availableIdentifiers ?? []).map((entry) => entry.key));
+        const nextIdentifier = validIdentifiers.has(prev.identifier)
+          ? prev.identifier
+          : (options.identifier ?? "workflow");
         const nextProtein =
           prev.protein && proteinChoices.includes(prev.protein) ? prev.protein : proteinChoices[0] ?? "";
         const filtered = prev.conditions.filter((value) => conditionChoices.includes(value));
         const nextConditions = filtered.length > 0 ? filtered : [...conditionChoices];
-        return { ...prev, protein: nextProtein, conditions: nextConditions };
+        return { ...prev, identifier: nextIdentifier, protein: nextProtein, conditions: nextConditions };
       });
       return;
     }
 
     if (activeTab === "lineplot") {
       setLine((prev) => {
+        const validIdentifiers = new Set((options.availableIdentifiers ?? []).map((entry) => entry.key));
+        const nextIdentifier = validIdentifiers.has(prev.identifier)
+          ? prev.identifier
+          : (options.identifier ?? "workflow");
         const filteredProteins = prev.proteins.filter((value) => proteinChoices.includes(value));
         const nextProteins =
           filteredProteins.length > 0 ? filteredProteins : proteinChoices.slice(0, Math.min(3, proteinChoices.length));
         const filteredConditions = prev.conditions.filter((value) => conditionChoices.includes(value));
         const nextConditions = filteredConditions.length > 0 ? filteredConditions : [...conditionChoices];
-        return { ...prev, proteins: nextProteins, conditions: nextConditions };
+        return { ...prev, identifier: nextIdentifier, proteins: nextProteins, conditions: nextConditions };
       });
       return;
     }
@@ -168,6 +181,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
         title: "Protein Boxplot",
         filename: `single_protein_boxplot_${effectiveKind}.png`,
         url: buildPlotUrl(`/api/plots/single-protein/${effectiveKind}/boxplot.png`, {
+          identifier: box.identifier,
           protein: box.protein,
           conditions: box.conditions.join(","),
           outliers: box.outliers,
@@ -187,6 +201,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
         title: "Protein Lineplot",
         filename: `single_protein_lineplot_${effectiveKind}.png`,
         url: buildPlotUrl(`/api/plots/single-protein/${effectiveKind}/lineplot.png`, {
+          identifier: line.identifier,
           proteins: line.proteins.join(","),
           conditions: line.conditions.join(","),
           includeId: line.includeId,
@@ -232,6 +247,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     if (activeTab === "boxplot") {
       if (!box.protein || box.conditions.length === 0) return null;
       const params: Record<string, string | number | boolean> = {
+        identifier: box.identifier,
         protein: box.protein,
         conditions: box.conditions.join(","),
       };
@@ -245,6 +261,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     if (activeTab === "lineplot") {
       if (line.proteins.length === 0 || line.conditions.length === 0) return null;
       const params: Record<string, string | number | boolean> = {
+        identifier: line.identifier,
         proteins: line.proteins.join(","),
         conditions: line.conditions.join(","),
         includeId: line.includeId,
@@ -477,14 +494,27 @@ export default function SingleProteinPage({ activeTab }: Props) {
   function renderOptions() {
     const proteinOptions = options?.proteins ?? [];
     const conditionOptions = options?.conditions ?? [];
+    const identifierEntries = options?.availableIdentifiers ?? [{ key: "workflow", label: "Workflow Names" }];
+    const identifierOptions = identifierEntries.map((entry) => entry.key);
+    const identifierLabels = Object.fromEntries(identifierEntries.map((entry) => [entry.key, entry.label]));
 
     if (activeTab === "boxplot") {
       return (
         <OptionsLayout
           fields={[
             <SelectField
+              key="identifier"
+              label="Identifier"
+              value={box.identifier}
+              options={identifierOptions}
+              labels={identifierLabels}
+              onChange={(value) =>
+                setBox({ ...box, identifier: value as SingleProteinIdentifier, protein: "" })
+              }
+            />,
+            <SelectField
               key="protein"
-              label="Protein / Site"
+              label={box.identifier === "genes" ? "Gene" : "Protein / Site"}
               value={box.protein}
               options={proteinOptions}
               onChange={(value) => setBox({ ...box, protein: value })}
@@ -521,9 +551,19 @@ export default function SingleProteinPage({ activeTab }: Props) {
       return (
         <OptionsLayout
           fields={[
+            <SelectField
+              key="identifier"
+              label="Identifier"
+              value={line.identifier}
+              options={identifierOptions}
+              labels={identifierLabels}
+              onChange={(value) =>
+                setLine({ ...line, identifier: value as SingleProteinIdentifier, proteins: [] })
+              }
+            />,
             <MultiSelectField
               key="proteins"
-              label="Proteins / Sites"
+              label={line.identifier === "genes" ? "Genes" : "Proteins / Sites"}
               value={line.proteins}
               options={proteinOptions}
               onChange={(value) => setLine({ ...line, proteins: value })}
@@ -661,11 +701,13 @@ function SelectField({
   label,
   value,
   options,
+  labels,
   onChange,
 }: {
   label: string;
   value: string;
   options: string[];
+  labels?: Record<string, string>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -678,7 +720,7 @@ function SelectField({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {labels?.[option] ?? option}
           </option>
         ))}
       </select>
