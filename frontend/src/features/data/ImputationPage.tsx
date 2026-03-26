@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildPlotUrl, downloadImputationCsv, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
 
 export default function ImputationPage() {
@@ -14,6 +20,7 @@ export default function ImputationPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImputationResultResponse | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   async function fetchPreview() {
     if (!availableKinds.includes(kind)) {
@@ -188,18 +195,24 @@ export default function ImputationPage() {
             title="Before: With vs Without Missing Values"
             imageUrl={beforePlotUrl}
             filename={`imputation_before_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
           />
 
           <PlotSection
             title="Overall Distribution with Normal Fit"
             imageUrl={overallPlotUrl}
             filename={`imputation_fit_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
           />
 
           <PlotSection
             title="After: Non-Imputed vs Imputed Values"
             imageUrl={afterPlotUrl}
             filename={`imputation_after_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
           />
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -239,22 +252,41 @@ function PlotSection({
   title,
   imageUrl,
   filename,
+  downloadFormat,
+  setDownloadFormat,
 }: {
   title: string;
   imageUrl: string;
   filename: string;
+  downloadFormat: PlotDownloadFormat;
+  setDownloadFormat: (value: PlotDownloadFormat) => void;
 }) {
+  const downloadUrl = withPlotDownloadFormat(imageUrl, downloadFormat);
+  const downloadFilename = withPlotDownloadFilename(filename, downloadFormat);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        <a
-          href={imageUrl}
-          download={filename}
-          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-        >
-          Download Plot
-        </a>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={downloadFormat}
+            onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+            className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+          >
+            {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <a
+            href={downloadUrl}
+            download={downloadFilename}
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+          >
+            Download Plot
+          </a>
+        </div>
       </div>
       <div className="mt-4">
         <img src={imageUrl} alt={title} className="w-full rounded-xl border border-slate-200" />

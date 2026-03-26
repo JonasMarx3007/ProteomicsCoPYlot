@@ -152,6 +152,101 @@ def _distribution_frame(kind: AnnotationKind):
     return raw
 
 
+def _peptide_file_column(frame: pd.DataFrame) -> str:
+    if "File.Name" in frame.columns:
+        return "File.Name"
+    for column in frame.columns:
+        normalized = str(column).strip().lower()
+        if "file" in normalized and "name" in normalized:
+            return str(column)
+    raise ValueError("Peptide dataset is missing a file-name column.")
+
+
+def _peptide_sequence_column(frame: pd.DataFrame) -> str:
+    if "Stripped.Sequence" in frame.columns:
+        return "Stripped.Sequence"
+    for column in frame.columns:
+        normalized = str(column).strip().lower()
+        if "stripped" in normalized and "sequence" in normalized:
+            return str(column)
+    raise ValueError("Peptide dataset is missing a stripped-sequence column.")
+
+
+def _peptide_quantity_column(frame: pd.DataFrame) -> str:
+    if "Precursor.Quantity" in frame.columns:
+        return "Precursor.Quantity"
+    for column in frame.columns:
+        normalized = str(column).strip().lower()
+        if "quantity" in normalized:
+            return str(column)
+    numeric_cols = frame.select_dtypes(include=[np.number]).columns.astype(str).tolist()
+    if numeric_cols:
+        return numeric_cols[0]
+    raise ValueError("Peptide dataset is missing a usable quantity column.")
+
+
+def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
+    file_col = _peptide_file_column(frame)
+    file_names = [
+        str(value)
+        for value in frame[file_col].dropna().astype(str).tolist()
+        if str(value).strip()
+    ]
+    ordered_files = list(dict.fromkeys(file_names))
+    if not ordered_files:
+        raise ValueError("Peptide dataset does not contain sample entries in the file-name column.")
+
+    annotation = get_annotation("protein")
+    if annotation is not None and not annotation.metadata.empty and "sample" in annotation.metadata.columns:
+        meta = annotation.metadata.copy()
+        if "condition" not in meta.columns:
+            meta["condition"] = "sample"
+        meta = meta[["sample", "condition"]].copy()
+        meta["sample"] = meta["sample"].astype(str)
+        meta["condition"] = meta["condition"].astype(str)
+
+        id_to_file: dict[str, str] = {}
+        file_set = set(ordered_files)
+        for value in ordered_files:
+            id_to_file.setdefault(_extract_id_or_number(value), value)
+
+        matched_rows: list[dict[str, str]] = []
+        for _, row in meta.iterrows():
+            sample = str(row["sample"])
+            condition = str(row["condition"])
+            if sample in file_set:
+                matched_rows.append({"sample": sample, "condition": condition, "source_sample": sample})
+                continue
+            sample_id = _extract_id_or_number(sample)
+            mapped = id_to_file.get(sample_id)
+            if mapped is not None:
+                matched_rows.append({"sample": mapped, "condition": condition, "source_sample": sample})
+
+        if matched_rows:
+            resolved = pd.DataFrame(matched_rows)
+            resolved = resolved.drop_duplicates(subset=["sample"], keep="first").reset_index(drop=True)
+        else:
+            resolved = pd.DataFrame({"sample": ordered_files, "condition": ["sample"] * len(ordered_files)})
+            resolved["source_sample"] = resolved["sample"]
+    else:
+        resolved = pd.DataFrame({"sample": ordered_files, "condition": ["sample"] * len(ordered_files)})
+        resolved["source_sample"] = resolved["sample"]
+
+    resolved["id"] = resolved["source_sample"].astype(str).apply(_extract_id_or_number)
+    resolved["sample_index"] = resolved.groupby("condition").cumcount() + 1
+    if include_id:
+        resolved["label"] = resolved.apply(
+            lambda row: f"{row['condition']}_{row['sample_index']}\n({row['id']})",
+            axis=1,
+        )
+    else:
+        resolved["label"] = resolved.apply(
+            lambda row: f"{row['condition']}_{row['sample_index']}",
+            axis=1,
+        )
+    return resolved
+
+
 def _coverage_frame(kind: AnnotationKind):
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
@@ -668,6 +763,74 @@ def qc_intensity_histogram_plot(
             legend_obj.remove()
         plt.tight_layout()
 
+    return _to_png_bytes(fig, plt, dpi=dpi)
+
+
+def qc_peptide_coverage_plot(
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from matplotlib.patches import Rectangle
+
+    from app.services.peptide_tools import get_peptide_frame
+
+    plt = _get_plt()
+    frame = get_peptide_frame()
+    file_col = _peptide_file_column(frame)
+    seq_col = _peptide_sequence_column(frame)
+    quantity_col = _peptide_quantity_column(frame)
+    meta = _peptide_coverage_metadata(frame, include_id=include_id)
+
+    pivot = frame.pivot_table(
+        index=seq_col,
+        columns=file_col,
+        values=quantity_col,
+        aggfunc="max",
+    )
+    if pivot.empty:
+        raise ValueError("No peptide entries are available for coverage plotting.")
+
+    labels = meta["label"].astype(str).tolist()
+    rename_map = dict(zip(meta["sample"].astype(str), labels))
+    pivot = pivot.rename(columns=rename_map)
+    selected = [label for label in labels if label in pivot.columns]
+    if not selected:
+        raise ValueError("Peptide metadata does not match peptide sample columns.")
+
+    data_filtered = pivot[selected].copy()
+    summary = data_filtered.notna().sum(axis=0).reset_index()
+    summary.columns = ["Sample", "Value"]
+    summary["Sample"] = pd.Categorical(summary["Sample"], categories=selected, ordered=True)
+    summary = summary.sort_values("Sample")
+    peptides_count = int(pivot.shape[0])
+
+    conditions = meta["condition"].astype(str).dropna().tolist()
+    ordered_conditions = list(dict.fromkeys(conditions))
+    color_map = _condition_colors("protein", plt, ordered_conditions)
+    sample_to_condition = dict(zip(meta["label"].astype(str), meta["condition"].astype(str)))
+    bar_colors = [
+        color_map.get(sample_to_condition.get(str(sample), ""), "#1f77b4")
+        for sample in summary["Sample"].astype(str).tolist()
+    ]
+
+    fig, ax = _make_fig(plt, width_cm, height_cm)
+    ax.bar(range(len(summary)), summary["Value"].to_numpy(dtype=float), color=bar_colors)
+    ax.axhline(y=peptides_count, color="red", linestyle="--")
+    if header:
+        ax.set_title("Peptides per sample")
+    ax.set_ylabel("Number of peptides")
+    ax.set_xticks(range(len(summary)))
+    ax.set_xticklabels(summary["Sample"].astype(str).tolist(), rotation=90)
+
+    if legend and ordered_conditions:
+        handles = [Rectangle((0, 0), 1, 1, color=color_map[condition]) for condition in ordered_conditions]
+        ax.legend(handles, ordered_conditions, title="Condition", bbox_to_anchor=(1.05, 1), loc="upper left")
+
+    fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 

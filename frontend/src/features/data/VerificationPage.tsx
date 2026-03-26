@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { buildPlotUrl, getVerificationSummary } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type { AnnotationKind, VerificationSummaryResponse } from "../../lib/types";
 
 export default function VerificationPage() {
@@ -9,6 +15,7 @@ export default function VerificationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<VerificationSummaryResponse | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   async function loadSummary() {
     if (!availableKinds.includes(kind)) {
@@ -41,7 +48,17 @@ export default function VerificationPage() {
   }, [kind, availableKinds]);
 
   const firstDigitUrl = buildPlotUrl(`/api/plots/verification/${kind}/first-digit.png`);
+  const firstDigitDownloadUrl = withPlotDownloadFormat(firstDigitUrl, downloadFormat);
+  const firstDigitDownloadFilename = withPlotDownloadFilename(
+    `verification_first_digit_${kind}.png`,
+    downloadFormat
+  );
   const duplicateUrl = buildPlotUrl(`/api/plots/verification/${kind}/duplicate-pattern.png`);
+  const duplicateDownloadUrl = withPlotDownloadFormat(duplicateUrl, downloadFormat);
+  const duplicateDownloadFilename = withPlotDownloadFilename(
+    `verification_duplicate_${kind}.png`,
+    downloadFormat
+  );
 
   return (
     <div className="space-y-6">
@@ -101,13 +118,26 @@ export default function VerificationPage() {
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-slate-900">First-Digit Analysis</h3>
-              <a
-                href={firstDigitUrl}
-                download={`verification_first_digit_${kind}.png`}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={downloadFormat}
+                  onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                  className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+                >
+                  {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <a
+                  href={firstDigitDownloadUrl}
+                  download={firstDigitDownloadFilename}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+                >
+                  Download Plot
+                </a>
+              </div>
             </div>
             <div className="mt-4">
               <img src={firstDigitUrl} alt="First digit verification plot" className="w-full rounded-xl border border-slate-200" />
@@ -118,8 +148,8 @@ export default function VerificationPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-slate-900">Duplicate Pattern Structure</h3>
               <a
-                href={duplicateUrl}
-                download={`verification_duplicate_${kind}.png`}
+                href={duplicateDownloadUrl}
+                download={duplicateDownloadFilename}
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
               >
                 Download Plot

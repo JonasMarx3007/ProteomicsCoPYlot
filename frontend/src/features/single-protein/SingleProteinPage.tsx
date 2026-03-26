@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type {
   AnnotationKind,
   SingleProteinOptionsResponse,
@@ -33,6 +39,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const [box, setBox] = useState({
     protein: "",
@@ -212,6 +219,14 @@ export default function SingleProteinPage({ activeTab }: Props) {
       }),
     };
   }, [activeTab, box, line, heatmap, effectiveKind]);
+  const plotDownloadUrl = useMemo(() => {
+    if (!plotView) return "";
+    return withPlotDownloadFormat(plotView.url, downloadFormat);
+  }, [plotView, downloadFormat]);
+  const plotDownloadFilename = useMemo(() => {
+    if (!plotView) return "";
+    return withPlotDownloadFilename(plotView.filename, downloadFormat);
+  }, [plotView, downloadFormat]);
 
   const tableRequest = useMemo<TableRequest | null>(() => {
     if (activeTab === "boxplot") {
@@ -377,13 +392,26 @@ export default function SingleProteinPage({ activeTab }: Props) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
           {plotView ? (
-            <a
-              href={plotView.url}
-              download={plotView.filename}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-            >
-              Download Plot
-            </a>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={downloadFormat}
+                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+              >
+                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={plotDownloadUrl}
+                download={plotDownloadFilename}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
           ) : null}
         </div>
 
