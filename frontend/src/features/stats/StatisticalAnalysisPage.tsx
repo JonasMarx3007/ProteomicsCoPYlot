@@ -832,6 +832,7 @@ function PathwayHeatmapPanel({
   const [pathway, setPathway] = useState("");
   const [selectedConditions, setSelectedConditions] = useState<string[]>([]);
   const [valueType, setValueType] = useState<"log2" | "z">("z");
+  const [includeId, setIncludeId] = useState(false);
   const [header, setHeader] = useState(true);
   const [removeEmpty, setRemoveEmpty] = useState(true);
   const [clusterRows, setClusterRows] = useState(false);
@@ -876,6 +877,7 @@ function PathwayHeatmapPanel({
     pathway,
     conditions: selectedConditions.join(","),
     valueType,
+    includeId,
     header,
     removeEmpty,
     clusterRows,
@@ -910,6 +912,7 @@ function PathwayHeatmapPanel({
         <div className="mt-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <CheckboxField label="Show gene labels" checked={header} onChange={setHeader} />
+            <CheckboxField label="Toggle ID" checked={includeId} onChange={setIncludeId} />
             <CheckboxField label="Remove empty genes" checked={removeEmpty} onChange={setRemoveEmpty} />
             <CheckboxField label="Cluster rows" checked={clusterRows} onChange={setClusterRows} />
             <CheckboxField label="Cluster columns" checked={clusterCols} onChange={setClusterCols} />

@@ -1,19 +1,32 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getCompletenessTables } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type { AnnotationKind, CompletenessTab, CompletenessTablesResponse } from "../../lib/types";
 
 type Props = {
   activeTab: CompletenessTab;
 };
 
+type CompletenessKind = AnnotationKind | "peptide" | "precursor";
+
+function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
+  return kind === "protein" || kind === "phospho" || kind === "phosprot";
+}
+
 export default function CompletenessPage({ activeTab }: Props) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
-  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
+  const [kind, setKind] = useState<CompletenessKind>("protein");
+  const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const [missingPlot, setMissingPlot] = useState({
     header: true,
@@ -37,8 +50,18 @@ export default function CompletenessPage({ activeTab }: Props) {
     outlierThreshold: 50,
   });
 
+  const activeKindOptions = useMemo<Array<{ value: CompletenessKind; label: string }>>(() => {
+    if (activeTab !== "missingPlot") return kindOptions;
+    const options: Array<{ value: CompletenessKind; label: string }> = [...kindOptions];
+    if (datasets?.peptide) {
+      options.push({ value: "peptide", label: "Peptide" });
+      options.push({ value: "precursor", label: "Precursor" });
+    }
+    return options;
+  }, [activeTab, kindOptions, datasets]);
+
   async function loadTables() {
-    if (!availableKinds.includes(kind)) {
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setTableData(null);
       setTableError("Please upload a protein, phospho, or phosphoprotein dataset first.");
       return;
@@ -60,18 +83,18 @@ export default function CompletenessPage({ activeTab }: Props) {
   }
 
   useEffect(() => {
-    if (availableKinds.length === 0) {
+    if (activeKindOptions.length === 0) {
       setTableData(null);
       return;
     }
-    if (!availableKinds.includes(kind)) {
-      setKind(availableKinds[0]);
+    if (!activeKindOptions.some((option) => option.value === kind)) {
+      setKind(activeKindOptions[0].value);
     }
-  }, [availableKinds, kind]);
+  }, [activeKindOptions, kind]);
 
   useEffect(() => {
     if (activeTab !== "tables") return;
-    if (!availableKinds.includes(kind)) return;
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) return;
     loadTables();
   }, [activeTab, kind, tables.includeId, tables.outlierThreshold, availableKinds]);
 
@@ -92,6 +115,14 @@ export default function CompletenessPage({ activeTab }: Props) {
     }
     return null;
   }, [activeTab, kind, missingPlot, heatmap]);
+  const plotDownloadUrl = useMemo(() => {
+    if (!plotView) return "";
+    return withPlotDownloadFormat(plotView.url, downloadFormat);
+  }, [plotView, downloadFormat]);
+  const plotDownloadFilename = useMemo(() => {
+    if (!plotView) return "";
+    return withPlotDownloadFilename(plotView.filename, downloadFormat);
+  }, [plotView, downloadFormat]);
 
   const sampleCsvUrl = useMemo(() => {
     if (!tableData || tableData.sampleSummary.length === 0) return null;
@@ -120,14 +151,14 @@ export default function CompletenessPage({ activeTab }: Props) {
             <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
             <select
               value={kind}
-              onChange={(e) => setKind(e.target.value as AnnotationKind)}
-              disabled={kindOptions.length === 0}
+              onChange={(e) => setKind(e.target.value as CompletenessKind)}
+              disabled={activeKindOptions.length === 0}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
             >
-              {kindOptions.length === 0 ? (
+              {activeKindOptions.length === 0 ? (
                 <option value="">No dataset available</option>
               ) : (
-                kindOptions.map((option) => (
+                activeKindOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -138,30 +169,43 @@ export default function CompletenessPage({ activeTab }: Props) {
         </div>
       </section>
 
-      {kindOptions.length === 0 ? (
+      {activeKindOptions.length === 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
-          Upload a protein, phospho, or phosphoprotein dataset in the Data tab to enable completeness plots.
+          Upload a protein, phospho, phosphoprotein, or peptide dataset in the Data tab to enable completeness plots.
         </section>
       ) : null}
 
-      {kindOptions.length > 0 ? (
+      {activeKindOptions.length > 0 ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
       ) : null}
 
-      {kindOptions.length > 0 && plotView ? (
+      {activeKindOptions.length > 0 && plotView ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">{plotView.title}</h3>
-            <a
-              href={plotView.url}
-              download={plotView.filename}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-            >
-              Download Plot
-            </a>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={downloadFormat}
+                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+              >
+                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={plotDownloadUrl}
+                download={plotDownloadFilename}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
           </div>
           <div className="mt-4">
             <img
@@ -181,7 +225,7 @@ export default function CompletenessPage({ activeTab }: Props) {
         </section>
       ) : null}
 
-      {kindOptions.length > 0 && activeTab === "tables" ? (
+      {activeKindOptions.length > 0 && activeTab === "tables" && isAnnotationKind(kind) ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Missing Value Tables</h3>

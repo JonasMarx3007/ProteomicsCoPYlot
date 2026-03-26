@@ -16,6 +16,8 @@ from app.services.functions import (
     comparison_venn_png,
     completeness_missing_value_heatmap,
     completeness_missing_value_plot,
+    completeness_missing_value_plot_peptide,
+    completeness_missing_value_plot_precursor,
     distribution_qqnorm_plot,
     imputation_after_plot,
     imputation_before_plot,
@@ -29,6 +31,7 @@ from app.services.functions import (
     qc_boxplot_plot,
     qc_correlation_plot,
     qc_coverage_plot,
+    qc_peptide_coverage_plot,
     qc_cv_plot,
     qc_intensity_histogram_plot,
     qc_pca_plot,
@@ -426,7 +429,7 @@ async def verification_duplicate_route(kind: AnnotationKind) -> Response:
 
 @router.get("/completeness/{kind}/missing-value.png")
 async def completeness_missing_value_route(
-    kind: AnnotationKind,
+    kind: str,
     binCount: int = 0,
     header: bool = True,
     text: bool = True,
@@ -437,19 +440,48 @@ async def completeness_missing_value_route(
     dpi: int = 300,
 ) -> Response:
     try:
-        return _png_response(
-            completeness_missing_value_plot(
-                kind=kind,
-                bin_count=binCount,
-                header=header,
-                text=text,
-                text_size=textSize,
-                color=color,
-                width_cm=widthCm,
-                height_cm=heightCm,
-                dpi=dpi,
+        kind_normalized = kind.strip().lower()
+        if kind_normalized == "peptide":
+            return _png_response(
+                completeness_missing_value_plot_peptide(
+                    bin_count=binCount,
+                    header=header,
+                    text=text,
+                    text_size=textSize,
+                    color=color,
+                    width_cm=widthCm,
+                    height_cm=heightCm,
+                    dpi=dpi,
+                )
             )
-        )
+        if kind_normalized == "precursor":
+            return _png_response(
+                completeness_missing_value_plot_precursor(
+                    bin_count=binCount,
+                    header=header,
+                    text=text,
+                    text_size=textSize,
+                    color=color,
+                    width_cm=widthCm,
+                    height_cm=heightCm,
+                    dpi=dpi,
+                )
+            )
+        if kind_normalized in {"protein", "phospho", "phosprot"}:
+            return _png_response(
+                completeness_missing_value_plot(
+                    kind=kind_normalized,
+                    bin_count=binCount,
+                    header=header,
+                    text=text,
+                    text_size=textSize,
+                    color=color,
+                    width_cm=widthCm,
+                    height_cm=heightCm,
+                    dpi=dpi,
+                )
+            )
+        raise ValueError("Unsupported completeness dataset level.")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -484,7 +516,7 @@ async def completeness_missing_heatmap_route(
 
 @router.get("/qc/{kind}/coverage.png")
 async def qc_coverage_route(
-    kind: AnnotationKind,
+    kind: str,
     includeId: bool = False,
     header: bool = True,
     legend: bool = True,
@@ -496,20 +528,34 @@ async def qc_coverage_route(
     dpi: int = 300,
 ) -> Response:
     try:
-        return _png_response(
-            qc_coverage_plot(
-                kind=kind,
-                include_id=includeId,
-                header=header,
-                legend=legend,
-                summary=summary,
-                text=text,
-                text_size=textSize,
-                width_cm=widthCm,
-                height_cm=heightCm,
-                dpi=dpi,
+        kind_normalized = kind.strip().lower()
+        if kind_normalized == "peptide":
+            return _png_response(
+                qc_peptide_coverage_plot(
+                    include_id=includeId,
+                    header=header,
+                    legend=legend,
+                    width_cm=widthCm,
+                    height_cm=heightCm,
+                    dpi=dpi,
+                )
             )
-        )
+        if kind_normalized in {"protein", "phospho", "phosprot"}:
+            return _png_response(
+                qc_coverage_plot(
+                    kind=kind_normalized,
+                    include_id=includeId,
+                    header=header,
+                    legend=legend,
+                    summary=summary,
+                    text=text,
+                    text_size=textSize,
+                    width_cm=widthCm,
+                    height_cm=heightCm,
+                    dpi=dpi,
+                )
+            )
+        raise ValueError("Unsupported QC dataset level.")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getQcPlotOptions, getQcTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import { saveQcReportSettings } from "../../lib/reportState";
 import type { AnnotationKind, QcTab } from "../../lib/types";
 
@@ -13,14 +19,21 @@ type QcTableRequest = {
   params?: Record<string, string | number | boolean>;
 };
 
+type QcKind = AnnotationKind | "peptide";
+
+function isAnnotationKind(kind: QcKind): kind is AnnotationKind {
+  return kind === "protein" || kind === "phospho" || kind === "phosprot";
+}
+
 export default function QCPipelinePage({ activeTab }: Props) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
-  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
+  const [kind, setKind] = useState<QcKind>("protein");
+  const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const [coverage, setCoverage] = useState({
     includeId: false,
@@ -92,7 +105,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
   });
 
   useEffect(() => {
-    if (!availableKinds.includes(kind)) return;
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) return;
     saveQcReportSettings(kind, {
       coverage,
       hist,
@@ -104,18 +117,27 @@ export default function QCPipelinePage({ activeTab }: Props) {
     });
   }, [kind, availableKinds, coverage, hist, box, cv, pca, abundance, correlation]);
 
+  const activeKindOptions = useMemo<Array<{ value: QcKind; label: string }>>(() => {
+    if (activeTab !== "coverage") return kindOptions;
+    const options: Array<{ value: QcKind; label: string }> = [...kindOptions];
+    if (datasets?.peptide) {
+      options.push({ value: "peptide", label: "Peptide" });
+    }
+    return options;
+  }, [activeTab, kindOptions, datasets]);
+
   useEffect(() => {
-    if (availableKinds.length === 0) {
+    if (activeKindOptions.length === 0) {
       setConditionOptions([]);
       return;
     }
-    if (!availableKinds.includes(kind)) {
-      setKind(availableKinds[0]);
+    if (!activeKindOptions.some((option) => option.value === kind)) {
+      setKind(activeKindOptions[0].value);
     }
-  }, [availableKinds, kind]);
+  }, [activeKindOptions, kind]);
 
   useEffect(() => {
-    if (!availableKinds.includes(kind)) {
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setConditionOptions([]);
       return;
     }
@@ -144,6 +166,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
   }, [conditionOptions]);
 
   const tableRequest = useMemo<QcTableRequest | null>(() => {
+    if (!isAnnotationKind(kind)) return null;
     if (activeTab === "coverage") {
       const params: Record<string, string | number | boolean> = {
         summary: coverage.summary,
@@ -169,10 +192,10 @@ export default function QCPipelinePage({ activeTab }: Props) {
       };
     }
     return null;
-  }, [activeTab, coverage.summary, box.mode]);
+  }, [kind, activeTab, coverage.summary, box.mode]);
 
   useEffect(() => {
-    if (!availableKinds.includes(kind)) {
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setTableRows([]);
       setTableError(null);
       setTableLoading(false);
@@ -210,7 +233,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
   }, [kind, tableRequest, availableKinds]);
 
   const plotView = useMemo(() => {
-    if (!availableKinds.includes(kind)) return null;
+    if (!activeKindOptions.some((option) => option.value === kind)) return null;
     if (activeTab === "coverage") {
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, coverage) };
     }
@@ -244,7 +267,16 @@ export default function QCPipelinePage({ activeTab }: Props) {
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, params) };
     }
     return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, correlation) };
-  }, [activeTab, kind, coverage, hist, box, cv, pca, abundance, correlation, availableKinds]);
+  }, [activeTab, kind, coverage, hist, box, cv, pca, abundance, correlation, activeKindOptions]);
+
+  const plotDownloadUrl = useMemo(() => {
+    if (!plotView || plotView.mode !== "image") return "";
+    return withPlotDownloadFormat(plotView.url, downloadFormat);
+  }, [plotView, downloadFormat]);
+  const plotDownloadFilename = useMemo(() => {
+    if (!plotView || plotView.mode !== "image") return "";
+    return withPlotDownloadFilename(`qc_${activeTab}_${kind}.png`, downloadFormat);
+  }, [plotView, activeTab, kind, downloadFormat]);
 
   const interactiveHeightPx = useMemo(() => {
     if (activeTab === "pca" && pca.type === "Interactive") {
@@ -285,17 +317,17 @@ export default function QCPipelinePage({ activeTab }: Props) {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">QC Pipeline</h2>
         <div className="mt-4 max-w-xs">
-          <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
-          <select
-            value={kindOptions.length === 0 ? "" : kind}
-            onChange={(e) => setKind(e.target.value as AnnotationKind)}
-            disabled={kindOptions.length === 0}
+            <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
+            <select
+            value={activeKindOptions.length === 0 ? "" : kind}
+            onChange={(e) => setKind(e.target.value as QcKind)}
+            disabled={activeKindOptions.length === 0}
             className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
           >
-            {kindOptions.length === 0 ? (
+            {activeKindOptions.length === 0 ? (
               <option value="">No dataset available</option>
             ) : (
-              kindOptions.map((option) => (
+              activeKindOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -305,31 +337,44 @@ export default function QCPipelinePage({ activeTab }: Props) {
         </div>
       </section>
 
-      {kindOptions.length === 0 ? (
+      {activeKindOptions.length === 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
-          Upload a protein, phospho, or phosphoprotein dataset in the Data tab to enable QC plotting.
+          Upload a protein, phospho, phosphoprotein, or peptide dataset in the Data tab to enable QC plotting.
         </section>
       ) : null}
 
-      {kindOptions.length > 0 ? (
+      {activeKindOptions.length > 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
       ) : null}
 
-      {kindOptions.length > 0 ? (
+      {activeKindOptions.length > 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">{tabTitle(activeTab)}</h3>
           {plotView?.mode === "image" ? (
-            <a
-              href={plotView?.url}
-              download={`qc_${activeTab}_${kind}.png`}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-            >
-              Download Plot
-            </a>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={downloadFormat}
+                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+              >
+                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={plotDownloadUrl}
+                download={plotDownloadFilename}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
           ) : plotView ? (
             <a
               href={plotView.url}
@@ -376,7 +421,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
       </section>
       ) : null}
 
-      {kindOptions.length > 0 && tableRequest ? (
+      {activeKindOptions.length > 0 && tableRequest ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>
