@@ -1,5 +1,5 @@
 {
-  "protein_file": "viewer_data/20241210_154937_20241018_JM_WP_8cells_ReportPG.tsv",
+  "protein_file": "viewer_data/20241210_154937_20241018_JM_WP_8cells_ReportPG_translated.tsv",
   "phospho_file": "viewer_data/20250325_141041_20241018_JM_PP_8cells_Report_pp_collapsed.tsv",
   "phosprot_file": "viewer_data/20250325_141041_20241018_JM_PP_8cells_Report_phosprot.csv",
   "peptide_file": "viewer_data/",

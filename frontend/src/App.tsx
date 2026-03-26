@@ -200,6 +200,7 @@ export default function App() {
       "completeness",
       "qc",
       "stats",
+      "singleProtein",
     ];
     if (datasets?.peptide) sections.push("peptide");
     const hasPhosphoWorkflow = Boolean(datasets?.phospho || datasets?.phosprot);
