@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import sys
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -77,14 +79,36 @@ def _get_current_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, str]:
     return current.frame.copy(), current.filename
 
 
-def _bionamesdb_candidates() -> list[Path]:
+def _db_candidates(filename: str) -> list[Path]:
     here = Path(__file__).resolve()
     project_root = here.parents[3]
     sibling_root = project_root.parent / "proteomics-copylot"
-    return [
-        project_root / "data" / "db" / "BioNamesDB.txt",
-        sibling_root / "data" / "db" / "BioNamesDB.txt",
-    ]
+    local_appdata = os.getenv("LOCALAPPDATA", "").strip()
+
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
+    if local_appdata:
+        roots.append(Path(local_appdata) / "proteomics-copylot")
+    roots.extend([project_root, sibling_root])
+
+    candidates = [root / "data" / "db" / filename for root in roots]
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _bionamesdb_candidates() -> list[Path]:
+    return _db_candidates("BioNamesDB.txt")
 
 
 def resolve_bionamesdb_path() -> Path:
