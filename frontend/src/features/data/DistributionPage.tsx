@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { buildPlotUrl, getDistributionSummary } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
 export default function DistributionPage() {
@@ -9,6 +15,7 @@ export default function DistributionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DistributionSummaryResponse | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   async function loadSummary() {
     if (!availableKinds.includes(kind)) {
@@ -41,6 +48,8 @@ export default function DistributionPage() {
   }, [kind, availableKinds]);
 
   const qqPlotUrl = buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`);
+  const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
+  const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
   const qqReferenceImageUrl = "/assets/qqnorm.jpg";
   const qqReferenceTextUrl = "/assets/qqnorm_txt.jpg";
 
@@ -86,13 +95,26 @@ export default function DistributionPage() {
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
-              <a
-                href={qqPlotUrl}
-                download={`qqnorm_${kind}.png`}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={downloadFormat}
+                  onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                  className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+                >
+                  {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <a
+                  href={qqPlotDownloadUrl}
+                  download={qqPlotDownloadFilename}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+                >
+                  Download Plot
+                </a>
+              </div>
             </div>
             {summary.warnings.length > 0 ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

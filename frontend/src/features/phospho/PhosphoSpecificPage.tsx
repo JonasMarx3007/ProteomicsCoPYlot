@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getPhosphoOptions, getPhosphoTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type { PhosphoOptionsResponse, PhosphoTab } from "../../lib/types";
 
 type Props = {
@@ -29,6 +35,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const [phosphositePlot, setPhosphositePlot] = useState({
     cutoff: 0,
@@ -269,6 +276,14 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       }),
     };
   }, [activeTab, phosphositePlot, coverage, distribution, sty, ksea, phosprotRegulation]);
+  const plotDownloadUrl = useMemo(() => {
+    if (!plotView || plotView.type !== "image") return "";
+    return withPlotDownloadFormat(plotView.url, downloadFormat);
+  }, [plotView, downloadFormat]);
+  const plotDownloadFilename = useMemo(() => {
+    if (!plotView || plotView.type !== "image") return "";
+    return withPlotDownloadFilename(plotView.filename, downloadFormat);
+  }, [plotView, downloadFormat]);
 
   const tableRequest = useMemo<TableRequest>(() => {
     if (activeTab === "phosphositePlot") {
@@ -439,13 +454,35 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
-          {hasPhosphoDataset && plotView ? (
+          {hasPhosphoDataset && plotView && plotView.type === "image" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={downloadFormat}
+                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+              >
+                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={plotDownloadUrl}
+                download={plotDownloadFilename}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </div>
+          ) : hasPhosphoDataset && plotView ? (
             <a
               href={plotView.url}
-              download={plotView.filename}
+              target="_blank"
+              rel="noreferrer"
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
             >
-              Download Plot
+              Open Plot
             </a>
           ) : null}
         </div>

@@ -386,6 +386,54 @@ def completeness_missing_value_plot(
     )
 
 
+def completeness_missing_value_plot_peptide(
+    bin_count: int = 0,
+    header: bool = True,
+    text: bool = True,
+    text_size: int = 8,
+    color: str = "#2563eb",
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.completeness_tools import completeness_missing_value_plot_peptide as _impl
+
+    return _impl(
+        bin_count=bin_count,
+        header=header,
+        text=text,
+        text_size=text_size,
+        color=color,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def completeness_missing_value_plot_precursor(
+    bin_count: int = 0,
+    header: bool = True,
+    text: bool = True,
+    text_size: int = 8,
+    color: str = "#2563eb",
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.completeness_tools import completeness_missing_value_plot_precursor as _impl
+
+    return _impl(
+        bin_count=bin_count,
+        header=header,
+        text=text,
+        text_size=text_size,
+        color=color,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
 def completeness_missing_value_heatmap(
     kind: AnnotationKind,
     include_id: bool = True,
@@ -443,6 +491,26 @@ def qc_coverage_plot(
         summary=summary,
         text=text,
         text_size=text_size,
+        width_cm=width_cm,
+        height_cm=height_cm,
+        dpi=dpi,
+    )
+
+
+def qc_peptide_coverage_plot(
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+) -> bytes:
+    from app.services.plot_images import qc_peptide_coverage_plot as _impl
+
+    return _impl(
+        include_id=include_id,
+        header=header,
+        legend=legend,
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
@@ -896,9 +964,12 @@ apply_cached_wrappers(
         "verification_first_digit_plot",
         "verification_duplicate_pattern_plot",
         "completeness_missing_value_plot",
+        "completeness_missing_value_plot_peptide",
+        "completeness_missing_value_plot_precursor",
         "completeness_missing_value_heatmap",
         "completeness_tables",
         "qc_coverage_plot",
+        "qc_peptide_coverage_plot",
         "qc_intensity_histogram_plot",
         "qc_boxplot_plot",
         "qc_cv_plot",

@@ -4,6 +4,12 @@ import {
   getPeptideOverview,
   getPeptideSequenceCoverage,
 } from "../../lib/api";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  type PlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+} from "../../lib/plotDownload";
 import type {
   PeptideCoverageResponse,
   PeptideOverviewResponse,
@@ -553,10 +559,14 @@ function ImagePlotCard({
   downloadName: string;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   useEffect(() => {
     setError(null);
   }, [url]);
+
+  const downloadUrl = withPlotDownloadFormat(url, downloadFormat);
+  const downloadFilename = withPlotDownloadFilename(downloadName, downloadFormat);
 
   async function handleError() {
     try {
@@ -578,13 +588,26 @@ function ImagePlotCard({
   return (
     <SectionCard title={title}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <a
-          href={url}
-          download={downloadName}
-          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-        >
-          Download Plot
-        </a>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={downloadFormat}
+            onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+            className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+          >
+            {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <a
+            href={downloadUrl}
+            download={downloadFilename}
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+          >
+            Download Plot
+          </a>
+        </div>
       </div>
       <img
         key={url}
