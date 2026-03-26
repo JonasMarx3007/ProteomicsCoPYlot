@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from app.schemas.annotation import MetadataAnnotationKind
+from app.services.runtime_cache import invalidate_runtime_cache
 
 
 @dataclass
@@ -34,6 +35,7 @@ def save_uploaded_metadata(
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     _UPLOADED_METADATA[kind] = stored
+    invalidate_runtime_cache(f"metadata:{kind}:uploaded")
     return stored
 
 
@@ -43,3 +45,4 @@ def get_uploaded_metadata(kind: MetadataAnnotationKind) -> StoredUploadedMetadat
 
 def clear_uploaded_metadata(kind: MetadataAnnotationKind) -> None:
     _UPLOADED_METADATA[kind] = None
+    invalidate_runtime_cache(f"metadata:{kind}:cleared")

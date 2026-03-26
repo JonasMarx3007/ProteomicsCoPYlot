@@ -30,6 +30,7 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _get_plt():
@@ -970,3 +971,21 @@ def simulation_html(payload: SimulationRequest) -> str:
         margin=dict(l=40, r=20, t=50, b=40),
     )
     return _plotly_html(fig)
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "statistical_options",
+        "run_volcano",
+        "run_volcano_control",
+        "volcano_html",
+        "volcano_control_html",
+        "pathway_options",
+        "run_enrichment",
+        "gsea_plot_png",
+        "pathway_heatmap_png",
+        "run_simulation",
+        "simulation_html",
+    ],
+)

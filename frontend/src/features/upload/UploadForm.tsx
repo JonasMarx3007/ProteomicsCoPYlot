@@ -6,7 +6,7 @@ type UploadFormProps = {
   loading: boolean;
   onKindChange: (kind: DatasetKind) => void;
   onFileSubmit: (file: File, kind: "protein" | "phospho" | "phosprot") => void;
-  onPeptideSubmit: (path: string) => void;
+  onPeptideSubmit: (file: File, inputValue: string) => void;
 };
 
 export default function UploadForm({
@@ -17,14 +17,14 @@ export default function UploadForm({
   onPeptideSubmit,
 }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [peptidePath, setPeptidePath] = useState("");
+  const [peptideInputValue, setPeptideInputValue] = useState("");
 
   const isTableKind = kind === "protein" || kind === "phospho" || kind === "phosprot";
   const isPeptide = kind === "peptide";
 
   useEffect(() => {
     setFile(null);
-    setPeptidePath("");
+    setPeptideInputValue("");
   }, [kind]);
 
   return (
@@ -33,7 +33,7 @@ export default function UploadForm({
         <h2 className="text-lg font-semibold">Upload Dataset</h2>
         <p className="text-sm text-slate-500">
           Protein, phospho, and phosphoprotein datasets are uploaded and previewed. Peptide stores
-          only the absolute file path.
+          only the selected local file path.
         </p>
       </div>
 
@@ -83,23 +83,26 @@ export default function UploadForm({
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div className="min-w-0">
               <label className="mb-2 block text-sm font-medium text-slate-700">
-                Absolute file path
+                File
               </label>
               <input
-                type="text"
-                value={peptidePath}
-                onChange={(e) => setPeptidePath(e.target.value)}
-                placeholder="C:\Data\my_peptide_file.tsv"
+                key="upload-file-peptide"
+                type="file"
+                accept=".csv,.tsv,.txt,.xlsx,.parquet"
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setPeptideInputValue(e.target.value);
+                }}
                 className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
               />
             </div>
 
             <button
-              onClick={() => onPeptideSubmit(peptidePath)}
-              disabled={!peptidePath.trim() || loading}
+              onClick={() => file && onPeptideSubmit(file, peptideInputValue)}
+              disabled={!file || loading}
               className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
             >
-              {loading ? "Saving..." : "Save Path"}
+              {loading ? "Saving..." : "Upload Path"}
             </button>
           </div>
         )}

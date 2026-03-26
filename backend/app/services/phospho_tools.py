@@ -9,6 +9,7 @@ from scipy.stats import t
 
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _get_plt():
@@ -1028,3 +1029,24 @@ def phosprot_regulation_html(
         raise ValueError("No phosphoprotein regulation rows available for the selected parameters.")
     fig = _phosprot_regulation_figure(table, header=header)
     return _plotly_html(fig)
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "phospho_options",
+        "phosphosite_plot_table",
+        "phosphosite_plot_png",
+        "phospho_coverage_table",
+        "phospho_coverage_png",
+        "phospho_distribution_table",
+        "phospho_distribution_png",
+        "phospho_sty_table",
+        "phospho_sty_png",
+        "ksea_table",
+        "ksea_plot_png",
+        "phosprot_regulation_table",
+        "phosprot_regulation_png",
+        "phosprot_regulation_html",
+    ],
+)

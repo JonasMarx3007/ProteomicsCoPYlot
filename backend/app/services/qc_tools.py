@@ -9,6 +9,7 @@ from app.schemas.qc import BoxplotPoint, QcSummaryResponse, SampleMetricPoint
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import choose_best_source, histogram
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _best_qc_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
@@ -77,3 +78,6 @@ def qc_summary(kind: AnnotationKind) -> QcSummaryResponse:
         cv=cv_points,
         warnings=warnings,
     )
+
+
+apply_cached_wrappers(globals(), ["qc_summary"])

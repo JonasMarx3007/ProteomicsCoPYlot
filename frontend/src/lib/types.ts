@@ -11,6 +11,7 @@ export type DatasetPreviewResponse = {
   columns: number;
   columnNames: string[];
   preview: Record<string, unknown>[];
+  suggestedIsLog2Transformed: boolean;
 };
 
 export type PeptidePathResponse = {

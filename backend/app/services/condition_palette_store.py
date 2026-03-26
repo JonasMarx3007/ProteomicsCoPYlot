@@ -4,6 +4,7 @@ import colorsys
 import re
 
 from app.schemas.annotation import AnnotationKind
+from app.services.runtime_cache import invalidate_runtime_cache
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -85,6 +86,7 @@ def set_condition_palette(kind: AnnotationKind, palette: dict[str, str]) -> dict
             continue
         normalized[condition_name] = hex_color
     _CONDITION_PALETTES[kind] = normalized
+    invalidate_runtime_cache(f"palette:{kind}:updated")
     return dict(normalized)
 
 

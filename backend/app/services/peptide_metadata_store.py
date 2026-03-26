@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from app.services.runtime_cache import invalidate_runtime_cache
+
 
 @dataclass
 class StoredPeptideMetadata:
@@ -23,6 +25,7 @@ def save_peptide_metadata(filename: str, frame: pd.DataFrame) -> StoredPeptideMe
         frame=frame.copy(),
         created_at=datetime.now(timezone.utc).isoformat(),
     )
+    invalidate_runtime_cache("peptide-metadata:updated")
     return _CURRENT_METADATA
 
 
@@ -33,3 +36,4 @@ def get_peptide_metadata() -> StoredPeptideMetadata | None:
 def clear_peptide_metadata() -> None:
     global _CURRENT_METADATA
     _CURRENT_METADATA = None
+    invalidate_runtime_cache("peptide-metadata:cleared")

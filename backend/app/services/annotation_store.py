@@ -10,6 +10,7 @@ from app.schemas.annotation import (
     AnnotationKind,
     MetadataSource,
 )
+from app.services.runtime_cache import invalidate_runtime_cache
 
 
 @dataclass
@@ -60,8 +61,14 @@ def save_annotation(
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     _ANNOTATIONS[kind] = stored
+    invalidate_runtime_cache(f"annotation:{kind}:updated")
     return stored
 
 
 def get_annotation(kind: AnnotationKind) -> StoredAnnotation | None:
     return _ANNOTATIONS.get(kind)
+
+
+def clear_annotation(kind: AnnotationKind) -> None:
+    _ANNOTATIONS[kind] = None
+    invalidate_runtime_cache(f"annotation:{kind}:cleared")

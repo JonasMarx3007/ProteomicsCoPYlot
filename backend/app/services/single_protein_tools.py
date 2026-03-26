@@ -9,6 +9,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _get_plt():
@@ -595,3 +596,17 @@ def single_protein_heatmap_plot(
     ax.set_ylabel("PTM site")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "single_protein_options",
+        "single_protein_lineplot_table",
+        "single_protein_lineplot_plot",
+        "single_protein_boxplot_table",
+        "single_protein_boxplot_plot",
+        "single_protein_heatmap_table",
+        "single_protein_heatmap_plot",
+    ],
+)

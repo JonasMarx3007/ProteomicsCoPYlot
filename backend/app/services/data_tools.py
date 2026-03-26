@@ -39,6 +39,7 @@ from app.services.functions import (
     normal_fit_curve,
     qqnorm_plot_data,
 )
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _preview(df: pd.DataFrame, rows: int = 20) -> list[dict[str, object]]:
@@ -295,3 +296,14 @@ def update_condition_palette_config(
         kind=kind,
         palette=updated,
     )
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "run_imputation",
+        "imputed_dataframe",
+        "distribution_summary",
+        "verification_summary",
+    ],
+)

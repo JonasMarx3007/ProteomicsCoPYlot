@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { runPeptideCollapse } from "../../lib/api";
-import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type { ExternalTab, PeptideCollapseResponse } from "../../lib/types";
 
 type Props = {
@@ -21,9 +20,6 @@ export default function ExternalToolsPage({ activeTab }: Props) {
 }
 
 function PeptideCollapseTool() {
-  const { datasets } = useCurrentDatasetsSnapshot();
-  const peptidePath = datasets?.peptide?.path ?? "";
-
   const [inputPath, setInputPath] = useState("");
   const [outputPath, setOutputPath] = useState("");
   const [cutoff, setCutoff] = useState(0);
@@ -31,12 +27,6 @@ function PeptideCollapseTool() {
   const [result, setResult] = useState<PeptideCollapseResponse | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!inputPath && peptidePath) {
-      setInputPath(peptidePath);
-    }
-  }, [inputPath, peptidePath]);
 
   const canRun = useMemo(() => Boolean(inputPath.trim()) && !running, [inputPath, running]);
 
@@ -65,9 +55,9 @@ function PeptideCollapseTool() {
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Peptide Collapse Tool</h2>
+        <h2 className="text-lg font-semibold text-slate-900">Peptide Collapse</h2>
         <p className="mt-2 text-sm text-slate-600">
-          Run the external peptide collapse function on a Spectronaut TSV file path.
+          Run peptide collapse on a Spectronaut TSV file path.
         </p>
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
@@ -111,17 +101,6 @@ function PeptideCollapseTool() {
               <option value="legacy">Legacy (Denis Oleynik)</option>
             </select>
           </label>
-        </div>
-
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          {peptidePath ? (
-            <>
-              Current uploaded peptide dataset path:
-              <div className="mt-1 break-all font-mono text-xs text-slate-700">{peptidePath}</div>
-            </>
-          ) : (
-            "No peptide dataset path is currently uploaded. You can still run this tool by entering a valid input file path."
-          )}
         </div>
 
         <div className="mt-5">

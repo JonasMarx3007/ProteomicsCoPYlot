@@ -1,15 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   buildPlotUrl,
-  clearCurrentPeptideMetadata,
-  getCurrentPeptideMetadata,
   getPeptideOverview,
   getPeptideSequenceCoverage,
-  uploadPeptideMetadata,
 } from "../../lib/api";
 import type {
   PeptideCoverageResponse,
-  PeptideMetadataResponse,
   PeptideOverviewResponse,
   PeptideSpecies,
   PeptideTab,
@@ -21,13 +17,9 @@ type Props = {
 
 export default function PeptideLevelPage({ activeTab }: Props) {
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
-  const [metadata, setMetadata] = useState<PeptideMetadataResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [metadataFile, setMetadataFile] = useState<File | null>(null);
-  const [uploadingMetadata, setUploadingMetadata] = useState(false);
-  const [clearingMetadata, setClearingMetadata] = useState(false);
 
   const [rt, setRt] = useState({
     method: "Hexbin Plot",
@@ -117,7 +109,7 @@ export default function PeptideLevelPage({ activeTab }: Props) {
   }, [activeTab, coverage.chunkSize, coverage.protein, coverage.species, overview]);
 
   const hasDataset = Boolean(overview);
-  const hasMetadata = Boolean(metadata);
+  const hasMetadata = Boolean(overview?.metadataLoaded);
 
   const rtPlotUrl = useMemo(() => buildPlotUrl("/api/plots/peptide/rt.png", rt), [rt]);
   const modificationPlotUrl = useMemo(
@@ -137,50 +129,12 @@ export default function PeptideLevelPage({ activeTab }: Props) {
   async function refresh() {
     setRefreshing(true);
     try {
-      const [nextOverview, nextMetadata] = await Promise.all([
-        getPeptideOverview(),
-        getCurrentPeptideMetadata().catch(() => null),
-      ]);
+      const nextOverview = await getPeptideOverview();
       setOverview(nextOverview);
-      setMetadata(nextMetadata);
       setError(null);
     } finally {
       setRefreshing(false);
       setLoading(false);
-    }
-  }
-
-  async function handleMetadataUpload() {
-    if (!metadataFile) {
-      setError("Please choose a peptide metadata file first.");
-      return;
-    }
-
-    try {
-      setUploadingMetadata(true);
-      setError(null);
-      const uploaded = await uploadPeptideMetadata(metadataFile);
-      setMetadata(uploaded);
-      setMetadataFile(null);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to upload peptide metadata");
-    } finally {
-      setUploadingMetadata(false);
-    }
-  }
-
-  async function handleMetadataClear() {
-    try {
-      setClearingMetadata(true);
-      setError(null);
-      await clearCurrentPeptideMetadata();
-      setMetadata(null);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to clear peptide metadata");
-    } finally {
-      setClearingMetadata(false);
     }
   }
 
@@ -211,79 +165,21 @@ export default function PeptideLevelPage({ activeTab }: Props) {
           <SummaryCard label="Rows" value={String(overview.rows)} />
           <SummaryCard label="Proteins" value={String(overview.availableProteins.length)} />
         </div>
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          <div className="font-medium text-slate-700">Dataset path</div>
-          <div className="mt-1 break-all">{overview.path}</div>
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => refresh().catch(() => {})}
+            disabled={refreshing}
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+          >
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
         </div>
         {overview.warnings.length > 0 ? (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             {overview.warnings.join(" ")}
           </div>
         ) : null}
-      </SectionCard>
-
-      <SectionCard title="Peptide Metadata">
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-          <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              <div className="font-medium text-slate-700">Current metadata</div>
-              <div className="mt-2">
-                {metadata ? `${metadata.filename} (${metadata.rows} rows)` : "No peptide metadata uploaded"}
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Upload metadata file</label>
-              <input
-                type="file"
-                accept=".csv,.tsv,.txt,.xlsx,.parquet"
-                onChange={(e) => setMetadataFile(e.target.files?.[0] ?? null)}
-                className="block w-full text-sm text-slate-600"
-              />
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={handleMetadataUpload}
-                disabled={!metadataFile || uploadingMetadata}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {uploadingMetadata ? "Uploading..." : "Upload Metadata"}
-              </button>
-              <button
-                type="button"
-                onClick={handleMetadataClear}
-                disabled={!metadata || clearingMetadata}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              >
-                {clearingMetadata ? "Clearing..." : "Clear Metadata"}
-              </button>
-              <button
-                type="button"
-                onClick={() => refresh().catch(() => {})}
-                disabled={refreshing}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              >
-                {refreshing ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-              Modification Plot and Missed Cleavage Plot require a metadata file with `sample` and `condition` columns.
-            </div>
-          </div>
-
-          <div>
-            {metadata ? (
-              <PreviewTable rows={metadata.preview} emptyText="No peptide metadata preview available." />
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-                No peptide metadata preview available.
-              </div>
-            )}
-          </div>
-        </div>
       </SectionCard>
 
       {error ? <ErrorBanner message={error} /> : null}
@@ -367,7 +263,7 @@ export default function PeptideLevelPage({ activeTab }: Props) {
             />
           </SectionCard>
           {!hasMetadata ? (
-            <InfoBanner message="Upload peptide metadata to generate the modification plot." />
+            <InfoBanner message="Generate protein annotation in Data > Annotation to generate the modification plot." />
           ) : (
             <ImagePlotCard title="Modification Plot" url={modificationPlotUrl} downloadName="peptide_modification_plot.png" />
           )}
@@ -412,7 +308,7 @@ export default function PeptideLevelPage({ activeTab }: Props) {
             />
           </SectionCard>
           {!hasMetadata ? (
-            <InfoBanner message="Upload peptide metadata to generate the missed cleavage plot." />
+            <InfoBanner message="Generate protein annotation in Data > Annotation to generate the missed cleavage plot." />
           ) : (
             <ImagePlotCard title="Missed Cleavage Plot" url={missedCleavagePlotUrl} downloadName="peptide_missed_cleavage_plot.png" />
           )}
@@ -705,56 +601,3 @@ function ImagePlotCard({
   );
 }
 
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  const columns = useMemo(() => {
-    const seen = new Set<string>();
-    rows.forEach((row) => {
-      Object.keys(row).forEach((key) => seen.add(key));
-    });
-    return Array.from(seen);
-  }, [rows]);
-
-  if (!rows.length || !columns.length) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full table-fixed text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th key={column} className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700">
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-              {columns.map((column) => {
-                const text = row[column] == null ? "" : String(row[column]);
-                return (
-                  <td key={`${rowIndex}-${column}`} className="border-b border-slate-100 px-3 py-2 text-slate-600" title={text}>
-                    <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">{text}</div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
