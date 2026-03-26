@@ -80,6 +80,7 @@ export default function IdTranslatorPage() {
   }, [kind]);
 
   const canRun = Boolean(activeDataset && column && outputDb && (autoDetectInput || inputDb));
+  const canDownload = canRun && !loading;
 
   const requestPayload = useMemo(
     () => ({
@@ -213,7 +214,7 @@ export default function IdTranslatorPage() {
           <button
             type="button"
             onClick={handleDownload}
-            disabled={!result || downloading}
+            disabled={!canDownload || downloading}
             className="rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {downloading ? "Downloading..." : "Download Translated Table"}
