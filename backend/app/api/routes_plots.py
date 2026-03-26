@@ -857,9 +857,10 @@ async def qc_correlation_route(
 async def single_protein_options_route(
     kind: AnnotationKind,
     tab: str = "boxplot",
-) -> dict[str, list[str] | int]:
+    identifier: str = "workflow",
+) -> dict[str, object]:
     try:
-        return single_protein_options(kind=kind, tab=tab)
+        return single_protein_options(kind=kind, tab=tab, identifier=identifier)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -871,6 +872,7 @@ async def single_protein_boxplot_route(
     kind: AnnotationKind,
     protein: str,
     conditions: str = "",
+    identifier: str = "workflow",
     outliers: bool = False,
     dots: bool = False,
     header: bool = True,
@@ -885,6 +887,7 @@ async def single_protein_boxplot_route(
                 kind=kind,
                 protein=protein,
                 conditions=_csv_values(conditions),
+                identifier=identifier,
                 outliers=outliers,
                 dots=dots,
                 header=header,
@@ -908,6 +911,7 @@ async def single_protein_lineplot_route(
     proteins: str = "",
     conditions: str = "",
     includeId: bool = False,
+    identifier: str = "workflow",
     header: bool = True,
     legend: bool = True,
     widthCm: float = 20,
@@ -921,6 +925,7 @@ async def single_protein_lineplot_route(
                 proteins=_csv_values(proteins),
                 conditions=_csv_values(conditions),
                 include_id=includeId,
+                identifier=identifier,
                 header=header,
                 legend=legend,
                 width_cm=widthCm,
@@ -983,6 +988,7 @@ async def single_protein_boxplot_table_route(
     kind: AnnotationKind,
     protein: str,
     conditions: str = "",
+    identifier: str = "workflow",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -990,6 +996,7 @@ async def single_protein_boxplot_table_route(
                 kind=kind,
                 protein=protein,
                 conditions=_csv_values(conditions),
+                identifier=identifier,
             )
         )
     except ValueError as e:
@@ -1004,6 +1011,7 @@ async def single_protein_lineplot_table_route(
     proteins: str = "",
     conditions: str = "",
     includeId: bool = False,
+    identifier: str = "workflow",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -1012,6 +1020,7 @@ async def single_protein_lineplot_table_route(
                 proteins=_csv_values(proteins),
                 conditions=_csv_values(conditions),
                 include_id=includeId,
+                identifier=identifier,
             )
         )
     except ValueError as e:
