@@ -77,6 +77,22 @@ npm run build
 cd ..
 ./backend/.venv/bin/python3 launch.py --viewer --port 8001
 
+MACOS BUILD APP TOOL ONLY (ONEFILE)
+cd frontend
+VITE_APP_MODE=analysis npm run build
+cd ..
+./backend/.venv/bin/python3 -m pip install --upgrade pip pyinstaller
+./backend/.venv/bin/python3 -m PyInstaller --noconfirm --clean --onefile --name ProteomicsCoPYlot --paths backend --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all pandas --collect-all numpy --collect-all scipy --collect-all matplotlib --collect-all seaborn --collect-all plotly --collect-all pyarrow --collect-all openpyxl --add-data "frontend/dist:frontend_dist" --add-data "viewer_config.json:." --add-data "viewer_data:viewer_data" launch_tool.py
+output: ./dist/ProteomicsCoPYlot
+
+MACOS BUILD APP VIEWER ONLY (ONEFILE)
+cd frontend
+VITE_APP_MODE=viewer npm run build
+cd ..
+./backend/.venv/bin/python3 -m pip install --upgrade pip pyinstaller
+./backend/.venv/bin/python3 -m PyInstaller --noconfirm --clean --onefile --name DataViewer --paths backend --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all pandas --collect-all numpy --collect-all scipy --collect-all matplotlib --collect-all seaborn --collect-all plotly --collect-all pyarrow --collect-all openpyxl --add-data "frontend/dist:frontend_dist" --add-data "viewer_config.json:." --add-data "viewer_data:viewer_data" launch_viewer.py
+output: ./dist/DataViewer
+
 LINUX INSTALL
 git clone https://github.com/JonasMarx3007/ProteomicsCoPYlot.git
 cd ProteomicsCoPYlot
@@ -106,3 +122,19 @@ cd frontend
 npm run build
 cd ..
 ./backend/.venv/bin/python3 launch.py --viewer --port 8001
+
+LINUX BUILD APP TOOL ONLY (ONEFILE)
+cd frontend
+VITE_APP_MODE=analysis npm run build
+cd ..
+./backend/.venv/bin/python3 -m pip install --upgrade pip pyinstaller
+./backend/.venv/bin/python3 -m PyInstaller --noconfirm --clean --onefile --name ProteomicsCoPYlot --paths backend --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all pandas --collect-all numpy --collect-all scipy --collect-all matplotlib --collect-all seaborn --collect-all plotly --collect-all pyarrow --collect-all openpyxl --add-data "frontend/dist:frontend_dist" --add-data "viewer_config.json:." --add-data "viewer_data:viewer_data" launch_tool.py
+output: ./dist/ProteomicsCoPYlot
+
+LINUX BUILD APP VIEWER ONLY (ONEFILE)
+cd frontend
+VITE_APP_MODE=viewer npm run build
+cd ..
+./backend/.venv/bin/python3 -m pip install --upgrade pip pyinstaller
+./backend/.venv/bin/python3 -m PyInstaller --noconfirm --clean --onefile --name DataViewer --paths backend --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all pandas --collect-all numpy --collect-all scipy --collect-all matplotlib --collect-all seaborn --collect-all plotly --collect-all pyarrow --collect-all openpyxl --add-data "frontend/dist:frontend_dist" --add-data "viewer_config.json:." --add-data "viewer_data:viewer_data" launch_viewer.py
+output: ./dist/DataViewer
