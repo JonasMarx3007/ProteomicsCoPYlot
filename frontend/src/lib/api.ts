@@ -684,10 +684,11 @@ export async function runSimulationAnalysis(
 
 export async function getSingleProteinOptions(
   kind: AnnotationKind,
-  tab: "boxplot" | "lineplot" | "heatmap"
+  tab: "boxplot" | "lineplot" | "heatmap",
+  identifier: "workflow" | "genes" = "workflow"
 ): Promise<SingleProteinOptionsResponse> {
   const response = await fetch(
-    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab })
+    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab, identifier })
   );
   const data = await parseJson(response);
   if (!response.ok) {
