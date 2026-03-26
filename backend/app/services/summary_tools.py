@@ -5,6 +5,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.schemas.summary import SummaryMetadataTable, SummaryTablesResponse
 from app.services.annotation_store import get_annotation
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _metadata_table(kind: AnnotationKind) -> SummaryMetadataTable:
@@ -28,3 +29,6 @@ def summary_tables() -> SummaryTablesResponse:
         protein=_metadata_table("protein"),
         phospho=_metadata_table("phospho"),
     )
+
+
+apply_cached_wrappers(globals(), ["summary_tables"])

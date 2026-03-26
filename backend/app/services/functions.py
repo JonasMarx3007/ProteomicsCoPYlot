@@ -11,6 +11,7 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.completeness import CompletenessTablesResponse
+from app.services.runtime_cache import apply_cached_wrappers
 
 FilterMode = Literal["per_group", "in_at_least_one_group"]
 DataSource = Literal["filtered", "log2", "raw"]
@@ -883,3 +884,37 @@ def comparison_venn_png(
         height_cm=height_cm,
         dpi=dpi,
     )
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "imputation_before_plot",
+        "imputation_overall_fit_plot",
+        "imputation_after_plot",
+        "distribution_qqnorm_plot",
+        "verification_first_digit_plot",
+        "verification_duplicate_pattern_plot",
+        "completeness_missing_value_plot",
+        "completeness_missing_value_heatmap",
+        "completeness_tables",
+        "qc_coverage_plot",
+        "qc_intensity_histogram_plot",
+        "qc_boxplot_plot",
+        "qc_cv_plot",
+        "qc_pca_plot",
+        "qc_pca_interactive_html",
+        "qc_abundance_plot",
+        "qc_abundance_interactive_html",
+        "qc_correlation_plot",
+        "single_protein_boxplot_plot",
+        "single_protein_lineplot_plot",
+        "single_protein_heatmap_plot",
+        "phosphosite_plot_png",
+        "phospho_coverage_png",
+        "phospho_distribution_png",
+        "phospho_sty_png",
+        "comparison_pearson_png",
+        "comparison_venn_png",
+    ],
+)

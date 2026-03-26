@@ -9,6 +9,7 @@ from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import inverse_log2_transform_data
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _extract_id_or_number(sample: str) -> str:
@@ -305,3 +306,13 @@ def qc_cv_table(kind: AnnotationKind) -> pd.DataFrame:
     meta = _metadata_for_kind(kind, frame, sample_columns)
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     return prepare_cov_df(numeric, meta)
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "qc_coverage_table",
+        "qc_boxplot_table",
+        "qc_cv_table",
+    ],
+)

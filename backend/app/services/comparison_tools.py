@@ -8,6 +8,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.runtime_cache import apply_cached_wrappers
 
 
 def _get_plt():
@@ -395,3 +396,15 @@ def venn_png(
         ax.set_title(f"Venn Diagram ({mode_label})")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+apply_cached_wrappers(
+    globals(),
+    [
+        "comparison_options",
+        "pearson_correlation_table",
+        "pearson_correlation_png",
+        "venn_table",
+        "venn_png",
+    ],
+)

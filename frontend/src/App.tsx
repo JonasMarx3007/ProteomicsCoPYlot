@@ -122,7 +122,7 @@ const comparisonTabs: { key: ComparisonTab; label: string }[] = [
 ];
 
 const externalTabs: { key: ExternalTab; label: string }[] = [
-  { key: "peptideCollapse", label: "Peptide Collapse Function" },
+  { key: "peptideCollapse", label: "Peptide Collapse" },
 ];
 
 const summaryTabs: { key: SummaryTab; label: string }[] = [

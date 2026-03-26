@@ -1,11 +1,13 @@
 import type {
   AnnotationKind,
+  CurrentDatasetsResponse,
   SummaryReportContext,
   SummaryVolcanoEntry,
 } from "./types";
 
 const QC_SETTINGS_KEY = "pcopylot.report.qcSettings.v1";
 const VOLCANO_LOG_KEY = "pcopylot.report.volcanoLog.v1";
+const REPORT_SCOPE_KEY = "pcopylot.report.datasetScope.v1";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -24,6 +26,69 @@ function writeJson(key: string, value: unknown) {
   } catch {
     // Ignore storage write failures (private mode, quota, etc.).
   }
+}
+
+function readRaw(key: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRaw(key: string, value: string) {
+  try {
+    globalThis.localStorage?.setItem(key, value);
+  } catch {
+    // Ignore storage write failures (private mode, quota, etc.).
+  }
+}
+
+function removeKey(key: string) {
+  try {
+    globalThis.localStorage?.removeItem(key);
+  } catch {
+    // Ignore storage write failures (private mode, quota, etc.).
+  }
+}
+
+function datasetScopeToken(
+  datasets: CurrentDatasetsResponse | null
+): string {
+  if (!datasets) return "none";
+  const protein = datasets.protein
+    ? `protein:${datasets.protein.filename}:${datasets.protein.rows}:${datasets.protein.columns}`
+    : "protein:none";
+  const phospho = datasets.phospho
+    ? `phospho:${datasets.phospho.filename}:${datasets.phospho.rows}:${datasets.phospho.columns}`
+    : "phospho:none";
+  const phosprot = datasets.phosprot
+    ? `phosprot:${datasets.phosprot.filename}:${datasets.phosprot.rows}:${datasets.phosprot.columns}`
+    : "phosprot:none";
+  const peptide = datasets.peptide
+    ? `peptide:${datasets.peptide.filename}:${datasets.peptide.path}`
+    : "peptide:none";
+  return [protein, phospho, phosprot, peptide].join("|");
+}
+
+export function clearSummaryReportState() {
+  removeKey(VOLCANO_LOG_KEY);
+  removeKey(QC_SETTINGS_KEY);
+}
+
+export function syncSummaryReportStateWithDatasets(
+  datasets: CurrentDatasetsResponse | null
+) {
+  const token = datasetScopeToken(datasets);
+  const previous = readRaw(REPORT_SCOPE_KEY);
+  if (previous == null) {
+    clearSummaryReportState();
+    writeRaw(REPORT_SCOPE_KEY, token);
+    return;
+  }
+  if (previous === token) return;
+  clearSummaryReportState();
+  writeRaw(REPORT_SCOPE_KEY, token);
 }
 
 export function saveQcReportSettings(
