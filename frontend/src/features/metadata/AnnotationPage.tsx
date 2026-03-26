@@ -46,7 +46,7 @@ export default function AnnotationPage() {
   const [uploadingMetadata, setUploadingMetadata] = useState(false);
   const [phosprotResult, setPhosprotResult] = useState<AnnotationResultResponse | null>(null);
   const [phosprotMode, setPhosprotMode] =
-    useState<PhosprotAggregationMode>("sum_mean_impute");
+    useState<PhosprotAggregationMode>("sum_ignore_na");
   const [phosprotBusy, setPhosprotBusy] = useState(false);
 
   const activeDataset = currentDatasets?.[kind] ?? null;
@@ -86,6 +86,8 @@ export default function AnnotationPage() {
   }, [availableKinds, kind]);
 
   useEffect(() => {
+    const suggestedLog2 = activeDataset?.suggestedIsLog2Transformed ?? true;
+
     getCurrentAnnotation(kind)
       .then((stored) => {
         setResult(stored);
@@ -96,8 +98,9 @@ export default function AnnotationPage() {
       })
       .catch(() => {
         setResult(null);
+        setIsLog2Transformed(suggestedLog2);
       });
-  }, [kind]);
+  }, [kind, activeDataset?.filename, activeDataset?.suggestedIsLog2Transformed]);
 
   useEffect(() => {
     getCurrentAnnotation("phosprot")
@@ -330,16 +333,7 @@ export default function AnnotationPage() {
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-lg font-semibold text-slate-900">Condition Mapping</h3>
-          <button
-            type="button"
-            onClick={addCondition}
-            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-          >
-            Add condition
-          </button>
-        </div>
+        <h3 className="text-lg font-semibold text-slate-900">Condition Mapping</h3>
 
         <div className="mt-4 space-y-4">
           {conditions.map((condition) => (
@@ -362,24 +356,26 @@ export default function AnnotationPage() {
                   <label className="mb-2 block text-sm font-medium text-slate-700">
                     Sample columns
                   </label>
-                  <select
-                    multiple
-                    value={condition.columns}
-                    size={Math.max(4, Math.min(10, availableColumns.length || 4))}
-                    onChange={(e) =>
-                      updateConditionColumns(
-                        condition.id,
-                        Array.from(e.target.selectedOptions).map((option) => option.value)
-                      )
-                    }
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
-                  >
-                    {availableColumns.map((column) => (
-                      <option key={column} value={column}>
-                        {column}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="overflow-x-auto rounded-xl border border-slate-300">
+                    <select
+                      multiple
+                      value={condition.columns}
+                      size={Math.max(4, Math.min(10, availableColumns.length || 4))}
+                      onChange={(e) =>
+                        updateConditionColumns(
+                          condition.id,
+                          Array.from(e.target.selectedOptions).map((option) => option.value)
+                        )
+                      }
+                      className="min-w-full w-max border-0 px-3 py-2 text-sm outline-none"
+                    >
+                      {availableColumns.map((column) => (
+                        <option key={column} value={column} className="whitespace-nowrap">
+                          {column}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div className="self-end">
@@ -394,6 +390,16 @@ export default function AnnotationPage() {
               </div>
             </div>
           ))}
+        </div>
+
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={addCondition}
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+          >
+            Add condition
+          </button>
         </div>
       </section>
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getCurrentDatasets,
   savePeptidePath,
+  uploadPeptideFile,
   uploadDataset,
 } from "../../lib/api";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
@@ -18,6 +19,24 @@ type UploadPageProps = {
   onDatasetUploaded?: (dataset: DatasetPreviewResponse | null) => void;
   readOnly?: boolean;
 };
+
+type LocalFile = File & {
+  path?: string;
+};
+
+function resolveSelectedPeptidePath(file: File, inputValue: string): string | null {
+  const localPath = (file as LocalFile).path?.trim();
+  if (localPath) {
+    return localPath;
+  }
+
+  const raw = inputValue.trim();
+  if (raw && !raw.toLowerCase().includes("fakepath")) {
+    return raw;
+  }
+
+  return null;
+}
 
 export default function UploadPage({ onDatasetUploaded, readOnly = false }: UploadPageProps) {
   const [kind, setKind] = useState<DatasetKind>("protein");
@@ -96,12 +115,17 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
     }
   }
 
-  async function handlePeptideSubmit(path: string) {
+  async function handlePeptideSubmit(file: File, inputValue: string) {
     try {
       setLoading(true);
       setError(null);
 
-      await savePeptidePath(path);
+      const resolvedPath = resolveSelectedPeptidePath(file, inputValue);
+      if (resolvedPath) {
+        await savePeptidePath(resolvedPath);
+      } else {
+        await uploadPeptideFile(file);
+      }
       await refreshCurrentDatasets();
 
       onDatasetUploaded?.(null);
@@ -159,7 +183,7 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
         <div className="rounded-2xl border border-slate-200 bg-white p-6">
           <h2 className="text-lg font-semibold text-slate-900">Preview</h2>
           <p className="mt-2 text-sm text-slate-500">
-            Peptide datasets store only the absolute file path. No preview is shown.
+            Peptide datasets store only the selected local file path. No preview is shown.
           </p>
         </div>
       ) : (

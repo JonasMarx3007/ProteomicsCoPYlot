@@ -10,9 +10,9 @@ import pandas as pd
 from matplotlib import ticker as mtick
 
 from app.schemas.peptide import PeptideSpecies
+from app.services.annotation_store import get_annotation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import get_current_dataset
-from app.services.peptide_metadata_store import get_peptide_metadata
 
 
 def _get_plt():
@@ -71,8 +71,9 @@ def get_peptide_frame() -> pd.DataFrame:
 
 
 def _extract_id_or_number(value: object) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(value))
-    return match.group(0) if match else str(value)
+    text = str(value)
+    matches = re.findall(r"\d+", text)
+    return matches[-1] if matches else text
 
 
 def _require_column(frame: pd.DataFrame, column: str) -> str:
@@ -108,14 +109,18 @@ def _protein_names_column(frame: pd.DataFrame) -> str:
 
 
 def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
-    stored = get_peptide_metadata()
-    if stored is None:
-        raise ValueError("Peptide metadata is required for this plot. Upload a metadata file first.")
+    stored = get_annotation("protein")
+    if stored is None or stored.metadata.empty:
+        raise ValueError(
+            "Protein annotation metadata is required for this plot. Generate protein annotation first."
+        )
 
-    meta = stored.frame.copy()
+    meta = stored.metadata.copy()
     normalized = {str(column).strip().lower(): str(column) for column in meta.columns}
     if "sample" not in normalized or "condition" not in normalized:
-        raise ValueError("Peptide metadata must contain 'sample' and 'condition' columns.")
+        raise ValueError(
+            "Protein annotation metadata must contain 'sample' and 'condition' columns."
+        )
 
     meta = meta.rename(
         columns={
@@ -127,20 +132,16 @@ def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
     meta["condition"] = meta["condition"].astype(str).str.strip()
     meta = meta[(meta["sample"] != "") & (meta["condition"] != "")].reset_index(drop=True)
     if meta.empty:
-        raise ValueError("Peptide metadata does not contain any usable sample/condition rows.")
+        raise ValueError(
+            "Protein annotation metadata does not contain any usable sample/condition rows."
+        )
 
     file_col = _file_name_column(frame)
-    file_ids = {
-        _extract_id_or_number(value)
-        for value in frame[file_col].dropna().astype(str).tolist()
-        if str(value).strip()
-    }
-    meta["id"] = meta["sample"].apply(_extract_id_or_number)
-    matched = meta["id"].isin(file_ids)
-    if not matched.any():
-        raise ValueError("Peptide metadata does not match any peptide sample IDs from the dataset.")
+    file_names = frame[file_col].dropna().astype(str).unique().tolist()
+    for name in file_names:
+        meta["sample"] = np.where(meta["sample"] == name, name, meta["sample"])
 
-    meta = meta.loc[matched].drop_duplicates(subset=["id"]).reset_index(drop=True)
+    meta["id"] = meta["sample"].apply(_extract_id_or_number)
     meta["sample_index"] = meta.groupby("condition").cumcount() + 1
     if include_id:
         meta["new_sample"] = meta.apply(
@@ -171,7 +172,17 @@ def peptide_overview() -> dict[str, object]:
     else:
         proteins = []
         warnings.append("ProteinNames is missing, so sequence coverage is unavailable for this peptide dataset.")
-    metadata = get_peptide_metadata()
+    protein_annotation = get_annotation("protein")
+    metadata_loaded = protein_annotation is not None and not protein_annotation.metadata.empty
+    metadata_name = (
+        "Protein Annotation (Data > Annotation)"
+        if metadata_loaded
+        else None
+    )
+    if not metadata_loaded:
+        warnings.append(
+            "Protein annotation metadata is required for modification and missed cleavage plots. Generate protein annotation in Data > Annotation."
+        )
 
     return {
         "filename": path.name,
@@ -180,8 +191,8 @@ def peptide_overview() -> dict[str, object]:
         "columns": len(frame.columns),
         "columnNames": [str(column) for column in frame.columns],
         "availableProteins": proteins,
-        "metadataLoaded": metadata is not None,
-        "metadataFilename": metadata.filename if metadata is not None else None,
+        "metadataLoaded": metadata_loaded,
+        "metadataFilename": metadata_name,
         "warnings": warnings,
     }
 
@@ -276,7 +287,9 @@ def peptide_modification_plot(
     ordered_samples = meta["new_sample"].tolist()
     annotated_cols = [column for column in ordered_samples if column in wide.columns]
     if not annotated_cols:
-        raise ValueError("Peptide metadata does not match any sample columns after normalization.")
+        raise ValueError(
+            "Protein annotation metadata does not match any peptide sample columns after normalization."
+        )
 
     filtered = wide[["Modified.Sequence", *annotated_cols]].copy()
 
@@ -380,7 +393,9 @@ def peptide_missed_cleavage_plot(
     wide = wide.rename(columns=rename_map)
     annotated_cols = [column for column in meta["new_sample"].tolist() if column in wide.columns]
     if not annotated_cols:
-        raise ValueError("Peptide metadata does not match any sample columns after normalization.")
+        raise ValueError(
+            "Protein annotation metadata does not match any peptide sample columns after normalization."
+        )
 
     filtered = wide[[seq_col, *annotated_cols]].copy()
 

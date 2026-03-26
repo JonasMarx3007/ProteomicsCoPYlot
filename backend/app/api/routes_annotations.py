@@ -16,9 +16,9 @@ from app.services.annotation_processor import (
     compute_annotation,
     compute_annotation_from_metadata,
 )
-from app.services.annotation_store import get_annotation, save_annotation
+from app.services.annotation_store import clear_annotation, get_annotation, save_annotation
 from app.services.dataset_reader import get_extension, read_dataframe
-from app.services.dataset_store import get_current_dataset
+from app.services.dataset_store import clear_dataset, get_current_dataset
 from app.services.metadata_upload_store import (
     clear_uploaded_metadata,
     get_uploaded_metadata,
@@ -155,6 +155,11 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
     )
+
+    if payload.kind == "phospho":
+        # Keep phosphoprotein output strictly user-triggered via aggregate/upload actions.
+        clear_annotation("phosprot")
+        clear_dataset("phosprot")
 
     return _response_from_stored(stored)
 

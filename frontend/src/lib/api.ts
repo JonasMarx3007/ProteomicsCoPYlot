@@ -45,6 +45,7 @@ import type {
   VolcanoRequest,
   VerificationSummaryResponse,
 } from "./types";
+import { syncSummaryReportStateWithDatasets } from "./reportState";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -105,6 +106,27 @@ export async function savePeptidePath(path: string): Promise<PeptidePathResponse
   return data as PeptidePathResponse;
 }
 
+export async function uploadPeptideFile(file: File): Promise<PeptidePathResponse> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/datasets/peptide-file`, {
+    method: "POST",
+    body: form,
+  });
+
+  const data = await parseJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Saving peptide file failed"
+    );
+  }
+
+  return data as PeptidePathResponse;
+}
+
 export async function getCurrentDatasets(): Promise<CurrentDatasetsResponse> {
   const response = await fetch(`${API_BASE}/api/datasets/current`);
   const data = await parseJson(response);
@@ -116,7 +138,9 @@ export async function getCurrentDatasets(): Promise<CurrentDatasetsResponse> {
     );
   }
 
-  return data as CurrentDatasetsResponse;
+  const payload = data as CurrentDatasetsResponse;
+  syncSummaryReportStateWithDatasets(payload);
+  return payload;
 }
 
 export async function getPeptideOverview(): Promise<PeptideOverviewResponse> {
