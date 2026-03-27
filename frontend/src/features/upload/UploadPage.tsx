@@ -43,7 +43,7 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
   const [current, setCurrent] = useState<CurrentDatasetsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [viewerRefreshQueued, setViewerRefreshQueued] = useState(false);
+  const [viewerRefreshAttempts, setViewerRefreshAttempts] = useState(0);
 
   const refreshCurrentDatasets = useCallback(async () => {
     const data = await getCurrentDatasets();
@@ -69,32 +69,24 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
   }, [displayedDataset, onDatasetUploaded]);
 
   useEffect(() => {
-    if (!readOnly || !IS_VIEWER_MODE || viewerRefreshQueued) return;
-    if (current === null) {
-      setViewerRefreshQueued(true);
-      const timer = window.setTimeout(() => {
-        refreshCurrentDatasets().catch(() => {
-          // keep current fallback state if backend is still booting
-        });
-      }, 700);
-      return () => window.clearTimeout(timer);
-    }
+    if (!readOnly || !IS_VIEWER_MODE) return;
+
     const hasAnyDataset =
-      Boolean(current.protein) ||
-      Boolean(current.phospho) ||
-      Boolean(current.phosprot) ||
-      Boolean(current.peptide);
-    if (!hasAnyDataset) {
-      setViewerRefreshQueued(true);
-      const timer = window.setTimeout(() => {
-        refreshCurrentDatasets().catch(() => {
-          // keep current fallback state if backend is still booting
-        });
-      }, 700);
-      return () => window.clearTimeout(timer);
-    }
-    return;
-  }, [current, readOnly, viewerRefreshQueued, refreshCurrentDatasets]);
+      Boolean(current?.protein) ||
+      Boolean(current?.phospho) ||
+      Boolean(current?.phosprot) ||
+      Boolean(current?.peptide);
+    if (hasAnyDataset) return;
+    if (viewerRefreshAttempts >= 20) return;
+
+    const timer = window.setTimeout(() => {
+      setViewerRefreshAttempts((value) => value + 1);
+      refreshCurrentDatasets().catch(() => {
+        // keep current fallback state if backend is still booting
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [current, readOnly, viewerRefreshAttempts, refreshCurrentDatasets]);
 
   async function handleFileSubmit(
     file: File,

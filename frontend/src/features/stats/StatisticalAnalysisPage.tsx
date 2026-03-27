@@ -656,10 +656,17 @@ function GseaPanel({
 }: {
   kindOptions: { value: string; label: string }[];
 }) {
+  const gseaKindOptions = useMemo(
+    () => kindOptions.filter((option) => option.value === "protein" || option.value === "phosprot"),
+    [kindOptions]
+  );
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState("");
   const [condition2, setCondition2] = useState("");
+  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">("volcano");
+  const [condition1Control, setCondition1Control] = useState("");
+  const [condition2Control, setCondition2Control] = useState("");
   const [testType, setTestType] = useState<StatsTestType>("unpaired");
   const [pValueThreshold, setPValueThreshold] = useState(0.05);
   const [log2fcThreshold, setLog2fcThreshold] = useState(1);
@@ -670,14 +677,14 @@ function GseaPanel({
   const [result, setResult] = useState<EnrichmentResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const kindAvailable = kindOptions.some((option) => option.value === kind);
+  const kindAvailable = gseaKindOptions.some((option) => option.value === kind);
 
   useEffect(() => {
-    if (kindOptions.length === 0) return;
-    if (!kindOptions.some((option) => option.value === kind)) {
-      setKind(kindOptions[0].value as AnnotationKind);
+    if (gseaKindOptions.length === 0) return;
+    if (!gseaKindOptions.some((option) => option.value === kind)) {
+      setKind(gseaKindOptions[0].value as AnnotationKind);
     }
-  }, [kindOptions, kind]);
+  }, [gseaKindOptions, kind]);
 
   useEffect(() => {
     if (!kindAvailable) {
@@ -690,12 +697,24 @@ function GseaPanel({
         setOptions(data);
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
+        setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
+        setCondition2Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
   }, [kind, kindAvailable]);
 
   const geneNamesAvailable = hasGeneNameSupport(options);
-  const canRun = Boolean(kindAvailable && geneNamesAvailable && condition1 && condition2 && condition1 !== condition2);
+  const controlSelectionValid =
+    sourceMode !== "volcano_control" ||
+    new Set([condition1, condition2, condition1Control, condition2Control].filter(Boolean)).size === 4;
+  const canRun = Boolean(
+    kindAvailable &&
+      geneNamesAvailable &&
+      condition1 &&
+      condition2 &&
+      condition1 !== condition2 &&
+      controlSelectionValid
+  );
 
   useEffect(() => {
     if (!geneNamesAvailable || !canRun) {
@@ -709,8 +728,11 @@ function GseaPanel({
 
     runEnrichmentAnalysis({
       kind,
+      source: sourceMode,
       condition1,
       condition2,
+      condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
+      condition2Control: sourceMode === "volcano_control" ? condition2Control : null,
       pValueThreshold,
       log2fcThreshold,
       testType,
@@ -738,8 +760,11 @@ function GseaPanel({
   }, [
     canRun,
     kind,
+    sourceMode,
     condition1,
     condition2,
+    condition1Control,
+    condition2Control,
     testType,
     pValueThreshold,
     log2fcThreshold,
@@ -749,22 +774,88 @@ function GseaPanel({
     maxTermSize,
   ]);
 
-  const upPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/up.png`, { condition1, condition2, pValueThreshold, log2fcThreshold, testType, useUncorrected, topN, minTermSize, maxTermSize });
-  const downPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/down.png`, { condition1, condition2, pValueThreshold, log2fcThreshold, testType, useUncorrected, topN, minTermSize, maxTermSize });
+  const upPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/up.png`, {
+    source: sourceMode,
+    condition1,
+    condition2,
+    condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
+    condition2Control: sourceMode === "volcano_control" ? condition2Control : "",
+    pValueThreshold,
+    log2fcThreshold,
+    testType,
+    useUncorrected,
+    topN,
+    minTermSize,
+    maxTermSize,
+  });
+  const downPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/down.png`, {
+    source: sourceMode,
+    condition1,
+    condition2,
+    condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
+    condition2Control: sourceMode === "volcano_control" ? condition2Control : "",
+    pValueThreshold,
+    log2fcThreshold,
+    testType,
+    useUncorrected,
+    topN,
+    minTermSize,
+    maxTermSize,
+  });
+
+  if (gseaKindOptions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <SectionCard title="GSEA">
+          <InfoSection message="Load a protein or phosphoproteome dataset to run GSEA." />
+        </SectionCard>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <SectionCard title="GSEA">
         <div className="max-w-xs">
-          <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+          <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={gseaKindOptions} />
         </div>
       </SectionCard>
 
       <SectionCard title="Options">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-          <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+        <div className="max-w-xs">
+          <SelectField
+            label="Source"
+            value={sourceMode}
+            onChange={(value) => setSourceMode(value as "volcano" | "volcano_control")}
+            options={[
+              { value: "volcano", label: "Volcano" },
+              { value: "volcano_control", label: "Volcano Control" },
+            ]}
+          />
         </div>
+        {sourceMode === "volcano_control" ? (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+            <SelectField
+              label="Condition 1 Control"
+              value={condition1Control}
+              onChange={setCondition1Control}
+              options={conditionOptions(options)}
+            />
+            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+            <SelectField
+              label="Condition 2 Control"
+              value={condition2Control}
+              onChange={setCondition2Control}
+              options={conditionOptions(options)}
+            />
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+          </div>
+        )}
         <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={[{ value: "unpaired", label: "Unpaired" }, { value: "paired", label: "Paired" }]} />
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
@@ -783,7 +874,15 @@ function GseaPanel({
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
       {options && !geneNamesAvailable ? <InfoSection message="Gene names are required for GSEA. Please generate or load gene names first." /> : null}
-      {options && geneNamesAvailable && !canRun ? <InfoSection message="Please select two different conditions to generate the plot." /> : null}
+      {options && geneNamesAvailable && !canRun ? (
+        <InfoSection
+          message={
+            sourceMode === "volcano_control"
+              ? "Please select four different conditions and controls to generate the plot."
+              : "Please select two different conditions to generate the plot."
+          }
+        />
+      ) : null}
       {result ? (
         <>
           <SummarySection items={[{ label: "Up Genes", value: String(result.upGenes.length) }, { label: "Down Genes", value: String(result.downGenes.length) }, { label: "Up Terms", value: String(result.upTerms.length) }, { label: "Down Terms", value: String(result.downTerms.length) }]} warnings={result.warnings} />

@@ -331,8 +331,11 @@ export type VolcanoResultResponse = {
 
 export type EnrichmentRequest = {
   kind: AnnotationKind;
+  source: "volcano" | "volcano_control";
   condition1: string;
   condition2: string;
+  condition1Control?: string | null;
+  condition2Control?: string | null;
   pValueThreshold: number;
   log2fcThreshold: number;
   testType: StatsTestType;
@@ -385,6 +388,45 @@ export type SimulationResultResponse = {
   upregulatedCount: number;
   downregulatedCount: number;
   notSignificantCount: number;
+  warnings: string[];
+};
+
+export type AnalysisSource = "volcano" | "volcano_control";
+
+export type AnalysisVolcanoRequest = {
+  kind: AnnotationKind;
+  source: AnalysisSource;
+  condition1: string;
+  condition2: string;
+  condition1Control?: string | null;
+  condition2Control?: string | null;
+  identifier: StatsIdentifier;
+  pValueThreshold: number;
+  log2fcThreshold: number;
+  testType: StatsTestType;
+  useUncorrected: boolean;
+};
+
+export type AnalysisVolcanoPoint = {
+  label: string;
+  selectionLabel: string;
+  uniprotAccession?: string | null;
+  workflowLabel?: string | null;
+  geneLabel?: string | null;
+  significance: string;
+  log2FC: number;
+  negLog10P: number;
+};
+
+export type AnalysisVolcanoResponse = {
+  kind: AnnotationKind;
+  source: AnalysisSource;
+  labelColumn: string;
+  totalRows: number;
+  upregulatedCount: number;
+  downregulatedCount: number;
+  notSignificantCount: number;
+  points: AnalysisVolcanoPoint[];
   warnings: string[];
 };
 
@@ -540,6 +582,7 @@ export type SummaryTab = "tables" | "text" | "report";
 
 export type SidebarSection =
   | "data"
+  | "analysis"
   | "completeness"
   | "qc"
   | "stats"

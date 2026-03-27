@@ -11,6 +11,7 @@ StatsTestType = Literal["unpaired", "paired"]
 StatsIdentifier = Literal["workflow", "genes"]
 GseaDirection = Literal["up", "down"]
 HeatmapValueType = Literal["log2", "z"]
+EnrichmentSource = Literal["volcano", "volcano_control"]
 
 
 class IdentifierOption(BaseModel):
@@ -78,8 +79,11 @@ class EnrichmentTerm(BaseModel):
 
 class EnrichmentRequest(BaseModel):
     kind: AnnotationKind
+    source: EnrichmentSource = "volcano"
     condition1: str
     condition2: str
+    condition1Control: str | None = None
+    condition2Control: str | None = None
     pValueThreshold: float = Field(default=0.05, gt=0.0, le=1.0)
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: StatsTestType = "unpaired"

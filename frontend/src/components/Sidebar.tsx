@@ -7,6 +7,7 @@ type SidebarItem = {
 
 const items: SidebarItem[] = [
   { key: "data", label: "Data" },
+  { key: "analysis", label: "Analysis" },
   { key: "completeness", label: "Completeness" },
   { key: "qc", label: "QC Pipeline" },
   { key: "stats", label: "Statistical Analysis" },

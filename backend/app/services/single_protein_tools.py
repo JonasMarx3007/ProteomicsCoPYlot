@@ -139,6 +139,19 @@ def _heatmap_protein_group_column(frame: pd.DataFrame) -> str:
     )
 
 
+def _heatmap_key_column_for_identifier(
+    frame: pd.DataFrame,
+    identifier: str = "workflow",
+) -> str:
+    resolved_identifier = _normalize_identifier(identifier)
+    if resolved_identifier == "genes":
+        for candidate in ["GeneNames", "Gene_group"]:
+            if candidate in frame.columns:
+                return candidate
+        raise ValueError("Gene names are not available for this phospho dataset.")
+    return _heatmap_protein_group_column(frame)
+
+
 def _build_sample_labels(meta: pd.DataFrame, include_id: bool) -> pd.DataFrame:
     labeled = meta.copy()
     labeled["sample"] = labeled["sample"].astype(str)
@@ -394,6 +407,7 @@ def _heatmap_matrix(
     cluster_rows: bool,
     cluster_cols: bool,
     value_type: str,
+    identifier: str = "workflow",
 ) -> tuple[pd.DataFrame, str]:
     if kind != "phospho":
         raise ValueError("Phosphosite-on-protein heatmap is only available for phospho dataset.")
@@ -401,15 +415,24 @@ def _heatmap_matrix(
         raise ValueError("Please select a protein for the heatmap.")
 
     frame, _, meta = _analysis_frame(kind)
-    group_col = _heatmap_protein_group_column(frame)
+    resolved_identifier = _normalize_identifier(identifier)
+    key_col = _heatmap_key_column_for_identifier(frame, identifier=resolved_identifier)
     if "PTM_Collapse_key" not in frame.columns:
         raise ValueError("Phospho dataset is missing PTM_Collapse_key column.")
 
-    protein_data = frame[
-        frame[group_col].astype(str).str.contains(str(protein), case=False, na=False, regex=False)
-    ].copy()
+    selected_value = str(protein).strip()
+    if resolved_identifier == "genes":
+        selected_set = {selected_value}
+        mask = _feature_match_mask(frame[key_col], selected_set, kind="phospho", identifier="genes")
+        protein_data = frame[mask].copy()
+    else:
+        protein_data = frame[
+            frame[key_col].astype(str).str.contains(selected_value, case=False, na=False, regex=False)
+        ].copy()
+
     if protein_data.empty:
-        raise ValueError(f"No phosphosite rows found for protein '{protein}'.")
+        entity_label = "gene" if resolved_identifier == "genes" else "protein"
+        raise ValueError(f"No phosphosite rows found for {entity_label} '{selected_value}'.")
 
     meta_filtered, _ = _select_conditions(meta, conditions)
     labeled = _build_sample_labels(meta_filtered, include_id=include_id)
@@ -502,10 +525,10 @@ def single_protein_options(
                 "conditions": [],
                 "proteinCount": 0,
                 "conditionCount": 0,
-                "identifier": "workflow",
+                "identifier": resolved_identifier,
                 "availableIdentifiers": available_identifiers,
             }
-        key_col = _heatmap_protein_group_column(frame)
+        key_col = _heatmap_key_column_for_identifier(frame, identifier=resolved_identifier)
     else:
         key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
 
@@ -679,6 +702,7 @@ def single_protein_heatmap_table(
     kind: AnnotationKind,
     protein: str,
     conditions: list[str],
+    identifier: str = "workflow",
     include_id: bool = False,
     filter_m1: bool = True,
     cluster_rows: bool = False,
@@ -694,6 +718,7 @@ def single_protein_heatmap_table(
         cluster_rows=cluster_rows,
         cluster_cols=cluster_cols,
         value_type=value_type,
+        identifier=identifier,
     )
     table = matrix.reset_index().rename(columns={"index": "Site"})
     numeric_cols = [col for col in table.columns if col != "Site"]
@@ -705,6 +730,7 @@ def single_protein_heatmap_plot(
     kind: AnnotationKind,
     protein: str,
     conditions: list[str],
+    identifier: str = "workflow",
     include_id: bool = False,
     header: bool = True,
     filter_m1: bool = True,
@@ -727,6 +753,7 @@ def single_protein_heatmap_plot(
         cluster_rows=cluster_rows,
         cluster_cols=cluster_cols,
         value_type=value_type,
+        identifier=identifier,
     )
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
