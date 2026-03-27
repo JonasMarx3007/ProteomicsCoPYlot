@@ -1,5 +1,7 @@
 import type {
   AnnotationGenerateRequest,
+  AnalysisVolcanoRequest,
+  AnalysisVolcanoResponse,
   AnnotationKind,
   AnnotationResultResponse,
   ComparisonOptionsResponse,
@@ -648,6 +650,26 @@ export async function runEnrichmentAnalysis(
     );
   }
   return data as EnrichmentResultResponse;
+}
+
+export async function runAnalysisVolcanoData(
+  payload: AnalysisVolcanoRequest
+): Promise<AnalysisVolcanoResponse> {
+  const response = await fetch(`${API_BASE}/api/analysis/volcano/data`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load analysis volcano data"
+    );
+  }
+  return data as AnalysisVolcanoResponse;
 }
 
 export async function getPathwayOptions(): Promise<PathwayOptionsResponse> {

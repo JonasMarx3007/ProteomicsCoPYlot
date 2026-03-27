@@ -66,6 +66,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
     dpi: 300,
   });
   const [heatmap, setHeatmap] = useState({
+    identifier: "workflow" as SingleProteinIdentifier,
     protein: "",
     conditions: [] as string[],
     includeId: false,
@@ -82,7 +83,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
 
   const effectiveKind: AnnotationKind = activeTab === "heatmap" ? "phospho" : kind;
   const activeIdentifier: SingleProteinIdentifier =
-    activeTab === "boxplot" ? box.identifier : activeTab === "lineplot" ? line.identifier : "workflow";
+    activeTab === "boxplot" ? box.identifier : activeTab === "lineplot" ? line.identifier : heatmap.identifier;
   const hasPhospho = availableKinds.includes("phospho");
   const hasRequiredDataset = activeTab === "heatmap" ? hasPhospho : availableKinds.includes(effectiveKind);
 
@@ -166,11 +167,15 @@ export default function SingleProteinPage({ activeTab }: Props) {
     }
 
     setHeatmap((prev) => {
+      const validIdentifiers = new Set((options.availableIdentifiers ?? []).map((entry) => entry.key));
+      const nextIdentifier = validIdentifiers.has(prev.identifier)
+        ? prev.identifier
+        : (options.identifier ?? "workflow");
       const nextProtein =
         prev.protein && proteinChoices.includes(prev.protein) ? prev.protein : proteinChoices[0] ?? "";
       const filtered = prev.conditions.filter((value) => conditionChoices.includes(value));
       const nextConditions = filtered.length > 0 ? filtered : [...conditionChoices];
-      return { ...prev, protein: nextProtein, conditions: nextConditions };
+      return { ...prev, identifier: nextIdentifier, protein: nextProtein, conditions: nextConditions };
     });
   }, [activeTab, options]);
 
@@ -219,6 +224,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
       title: "Phosphosites on Protein Heatmap",
       filename: "single_protein_heatmap_phospho.png",
       url: buildPlotUrl("/api/plots/single-protein/phospho/heatmap.png", {
+        identifier: heatmap.identifier,
         protein: heatmap.protein,
         conditions: heatmap.conditions.join(","),
         includeId: heatmap.includeId,
@@ -275,6 +281,7 @@ export default function SingleProteinPage({ activeTab }: Props) {
 
     if (!heatmap.protein || heatmap.conditions.length === 0) return null;
     const params: Record<string, string | number | boolean> = {
+      identifier: heatmap.identifier,
       protein: heatmap.protein,
       conditions: heatmap.conditions.join(","),
       includeId: heatmap.includeId,
@@ -599,8 +606,18 @@ export default function SingleProteinPage({ activeTab }: Props) {
       <OptionsLayout
         fields={[
           <SelectField
+            key="identifier"
+            label="Identifier"
+            value={heatmap.identifier}
+            options={identifierOptions}
+            labels={identifierLabels}
+            onChange={(value) =>
+              setHeatmap({ ...heatmap, identifier: value as SingleProteinIdentifier, protein: "" })
+            }
+          />,
+          <SelectField
             key="protein"
-            label="Protein Group"
+            label={heatmap.identifier === "genes" ? "Gene" : "Protein Group"}
             value={heatmap.protein}
             options={proteinOptions}
             onChange={(value) => setHeatmap({ ...heatmap, protein: value })}

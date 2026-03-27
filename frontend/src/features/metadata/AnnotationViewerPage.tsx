@@ -29,7 +29,7 @@ export default function AnnotationViewerPage() {
   >(emptyAnnotations);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewerRefreshQueued, setViewerRefreshQueued] = useState(false);
+  const [viewerRefreshAttempts, setViewerRefreshAttempts] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,24 +81,22 @@ export default function AnnotationViewerPage() {
   );
 
   useEffect(() => {
-    if (!IS_VIEWER_MODE || viewerRefreshQueued || loading) return;
+    if (!IS_VIEWER_MODE || loading) return;
     const hasDatasets =
       Boolean(datasets?.protein) ||
       Boolean(datasets?.phospho) ||
       Boolean(datasets?.phosprot) ||
       Boolean(datasets?.peptide);
     if (hasDatasets && availableStatuses.length > 0) return;
-    if (!hasDatasets || error) {
-      setViewerRefreshQueued(true);
-      const timer = window.setTimeout(() => {
-        load().catch(() => {
-          // keep current state if backend is still completing startup
-        });
-      }, 700);
-      return () => window.clearTimeout(timer);
-    }
-    return;
-  }, [availableStatuses.length, datasets, error, loading, load, viewerRefreshQueued]);
+    if (viewerRefreshAttempts >= 20) return;
+    const timer = window.setTimeout(() => {
+      setViewerRefreshAttempts((value) => value + 1);
+      load().catch(() => {
+        // keep current state if backend is still completing startup
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [availableStatuses.length, datasets, loading, load, viewerRefreshAttempts]);
 
   return (
     <div className="space-y-6">
