@@ -1,16 +1,17 @@
 ﻿
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildPlotUrl, getStatisticalOptions, runAnalysisVolcanoData } from "../../lib/api";
+import { buildPlotUrl, getStatisticalOptions, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type {
   AnalysisVolcanoResponse,
   AnnotationKind,
+  ListEnrichmentResultResponse,
   StatsIdentifier,
   StatsTestType,
   StatisticalOptionsResponse,
 } from "../../lib/types";
 
-type TileType = "volcano" | "volcanoControl" | "proteinBoxplot" | "proteinLineplot";
+type TileType = "volcano" | "volcanoControl" | "proteinBoxplot" | "proteinLineplot" | "gseaList";
 type BoxplotSourceMode = "active" | "manual";
 type LineplotSourceMode = "active" | "selected" | "list" | "manual";
 type PValueMode = "corrected" | "uncorrected";
@@ -38,7 +39,8 @@ type AnalysisTile =
       sourceMode: LineplotSourceMode;
       listName: string;
       proteinsText: string;
-    };
+    }
+  | { id: string; type: "gseaList" };
 
 function uid() {
   return `tile_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
@@ -508,6 +510,7 @@ export default function AnalysisPage() {
               <option value="volcanoControl">Volcano Control</option>
               <option value="proteinBoxplot">Protein Boxplot</option>
               <option value="proteinLineplot">Protein Lineplot</option>
+              <option value="gseaList">GSEA (List)</option>
             </select>
             <button
               type="button"
@@ -795,6 +798,18 @@ export default function AnalysisPage() {
                   );
                 }
 
+                if (tile.type === "gseaList") {
+                  return (
+                    <GseaListTile
+                      key={tile.id}
+                      tileId={tile.id}
+                      onRemove={removeTile}
+                      listNames={listNames}
+                      lists={lists}
+                    />
+                  );
+                }
+
                 return null;
               })}
 
@@ -931,6 +946,216 @@ export default function AnalysisPage() {
   );
 }
 
+function GseaListTile({
+  tileId,
+  onRemove,
+  listNames,
+  lists,
+}: {
+  tileId: string;
+  onRemove: (id: string) => void;
+  listNames: string[];
+  lists: Record<string, string[]>;
+}) {
+  const [sourceMode, setSourceMode] = useState<"manual" | "list">("manual");
+  const [selectedListName, setSelectedListName] = useState("");
+  const [genesText, setGenesText] = useState("");
+  const [topN, setTopN] = useState(10);
+  const [minTermSize, setMinTermSize] = useState(20);
+  const [maxTermSize, setMaxTermSize] = useState(300);
+  const [result, setResult] = useState<ListEnrichmentResultResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (listNames.length === 0) {
+      setSelectedListName("");
+      return;
+    }
+    if (!selectedListName || !listNames.includes(selectedListName)) {
+      setSelectedListName(listNames[0]);
+    }
+  }, [listNames, selectedListName]);
+
+  const parsedGenes = useMemo(() => parseProteins(genesText), [genesText]);
+
+  async function runGsea() {
+    const genes = sourceMode === "list" ? toUnique(lists[selectedListName] ?? []) : parsedGenes;
+    if (genes.length === 0) {
+      setError("Provide at least one gene in the input list.");
+      setResult(null);
+      return;
+    }
+
+    setRunning(true);
+    setError(null);
+    try {
+      const response = await runListEnrichmentAnalysis({
+        genes,
+        topN: Math.max(1, Math.round(topN)),
+        minTermSize: Math.max(1, Math.round(minTermSize)),
+        maxTermSize: Math.max(1, Math.round(maxTermSize)),
+      });
+      setResult(response);
+    } catch (err) {
+      setResult(null);
+      setError(err instanceof Error ? err.message : "Failed to run list enrichment analysis");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function loadFromActiveList() {
+    const genes = toUnique(lists[selectedListName] ?? []);
+    setGenesText(genes.join("\n"));
+    setSourceMode("manual");
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm font-semibold text-slate-800">GSEA (List)</div>
+        <button
+          type="button"
+          onClick={() => onRemove(tileId)}
+          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
+        >
+          Remove
+        </button>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <SelectField
+          label="Input source"
+          value={sourceMode}
+          options={[
+            { value: "manual", label: "Manual list input" },
+            { value: "list", label: "Named list from sidebar" },
+          ]}
+          onChange={(value) => setSourceMode(value as "manual" | "list")}
+        />
+        {sourceMode === "list" ? (
+          <SelectField
+            label="Named list"
+            value={selectedListName}
+            options={listNames.map((name) => ({ value: name, label: name }))}
+            onChange={setSelectedListName}
+          />
+        ) : (
+          <div className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+            Genes in input: {parsedGenes.length}
+          </div>
+        )}
+      </div>
+
+      {sourceMode === "manual" ? (
+        <div className="mt-3">
+          <label className="mb-1 block text-sm font-medium text-slate-700">Gene list input</label>
+          <textarea
+            value={genesText}
+            onChange={(event) => setGenesText(event.target.value)}
+            rows={6}
+            placeholder="Paste genes separated by comma, space, or newline"
+            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+          />
+          {listNames.length > 0 ? (
+            <button
+              type="button"
+              onClick={loadFromActiveList}
+              className="mt-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
+            >
+              Load from named list
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <div className="mt-3 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          Selected list size: {toUnique(lists[selectedListName] ?? []).length}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <NumberField label="Top terms" value={topN} onChange={setTopN} />
+        <NumberField label="Min term size" value={minTermSize} onChange={setMinTermSize} />
+        <NumberField label="Max term size" value={maxTermSize} onChange={setMaxTermSize} />
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={runGsea}
+          disabled={running}
+          className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
+        >
+          {running ? "Running..." : "Run GSEA"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setResult(null);
+            setError(null);
+          }}
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
+        >
+          Clear Result
+        </button>
+      </div>
+
+      {error ? (
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+      ) : null}
+
+      {result ? (
+        <div className="mt-3 space-y-3">
+          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            Genes used: <span className="font-medium text-slate-900">{result.genes.length}</span> | Terms found:{" "}
+            <span className="font-medium text-slate-900">{result.terms.length}</span>
+          </div>
+
+          {result.warnings.length > 0 ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {result.warnings.join(" ")}
+            </div>
+          ) : null}
+
+          {result.terms.length > 0 ? (
+            <div className="max-h-80 overflow-auto rounded-xl border border-slate-200 bg-white">
+              <table className="min-w-full divide-y divide-slate-200 text-xs sm:text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Term</th>
+                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Source</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Adj. p-value</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hits</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hit %</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {result.terms.map((term) => (
+                    <tr key={`${term.source}:${term.termId}:${term.name}`}>
+                      <td className="px-3 py-2 text-slate-900">{term.name}</td>
+                      <td className="px-3 py-2 text-slate-700">{term.source || "-"}</td>
+                      <td className="px-3 py-2 text-right text-slate-700">{term.adjPValue.toExponential(3)}</td>
+                      <td className="px-3 py-2 text-right text-slate-700">
+                        {term.intersectionSize}/{term.termSize}
+                      </td>
+                      <td className="px-3 py-2 text-right text-slate-700">{term.hitPercent.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-4 text-sm text-slate-500">
+              No enrichment terms were found for the provided list and parameters.
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function VolcanoBundleControls({
   settings,
   options,
@@ -946,20 +1171,51 @@ function VolcanoBundleControls({
 
   return (
     <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">Volcano Plot Bundle</div>
-      <div className="grid gap-3 lg:grid-cols-2">
-        <SelectField
-          label="Condition 1"
-          value={settings.condition1}
-          options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
-          onChange={(value) => onChange({ condition1: value })}
-        />
-        <SelectField
-          label="Condition 2"
-          value={settings.condition2}
-          options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
-          onChange={(value) => onChange({ condition2: value })}
-        />
+      {isControl ? (
+        <div className="grid gap-3 lg:grid-cols-4">
+          <SelectField
+            label="Condition 1"
+            value={settings.condition1}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition1: value })}
+          />
+          <SelectField
+            label="Condition 1 Control"
+            value={(settings as VolcanoControlSettings).condition1Control}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition1Control: value })}
+          />
+          <SelectField
+            label="Condition 2"
+            value={settings.condition2}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition2: value })}
+          />
+          <SelectField
+            label="Condition 2 Control"
+            value={(settings as VolcanoControlSettings).condition2Control}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition2Control: value })}
+          />
+        </div>
+      ) : (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <SelectField
+            label="Condition 1"
+            value={settings.condition1}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition1: value })}
+          />
+          <SelectField
+            label="Condition 2"
+            value={settings.condition2}
+            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
+            onChange={(value) => onChange({ condition2: value })}
+          />
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <SelectField
           label="Test type"
           value={settings.testType}
@@ -979,23 +1235,6 @@ function VolcanoBundleControls({
           onChange={(value) => onChange({ pValueMode: value as PValueMode })}
         />
       </div>
-
-      {isControl ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <SelectField
-            label="Condition 1 Control"
-            value={(settings as VolcanoControlSettings).condition1Control}
-            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
-            onChange={(value) => onChange({ condition1Control: value })}
-          />
-          <SelectField
-            label="Condition 2 Control"
-            value={(settings as VolcanoControlSettings).condition2Control}
-            options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
-            onChange={(value) => onChange({ condition2Control: value })}
-          />
-        </div>
-      ) : null}
 
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <NumberField

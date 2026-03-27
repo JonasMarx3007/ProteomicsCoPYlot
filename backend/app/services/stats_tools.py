@@ -20,6 +20,8 @@ from app.schemas.stats import (
     GseaDirection,
     HeatmapValueType,
     IdentifierOption,
+    ListEnrichmentRequest,
+    ListEnrichmentResultResponse,
     PathwayOptionsResponse,
     SimulationRequest,
     SimulationResultResponse,
@@ -778,6 +780,26 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
     )
 
 
+def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentResultResponse:
+    if payload.minTermSize > payload.maxTermSize:
+        raise ValueError("Minimum term size cannot be larger than maximum term size.")
+
+    cleaned_genes = sorted({_clean_feature_name(gene) for gene in payload.genes if _clean_feature_name(gene)})
+    terms = _enrichment_terms(cleaned_genes, payload.topN, payload.minTermSize, payload.maxTermSize)
+
+    warnings: list[str] = []
+    if not cleaned_genes:
+        warnings.append("No valid genes were provided in the input list.")
+    elif not terms:
+        warnings.append("No enrichment terms found for the provided gene list and parameters.")
+
+    return ListEnrichmentResultResponse(
+        genes=cleaned_genes,
+        terms=terms,
+        warnings=warnings,
+    )
+
+
 def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection) -> bytes:
     plt = _get_plt()
     result = run_enrichment(payload)
@@ -1054,6 +1076,7 @@ apply_cached_wrappers(
         "volcano_control_html",
         "pathway_options",
         "run_enrichment",
+        "run_enrichment_from_list",
         "gsea_plot_png",
         "pathway_heatmap_png",
         "run_simulation",

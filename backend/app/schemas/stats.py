@@ -103,6 +103,19 @@ class EnrichmentResultResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ListEnrichmentRequest(BaseModel):
+    genes: list[str] = Field(default_factory=list)
+    topN: int = Field(default=10, ge=1, le=100)
+    minTermSize: int = Field(default=20, ge=1)
+    maxTermSize: int = Field(default=300, ge=1)
+
+
+class ListEnrichmentResultResponse(BaseModel):
+    genes: list[str]
+    terms: list[EnrichmentTerm]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class PathwayOptionsResponse(BaseModel):
     pathways: list[str]
 
