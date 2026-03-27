@@ -6,6 +6,8 @@ from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
     EnrichmentRequest,
     EnrichmentResultResponse,
+    ListEnrichmentRequest,
+    ListEnrichmentResultResponse,
     PathwayOptionsResponse,
     SimulationRequest,
     SimulationResultResponse,
@@ -16,6 +18,7 @@ from app.schemas.stats import (
 )
 from app.services.stats_tools import (
     pathway_options,
+    run_enrichment_from_list,
     run_enrichment,
     run_simulation,
     run_volcano,
@@ -64,6 +67,16 @@ async def gsea_route(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run enrichment analysis: {e}") from e
+
+
+@router.post("/gsea/list/run", response_model=ListEnrichmentResultResponse)
+async def gsea_list_route(payload: ListEnrichmentRequest) -> ListEnrichmentResultResponse:
+    try:
+        return run_enrichment_from_list(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run list enrichment analysis: {e}") from e
 
 
 @router.get("/pathways", response_model=PathwayOptionsResponse)
