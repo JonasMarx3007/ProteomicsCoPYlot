@@ -367,6 +367,19 @@ export type EnrichmentResultResponse = {
   warnings: string[];
 };
 
+export type ListEnrichmentRequest = {
+  genes: string[];
+  topN: number;
+  minTermSize: number;
+  maxTermSize: number;
+};
+
+export type ListEnrichmentResultResponse = {
+  genes: string[];
+  terms: EnrichmentTerm[];
+  warnings: string[];
+};
+
 export type PathwayOptionsResponse = {
   pathways: string[];
 };

@@ -14,6 +14,8 @@ import type {
   DatasetKind,
   EnrichmentRequest,
   EnrichmentResultResponse,
+  ListEnrichmentRequest,
+  ListEnrichmentResultResponse,
   IdTranslationRequest,
   IdTranslationResponse,
   ImputationResultResponse,
@@ -650,6 +652,26 @@ export async function runEnrichmentAnalysis(
     );
   }
   return data as EnrichmentResultResponse;
+}
+
+export async function runListEnrichmentAnalysis(
+  payload: ListEnrichmentRequest
+): Promise<ListEnrichmentResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/gsea/list/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run list enrichment analysis"
+    );
+  }
+  return data as ListEnrichmentResultResponse;
 }
 
 export async function runAnalysisVolcanoData(
