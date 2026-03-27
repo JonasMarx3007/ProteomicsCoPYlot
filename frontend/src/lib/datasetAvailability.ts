@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentDatasets } from "./api";
 import type { AnnotationKind, CurrentDatasetsResponse } from "./types";
 import { IS_VIEWER_MODE } from "./appMode";
@@ -36,6 +36,7 @@ export function useCurrentDatasetsSnapshot() {
   const [datasets, setDatasets] = useState<CurrentDatasetsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const viewerRetryCountRef = useRef(0);
 
   const refresh = useCallback(async (silent = false) => {
     try {
@@ -60,12 +61,31 @@ export function useCurrentDatasetsSnapshot() {
   }, [refresh]);
 
   useEffect(() => {
-    if (datasets !== null) return;
+    const hasAnyDataset =
+      Boolean(datasets?.protein) ||
+      Boolean(datasets?.phospho) ||
+      Boolean(datasets?.phosprot) ||
+      Boolean(datasets?.peptide);
+
+    if (!IS_VIEWER_MODE) {
+      if (datasets !== null) return;
+      const timer = window.setTimeout(() => {
+        refresh(true).catch(() => {
+          // next retry is scheduled by this effect if datasets stays null
+        });
+      }, 2000);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (hasAnyDataset) return;
+    if (viewerRetryCountRef.current >= 20) return;
+
     const timer = window.setTimeout(() => {
+      viewerRetryCountRef.current += 1;
       refresh(true).catch(() => {
-        // next retry is scheduled by this effect if datasets stays null
+        // continue retrying for a short bootstrap window in viewer mode
       });
-    }, IS_VIEWER_MODE ? 500 : 2000);
+    }, 500);
     return () => window.clearTimeout(timer);
   }, [datasets, refresh]);
 

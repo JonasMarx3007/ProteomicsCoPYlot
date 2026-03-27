@@ -630,6 +630,8 @@ def _different_genes(
     log2fc_threshold: float,
     test_type: str,
     use_uncorrected: bool,
+    condition1_control: str | None = None,
+    condition2_control: str | None = None,
 ) -> tuple[StatsSource, list[str], list[str], list[str]]:
     source_used, gene_column, df, warnings = _volcano_dataframe(
         kind=kind,
@@ -640,21 +642,43 @@ def _different_genes(
         log2fc_threshold=log2fc_threshold,
         test_type=test_type,
         use_uncorrected=use_uncorrected,
+        condition1_control=condition1_control,
+        condition2_control=condition2_control,
     )
     if gene_column not in df.columns:
         raise ValueError("A gene label column is required for enrichment analysis.")
 
-    up_genes = [
-        _clean_feature_name(value)
-        for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
-    ]
-    down_genes = [
-        _clean_feature_name(value)
-        for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
-    ]
+    if kind == "phosprot" or gene_column == "Gene_group":
+        up_genes = [
+            token
+            for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
+            for token in _gene_tokens(value)
+        ]
+        down_genes = [
+            token
+            for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
+            for token in _gene_tokens(value)
+        ]
+    else:
+        up_genes = [
+            _clean_feature_name(value)
+            for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
+        ]
+        down_genes = [
+            _clean_feature_name(value)
+            for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
+        ]
     up_genes = [gene for gene in up_genes if gene]
     down_genes = [gene for gene in down_genes if gene]
     return source_used, sorted(set(up_genes)), sorted(set(down_genes)), warnings
+
+
+def _validate_enrichment_kind(kind: AnnotationKind) -> None:
+    if kind == "phospho":
+        raise ValueError(
+            "GSEA only supports Protein and Phosphoproteome levels. "
+            "Phospho (site-level) is not supported."
+        )
 
 
 def _enrichment_terms(gene_list: list[str], top_n: int, min_term_size: int, max_term_size: int) -> list[EnrichmentTerm]:
@@ -717,6 +741,21 @@ def _enrichment_terms(gene_list: list[str], top_n: int, min_term_size: int, max_
 
 
 def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
+    _validate_enrichment_kind(payload.kind)
+    source_mode = str(payload.source).strip().lower()
+    use_control = source_mode == "volcano_control"
+    if use_control:
+        if not payload.condition1Control or not payload.condition2Control:
+            raise ValueError("Volcano control source requires both control conditions.")
+        unique_conditions = {
+            str(payload.condition1).strip(),
+            str(payload.condition2).strip(),
+            str(payload.condition1Control).strip(),
+            str(payload.condition2Control).strip(),
+        }
+        if len([value for value in unique_conditions if value]) < 4:
+            raise ValueError("Volcano control source requires four different conditions.")
+
     source_used, up_genes, down_genes, warnings = _different_genes(
         kind=payload.kind,
         condition1=payload.condition1,
@@ -725,6 +764,8 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         log2fc_threshold=payload.log2fcThreshold,
         test_type=payload.testType,
         use_uncorrected=payload.useUncorrected,
+        condition1_control=payload.condition1Control if use_control else None,
+        condition2_control=payload.condition2Control if use_control else None,
     )
     return EnrichmentResultResponse(
         kind=payload.kind,

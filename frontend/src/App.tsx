@@ -3,6 +3,7 @@ import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
 import UploadPage from "./features/upload/UploadPage";
+import AnalysisPage from "./features/analysis/AnalysisPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
 import AnnotationViewerPage from "./features/metadata/AnnotationViewerPage";
 import ImputationPage from "./features/data/ImputationPage";
@@ -137,6 +138,7 @@ const viewerDataTabs: { key: DataTab; label: string }[] = dataTabs.filter(
 
 const allSidebarSections: SidebarSection[] = [
   "data",
+  "analysis",
   "completeness",
   "qc",
   "stats",
@@ -197,6 +199,7 @@ export default function App() {
 
     const sections: SidebarSection[] = [
       "data",
+      "analysis",
       "completeness",
       "qc",
       "stats",
@@ -313,6 +316,10 @@ export default function App() {
           rightContent={topManualButton}
         />
       );
+    }
+
+    if (activeSection === "analysis") {
+      return null;
     }
 
     if (activeSection === "qc") {
@@ -613,6 +620,10 @@ export default function App() {
       }
     }
 
+    if (activeSection === "analysis") {
+      return <AnalysisPage />;
+    }
+
     return (
       <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
         <div className="text-lg font-semibold text-slate-900">
@@ -641,6 +652,8 @@ function sectionTitle(section: SidebarSection): string {
   switch (section) {
     case "data":
       return "Data";
+    case "analysis":
+      return "Analysis";
     case "qc":
       return "QC Pipeline";
     case "completeness":
