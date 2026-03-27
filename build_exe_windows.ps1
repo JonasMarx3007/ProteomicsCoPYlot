@@ -15,6 +15,17 @@ $IconPath = Join-Path $RootDir "favicon.ico"
 $FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
 $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
 
+function Assert-LastExitCode {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Step
+  )
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Step failed with exit code $LASTEXITCODE."
+  }
+}
+
 if (-not (Test-Path $PythonExe)) {
   throw "Backend virtualenv not found. Expected: $PythonExe"
 }
@@ -27,11 +38,14 @@ if (-not $SkipFrontendBuild) {
   Push-Location $FrontendDir
   try {
     cmd /c npm install
+    Assert-LastExitCode -Step "npm install"
     if ($FrontendTargetMode -eq "viewer") {
       cmd /c "set VITE_APP_MODE=viewer&& npm run build"
+      Assert-LastExitCode -Step "frontend build (viewer)"
     }
     else {
       cmd /c "set VITE_APP_MODE=analysis&& npm run build"
+      Assert-LastExitCode -Step "frontend build (analysis)"
     }
   }
   finally {
@@ -56,7 +70,9 @@ if ($CurrentFrontendMode -ne $FrontendTargetMode) {
 }
 
 & $PythonExe -m pip install --upgrade pip
+Assert-LastExitCode -Step "pip upgrade"
 & $PythonExe -m pip install pyinstaller
+Assert-LastExitCode -Step "install pyinstaller"
 
 function Invoke-PyInstallerBuild {
   param(
@@ -98,6 +114,7 @@ function Invoke-PyInstallerBuild {
     --add-data "viewer_config.json;." `
     --add-data "viewer_data;viewer_data" `
     $EntryPoint
+  Assert-LastExitCode -Step "PyInstaller build ($Name)"
 }
 
 Push-Location $RootDir
