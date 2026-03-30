@@ -56,6 +56,8 @@ function datasetScopeToken(
   datasets: CurrentDatasetsResponse | null
 ): string {
   if (!datasets) return "none";
+  const pkg = `package:${datasets.activePackage || "Data"}`;
+  const metadataProfile = `metadata:${datasets.activeMetadataProfile || "Metadata"}`;
   const protein = datasets.protein
     ? `protein:${datasets.protein.filename}:${datasets.protein.rows}:${datasets.protein.columns}`
     : "protein:none";
@@ -68,7 +70,7 @@ function datasetScopeToken(
   const peptide = datasets.peptide
     ? `peptide:${datasets.peptide.filename}:${datasets.peptide.path}`
     : "peptide:none";
-  return [protein, phospho, phosprot, peptide].join("|");
+  return [pkg, metadataProfile, protein, phospho, phosprot, peptide].join("|");
 }
 
 export function clearSummaryReportState() {
