@@ -786,8 +786,25 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         header=_to_bool(protein_pca.get("header"), True),
                         legend=_to_bool(protein_pca.get("legend"), True),
                         plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
+                        method=_to_str(protein_pca.get("method"), "PCA"),
                         add_ellipses=_to_bool(protein_pca.get("addEllipses"), False),
                         dot_size=_to_int(protein_pca.get("dotSize"), 5, minimum=1, maximum=60),
+                        cluster_method=_to_str(protein_pca.get("clusterMethod"), "None"),
+                        cluster_count=_to_int(protein_pca.get("clusterCount"), 3, minimum=2, maximum=200),
+                        color_by=_to_str(protein_pca.get("colorBy"), "Condition"),
+                        umap_n_neighbors=_to_int(protein_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
+                        umap_min_dist=_to_float(protein_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
+                        tsne_perplexity=_to_float(
+                            protein_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
+                        ),
+                        tsne_learning_rate=_to_float(
+                            protein_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
+                        ),
+                        dbscan_eps=_to_float(protein_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+                        dbscan_min_samples=_to_int(
+                            protein_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
+                        ),
+                        random_state=_to_int(protein_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=protein_pca_height_cm,
                     ),
@@ -802,8 +819,25 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         header=_to_bool(protein_pca.get("header"), True),
                         legend=_to_bool(protein_pca.get("legend"), True),
                         plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
+                        method=_to_str(protein_pca.get("method"), "PCA"),
                         add_ellipses=_to_bool(protein_pca.get("addEllipses"), False),
                         dot_size=_to_int(protein_pca.get("dotSize"), 5, minimum=1, maximum=60),
+                        cluster_method=_to_str(protein_pca.get("clusterMethod"), "None"),
+                        cluster_count=_to_int(protein_pca.get("clusterCount"), 3, minimum=2, maximum=200),
+                        color_by=_to_str(protein_pca.get("colorBy"), "Condition"),
+                        umap_n_neighbors=_to_int(protein_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
+                        umap_min_dist=_to_float(protein_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
+                        tsne_perplexity=_to_float(
+                            protein_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
+                        ),
+                        tsne_learning_rate=_to_float(
+                            protein_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
+                        ),
+                        dbscan_eps=_to_float(protein_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+                        dbscan_min_samples=_to_int(
+                            protein_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
+                        ),
+                        random_state=_to_int(protein_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=protein_pca_height_cm,
                         dpi=_to_int(protein_pca.get("dpi"), 300, minimum=72, maximum=1200),
@@ -1059,8 +1093,25 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         header=_to_bool(phospho_pca.get("header"), True),
                         legend=_to_bool(phospho_pca.get("legend"), True),
                         plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
+                        method=_to_str(phospho_pca.get("method"), "PCA"),
                         add_ellipses=_to_bool(phospho_pca.get("addEllipses"), False),
                         dot_size=_to_int(phospho_pca.get("dotSize"), 5, minimum=1, maximum=60),
+                        cluster_method=_to_str(phospho_pca.get("clusterMethod"), "None"),
+                        cluster_count=_to_int(phospho_pca.get("clusterCount"), 3, minimum=2, maximum=200),
+                        color_by=_to_str(phospho_pca.get("colorBy"), "Condition"),
+                        umap_n_neighbors=_to_int(phospho_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
+                        umap_min_dist=_to_float(phospho_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
+                        tsne_perplexity=_to_float(
+                            phospho_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
+                        ),
+                        tsne_learning_rate=_to_float(
+                            phospho_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
+                        ),
+                        dbscan_eps=_to_float(phospho_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+                        dbscan_min_samples=_to_int(
+                            phospho_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
+                        ),
+                        random_state=_to_int(phospho_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=phospho_pca_height_cm,
                     ),
@@ -1075,8 +1126,25 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         header=_to_bool(phospho_pca.get("header"), True),
                         legend=_to_bool(phospho_pca.get("legend"), True),
                         plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
+                        method=_to_str(phospho_pca.get("method"), "PCA"),
                         add_ellipses=_to_bool(phospho_pca.get("addEllipses"), False),
                         dot_size=_to_int(phospho_pca.get("dotSize"), 5, minimum=1, maximum=60),
+                        cluster_method=_to_str(phospho_pca.get("clusterMethod"), "None"),
+                        cluster_count=_to_int(phospho_pca.get("clusterCount"), 3, minimum=2, maximum=200),
+                        color_by=_to_str(phospho_pca.get("colorBy"), "Condition"),
+                        umap_n_neighbors=_to_int(phospho_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
+                        umap_min_dist=_to_float(phospho_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
+                        tsne_perplexity=_to_float(
+                            phospho_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
+                        ),
+                        tsne_learning_rate=_to_float(
+                            phospho_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
+                        ),
+                        dbscan_eps=_to_float(phospho_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+                        dbscan_min_samples=_to_int(
+                            phospho_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
+                        ),
+                        random_state=_to_int(phospho_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=phospho_pca_height_cm,
                         dpi=_to_int(phospho_pca.get("dpi"), 300, minimum=72, maximum=1200),

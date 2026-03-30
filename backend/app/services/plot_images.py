@@ -1036,39 +1036,141 @@ def qc_cv_plot(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def _pca_projection(kind: AnnotationKind, plot_dim: str = "2D") -> tuple[pd.DataFrame, np.ndarray]:
+def _pca_projection(
+    kind: AnnotationKind,
+    plot_dim: str = "2D",
+    method: str = "PCA",
+    umap_n_neighbors: int = 15,
+    umap_min_dist: float = 0.1,
+    tsne_perplexity: float = 30.0,
+    tsne_learning_rate: float = 200.0,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, np.ndarray | None, str]:
     frame = _log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
-        raise ValueError("At least two sample columns are required for PCA.")
+        raise ValueError("At least two sample columns are required for dimensionality reduction.")
 
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     data_filtered = numeric.dropna()
     if data_filtered.empty:
-        raise ValueError("No complete sample rows available for PCA.")
+        raise ValueError("No complete sample rows available for dimensionality reduction.")
 
     transposed_expr = data_filtered.T
     transposed_expr = transposed_expr.loc[:, transposed_expr.var(axis=0) > 0]
     if transposed_expr.empty:
-        raise ValueError("All features have zero variance; PCA cannot be computed.")
+        raise ValueError("All features have zero variance; dimensionality reduction cannot be computed.")
 
     n_components = 3 if str(plot_dim).upper() == "3D" else 2
     if transposed_expr.shape[0] < n_components:
-        raise ValueError(f"Need at least {n_components} samples for {n_components}D PCA.")
+        raise ValueError(f"Need at least {n_components} samples for {n_components}D projection.")
 
-    x = transposed_expr.values
-    x = x - x.mean(axis=0, keepdims=True)
-    u, s, _ = np.linalg.svd(x, full_matrices=False)
-    scores = u[:, :n_components] * s[:n_components]
-    explained = (s ** 2) / max(float(np.sum(s ** 2)), 1e-12) * 100.0
+    method_key = str(method or "PCA").strip().lower()
+    x = transposed_expr.values.astype(float)
+    x_centered = x - x.mean(axis=0, keepdims=True)
+    x_std = x_centered.std(axis=0, keepdims=True)
+    x_std[x_std == 0] = 1.0
+    x_scaled = x_centered / x_std
 
-    pcs = [f"PC{i + 1}" for i in range(n_components)]
+    explained: np.ndarray | None = None
+    axis_prefix = "PC"
+
+    if method_key == "pca":
+        u, s, _ = np.linalg.svd(x_centered, full_matrices=False)
+        scores = u[:, :n_components] * s[:n_components]
+        explained = (s ** 2) / max(float(np.sum(s ** 2)), 1e-12) * 100.0
+        axis_prefix = "PC"
+    elif method_key == "umap":
+        try:
+            import umap
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "umap-learn is required for UMAP. Install it with: pip install umap-learn"
+            ) from exc
+        reducer = umap.UMAP(
+            n_components=n_components,
+            n_neighbors=max(2, int(umap_n_neighbors)),
+            min_dist=max(0.0, float(umap_min_dist)),
+            random_state=int(random_state),
+        )
+        scores = reducer.fit_transform(x_scaled)
+        axis_prefix = "UMAP"
+    elif method_key in {"t-sne", "tsne", "t_sne"}:
+        try:
+            from sklearn.manifold import TSNE
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "scikit-learn is required for t-SNE. Install it with: pip install scikit-learn"
+            ) from exc
+
+        max_perplexity = max(1.0, float(transposed_expr.shape[0] - 1))
+        effective_perplexity = min(max(1.0, float(tsne_perplexity)), max_perplexity)
+        tsne = TSNE(
+            n_components=n_components,
+            perplexity=effective_perplexity,
+            learning_rate=max(10.0, float(tsne_learning_rate)),
+            init="pca",
+            random_state=int(random_state),
+            method="barnes_hut",
+        )
+        scores = tsne.fit_transform(x_scaled)
+        axis_prefix = "t-SNE"
+    else:
+        raise ValueError("Unsupported dimensionality-reduction method. Use PCA, UMAP, or t-SNE.")
+
+    pcs = [f"{axis_prefix}{i + 1}" for i in range(n_components)]
     pca_scores = pd.DataFrame(scores, columns=pcs)
     pca_scores["sample"] = transposed_expr.index.astype(str)
     condition_map = meta.set_index("sample")["condition"].astype(str).to_dict()
     pca_scores["condition"] = pca_scores["sample"].map(condition_map).fillna("sample")
-    return pca_scores, explained
+    return pca_scores, explained, axis_prefix
+
+
+def _compute_cluster_labels(
+    embedding: np.ndarray,
+    *,
+    cluster_method: str = "None",
+    cluster_count: int = 3,
+    dbscan_eps: float = 0.5,
+    dbscan_min_samples: int = 2,
+    random_state: int = 42,
+) -> np.ndarray | None:
+    method_key = str(cluster_method or "None").strip().lower()
+    if method_key in {"none", "", "off"}:
+        return None
+    if embedding.shape[0] < 2:
+        return None
+
+    try:
+        from sklearn.cluster import AgglomerativeClustering, DBSCAN, KMeans
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "scikit-learn is required for clustering. Install it with: pip install scikit-learn"
+        ) from exc
+
+    if method_key == "kmeans":
+        k = min(max(2, int(cluster_count)), embedding.shape[0])
+        model = KMeans(n_clusters=k, random_state=int(random_state), n_init=10)
+        return model.fit_predict(embedding)
+    if method_key in {"agglomerative", "hierarchical"}:
+        k = min(max(2, int(cluster_count)), embedding.shape[0])
+        model = AgglomerativeClustering(n_clusters=k)
+        return model.fit_predict(embedding)
+    if method_key == "dbscan":
+        model = DBSCAN(
+            eps=max(1e-6, float(dbscan_eps)),
+            min_samples=max(1, int(dbscan_min_samples)),
+        )
+        return model.fit_predict(embedding)
+
+    raise ValueError("Unsupported clustering method. Use None, KMeans, Agglomerative, or DBSCAN.")
+
+
+def _cluster_display_label(label: int) -> str:
+    if int(label) == -1:
+        return "Noise"
+    return f"Cluster {int(label) + 1}"
 
 
 def qc_pca_plot(
@@ -1076,8 +1178,19 @@ def qc_pca_plot(
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
+    method: str = "PCA",
     add_ellipses: bool = False,
     dot_size: int = 5,
+    cluster_method: str = "None",
+    cluster_count: int = 3,
+    color_by: str = "Condition",
+    umap_n_neighbors: int = 15,
+    umap_min_dist: float = 0.1,
+    tsne_perplexity: float = 30.0,
+    tsne_learning_rate: float = 200.0,
+    dbscan_eps: float = 0.5,
+    dbscan_min_samples: int = 2,
+    random_state: int = 42,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
@@ -1085,70 +1198,116 @@ def qc_pca_plot(
     from matplotlib.patches import Ellipse
 
     plt = _get_plt()
-    pca_scores, explained = _pca_projection(kind, plot_dim=plot_dim)
+    pca_scores, explained, axis_prefix = _pca_projection(
+        kind,
+        plot_dim=plot_dim,
+        method=method,
+        umap_n_neighbors=umap_n_neighbors,
+        umap_min_dist=umap_min_dist,
+        tsne_perplexity=tsne_perplexity,
+        tsne_learning_rate=tsne_learning_rate,
+        random_state=random_state,
+    )
     n_components = 3 if str(plot_dim).upper() == "3D" else 2
+    component_cols = [f"{axis_prefix}{i + 1}" for i in range(n_components)]
 
-    conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(kind, plt, conditions)
+    cluster_labels = _compute_cluster_labels(
+        pca_scores[component_cols].to_numpy(dtype=float),
+        cluster_method=cluster_method,
+        cluster_count=cluster_count,
+        dbscan_eps=dbscan_eps,
+        dbscan_min_samples=dbscan_min_samples,
+        random_state=random_state,
+    )
+    if cluster_labels is not None:
+        pca_scores["cluster"] = [_cluster_display_label(value) for value in cluster_labels]
+
+    color_by_key = str(color_by or "Condition").strip().lower()
+    group_col = (
+        "cluster"
+        if color_by_key == "cluster" and cluster_labels is not None
+        else "condition"
+    )
+
+    groups = pca_scores[group_col].astype(str).dropna().unique().tolist()
+    color_map = _condition_colors(kind, plt, groups)
+    method_name = "t-SNE" if str(method).strip().lower() in {"t-sne", "tsne", "t_sne"} else str(method).strip().upper()
 
     if n_components == 3:
         fig = plt.figure(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
         ax = fig.add_subplot(111, projection="3d")
-        for cond in conditions:
-            subset = pca_scores[pca_scores["condition"] == cond]
+        for group in groups:
+            subset = pca_scores[pca_scores[group_col] == group]
             ax.scatter(
-                subset["PC1"],
-                subset["PC2"],
-                subset["PC3"],
-                label=cond,
+                subset[component_cols[0]],
+                subset[component_cols[1]],
+                subset[component_cols[2]],
+                label=group,
                 s=max(1, dot_size) * 10,
                 alpha=0.7,
-                color=color_map[cond],
+                color=color_map[group],
             )
-        ax.set_xlabel(f"PC1 - {explained[0]:.2f}%")
-        ax.set_ylabel(f"PC2 - {explained[1]:.2f}%")
-        ax.set_zlabel(f"PC3 - {explained[2]:.2f}%")
+        if explained is not None and axis_prefix == "PC":
+            ax.set_xlabel(f"{component_cols[0]} - {explained[0]:.2f}%")
+            ax.set_ylabel(f"{component_cols[1]} - {explained[1]:.2f}%")
+            ax.set_zlabel(f"{component_cols[2]} - {explained[2]:.2f}%")
+        else:
+            ax.set_xlabel(component_cols[0])
+            ax.set_ylabel(component_cols[1])
+            ax.set_zlabel(component_cols[2])
         if header:
-            ax.set_title("3D PCA Plot")
+            ax.set_title(f"3D {method_name} Plot")
         else:
             ax.set_title("")
         if legend:
-            ax.legend(title="Condition", bbox_to_anchor=(1.05, 1), loc="upper left")
+            ax.legend(
+                title="Cluster" if group_col == "cluster" else "Condition",
+                bbox_to_anchor=(1.05, 1),
+                loc="upper left",
+            )
     else:
         fig, ax = _make_fig(plt, width_cm, height_cm)
-        for cond in conditions:
-            subset = pca_scores[pca_scores["condition"] == cond]
+        for group in groups:
+            subset = pca_scores[pca_scores[group_col] == group]
             ax.scatter(
-                subset["PC1"],
-                subset["PC2"],
-                label=cond,
+                subset[component_cols[0]],
+                subset[component_cols[1]],
+                label=group,
                 s=max(1, dot_size) * 10,
                 alpha=0.7,
-                color=color_map[cond],
+                color=color_map[group],
             )
             if add_ellipses and len(subset) > 2:
-                points = subset[["PC1", "PC2"]].to_numpy()
+                points = subset[[component_cols[0], component_cols[1]]].to_numpy()
                 center, axes, angle = _minimum_enclosing_ellipse(points)
                 ellipse = Ellipse(
                     xy=center,
                     width=2 * axes[0],
                     height=2 * axes[1],
                     angle=angle,
-                    facecolor=color_map[cond],
+                    facecolor=color_map[group],
                     alpha=0.15,
-                    edgecolor=color_map[cond],
+                    edgecolor=color_map[group],
                     lw=1,
                 )
                 ax.add_patch(ellipse)
 
-        ax.set_xlabel(f"PC1 - {explained[0]:.2f}% variance")
-        ax.set_ylabel(f"PC2 - {explained[1]:.2f}% variance")
+        if explained is not None and axis_prefix == "PC":
+            ax.set_xlabel(f"{component_cols[0]} - {explained[0]:.2f}% variance")
+            ax.set_ylabel(f"{component_cols[1]} - {explained[1]:.2f}% variance")
+        else:
+            ax.set_xlabel(component_cols[0])
+            ax.set_ylabel(component_cols[1])
         if header:
-            ax.set_title("PCA Plot")
+            ax.set_title(f"{method_name} Plot")
         else:
             ax.set_title("")
         if legend:
-            ax.legend(title="Condition", bbox_to_anchor=(1.05, 1), loc="upper left")
+            ax.legend(
+                title="Cluster" if group_col == "cluster" else "Condition",
+                bbox_to_anchor=(1.05, 1),
+                loc="upper left",
+            )
 
     if not legend:
         legend_obj = ax.get_legend()
@@ -1164,69 +1323,129 @@ def qc_pca_interactive_html(
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
+    method: str = "PCA",
     add_ellipses: bool = False,
     dot_size: int = 8,
+    cluster_method: str = "None",
+    cluster_count: int = 3,
+    color_by: str = "Condition",
+    umap_n_neighbors: int = 15,
+    umap_min_dist: float = 0.1,
+    tsne_perplexity: float = 30.0,
+    tsne_learning_rate: float = 200.0,
+    dbscan_eps: float = 0.5,
+    dbscan_min_samples: int = 2,
+    random_state: int = 42,
     width_cm: float = 20,
     height_cm: float = 10,
 ) -> str:
     px, go = _get_plotly()
-    pca_scores, explained = _pca_projection(kind, plot_dim=plot_dim)
+    pca_scores, explained, axis_prefix = _pca_projection(
+        kind,
+        plot_dim=plot_dim,
+        method=method,
+        umap_n_neighbors=umap_n_neighbors,
+        umap_min_dist=umap_min_dist,
+        tsne_perplexity=tsne_perplexity,
+        tsne_learning_rate=tsne_learning_rate,
+        random_state=random_state,
+    )
     plot_3d = str(plot_dim).upper() == "3D"
+    n_components = 3 if plot_3d else 2
+    component_cols = [f"{axis_prefix}{i + 1}" for i in range(n_components)]
 
     height_px = _cm_to_px(height_cm)
-    conditions = pca_scores["condition"].astype(str).dropna().unique().tolist()
-    color_map = _condition_colors(kind, None, conditions)
+    cluster_labels = _compute_cluster_labels(
+        pca_scores[component_cols].to_numpy(dtype=float),
+        cluster_method=cluster_method,
+        cluster_count=cluster_count,
+        dbscan_eps=dbscan_eps,
+        dbscan_min_samples=dbscan_min_samples,
+        random_state=random_state,
+    )
+    if cluster_labels is not None:
+        pca_scores["cluster"] = [_cluster_display_label(value) for value in cluster_labels]
+
+    color_by_key = str(color_by or "Condition").strip().lower()
+    color_col = (
+        "cluster"
+        if color_by_key == "cluster" and cluster_labels is not None
+        else "condition"
+    )
+    groups = pca_scores[color_col].astype(str).dropna().unique().tolist()
+    color_map = _condition_colors(kind, None, groups)
+    method_name = "t-SNE" if str(method).strip().lower() in {"t-sne", "tsne", "t_sne"} else str(method).strip().upper()
+
+    hover_data = {"sample": True, "condition": True}
+    if cluster_labels is not None:
+        hover_data["cluster"] = True
 
     if plot_3d:
         fig = px.scatter_3d(
             pca_scores,
-            x="PC1",
-            y="PC2",
-            z="PC3",
-            color="condition",
+            x=component_cols[0],
+            y=component_cols[1],
+            z=component_cols[2],
+            color=color_col,
             color_discrete_map=color_map,
-            hover_data={"sample": True, "condition": True},
+            hover_data=hover_data,
             opacity=0.85,
         )
         fig.update_traces(marker=dict(size=max(2, int(dot_size))))
+        if explained is not None and axis_prefix == "PC":
+            x_title = f"{component_cols[0]} - {explained[0]:.2f}%"
+            y_title = f"{component_cols[1]} - {explained[1]:.2f}%"
+            z_title = f"{component_cols[2]} - {explained[2]:.2f}%"
+        else:
+            x_title = component_cols[0]
+            y_title = component_cols[1]
+            z_title = component_cols[2]
         fig.update_layout(
             height=height_px,
             autosize=True,
             showlegend=legend,
-            title="3D PCA Plot" if header else None,
+            title=f"3D {method_name} Plot" if header else None,
             scene=dict(
-                xaxis=dict(title=f"PC1 - {explained[0]:.2f}%"),
-                yaxis=dict(title=f"PC2 - {explained[1]:.2f}%"),
-                zaxis=dict(title=f"PC3 - {explained[2]:.2f}%"),
+                xaxis=dict(title=x_title),
+                yaxis=dict(title=y_title),
+                zaxis=dict(title=z_title),
             ),
+            legend_title_text="Cluster" if color_col == "cluster" else "Condition",
         )
         return _plotly_html(fig)
 
     fig = px.scatter(
         pca_scores,
-        x="PC1",
-        y="PC2",
-        color="condition",
+        x=component_cols[0],
+        y=component_cols[1],
+        color=color_col,
         color_discrete_map=color_map,
-        hover_data={"sample": True, "condition": True},
+        hover_data=hover_data,
         opacity=0.85,
     )
     fig.update_traces(marker=dict(size=max(2, int(dot_size))))
+    if explained is not None and axis_prefix == "PC":
+        x_title = f"{component_cols[0]} - {explained[0]:.2f}% variance"
+        y_title = f"{component_cols[1]} - {explained[1]:.2f}% variance"
+    else:
+        x_title = component_cols[0]
+        y_title = component_cols[1]
     fig.update_layout(
         height=height_px,
         autosize=True,
         showlegend=legend,
-        title="PCA Plot" if header else None,
-        xaxis=dict(title=f"PC1 - {explained[0]:.2f}% variance", zeroline=False),
-        yaxis=dict(title=f"PC2 - {explained[1]:.2f}% variance", zeroline=False),
+        title=f"{method_name} Plot" if header else None,
+        xaxis=dict(title=x_title, zeroline=False),
+        yaxis=dict(title=y_title, zeroline=False),
+        legend_title_text="Cluster" if color_col == "cluster" else "Condition",
     )
 
     if add_ellipses:
-        for cond in conditions:
-            subset = pca_scores[pca_scores["condition"] == cond]
+        for group in groups:
+            subset = pca_scores[pca_scores[color_col] == group]
             if len(subset) <= 2:
                 continue
-            points = subset[["PC1", "PC2"]].to_numpy()
+            points = subset[[component_cols[0], component_cols[1]]].to_numpy()
             center, axes, angle = _minimum_enclosing_ellipse(points)
             t = np.linspace(0, 2 * np.pi, 200)
             ellipse = np.array([axes[0] * np.cos(t), axes[1] * np.sin(t)])
@@ -1245,8 +1464,8 @@ def qc_pca_interactive_html(
                     y=ellipse_y,
                     mode="lines",
                     fill="toself",
-                    line=dict(width=1, color=color_map.get(cond, "#6b7280")),
-                    fillcolor=color_map.get(cond, "#6b7280"),
+                    line=dict(width=1, color=color_map.get(group, "#6b7280")),
+                    fillcolor=color_map.get(group, "#6b7280"),
                     showlegend=False,
                     hoverinfo="skip",
                     opacity=0.18,

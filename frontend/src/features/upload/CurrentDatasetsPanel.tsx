@@ -15,9 +15,6 @@ export default function CurrentDatasetsPanel({ current }: Props) {
     <section className="rounded-2xl border border-slate-200 bg-white p-6">
       <div className="mb-4">
         <h2 className="text-lg font-semibold text-slate-900">Current datasets</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          One active dataset is stored per type.
-        </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
@@ -154,5 +151,5 @@ function EmptyState({ text }: { text: string }) {
 
 function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength)}…`;
+  return `${text.slice(0, maxLength)}...`;
 }

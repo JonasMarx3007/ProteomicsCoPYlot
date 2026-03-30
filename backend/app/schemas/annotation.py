@@ -33,6 +33,18 @@ class AnnotationGenerateRequest(BaseModel):
     filter: AnnotationFilterConfig | None = None
 
 
+class AnnotationImputationInfo(BaseModel):
+    mode: str = "none"
+    applied: bool = False
+    qValue: float | None = None
+    adjustStd: float | None = None
+    seed: int | None = None
+    sampleWise: bool | None = None
+    sampleCount: int | None = None
+    missingBefore: int | None = None
+    missingAfter: int | None = None
+
+
 class AnnotationResultResponse(BaseModel):
     kind: AnnotationKind
     sourceRows: int
@@ -51,10 +63,12 @@ class AnnotationResultResponse(BaseModel):
     filter: AnnotationFilterConfig | None = None
     autoDetected: bool
     warnings: list[str] = Field(default_factory=list)
+    imputation: AnnotationImputationInfo | None = None
 
 
 class MetadataUploadResponse(BaseModel):
     kind: MetadataAnnotationKind
+    profileName: str
     filename: str
     rows: int
     columns: int

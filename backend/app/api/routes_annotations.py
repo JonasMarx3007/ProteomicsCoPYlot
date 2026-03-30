@@ -20,8 +20,10 @@ from app.services.annotation_store import clear_annotation, get_annotation, save
 from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.dataset_store import clear_dataset, get_current_dataset
 from app.services.metadata_upload_store import (
+    get_active_profile,
     clear_uploaded_metadata,
     get_uploaded_metadata,
+    list_auto_generated_profiles,
     save_uploaded_metadata,
 )
 from app.services.phosprot_tools import aggregate_from_phospho, upload_phosprot
@@ -53,6 +55,7 @@ def _response_from_stored(stored) -> AnnotationResultResponse:
         filter=stored.filter_config,
         autoDetected=stored.auto_detected,
         warnings=stored.warnings,
+        imputation=getattr(stored, "imputation", None),
     )
 
 
@@ -60,12 +63,56 @@ def _metadata_upload_response(stored) -> MetadataUploadResponse:
     preview = stored.frame.head(30).where(pd.notna(stored.frame.head(30)), None)
     return MetadataUploadResponse(
         kind=stored.kind,
+        profileName=get_active_profile(),
         filename=stored.filename,
         rows=len(stored.frame),
         columns=len(stored.frame.columns),
         createdAt=stored.created_at,
         preview=preview.to_dict(orient="records"),
     )
+
+
+def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> None:
+    current_dataset = get_current_dataset(kind)
+    if current_dataset is None or not hasattr(current_dataset, "frame"):
+        return
+
+    base_annotation = get_annotation(kind)
+    if base_annotation is not None:
+        is_log2_transformed = base_annotation.is_log2_transformed
+        filter_config = base_annotation.filter_config
+    else:
+        is_log2_transformed = bool(
+            getattr(current_dataset, "suggested_is_log2_transformed", True)
+        )
+        filter_config = AnnotationFilterConfig()
+
+    for profile_name in list_auto_generated_profiles():
+        uploaded_metadata = get_uploaded_metadata(kind, profile_name=profile_name)
+        if uploaded_metadata is None or uploaded_metadata.frame.empty:
+            clear_annotation(kind, metadata_profile_name=profile_name)
+            continue
+
+        computed = compute_annotation_from_metadata(
+            data=current_dataset.frame,
+            metadata=uploaded_metadata.frame,
+            is_log2_transformed=is_log2_transformed,
+            min_present=filter_config.minPresent,
+            filter_mode=filter_config.mode,
+        )
+        save_annotation(
+            kind=kind,
+            source_data=current_dataset.frame,
+            metadata=computed.metadata,
+            log2_data=computed.log2_data,
+            filtered_data=computed.filtered_data,
+            is_log2_transformed=is_log2_transformed,
+            metadata_source="uploaded",
+            filter_config=filter_config,
+            auto_detected=computed.auto_detected,
+            warnings=computed.warnings,
+            metadata_profile_name=profile_name,
+        )
 
 
 @router.post("/metadata/upload", response_model=MetadataUploadResponse)
@@ -85,6 +132,7 @@ async def upload_annotation_metadata(
         raise HTTPException(status_code=400, detail=f"Failed to parse metadata file: {e}") from e
 
     stored = save_uploaded_metadata(kind=kind, filename=file.filename, frame=frame)
+    _sync_auto_generated_profile_annotations(kind)
     return _metadata_upload_response(stored)
 
 
@@ -99,6 +147,7 @@ async def get_current_uploaded_metadata(kind: MetadataAnnotationKind) -> Metadat
 @router.delete("/metadata/current/{kind}")
 async def clear_current_uploaded_metadata(kind: MetadataAnnotationKind) -> dict[str, object]:
     clear_uploaded_metadata(kind)
+    _sync_auto_generated_profile_annotations(kind)
     return {"kind": kind, "cleared": True}
 
 
