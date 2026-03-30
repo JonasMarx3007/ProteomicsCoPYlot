@@ -79,9 +79,20 @@ export default function QCPipelinePage({ activeTab }: Props) {
     type: "Normal",
     header: true,
     legend: true,
+    method: "PCA",
     plotDim: "2D",
     addEllipses: false,
     dotSize: 5,
+    clusterMethod: "None",
+    clusterCount: 3,
+    colorBy: "Condition",
+    umapNNeighbors: 15,
+    umapMinDist: 0.1,
+    tsnePerplexity: 30,
+    tsneLearningRate: 200,
+    dbscanEps: 0.5,
+    dbscanMinSamples: 2,
+    randomState: 42,
     widthCm: 20,
     heightCm: 10,
     dpi: 300,
@@ -288,6 +299,13 @@ export default function QCPipelinePage({ activeTab }: Props) {
     return 760;
   }, [activeTab, pca.type, pca.heightCm, abundance.type, abundance.heightCm]);
 
+  const activePlotTitle = useMemo(() => {
+    if (activeTab === "pca") {
+      return `${pcaMethodLabel(pca.method)} Plot`;
+    }
+    return tabTitle(activeTab);
+  }, [activeTab, pca.method]);
+
   const tableCsvUrl = useMemo(() => {
     if (!tableRequest || tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
@@ -353,7 +371,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
       {activeKindOptions.length > 0 ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-lg font-semibold text-slate-900">{tabTitle(activeTab)}</h3>
+          <h3 className="text-lg font-semibold text-slate-900">{activePlotTitle}</h3>
           {plotView?.mode === "image" ? (
             <div className="flex flex-wrap items-center gap-2">
               <select
@@ -391,7 +409,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
             <img
               key={plotView?.url}
               src={plotView?.url}
-              alt={`${tabTitle(activeTab)} plot`}
+              alt={activePlotTitle}
               className="w-full rounded-xl border border-slate-200"
               onLoad={() => setImageError(null)}
               onError={() => {
@@ -402,7 +420,7 @@ export default function QCPipelinePage({ activeTab }: Props) {
             <iframe
               key={plotView.url}
               src={plotView.url}
-              title={`${tabTitle(activeTab)} interactive plot`}
+              title={`${activePlotTitle} interactive plot`}
               className="w-full rounded-xl border border-slate-200"
               style={{ height: `${interactiveHeightPx}px` }}
               onLoad={() => setImageError(null)}
@@ -578,14 +596,53 @@ export default function QCPipelinePage({ activeTab }: Props) {
     }
 
     if (activeTab === "pca") {
+      const clusterMethodOptions = ["None", "KMeans", "Agglomerative", "DBSCAN"];
+      const showDimensions = pca.method === "PCA";
+      const showClusteringControls = pca.method !== "PCA";
+      const colorByOptions = pca.clusterMethod === "None" ? ["Condition"] : ["Condition", "Cluster"];
+      const showClusterCount =
+        showClusteringControls &&
+        (pca.clusterMethod === "KMeans" || pca.clusterMethod === "Agglomerative");
+      const showDbscan = showClusteringControls && pca.clusterMethod === "DBSCAN";
+      const showUmap = pca.method === "UMAP";
+      const showTsne = pca.method === "t-SNE";
+      const showRandomState = showUmap || showTsne;
+      const showEllipsesToggle = pca.plotDim === "2D";
+
       return (
         <OptionsLayout
           toggles={[
             <Checkbox key="header" label="Toggle Header" checked={pca.header} onChange={(v) => setPca({ ...pca, header: v })} />,
             <Checkbox key="legend" label="Toggle Legend" checked={pca.legend} onChange={(v) => setPca({ ...pca, legend: v })} />,
-            <Checkbox key="ellipses" label="Add Ellipses (2D)" checked={pca.addEllipses} onChange={(v) => setPca({ ...pca, addEllipses: v })} />,
+            ...(showEllipsesToggle
+              ? [
+                  <Checkbox
+                    key="ellipses"
+                    label="Add Ellipses (2D)"
+                    checked={pca.addEllipses}
+                    onChange={(v) => setPca({ ...pca, addEllipses: v })}
+                  />,
+                ]
+              : []),
           ]}
           inputs={[
+            <SelectField
+              key="method"
+              label="Method"
+              value={pca.method}
+              onChange={(value) => {
+                const nextMethod = value || "PCA";
+                setPca({
+                  ...pca,
+                  method: nextMethod,
+                  plotDim: nextMethod === "PCA" ? pca.plotDim : "2D",
+                  addEllipses: pca.addEllipses,
+                  clusterMethod: nextMethod === "PCA" ? "None" : pca.clusterMethod,
+                  colorBy: nextMethod === "PCA" ? "Condition" : pca.colorBy,
+                });
+              }}
+              options={["PCA", "UMAP", "t-SNE"]}
+            />,
             <SelectField
               key="type"
               label="Type"
@@ -593,19 +650,122 @@ export default function QCPipelinePage({ activeTab }: Props) {
               onChange={(value) => setPca({ ...pca, type: value })}
               options={["Normal", "Interactive"]}
             />,
-            <SelectField
-              key="dim"
-              label="Dimensions"
-              value={pca.plotDim}
-              onChange={(value) => setPca({ ...pca, plotDim: value })}
-              options={["2D", "3D"]}
-            />,
+            ...(showDimensions
+              ? [
+                  <SelectField
+                    key="dim"
+                    label="Dimensions"
+                    value={pca.plotDim}
+                    onChange={(value) => setPca({ ...pca, plotDim: value })}
+                    options={["2D", "3D"]}
+                  />,
+                ]
+              : []),
             <NumericField
               key="dot-size"
               label="Dot Size"
               value={pca.dotSize}
               onChange={(v) => setPca({ ...pca, dotSize: Math.max(1, Math.min(50, Math.round(v))) })}
             />,
+            ...(showClusteringControls
+              ? [
+                  <SelectField
+                    key="cluster-method"
+                    label="Clustering"
+                    value={pca.clusterMethod}
+                    onChange={(value) => {
+                      const nextClusterMethod = value || "None";
+                      setPca({
+                        ...pca,
+                        clusterMethod: nextClusterMethod,
+                        colorBy: nextClusterMethod === "None" ? "Condition" : pca.colorBy,
+                      });
+                    }}
+                    options={clusterMethodOptions}
+                  />,
+                  <SelectField
+                    key="color-by"
+                    label="Color By"
+                    value={colorByOptions.includes(pca.colorBy) ? pca.colorBy : "Condition"}
+                    onChange={(value) => setPca({ ...pca, colorBy: value || "Condition" })}
+                    options={colorByOptions}
+                  />,
+                ]
+              : []),
+            ...(showClusterCount
+              ? [
+                  <NumericField
+                    key="cluster-count"
+                    label="Cluster Count"
+                    value={pca.clusterCount}
+                    onChange={(v) =>
+                      setPca({ ...pca, clusterCount: Math.max(2, Math.min(20, Math.round(v))) })
+                    }
+                  />,
+                ]
+              : []),
+            ...(showDbscan
+              ? [
+                  <NumericField
+                    key="dbscan-eps"
+                    label="DBSCAN Eps"
+                    value={pca.dbscanEps}
+                    onChange={(v) => setPca({ ...pca, dbscanEps: Math.max(0.001, v) })}
+                  />,
+                  <NumericField
+                    key="dbscan-min-samples"
+                    label="DBSCAN Min Samples"
+                    value={pca.dbscanMinSamples}
+                    onChange={(v) =>
+                      setPca({ ...pca, dbscanMinSamples: Math.max(1, Math.min(50, Math.round(v))) })
+                    }
+                  />,
+                ]
+              : []),
+            ...(showUmap
+              ? [
+                  <NumericField
+                    key="umap-neighbors"
+                    label="UMAP Neighbors"
+                    value={pca.umapNNeighbors}
+                    onChange={(v) =>
+                      setPca({ ...pca, umapNNeighbors: Math.max(2, Math.min(200, Math.round(v))) })
+                    }
+                  />,
+                  <NumericField
+                    key="umap-min-dist"
+                    label="UMAP Min Dist"
+                    value={pca.umapMinDist}
+                    onChange={(v) => setPca({ ...pca, umapMinDist: Math.max(0, Math.min(1, v)) })}
+                  />,
+                ]
+              : []),
+            ...(showTsne
+              ? [
+                  <NumericField
+                    key="tsne-perplexity"
+                    label="t-SNE Perplexity"
+                    value={pca.tsnePerplexity}
+                    onChange={(v) => setPca({ ...pca, tsnePerplexity: Math.max(1, v) })}
+                  />,
+                  <NumericField
+                    key="tsne-learning-rate"
+                    label="t-SNE Learning Rate"
+                    value={pca.tsneLearningRate}
+                    onChange={(v) => setPca({ ...pca, tsneLearningRate: Math.max(10, v) })}
+                  />,
+                ]
+              : []),
+            ...(showRandomState
+              ? [
+                  <NumericField
+                    key="random-state"
+                    label="Random State"
+                    value={pca.randomState}
+                    onChange={(v) => setPca({ ...pca, randomState: Math.max(0, Math.round(v)) })}
+                  />,
+                ]
+              : []),
           ]}
           sizeRow={
             <SizeRow
@@ -750,6 +910,13 @@ function tabTitle(tab: QcTab): string {
     case "correlation":
       return "Correlation Plot";
   }
+}
+
+function pcaMethodLabel(method: string): string {
+  const key = String(method || "").trim().toLowerCase();
+  if (key === "umap") return "UMAP";
+  if (key === "t-sne" || key === "tsne" || key === "t_sne") return "t-SNE";
+  return "PCA";
 }
 
 function Checkbox({

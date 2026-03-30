@@ -104,6 +104,8 @@ function Invoke-PyInstallerBuild {
     --collect-all "pandas" `
     --collect-all "numpy" `
     --collect-all "scipy" `
+    --collect-all "sklearn" `
+    --collect-all "umap" `
     --collect-all "matplotlib" `
     --collect-all "seaborn" `
     --collect-all "plotly" `

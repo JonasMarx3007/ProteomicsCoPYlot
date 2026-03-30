@@ -1,11 +1,21 @@
 @echo off
 set "ROOT=%~dp0"
 set "BACKEND_PORT=8000"
+set "FRONTEND_PORT=5173"
 
-powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
-if errorlevel 1 (
-  start "Backend" /D "%ROOT%backend" cmd /k """%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
+if defined BACKEND_PID (
+  powershell -NoProfile -Command "Stop-Process -Id %BACKEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
+  timeout /t 1 /nobreak >nul
 )
+
+for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %FRONTEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "FRONTEND_PID=%%P"
+if defined FRONTEND_PID (
+  powershell -NoProfile -Command "Stop-Process -Id %FRONTEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
+  timeout /t 1 /nobreak >nul
+)
+
+start "Backend" /D "%ROOT%backend" cmd /k """%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
 set "BACKEND_READY=0"
 for /l %%i in (1,1,20) do (
@@ -22,6 +32,6 @@ if "%BACKEND_READY%"=="0" (
   echo Warning: backend on port %BACKEND_PORT% is not ready yet.
 )
 
-start "Frontend" /D "%ROOT%frontend" cmd /k "npm run dev"
+start "Frontend" /D "%ROOT%frontend" cmd /k "npm run dev -- --port %FRONTEND_PORT%"
 timeout /t 2 /nobreak >nul
-start "" "http://localhost:5173"
+start "" "http://localhost:%FRONTEND_PORT%"
