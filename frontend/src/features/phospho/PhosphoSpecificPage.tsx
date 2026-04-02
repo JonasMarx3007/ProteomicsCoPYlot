@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getPhosphoOptions, getPhosphoTable } from "../../lib/api";
+import PaginatedTable from "../../components/PaginatedTable";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -7,6 +8,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import type { PhosphoOptionsResponse, PhosphoTab } from "../../lib/types";
 
 type Props = {
@@ -101,6 +103,12 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     heightCm: 12,
     dpi: 220,
   });
+  const debouncedPhosphositePlot = useDebouncedValue(phosphositePlot, 650);
+  const debouncedCoverage = useDebouncedValue(coverage, 650);
+  const debouncedDistribution = useDebouncedValue(distribution, 650);
+  const debouncedSty = useDebouncedValue(sty, 650);
+  const debouncedKsea = useDebouncedValue(ksea, 650);
+  const debouncedPhosprotRegulation = useDebouncedValue(phosprotRegulation, 650);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -174,11 +182,11 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
         filename: "phosphosite_plot.png",
         type: "image",
         url: buildPlotUrl("/api/plots/phospho/phosphosite-plot.png", {
-          cutoff: phosphositePlot.cutoff,
-          color: phosphositePlot.color,
-          widthCm: phosphositePlot.widthCm,
-          heightCm: phosphositePlot.heightCm,
-          dpi: phosphositePlot.dpi,
+          cutoff: debouncedPhosphositePlot.cutoff,
+          color: debouncedPhosphositePlot.color,
+          widthCm: debouncedPhosphositePlot.widthCm,
+          heightCm: debouncedPhosphositePlot.heightCm,
+          dpi: debouncedPhosphositePlot.dpi,
         }),
       };
     }
@@ -189,16 +197,16 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
         filename: "phosphosite_coverage_plot.png",
         type: "image",
         url: buildPlotUrl("/api/plots/phospho/coverage.png", {
-          includeId: coverage.includeId,
-          header: coverage.header,
-          legend: coverage.legend,
-          mode: coverage.mode,
-          colorClassI: coverage.colorClassI,
-          colorNotClassI: coverage.colorNotClassI,
-          widthCm: coverage.widthCm,
-          heightCm: coverage.heightCm,
-          dpi: coverage.dpi,
-          conditions: coverage.conditions.join(","),
+          includeId: debouncedCoverage.includeId,
+          header: debouncedCoverage.header,
+          legend: debouncedCoverage.legend,
+          mode: debouncedCoverage.mode,
+          colorClassI: debouncedCoverage.colorClassI,
+          colorNotClassI: debouncedCoverage.colorNotClassI,
+          widthCm: debouncedCoverage.widthCm,
+          heightCm: debouncedCoverage.heightCm,
+          dpi: debouncedCoverage.dpi,
+          conditions: debouncedCoverage.conditions.join(","),
         }),
       };
     }
@@ -209,57 +217,57 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
         filename: "phosphosite_distribution.png",
         type: "image",
         url: buildPlotUrl("/api/plots/phospho/distribution.png", {
-          cutoff: distribution.cutoff,
-          header: distribution.header,
-          color: distribution.color,
-          widthCm: distribution.widthCm,
-          heightCm: distribution.heightCm,
-          dpi: distribution.dpi,
+          cutoff: debouncedDistribution.cutoff,
+          header: debouncedDistribution.header,
+          color: debouncedDistribution.color,
+          widthCm: debouncedDistribution.widthCm,
+          heightCm: debouncedDistribution.heightCm,
+          dpi: debouncedDistribution.dpi,
         }),
       };
     }
 
     if (activeTab === "ksea") {
-      if (!ksea.condition1 || !ksea.condition2) return null;
+      if (!debouncedKsea.condition1 || !debouncedKsea.condition2) return null;
       return {
         title: "KSEA",
         filename: "ksea_plot.png",
         type: "image",
         url: buildPlotUrl("/api/plots/phospho/ksea.png", {
-          condition1: ksea.condition1,
-          condition2: ksea.condition2,
-          pValueThreshold: ksea.pValueThreshold,
-          log2fcThreshold: ksea.log2fcThreshold,
-          testType: ksea.testType,
-          useUncorrected: ksea.useUncorrected,
-          header: ksea.header,
-          widthCm: ksea.widthCm,
-          heightCm: ksea.heightCm,
-          dpi: ksea.dpi,
+          condition1: debouncedKsea.condition1,
+          condition2: debouncedKsea.condition2,
+          pValueThreshold: debouncedKsea.pValueThreshold,
+          log2fcThreshold: debouncedKsea.log2fcThreshold,
+          testType: debouncedKsea.testType,
+          useUncorrected: debouncedKsea.useUncorrected,
+          header: debouncedKsea.header,
+          widthCm: debouncedKsea.widthCm,
+          heightCm: debouncedKsea.heightCm,
+          dpi: debouncedKsea.dpi,
         }),
       };
     }
 
     if (activeTab === "phosprotRegulation") {
-      if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
-      if (phosprotRegulation.condition1 === phosprotRegulation.condition2) return null;
+      if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
+      if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
       return {
         title: "Phosprot Regulation",
         filename: "phosprot_regulation.html",
         type: "html",
         url: buildPlotUrl("/api/plots/phospho/phosprot-regulation.html", {
-          condition1: phosprotRegulation.condition1,
-          condition2: phosprotRegulation.condition2,
-          pValueThreshold: phosprotRegulation.pValueThreshold,
-          log2fcThreshold: phosprotRegulation.log2fcThreshold,
-          testType: phosprotRegulation.testType,
-          useUncorrected: phosprotRegulation.useUncorrected,
-          maxHoverSites: phosprotRegulation.maxHoverSites,
-          showPhosphosites: phosprotRegulation.showPhosphosites,
-          header: phosprotRegulation.header,
-          widthCm: phosprotRegulation.widthCm,
-          heightCm: phosprotRegulation.heightCm,
-          dpi: phosprotRegulation.dpi,
+          condition1: debouncedPhosprotRegulation.condition1,
+          condition2: debouncedPhosprotRegulation.condition2,
+          pValueThreshold: debouncedPhosprotRegulation.pValueThreshold,
+          log2fcThreshold: debouncedPhosprotRegulation.log2fcThreshold,
+          testType: debouncedPhosprotRegulation.testType,
+          useUncorrected: debouncedPhosprotRegulation.useUncorrected,
+          maxHoverSites: debouncedPhosprotRegulation.maxHoverSites,
+          showPhosphosites: debouncedPhosprotRegulation.showPhosphosites,
+          header: debouncedPhosprotRegulation.header,
+          widthCm: debouncedPhosprotRegulation.widthCm,
+          heightCm: debouncedPhosprotRegulation.heightCm,
+          dpi: debouncedPhosprotRegulation.dpi,
         }),
       };
     }
@@ -269,13 +277,21 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
       filename: "sty_plot.png",
       type: "image",
       url: buildPlotUrl("/api/plots/phospho/sty.png", {
-        header: sty.header,
-        widthCm: sty.widthCm,
-        heightCm: sty.heightCm,
-        dpi: sty.dpi,
+        header: debouncedSty.header,
+        widthCm: debouncedSty.widthCm,
+        heightCm: debouncedSty.heightCm,
+        dpi: debouncedSty.dpi,
       }),
     };
-  }, [activeTab, phosphositePlot, coverage, distribution, sty, ksea, phosprotRegulation]);
+  }, [
+    activeTab,
+    debouncedPhosphositePlot,
+    debouncedCoverage,
+    debouncedDistribution,
+    debouncedSty,
+    debouncedKsea,
+    debouncedPhosprotRegulation,
+  ]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.type !== "image") return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -288,7 +304,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
   const tableRequest = useMemo<TableRequest>(() => {
     if (activeTab === "phosphositePlot") {
       const params: Record<string, string | number | boolean> = {
-        cutoff: phosphositePlot.cutoff,
+        cutoff: debouncedPhosphositePlot.cutoff,
       };
       return {
         tab: "phosphositePlot",
@@ -298,9 +314,9 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 
     if (activeTab === "coverage") {
       const params: Record<string, string | number | boolean> = {
-        includeId: coverage.includeId,
-        mode: coverage.mode,
-        conditions: coverage.conditions.join(","),
+        includeId: debouncedCoverage.includeId,
+        mode: debouncedCoverage.mode,
+        conditions: debouncedCoverage.conditions.join(","),
       };
       return {
         tab: "coverage",
@@ -310,7 +326,7 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 
     if (activeTab === "distribution") {
       const params: Record<string, string | number | boolean> = {
-        cutoff: distribution.cutoff,
+        cutoff: debouncedDistribution.cutoff,
       };
       return {
         tab: "distribution",
@@ -319,14 +335,14 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     }
 
     if (activeTab === "ksea") {
-      if (!ksea.condition1 || !ksea.condition2) return null;
+      if (!debouncedKsea.condition1 || !debouncedKsea.condition2) return null;
       const params: Record<string, string | number | boolean> = {
-        condition1: ksea.condition1,
-        condition2: ksea.condition2,
-        pValueThreshold: ksea.pValueThreshold,
-        log2fcThreshold: ksea.log2fcThreshold,
-        testType: ksea.testType,
-        useUncorrected: ksea.useUncorrected,
+        condition1: debouncedKsea.condition1,
+        condition2: debouncedKsea.condition2,
+        pValueThreshold: debouncedKsea.pValueThreshold,
+        log2fcThreshold: debouncedKsea.log2fcThreshold,
+        testType: debouncedKsea.testType,
+        useUncorrected: debouncedKsea.useUncorrected,
       };
       return {
         tab: "ksea",
@@ -335,17 +351,17 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     }
 
     if (activeTab === "phosprotRegulation") {
-      if (!phosprotRegulation.condition1 || !phosprotRegulation.condition2) return null;
-      if (phosprotRegulation.condition1 === phosprotRegulation.condition2) return null;
+      if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
+      if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
       const params: Record<string, string | number | boolean> = {
-        condition1: phosprotRegulation.condition1,
-        condition2: phosprotRegulation.condition2,
-        pValueThreshold: phosprotRegulation.pValueThreshold,
-        log2fcThreshold: phosprotRegulation.log2fcThreshold,
-        testType: phosprotRegulation.testType,
-        useUncorrected: phosprotRegulation.useUncorrected,
-        maxHoverSites: phosprotRegulation.maxHoverSites,
-        showPhosphosites: phosprotRegulation.showPhosphosites,
+        condition1: debouncedPhosprotRegulation.condition1,
+        condition2: debouncedPhosprotRegulation.condition2,
+        pValueThreshold: debouncedPhosprotRegulation.pValueThreshold,
+        log2fcThreshold: debouncedPhosprotRegulation.log2fcThreshold,
+        testType: debouncedPhosprotRegulation.testType,
+        useUncorrected: debouncedPhosprotRegulation.useUncorrected,
+        maxHoverSites: debouncedPhosprotRegulation.maxHoverSites,
+        showPhosphosites: debouncedPhosprotRegulation.showPhosphosites,
       };
       return {
         tab: "phosprotRegulation",
@@ -356,13 +372,13 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     return { tab: "sty" };
   }, [
     activeTab,
-    phosphositePlot.cutoff,
-    coverage.includeId,
-    coverage.mode,
-    coverage.conditions,
-    distribution.cutoff,
-    ksea,
-    phosprotRegulation,
+    debouncedPhosphositePlot.cutoff,
+    debouncedCoverage.includeId,
+    debouncedCoverage.mode,
+    debouncedCoverage.conditions,
+    debouncedDistribution.cutoff,
+    debouncedKsea,
+    debouncedPhosprotRegulation,
   ]);
 
   useEffect(() => {
@@ -1065,44 +1081,7 @@ function PreviewTable({
   rows: Record<string, unknown>[];
   emptyText: string;
 }) {
-  if (!rows || rows.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  const columns = collectColumns(rows);
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full divide-y divide-slate-200">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 bg-white">
-          {rows.map((row, index) => (
-            <tr key={index} className={index % 2 ? "bg-slate-50/40" : "bg-white"}>
-              {columns.map((column) => (
-                <td key={column} className="px-4 py-2 align-top text-sm text-slate-700">
-                  {formatValue(row[column])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  return <PaginatedTable rows={rows} pageSize={50} emptyText={emptyText} maxHeightClassName="max-h-[28rem]" />;
 }
 
 function collectColumns(rows: Record<string, unknown>[]) {
@@ -1130,13 +1109,3 @@ function rowsToCsv(rows: Record<string, unknown>[], columns: string[]) {
   return [header, ...body].join("\n");
 }
 
-function formatValue(value: unknown) {
-  if (value == null) return "";
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return String(value);
-    return value.toFixed(4);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}

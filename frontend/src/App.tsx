@@ -22,7 +22,6 @@ import PrincipalComponentAnalysisPage from "./features/qc/PrincipalComponentAnal
 import AbundancePlotPage from "./features/qc/AbundancePlotPage";
 import CorrelationPlotPage from "./features/qc/CorrelationPlotPage";
 import VolcanoPlotPage from "./features/stats/VolcanoPlotPage";
-import VolcanoPlotControlPage from "./features/stats/VolcanoPlotControlPage";
 import GseaPage from "./features/stats/GseaPage";
 import PathwayHeatmapPage from "./features/stats/PathwayHeatmapPage";
 import SimulationPage from "./features/stats/SimulationPage";
@@ -59,7 +58,7 @@ import type {
   StatsTab,
 } from "./lib/types";
 import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
-import { IS_VIEWER_MODE } from "./lib/appMode";
+import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -89,7 +88,6 @@ const completenessTabs: { key: CompletenessTab; label: string }[] = [
 
 const statsTabs: { key: StatsTab; label: string }[] = [
   { key: "volcano", label: "Volcano Plot" },
-  { key: "volcanoControl", label: "Volcano Plot Control" },
   { key: "gsea", label: "GSEA" },
   { key: "pathwayHeatmap", label: "Pathway Heatmap" },
   { key: "simulation", label: "Simulation" },
@@ -150,6 +148,8 @@ const allSidebarSections: SidebarSection[] = [
   "external",
 ];
 
+type RightPanel = "none" | "list" | "chat";
+
 export default function App() {
   const {
     datasets,
@@ -173,6 +173,7 @@ export default function App() {
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
+  const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const showDatasetSwitcher = availablePackages.length >= 2;
   const annotationMode = activeSection === "data" && activeDataTab === "annotation";
@@ -199,6 +200,18 @@ export default function App() {
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "analysis" && rightPanel === "list") {
+      setRightPanel("none");
+    }
+  }, [activeSection, rightPanel]);
+
+  useEffect(() => {
+    if (!IS_AI_MODE && rightPanel === "chat") {
+      setRightPanel("none");
+    }
+  }, [rightPanel, IS_AI_MODE]);
 
   const visibleDataTabs = useMemo(
     () => (IS_VIEWER_MODE ? viewerDataTabs : dataTabs),
@@ -300,7 +313,7 @@ export default function App() {
       return null;
     }
     if (activeSection === "stats") {
-      if (activeStatsTab === "volcano" || activeStatsTab === "volcanoControl") {
+      if (activeStatsTab === "volcano") {
         return { title: "Volcano Plot Manual", path: "/manuals/VolcanoPlotManual.pdf" };
       }
       return null;
@@ -337,6 +350,33 @@ export default function App() {
   const topManualButton = topManual ? (
     <ManualEmbed pdfPath={topManual.path} title={topManual.title} buttonLabel="Manual" />
   ) : null;
+
+  const activeModuleKey = useMemo(() => {
+    if (activeSection === "data") return `data.${activeDataTab}`;
+    if (activeSection === "analysis") return "analysis.canvas";
+    if (activeSection === "completeness") return `completeness.${activeCompletenessTab}`;
+    if (activeSection === "qc") return `qc.${activeQcTab}`;
+    if (activeSection === "stats") return `stats.${activeStatsTab}`;
+    if (activeSection === "peptide") return `peptide.${activePeptideTab}`;
+    if (activeSection === "singleProtein") return `singleProtein.${activeSingleProteinTab}`;
+    if (activeSection === "phospho") return `phospho.${activePhosphoTab}`;
+    if (activeSection === "comparison") return `comparison.${activeComparisonTab}`;
+    if (activeSection === "summary") return `summary.${activeSummaryTab}`;
+    if (activeSection === "external") return `external.${activeExternalTab}`;
+    return `${activeSection}.unknown`;
+  }, [
+    activeSection,
+    activeDataTab,
+    activeCompletenessTab,
+    activeQcTab,
+    activeStatsTab,
+    activePeptideTab,
+    activeSingleProteinTab,
+    activePhosphoTab,
+    activeComparisonTab,
+    activeSummaryTab,
+    activeExternalTab,
+  ]);
 
   const selectorBar = showTopSelector ? (
     <div className="border-b border-slate-200 bg-white px-4 py-2 sm:px-6">
@@ -582,10 +622,6 @@ export default function App() {
         return <VolcanoPlotPage />;
       }
 
-      if (activeStatsTab === "volcanoControl") {
-        return <VolcanoPlotControlPage />;
-      }
-
       if (activeStatsTab === "gsea") {
         return <GseaPage />;
       }
@@ -716,7 +752,13 @@ export default function App() {
     }
 
     if (activeSection === "analysis") {
-      return <AnalysisPage />;
+      return (
+        <AnalysisPage
+          rightPanel={rightPanel}
+          onRightPanelChange={setRightPanel}
+          aiEnabled={IS_AI_MODE}
+        />
+      );
     }
 
     return (
@@ -737,6 +779,10 @@ export default function App() {
       onSectionChange={setActiveSection}
       sections={visibleSections}
       topBar={combinedTopBar}
+      activeModuleKey={activeModuleKey}
+      aiEnabled={IS_AI_MODE}
+      rightPanel={rightPanel}
+      onRightPanelChange={setRightPanel}
     >
       <div key={`${activePackage}:${activeMetadataProfile}:${activeSection}`}>{renderContent()}</div>
     </AppShell>

@@ -112,7 +112,15 @@ function resolveLineplotProteins(
   return parseProteins(tile.proteinsText);
 }
 
-export default function AnalysisPage() {
+export default function AnalysisPage({
+  rightPanel = "none",
+  onRightPanelChange,
+  aiEnabled = false,
+}: {
+  rightPanel?: "none" | "list" | "chat";
+  onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
+  aiEnabled?: boolean;
+}) {
   const { kindOptions } = useCurrentDatasetsSnapshot();
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
@@ -155,7 +163,7 @@ export default function AnalysisPage() {
   const [opB, setOpB] = useState("");
   const [opMode, setOpMode] = useState<"intersection" | "union" | "a_minus_b" | "b_minus_a">("intersection");
   const [opTarget, setOpTarget] = useState("");
-  const [listSidebarOpen, setListSidebarOpen] = useState(true);
+  const listSidebarOpen = rightPanel === "list";
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   const hasVolcanoTile = tiles.some((tile) => tile.type === "volcano");
@@ -834,7 +842,7 @@ export default function AnalysisPage() {
 
           <button
             type="button"
-            onClick={() => setListSidebarOpen(false)}
+            onClick={() => onRightPanelChange?.("none")}
             className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
             aria-label="Close list sidebar"
           >
@@ -933,9 +941,10 @@ export default function AnalysisPage() {
 
       <button
         type="button"
-        onClick={() => setListSidebarOpen((current) => !current)}
+        onClick={() => onRightPanelChange?.(listSidebarOpen ? "none" : "list")}
         className={[
-          "fixed bottom-4 z-50 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition-all duration-300 hover:bg-slate-50",
+          "fixed z-50 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition-all duration-300 hover:bg-slate-50",
+          aiEnabled ? "bottom-16" : "bottom-4",
           listSidebarOpen ? "right-[21rem]" : "right-4",
         ].join(" ")}
         aria-label="Toggle list sidebar"

@@ -4,8 +4,13 @@ import {
   getPhosphoTable,
   renderKseaVolcanoFromFiles,
 } from "../../lib/api";
+import PaginatedTable from "../../components/PaginatedTable";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import type { PhosphoOptionsResponse } from "../../lib/types";
+
+type KseaSourceMode = "volcano" | "volcano_control";
+type KseaDataSource = "data" | "imputed";
 
 export default function KseaPage() {
   const { datasets } = useCurrentDatasetsSnapshot();
@@ -16,6 +21,10 @@ export default function KseaPage() {
 
   const [condition1, setCondition1] = useState("");
   const [condition2, setCondition2] = useState("");
+  const [sourceMode, setSourceMode] = useState<KseaSourceMode>("volcano");
+  const [dataSource, setDataSource] = useState<KseaDataSource>("data");
+  const [condition1Control, setCondition1Control] = useState("");
+  const [condition2Control, setCondition2Control] = useState("");
   const [pValueThreshold, setPValueThreshold] = useState(0.05);
   const [log2fcThreshold, setLog2fcThreshold] = useState(1.0);
   const [testType, setTestType] = useState<"unpaired" | "paired">("unpaired");
@@ -48,6 +57,7 @@ export default function KseaPage() {
       .then((payload) => {
         if (cancelled) return;
         setOptions(payload);
+        setDataSource(payload.imputedAvailable ? "imputed" : "data");
       })
       .catch((err) => {
         if (cancelled) return;
@@ -69,12 +79,47 @@ export default function KseaPage() {
     const first = conditionOptions[0];
     setCondition1((prev) => (conditionOptions.includes(prev) ? prev : first));
     setCondition2((prev) => (conditionOptions.includes(prev) ? prev : first));
+    setCondition1Control((prev) => (conditionOptions.includes(prev) ? prev : first));
+    setCondition2Control((prev) => (conditionOptions.includes(prev) ? prev : first));
   }, [options]);
 
-  const validComparison =
+  const controlSelectionValid =
+    sourceMode !== "volcano_control" ||
+    new Set([condition1, condition2, condition1Control, condition2Control].filter(Boolean)).size === 4;
+
+  const validSelection =
     condition1.trim() !== "" &&
     condition2.trim() !== "" &&
-    condition1 !== condition2;
+    condition1 !== condition2 &&
+    controlSelectionValid;
+  const tableRequest = useMemo(() => {
+    if (!validSelection) return null;
+    return {
+      source: sourceMode,
+      dataSource,
+      condition1,
+      condition2,
+      condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
+      condition2Control: sourceMode === "volcano_control" ? condition2Control : "",
+      pValueThreshold,
+      log2fcThreshold,
+      testType,
+      useUncorrected,
+    };
+  }, [
+    validSelection,
+    sourceMode,
+    dataSource,
+    condition1,
+    condition2,
+    condition1Control,
+    condition2Control,
+    pValueThreshold,
+    log2fcThreshold,
+    testType,
+    useUncorrected,
+  ]);
+  const debouncedTableRequest = useDebouncedValue(tableRequest, 650);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -83,7 +128,7 @@ export default function KseaPage() {
       setTableError("No phospho dataset loaded.");
       return;
     }
-    if (!validComparison) {
+    if (!debouncedTableRequest) {
       setTableRows([]);
       setTableLoading(false);
       setTableError(null);
@@ -92,14 +137,7 @@ export default function KseaPage() {
     let cancelled = false;
     setTableLoading(true);
     setTableError(null);
-    getPhosphoTable("ksea", {
-      condition1,
-      condition2,
-      pValueThreshold,
-      log2fcThreshold,
-      testType,
-      useUncorrected,
-    })
+    getPhosphoTable("ksea", debouncedTableRequest)
       .then((payload) => {
         if (cancelled) return;
         setTableRows(payload.rows ?? []);
@@ -118,13 +156,7 @@ export default function KseaPage() {
     };
   }, [
     hasPhosphoDataset,
-    validComparison,
-    condition1,
-    condition2,
-    pValueThreshold,
-    log2fcThreshold,
-    testType,
-    useUncorrected,
+    debouncedTableRequest,
   ]);
 
   const tsvDownload = useMemo(() => {
@@ -134,14 +166,28 @@ export default function KseaPage() {
     const body = rowsToDelimited(tableRows, columns, "\t");
     return `data:text/tab-separated-values;charset=utf-8,${encodeURIComponent(body)}`;
   }, [tableRows]);
+  const kseaComparisonLabel = useMemo(() => {
+    const c1 = toFilenameToken(condition1);
+    const c2 = toFilenameToken(condition2);
+    const c1Ctrl = toFilenameToken(condition1Control);
+    const c2Ctrl = toFilenameToken(condition2Control);
+    if (sourceMode === "volcano_control") {
+      return `(${c2}-${c2Ctrl})_minus_(${c1}-${c1Ctrl})`;
+    }
+    return `${c1}_vs_${c2}`;
+  }, [sourceMode, condition1, condition2, condition1Control, condition2Control]);
 
   async function generateVolcano() {
     if (!(fileSt && fileTnc)) {
       setVolcanoError("Please upload both KSEA result files.");
       return;
     }
-    if (!validComparison) {
-      setVolcanoError("Please select two different conditions to generate the plot.");
+    if (!validSelection) {
+      setVolcanoError(
+        sourceMode === "volcano_control"
+          ? "Please select four different conditions (Condition 1/2 and both controls)."
+          : "Please select two different conditions to generate the plot."
+      );
       return;
     }
     setVolcanoLoading(true);
@@ -181,19 +227,76 @@ export default function KseaPage() {
           <ErrorNotice message={optionsError} />
         ) : (
           <div className="mt-4 space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm">
+                <span className="mb-2 block font-medium text-slate-700">Source</span>
+                <select
+                  value={sourceMode}
+                  onChange={(event) => setSourceMode(event.target.value as KseaSourceMode)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
+                >
+                  <option value="volcano">Volcano</option>
+                  <option value="volcano_control">Volcano Control</option>
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="mb-2 block font-medium text-slate-700">Data Source</span>
+                <select
+                  value={dataSource}
+                  onChange={(event) => setDataSource(event.target.value as KseaDataSource)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
+                >
+                  <option value="data">Data</option>
+                  <option value="imputed" disabled={!options?.imputedAvailable}>
+                    Imputed Data
+                  </option>
+                </select>
+              </label>
+            </div>
+            {sourceMode === "volcano_control" ? (
+              <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+                <SelectField
+                  label="Condition 1"
+                  value={condition1}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition1}
+                />
+                <SelectField
+                  label="Condition 1 Control"
+                  value={condition1Control}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition1Control}
+                />
+                <SelectField
+                  label="Condition 2"
+                  value={condition2}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition2}
+                />
+                <SelectField
+                  label="Condition 2 Control"
+                  value={condition2Control}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition2Control}
+                />
+              </div>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <SelectField
+                  label="Condition 1"
+                  value={condition1}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition1}
+                />
+                <SelectField
+                  label="Condition 2"
+                  value={condition2}
+                  options={options?.conditions ?? []}
+                  onChange={setCondition2}
+                />
+              </div>
+            )}
             <div className="grid gap-4 lg:grid-cols-2">
-              <SelectField
-                label="Condition 1"
-                value={condition1}
-                options={options?.conditions ?? []}
-                onChange={setCondition1}
-              />
-              <SelectField
-                label="Condition 2"
-                value={condition2}
-                options={options?.conditions ?? []}
-                onChange={setCondition2}
-              />
               <NumericField
                 label="P-value Threshold"
                 value={pValueThreshold}
@@ -218,8 +321,14 @@ export default function KseaPage() {
                 onChange={setUseUncorrected}
               />
             </div>
-            {!validComparison ? (
-              <InfoNotice message="Please select two different conditions to generate the plot." />
+            {!validSelection ? (
+              <InfoNotice
+                message={
+                  sourceMode === "volcano_control"
+                    ? "Please select four different conditions and controls to generate the table."
+                    : "Please select two different conditions to generate the table."
+                }
+              />
             ) : tableLoading ? (
               <NeutralNotice message="Loading KSEA input table..." />
             ) : tableError ? (
@@ -229,7 +338,7 @@ export default function KseaPage() {
                 {tsvDownload ? (
                   <a
                     href={tsvDownload}
-                    download={`KSEA_${condition1}_vs_${condition2}.tsv`}
+                    download={`KSEA_${kseaComparisonLabel}.tsv`}
                     className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
                   >
                     Download KSEA Table (TSV)
@@ -245,7 +354,11 @@ export default function KseaPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Instructions</h3>
         <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-slate-700">
-          <li>Select two conditions and download the prepared KSEA table (TSV).</li>
+          <li>
+            {sourceMode === "volcano_control"
+              ? "Select Condition 1/2 plus both controls (four different conditions) and download the prepared KSEA table (TSV)."
+              : "Select two conditions and download the prepared KSEA table (TSV)."}
+          </li>
           <li>Open <a className="text-sky-700 underline" href="https://www.phosphosite.org/kinaseLibraryAction" target="_blank" rel="noreferrer">PhosphoSitePlus Kinase Library</a>.</li>
           <li>Go to <strong>Fisher Enrichment Analysis</strong> and upload the downloaded table.</li>
           <li>Set columns as in the original workflow:
@@ -281,16 +394,22 @@ export default function KseaPage() {
           <Checkbox label="Toggle Header" checked={volcanoHeader} onChange={setVolcanoHeader} />
           <Checkbox label="Highlight GRK Kinases" checked={highlightGrk} onChange={setHighlightGrk} />
         </div>
-        {!validComparison ? (
+        {!validSelection ? (
           <div className="mt-4">
-            <InfoNotice message="Please select two different conditions to generate the plot." />
+            <InfoNotice
+              message={
+                sourceMode === "volcano_control"
+                  ? "Please select four different conditions and controls to generate the plot."
+                  : "Please select two different conditions to generate the plot."
+              }
+            />
           </div>
         ) : null}
         <div className="mt-4">
           <button
             type="button"
             onClick={generateVolcano}
-            disabled={volcanoLoading || !fileSt || !fileTnc || !validComparison}
+            disabled={volcanoLoading || !fileSt || !fileTnc || !validSelection}
             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
             {volcanoLoading ? "Generating..." : "Generate KSEA Volcano"}
@@ -476,38 +595,8 @@ function PreviewTable({
   rows: Record<string, unknown>[];
   emptyText: string;
 }) {
-  if (!rows || rows.length === 0) {
-    return (
-      <NeutralNotice message={emptyText} />
-    );
-  }
-  const columns = collectColumns(rows);
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full divide-y divide-slate-200">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th key={column} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 bg-white">
-          {rows.map((row, index) => (
-            <tr key={index} className={index % 2 ? "bg-slate-50/40" : "bg-white"}>
-              {columns.map((column) => (
-                <td key={column} className="px-4 py-2 align-top text-sm text-slate-700">
-                  {formatValue(row[column])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  if (!rows || rows.length === 0) return <NeutralNotice message={emptyText} />;
+  return <PaginatedTable rows={rows} pageSize={50} emptyText={emptyText} maxHeightClassName="max-h-[28rem]" />;
 }
 
 function collectColumns(rows: Record<string, unknown>[]) {
@@ -533,13 +622,10 @@ function rowsToDelimited(rows: Record<string, unknown>[], columns: string[], del
   return [header, ...body].join("\n");
 }
 
-function formatValue(value: unknown) {
-  if (value == null) return "";
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return String(value);
-    return value.toFixed(4);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+function toFilenameToken(value: string) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "NA";
+  return normalized
+    .replace(/[<>:"/\\|?*]+/g, "_")
+    .replace(/\s+/g, "_");
 }

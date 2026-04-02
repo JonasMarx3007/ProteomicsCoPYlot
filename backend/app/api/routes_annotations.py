@@ -227,7 +227,7 @@ async def aggregate_phosprot_annotation(
     payload: PhosprotAggregateRequest,
 ) -> AnnotationResultResponse:
     try:
-        stored = aggregate_from_phospho(mode=payload.mode)
+        stored = aggregate_from_phospho(mode=payload.mode, source=payload.source)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

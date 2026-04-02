@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from app.schemas.annotation import AnnotationKind
+from app.schemas.annotation import AnnotationImputationInfo, AnnotationKind
 from app.schemas.data_tools import (
     ConditionPaletteResponse,
     ConditionPaletteUpdateRequest,
@@ -22,7 +22,7 @@ from app.schemas.data_tools import (
     ValueDistributionStats,
     VerificationSummaryResponse,
 )
-from app.services.annotation_store import get_annotation
+from app.services.annotation_store import get_annotation, save_annotation
 from app.services.condition_palette_store import get_condition_palette
 from app.services.condition_palette_store import set_condition_palette
 from app.services.dataset_store import get_current_dataset
@@ -108,6 +108,42 @@ def _best_distribution_source(kind: AnnotationKind) -> tuple[DataSource, pd.Data
     return "raw", raw_frame, warnings
 
 
+def _persist_imputation_settings(
+    payload: ImputationRunRequest,
+    *,
+    sample_columns: list[str],
+    missing_before: int,
+    missing_after: int,
+) -> None:
+    annotation = get_annotation(payload.kind)
+    if annotation is None:
+        return
+    imputation_info = AnnotationImputationInfo(
+        mode="normal",
+        applied=False,
+        qValue=payload.qValue,
+        adjustStd=payload.adjustStd,
+        seed=payload.seed,
+        sampleWise=payload.sampleWise,
+        sampleCount=len(sample_columns),
+        missingBefore=missing_before,
+        missingAfter=missing_after,
+    )
+    save_annotation(
+        kind=annotation.kind,
+        source_data=annotation.source_data,
+        metadata=annotation.metadata,
+        log2_data=annotation.log2_data,
+        filtered_data=annotation.filtered_data,
+        is_log2_transformed=annotation.is_log2_transformed,
+        metadata_source=annotation.metadata_source,
+        filter_config=annotation.filter_config,
+        auto_detected=annotation.auto_detected,
+        warnings=annotation.warnings,
+        imputation=imputation_info,
+    )
+
+
 def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
     source_used, source_data, warnings = _best_imputation_source(payload.kind)
     sample_columns = _get_sample_columns(payload.kind, source_data)
@@ -134,6 +170,12 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         diagnostics.after_non_imputed,
         diagnostics.after_imputed,
         bins=30,
+    )
+    _persist_imputation_settings(
+        payload,
+        sample_columns=sample_columns,
+        missing_before=diagnostics.missing_before,
+        missing_after=diagnostics.missing_after,
     )
 
     return ImputationResultResponse(

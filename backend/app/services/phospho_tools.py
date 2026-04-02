@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ from scipy.stats import t
 
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.functions import impute_values_with_diagnostics
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -121,6 +123,81 @@ def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     return frame, meta, sample_columns
 
 
+def _ksea_context(
+    *,
+    data_source: Literal["data", "imputed"] = "imputed",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    raw = _get_current_frame("phospho")
+    annotation = get_annotation("phospho")
+    if annotation is not None and not annotation.metadata.empty:
+        if not annotation.filtered_data.empty:
+            frame = annotation.filtered_data.copy()
+        elif not annotation.log2_data.empty:
+            frame = annotation.log2_data.copy()
+        elif not annotation.source_data.empty:
+            frame = annotation.source_data.copy()
+        else:
+            frame = raw.copy()
+        meta = annotation.metadata.copy()
+        sample_columns = [
+            sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
+        ]
+        meta = meta[meta["sample"].isin(sample_columns)].copy()
+    else:
+        frame = raw.copy()
+        sample_columns = _get_sample_columns("phospho", frame)
+        meta = pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)})
+
+    if "condition" not in meta.columns:
+        meta["condition"] = "sample"
+    meta["sample"] = meta["sample"].astype(str)
+    meta["condition"] = meta["condition"].astype(str)
+
+    if (
+        str(data_source).strip().lower() == "imputed"
+        and annotation is not None
+        and getattr(annotation, "imputation", None) is not None
+        and str(getattr(annotation.imputation, "mode", "none")).strip().lower() != "none"
+        and sample_columns
+    ):
+        q_value = (
+            float(annotation.imputation.qValue)
+            if getattr(annotation.imputation, "qValue", None) is not None
+            else 0.01
+        )
+        adjust_std = (
+            float(annotation.imputation.adjustStd)
+            if getattr(annotation.imputation, "adjustStd", None) is not None
+            else 1.0
+        )
+        seed = (
+            int(annotation.imputation.seed)
+            if getattr(annotation.imputation, "seed", None) is not None
+            else 1337
+        )
+        sample_wise = (
+            bool(annotation.imputation.sampleWise)
+            if getattr(annotation.imputation, "sampleWise", None) is not None
+            else False
+        )
+        try:
+            diagnostics = impute_values_with_diagnostics(
+                data=frame,
+                sample_columns=sample_columns,
+                q=q_value,
+                adj_std=adjust_std,
+                seed=seed,
+                sample_wise=sample_wise,
+            )
+            frame = diagnostics.imputed_data
+        except Exception:
+            pass
+
+    if not sample_columns:
+        raise ValueError("No phospho sample columns available for KSEA.")
+    return frame, meta, sample_columns
+
+
 def _filter_meta_conditions(meta: pd.DataFrame, conditions: list[str] | None) -> tuple[pd.DataFrame, list[str]]:
     available = meta["condition"].astype(str).dropna().tolist()
     ordered_available = list(dict.fromkeys(available))
@@ -136,8 +213,27 @@ def _filter_meta_conditions(meta: pd.DataFrame, conditions: list[str] | None) ->
     return filtered, selected
 
 
-def phospho_options() -> dict[str, list[str]]:
+def phospho_options() -> dict[str, object]:
     frame, meta, _ = _phospho_context()
+    annotation = get_annotation("phospho")
+    imputed_available = False
+    if annotation is not None and not annotation.metadata.empty:
+        imputation = getattr(annotation, "imputation", None)
+        if imputation is not None and str(getattr(imputation, "mode", "none")).strip().lower() != "none":
+            if not annotation.filtered_data.empty:
+                source_frame = annotation.filtered_data
+            elif not annotation.log2_data.empty:
+                source_frame = annotation.log2_data
+            elif not annotation.source_data.empty:
+                source_frame = annotation.source_data
+            else:
+                source_frame = frame
+            sample_columns = [
+                sample
+                for sample in annotation.metadata["sample"].astype(str).tolist()
+                if sample in source_frame.columns
+            ]
+            imputed_available = len(sample_columns) > 0
     conditions = (
         meta["condition"]
         .dropna()
@@ -156,6 +252,7 @@ def phospho_options() -> dict[str, list[str]]:
             "PTM_localization" if has_localization else "",
             "PTM_Collapse_key" if has_ptm_key else "",
         ],
+        "imputedAvailable": imputed_available,
     }
 
 
@@ -507,12 +604,23 @@ def ksea_table(
     *,
     condition1: str,
     condition2: str,
+    source: str = "volcano",
+    data_source: str = "imputed",
+    condition1_control: str | None = None,
+    condition2_control: str | None = None,
     p_value_threshold: float = 0.05,
     log2fc_threshold: float = 1.0,
     test_type: str = "unpaired",
     use_uncorrected: bool = False,
 ) -> pd.DataFrame:
-    frame, meta, _ = _phospho_context()
+    source_mode = str(source).strip().lower()
+    if source_mode not in {"volcano", "volcano_control"}:
+        raise ValueError("Unsupported KSEA source. Choose 'volcano' or 'volcano_control'.")
+    data_mode = str(data_source).strip().lower()
+    if data_mode not in {"data", "imputed"}:
+        raise ValueError("Unsupported KSEA data source. Choose 'data' or 'imputed'.")
+
+    frame, meta, _ = _ksea_context(data_source=data_mode)
     label_col = "UPD_seq"
     if label_col not in frame.columns:
         raise ValueError("Phospho dataset must contain UPD_seq for KSEA.")
@@ -522,9 +630,35 @@ def ksea_table(
     if not cols1 or not cols2:
         raise ValueError("Selected conditions do not have any annotated samples.")
 
-    df = frame[[label_col, *cols1, *cols2]].replace(0, np.nan).copy()
+    if source_mode == "volcano_control":
+        if not condition1_control or not condition2_control:
+            raise ValueError("Volcano Control source requires both control conditions.")
+        unique_conditions = {
+            str(condition1).strip(),
+            str(condition2).strip(),
+            str(condition1_control).strip(),
+            str(condition2_control).strip(),
+        }
+        if len([value for value in unique_conditions if value]) < 4:
+            raise ValueError("Volcano Control source requires four different conditions.")
+        ctrl1_cols = _condition_columns(meta, condition1_control)
+        ctrl2_cols = _condition_columns(meta, condition2_control)
+        if not ctrl1_cols or not ctrl2_cols:
+            raise ValueError("Selected control conditions do not have any annotated samples.")
+    else:
+        ctrl1_cols = []
+        ctrl2_cols = []
+
+    selected_columns = [label_col, *cols1, *cols2, *ctrl1_cols, *ctrl2_cols]
+    selected_columns = list(dict.fromkeys(selected_columns))
+    df = frame[selected_columns].replace(0, np.nan).copy()
     arr_x = df[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
     arr_y = df[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    if ctrl1_cols and ctrl2_cols:
+        arr_ctrl1 = df[ctrl1_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        arr_ctrl2 = df[ctrl2_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        arr_x = arr_x - np.nanmean(arr_ctrl1, axis=1)[:, None]
+        arr_y = arr_y - np.nanmean(arr_ctrl2, axis=1)[:, None]
 
     n1_real = np.sum(~np.isnan(arr_x), axis=1)
     n2_real = np.sum(~np.isnan(arr_y), axis=1)
@@ -584,6 +718,10 @@ def ksea_plot_png(
     *,
     condition1: str,
     condition2: str,
+    source: str = "volcano",
+    data_source: str = "imputed",
+    condition1_control: str | None = None,
+    condition2_control: str | None = None,
     p_value_threshold: float = 0.05,
     log2fc_threshold: float = 1.0,
     test_type: str = "unpaired",
@@ -597,6 +735,10 @@ def ksea_plot_png(
     table = ksea_table(
         condition1=condition1,
         condition2=condition2,
+        source=source,
+        data_source=data_source,
+        condition1_control=condition1_control,
+        condition2_control=condition2_control,
         p_value_threshold=p_value_threshold,
         log2fc_threshold=log2fc_threshold,
         test_type=test_type,
@@ -629,10 +771,22 @@ def ksea_plot_png(
     ax.axvline(float(-log2fc_threshold), color="black", linestyle="--", linewidth=1)
     ax.hlines(y_line, xmin=float(table["log2FC"].min()), xmax=float(table["log2FC"].max()), colors="black", linestyles="--", linewidth=1)
     ax.set_ylim(bottom=0, top=max_y * 1.05 if max_y > 0 else 1)
-    ax.set_xlabel(f"log2 fold change ({condition2} - {condition1})")
+    if str(source).strip().lower() == "volcano_control" and condition1_control and condition2_control:
+        ax.set_xlabel(
+            f"log2 fold change (({condition2} - {condition2_control}) - "
+            f"({condition1} - {condition1_control}))"
+        )
+    else:
+        ax.set_xlabel(f"log2 fold change ({condition2} - {condition1})")
     ax.set_ylabel("-log10 adj. p-value" if not use_uncorrected else "-log10 p-value")
     if header:
-        ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
+        if str(source).strip().lower() == "volcano_control" and condition1_control and condition2_control:
+            ax.set_title(
+                f"KSEA Volcano Control Plot: {condition1} vs {condition2} "
+                f"(controls: {condition1_control} vs {condition2_control})"
+            )
+        else:
+            ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
     ax.legend(loc="best")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
