@@ -31,13 +31,13 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$BACKEND_DIR"
-  "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+  COPYLOT_AI_MODE=0 "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ) &
 BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR"
-  npm run dev -- --port 5173
+  VITE_AI_ENABLED=0 VITE_PROXY_TARGET="http://127.0.0.1:8000" npm run dev -- --port 5173
 ) &
 FRONTEND_PID=$!
 

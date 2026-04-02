@@ -15,7 +15,7 @@ if defined FRONTEND_PID (
   timeout /t 1 /nobreak >nul
 )
 
-start "Backend" /D "%ROOT%backend" cmd /k """%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+start "Backend" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=0 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
 set "BACKEND_READY=0"
 for /l %%i in (1,1,20) do (
@@ -32,6 +32,6 @@ if "%BACKEND_READY%"=="0" (
   echo Warning: backend on port %BACKEND_PORT% is not ready yet.
 )
 
-start "Frontend" /D "%ROOT%frontend" cmd /k "npm run dev -- --port %FRONTEND_PORT%"
+start "Frontend" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"

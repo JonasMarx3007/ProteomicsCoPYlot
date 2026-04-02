@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import PaginatedTable from "../../components/PaginatedTable";
 import {
   buildPlotUrl,
   getPathwayOptions,
@@ -15,6 +16,7 @@ import {
   removeVolcanoReportEntry,
 } from "../../lib/reportState";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
+import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import type {
   AnnotationKind,
   EnrichmentRequest,
@@ -26,9 +28,7 @@ import type {
   StatsTab,
   StatsTestType,
   StatisticalOptionsResponse,
-  VolcanoControlRequest,
   VolcanoResultResponse,
-  VolcanoRequest,
   SummaryVolcanoEntry,
 } from "../../lib/types";
 
@@ -49,8 +49,7 @@ export default function StatisticalAnalysisPage({ activeTab }: Props) {
     );
   }
 
-  if (activeTab === "volcano") return <VolcanoPanel control={false} kindOptions={kindOptions} />;
-  if (activeTab === "volcanoControl") return <VolcanoPanel control kindOptions={kindOptions} />;
+  if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} />;
   if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} />;
   if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} />;
   return <SimulationPanel kindOptions={kindOptions} />;
@@ -62,6 +61,24 @@ function conditionOptions(options: StatisticalOptionsResponse | null) {
 
 function hasGeneNameSupport(options: StatisticalOptionsResponse | null) {
   return (options?.availableIdentifiers ?? []).some((item) => item.key === "genes");
+}
+
+function removeSourceUsageWarnings(warnings: string[] | undefined): string[] {
+  if (!warnings || warnings.length === 0) return [];
+  return warnings.filter((warning) => {
+    const normalized = warning.trim().toLowerCase();
+    if (!normalized) return false;
+    if (normalized.includes("using raw data because filtered/log2 annotated data is unavailable")) {
+      return false;
+    }
+    if (normalized.includes("using imputed data for statistical analysis")) {
+      return false;
+    }
+    if (normalized.includes("imputation settings were detected")) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[] }) {
@@ -294,39 +311,7 @@ function TableSection({ title, rows, filename }: { title: string; rows: Record<s
 }
 
 function PreviewTable({ rows }: { rows: Record<string, unknown>[] }) {
-  if (!rows.length) {
-    return <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No rows available.</div>;
-  }
-  const columns = Array.from(
-    rows.reduce((set, row) => {
-      Object.keys(row).forEach((key) => set.add(key));
-      return set;
-    }, new Set<string>())
-  );
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-200">
-      <div className="max-h-[36rem] overflow-auto">
-        <table className="min-w-full table-fixed divide-y divide-slate-200 text-left text-sm">
-          <thead className="sticky top-0 bg-slate-50">
-            <tr>
-              {columns.map((column) => (
-                <th key={column} className="overflow-hidden px-4 py-3 font-medium text-slate-700 text-ellipsis whitespace-nowrap">{column}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {columns.map((column) => (
-                  <td key={column} title={String(row[column] ?? "")} className="max-w-xs overflow-hidden px-4 py-3 align-top text-ellipsis whitespace-nowrap text-slate-600">{String(row[column] ?? "")}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+  return <PaginatedTable rows={rows} pageSize={50} emptyText="No rows available." maxHeightClassName="max-h-[36rem]" />;
 }
 
 function GeneListSection({ title, genes, filename }: { title: string; genes: string[]; filename: string }) {
@@ -355,13 +340,13 @@ function InfoSection({ message }: { message: string }) {
 }
 
 function VolcanoPanel({
-  control,
   kindOptions,
 }: {
-  control: boolean;
   kindOptions: { value: string; label: string }[];
 }) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">("volcano");
+  const [dataSource, setDataSource] = useState<"data" | "imputed">("data");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState("");
   const [condition2, setCondition2] = useState("");
@@ -396,6 +381,7 @@ function VolcanoPanel({
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
+        setDataSource(data.imputedAvailable ? "imputed" : "data");
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
@@ -405,23 +391,60 @@ function VolcanoPanel({
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
   }, [kind, kindAvailable]);
 
+  const controlSelectionValid =
+    sourceMode !== "volcano_control" ||
+    new Set([condition1, condition1Control, condition2, condition2Control].filter(Boolean)).size === 4;
   const canRun = Boolean(
     kindAvailable &&
-    condition1 &&
+      condition1 &&
       condition2 &&
       condition1 !== condition2 &&
-      (!control ||
-        new Set([condition1, condition1Control, condition2, condition2Control].filter(Boolean)).size === 4)
+      controlSelectionValid
   );
   const highlightTerms = useMemo(() => highlightText.split(/\s+/).map((term) => term.trim()).filter(Boolean), [highlightText]);
+  const requestPayload = useMemo(() => {
+    if (!canRun) return null;
+    return {
+      source: sourceMode,
+      kind,
+      dataSource,
+      condition1,
+      condition2,
+      condition1Control,
+      condition2Control,
+      identifier,
+      pValueThreshold,
+      log2fcThreshold,
+      testType,
+      useUncorrected,
+      highlightTerms,
+    };
+  }, [
+    canRun,
+    sourceMode,
+    kind,
+    dataSource,
+    condition1,
+    condition2,
+    condition1Control,
+    condition2Control,
+    identifier,
+    pValueThreshold,
+    log2fcThreshold,
+    testType,
+    useUncorrected,
+    highlightTerms,
+  ]);
+  const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
+
   const currentReportEntry = useMemo<SummaryVolcanoEntry>(
     () => ({
       kind,
-      control,
+      control: sourceMode === "volcano_control",
       condition1,
       condition2,
-      condition1Control: control ? condition1Control : null,
-      condition2Control: control ? condition2Control : null,
+      condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
+      condition2Control: sourceMode === "volcano_control" ? condition2Control : null,
       identifier,
       pValueThreshold,
       log2fcThreshold,
@@ -431,7 +454,7 @@ function VolcanoPanel({
     }),
     [
       kind,
-      control,
+      sourceMode,
       condition1,
       condition2,
       condition1Control,
@@ -480,6 +503,11 @@ function VolcanoPanel({
     if (!canRun) {
       setResult(null);
       setError(null);
+    }
+  }, [canRun]);
+
+  useEffect(() => {
+    if (!debouncedRequestPayload) {
       return;
     }
 
@@ -488,31 +516,33 @@ function VolcanoPanel({
 
     const run = async () => {
       try {
-        const response = control
+        const response = debouncedRequestPayload.source === "volcano_control"
           ? await runVolcanoControlAnalysis({
-              kind,
-              condition1,
-              condition2,
-              condition1Control,
-              condition2Control,
-              identifier,
-              pValueThreshold,
-              log2fcThreshold,
-              testType,
-              useUncorrected,
-              highlightTerms,
-            } satisfies VolcanoControlRequest)
+            kind: debouncedRequestPayload.kind,
+              dataSource: debouncedRequestPayload.dataSource,
+              condition1: debouncedRequestPayload.condition1,
+              condition2: debouncedRequestPayload.condition2,
+              condition1Control: debouncedRequestPayload.condition1Control,
+              condition2Control: debouncedRequestPayload.condition2Control,
+              identifier: debouncedRequestPayload.identifier,
+              pValueThreshold: debouncedRequestPayload.pValueThreshold,
+              log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
+              testType: debouncedRequestPayload.testType,
+              useUncorrected: debouncedRequestPayload.useUncorrected,
+              highlightTerms: debouncedRequestPayload.highlightTerms,
+            })
           : await runVolcanoAnalysis({
-              kind,
-              condition1,
-              condition2,
-              identifier,
-              pValueThreshold,
-              log2fcThreshold,
-              testType,
-              useUncorrected,
-              highlightTerms,
-            } satisfies VolcanoRequest);
+              kind: debouncedRequestPayload.kind,
+              dataSource: debouncedRequestPayload.dataSource,
+              condition1: debouncedRequestPayload.condition1,
+              condition2: debouncedRequestPayload.condition2,
+              identifier: debouncedRequestPayload.identifier,
+              pValueThreshold: debouncedRequestPayload.pValueThreshold,
+              log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
+              testType: debouncedRequestPayload.testType,
+              useUncorrected: debouncedRequestPayload.useUncorrected,
+              highlightTerms: debouncedRequestPayload.highlightTerms,
+            });
         if (cancelled) return;
         setResult(response);
       } catch (err) {
@@ -530,60 +560,81 @@ function VolcanoPanel({
       cancelled = true;
     };
   }, [
-    canRun,
-    control,
-    kind,
-    condition1,
-    condition2,
-    condition1Control,
-    condition2Control,
-    identifier,
-    pValueThreshold,
-    log2fcThreshold,
-    testType,
-    useUncorrected,
-    highlightTerms,
+    debouncedRequestPayload,
   ]);
 
-  const plotUrl = control
-    ? buildPlotUrl(`/api/plots/stats/${kind}/volcano-control.html`, {
-        condition1,
-        condition2,
-        condition1Control,
-        condition2Control,
-        identifier,
-        pValueThreshold,
-        log2fcThreshold,
-        testType,
-        useUncorrected,
-        highlightTerms: highlightTerms.join(","),
-      })
-    : buildPlotUrl(`/api/plots/stats/${kind}/volcano.html`, {
-        condition1,
-        condition2,
-        identifier,
-        pValueThreshold,
-        log2fcThreshold,
-        testType,
-        useUncorrected,
-        highlightTerms: highlightTerms.join(","),
+  const plotUrl = useMemo(() => {
+    if (!debouncedRequestPayload) return "";
+    if (debouncedRequestPayload.source === "volcano_control") {
+      return buildPlotUrl(`/api/plots/stats/${debouncedRequestPayload.kind}/volcano-control.html`, {
+        condition1: debouncedRequestPayload.condition1,
+        condition2: debouncedRequestPayload.condition2,
+        dataSource: debouncedRequestPayload.dataSource,
+        condition1Control: debouncedRequestPayload.condition1Control,
+        condition2Control: debouncedRequestPayload.condition2Control,
+        identifier: debouncedRequestPayload.identifier,
+        pValueThreshold: debouncedRequestPayload.pValueThreshold,
+        log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
+        testType: debouncedRequestPayload.testType,
+        useUncorrected: debouncedRequestPayload.useUncorrected,
+        highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
       });
+    }
+    return buildPlotUrl(`/api/plots/stats/${debouncedRequestPayload.kind}/volcano.html`, {
+      condition1: debouncedRequestPayload.condition1,
+      condition2: debouncedRequestPayload.condition2,
+      dataSource: debouncedRequestPayload.dataSource,
+      identifier: debouncedRequestPayload.identifier,
+      pValueThreshold: debouncedRequestPayload.pValueThreshold,
+      log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
+      testType: debouncedRequestPayload.testType,
+      useUncorrected: debouncedRequestPayload.useUncorrected,
+      highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
+    });
+  }, [debouncedRequestPayload]);
 
   return (
     <div className="space-y-6">
-      <SectionCard title={control ? "Volcano Plot Control" : "Volcano Plot"}>
+      <SectionCard title="Volcano Plot">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
         </div>
       </SectionCard>
 
       <SectionCard title="Options">
-        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-          <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-          {control ? <SelectField label="Condition 1 Control" value={condition1Control} onChange={setCondition1Control} options={conditionOptions(options)} /> : null}
-          <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-          {control ? <SelectField label="Condition 2 Control" value={condition2Control} onChange={setCondition2Control} options={conditionOptions(options)} /> : null}
+        <div className="grid gap-4 lg:grid-cols-2">
+          <SelectField
+            label="Source"
+            value={sourceMode}
+            onChange={(value) => setSourceMode(value as "volcano" | "volcano_control")}
+            options={[
+              { value: "volcano", label: "Volcano" },
+              { value: "volcano_control", label: "Volcano Control" },
+            ]}
+          />
+          <SelectField
+            label="Data Source"
+            value={dataSource}
+            onChange={(value) => setDataSource(value as "data" | "imputed")}
+            options={[
+              { value: "data", label: "Data" },
+              { value: "imputed", label: "Imputed Data" },
+            ]}
+          />
         </div>
+        {sourceMode === "volcano_control" ? (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+            <SelectField label="Condition 1 Control" value={condition1Control} onChange={setCondition1Control} options={conditionOptions(options)} />
+            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+            <SelectField label="Condition 2 Control" value={condition2Control} onChange={setCondition2Control} options={conditionOptions(options)} />
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+          </div>
+        )}
 
         <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
@@ -602,7 +653,7 @@ function VolcanoPanel({
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
         </div>
 
-        {!control && !IS_VIEWER_MODE ? (
+        {sourceMode === "volcano" && !IS_VIEWER_MODE ? (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -629,12 +680,12 @@ function VolcanoPanel({
           </div>
         ) : null}
 
-        <Notice error={error} warnings={options?.warnings} />
+      <Notice error={error} warnings={removeSourceUsageWarnings(options?.warnings)} />
       </SectionCard>
       {!canRun && options ? (
         <InfoSection
           message={
-            control
+            sourceMode === "volcano_control"
               ? "Please select four different conditions and controls to generate the plot."
               : "Please select two different conditions to generate the plot."
           }
@@ -642,7 +693,7 @@ function VolcanoPanel({
       ) : null}
       {result ? (
         <>
-          <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={result.warnings} />
+          <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={removeSourceUsageWarnings(result.warnings)} />
           <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
           <TableSection title="Result Table" rows={result.rows} filename={`volcano_${kind}.csv`} />
         </>

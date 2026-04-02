@@ -14,6 +14,7 @@ PhosprotAggregationMode = Literal[
     "sum_ignore_na",
     "mean",
 ]
+PhosprotAggregationSource = Literal["non_imputed", "imputed"]
 
 
 class ConditionAssignment(BaseModel):
@@ -78,3 +79,4 @@ class MetadataUploadResponse(BaseModel):
 
 class PhosprotAggregateRequest(BaseModel):
     mode: PhosprotAggregationMode = "sum_mean_impute"
+    source: PhosprotAggregationSource = "non_imputed"

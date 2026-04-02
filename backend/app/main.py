@@ -12,6 +12,7 @@ from app.api.routes_annotations import router as annotations_router
 from app.api.routes_data_tools import router as data_tools_router
 from app.api.routes_datasets import router as datasets_router
 from app.api.routes_external import router as external_router
+from app.api.routes_chat import router as chat_router
 from app.api.routes_plots import router as plots_router
 from app.api.routes_qc import router as qc_router
 from app.api.routes_peptide import router as peptide_router
@@ -153,6 +154,7 @@ async def plot_download_format_middleware(request: Request, call_next):
 app.include_router(datasets_router)
 app.include_router(annotations_router)
 app.include_router(data_tools_router)
+app.include_router(chat_router)
 app.include_router(stats_router)
 app.include_router(analysis_router)
 app.include_router(qc_router)
