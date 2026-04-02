@@ -77,6 +77,8 @@ export type PhosprotAggregationMode =
   | "sum_ignore_na"
   | "mean";
 
+export type PhosprotAggregationSource = "non_imputed" | "imputed";
+
 export type AnnotationResultResponse = {
   kind: AnnotationKind;
   sourceRows: number;
@@ -305,7 +307,6 @@ export type StatsIdentifier = "workflow" | "genes";
 export type StatsTestType = "unpaired" | "paired";
 export type StatsTab =
   | "volcano"
-  | "volcanoControl"
   | "gsea"
   | "pathwayHeatmap"
   | "simulation";
@@ -319,6 +320,7 @@ export type PeptideTab =
 export type StatisticalOptionsResponse = {
   kind: AnnotationKind;
   sourceUsed: DataSource;
+  imputedAvailable: boolean;
   availableConditions: string[];
   availableIdentifiers: { key: StatsIdentifier; label: string }[];
   warnings: string[];
@@ -326,6 +328,7 @@ export type StatisticalOptionsResponse = {
 
 export type VolcanoRequest = {
   kind: AnnotationKind;
+  dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
   identifier: StatsIdentifier;
@@ -485,6 +488,7 @@ export type SingleProteinTableResponse = {
 export type PhosphoOptionsResponse = {
   conditions: string[];
   features: string[];
+  imputedAvailable: boolean;
 };
 
 export type PhosphoTableResponse = {
@@ -657,3 +661,47 @@ export type PhosphoTab =
   | "distribution"
   | "sty"
   | "phosprotRegulation";
+
+export type ChatRole = "system" | "user" | "assistant";
+
+export type ChatMessage = {
+  role: ChatRole;
+  content: string;
+};
+
+export type OllamaChatRequest = {
+  messages: ChatMessage[];
+  message: string;
+  model?: string;
+  gpuEnabled?: boolean;
+};
+
+export type OllamaChatResponse = {
+  model: string;
+  message: ChatMessage;
+};
+
+export type OllamaGpuStatusResponse = {
+  gpuEligible: boolean;
+  gpuEnabledDefault: boolean;
+  provider: string | null;
+  deviceName: string | null;
+  reason: string | null;
+};
+
+export type OllamaModelsResponse = {
+  models: string[];
+  selectedModel: string | null;
+  warnings: string[];
+};
+
+export type ModuleContextResponse = {
+  moduleKey: string;
+  moduleTitle: string;
+  manualTitle?: string | null;
+  manualPath?: string | null;
+  contextPrompt: string;
+  contextSummary: string;
+  contextData: Record<string, unknown>;
+  warnings: string[];
+};

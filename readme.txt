@@ -23,6 +23,19 @@ run_app.bat
 WINDOWS RUN VIEWER
 run_viewer.bat
 
+WINDOWS AI PREREQUISITE
+Install Ollama from https://ollama.com (external system dependency, not a pip requirement).
+
+WINDOWS RUN ANALYSIS (AI)
+run_app_ai.bat
+or with on-the-fly model pull:
+run_app_ai.bat --deepseek-r1:1.5b
+
+WINDOWS RUN VIEWER (AI)
+run_viewer_ai.bat
+or with on-the-fly model pull:
+run_viewer_ai.bat --deepseek-r1:1.5b
+
 WINDOWS PRODUCTION RUN
 cd frontend
 npm run build
@@ -64,6 +77,19 @@ MACOS RUN ANALYSIS
 
 MACOS RUN VIEWER
 ./run_viewer_macos.sh
+
+MACOS AI PREREQUISITE
+Install Ollama from https://ollama.com (external system dependency, not a pip requirement).
+
+MACOS RUN ANALYSIS (AI)
+./run_app_ai_macos.sh
+or with on-the-fly model pull:
+./run_app_ai_macos.sh --deepseek-r1:1.5b
+
+MACOS RUN VIEWER (AI)
+./run_viewer_ai_macos.sh
+or with on-the-fly model pull:
+./run_viewer_ai_macos.sh --deepseek-r1:1.5b
 
 MACOS PRODUCTION RUN (ANALYSIS)
 cd frontend
@@ -110,6 +136,19 @@ LINUX RUN ANALYSIS
 
 LINUX RUN VIEWER
 ./run_viewer_linux.sh
+
+LINUX AI PREREQUISITE
+Install Ollama from https://ollama.com (external system dependency, not a pip requirement).
+
+LINUX RUN ANALYSIS (AI)
+./run_app_ai_linux.sh
+or with on-the-fly model pull:
+./run_app_ai_linux.sh --deepseek-r1:1.5b
+
+LINUX RUN VIEWER (AI)
+./run_viewer_ai_linux.sh
+or with on-the-fly model pull:
+./run_viewer_ai_linux.sh --deepseek-r1:1.5b
 
 LINUX PRODUCTION RUN (ANALYSIS)
 cd frontend

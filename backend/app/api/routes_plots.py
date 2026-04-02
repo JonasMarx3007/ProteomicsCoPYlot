@@ -102,6 +102,7 @@ async def stats_volcano_route(
     kind: AnnotationKind,
     condition1: str,
     condition2: str,
+    dataSource: str = "imputed",
     identifier: str = "workflow",
     pValueThreshold: float = 0.05,
     log2fcThreshold: float = 1.0,
@@ -112,6 +113,7 @@ async def stats_volcano_route(
     try:
         payload = VolcanoRequest(
             kind=kind,
+            dataSource=dataSource,
             condition1=condition1,
             condition2=condition2,
             identifier=identifier,
@@ -135,6 +137,7 @@ async def stats_volcano_control_route(
     condition2: str,
     condition1Control: str,
     condition2Control: str,
+    dataSource: str = "imputed",
     identifier: str = "workflow",
     pValueThreshold: float = 0.05,
     log2fcThreshold: float = 1.0,
@@ -145,6 +148,7 @@ async def stats_volcano_control_route(
     try:
         payload = VolcanoControlRequest(
             kind=kind,
+            dataSource=dataSource,
             condition1=condition1,
             condition2=condition2,
             condition1Control=condition1Control,
@@ -1116,7 +1120,7 @@ async def single_protein_heatmap_table_route(
 
 
 @router.get("/phospho/options")
-async def phospho_options_route() -> dict[str, list[str]]:
+async def phospho_options_route() -> dict[str, object]:
     try:
         return phospho_options()
     except ValueError as e:
@@ -1263,6 +1267,10 @@ async def phospho_distribution_table_route(
 async def phospho_ksea_route(
     condition1: str,
     condition2: str,
+    source: str = "volcano",
+    dataSource: str = "imputed",
+    condition1Control: str | None = None,
+    condition2Control: str | None = None,
     pValueThreshold: float = 0.05,
     log2fcThreshold: float = 1.0,
     testType: str = "unpaired",
@@ -1277,6 +1285,10 @@ async def phospho_ksea_route(
             ksea_plot_png(
                 condition1=condition1,
                 condition2=condition2,
+                source=source,
+                data_source=dataSource,
+                condition1_control=condition1Control,
+                condition2_control=condition2Control,
                 p_value_threshold=pValueThreshold,
                 log2fc_threshold=log2fcThreshold,
                 test_type=testType,
@@ -1299,6 +1311,10 @@ async def phospho_ksea_route(
 async def phospho_ksea_table_route(
     condition1: str,
     condition2: str,
+    source: str = "volcano",
+    dataSource: str = "imputed",
+    condition1Control: str | None = None,
+    condition2Control: str | None = None,
     pValueThreshold: float = 0.05,
     log2fcThreshold: float = 1.0,
     testType: str = "unpaired",
@@ -1309,6 +1325,10 @@ async def phospho_ksea_table_route(
             ksea_table(
                 condition1=condition1,
                 condition2=condition2,
+                source=source,
+                data_source=dataSource,
+                condition1_control=condition1Control,
+                condition2_control=condition2Control,
                 p_value_threshold=pValueThreshold,
                 log2fc_threshold=log2fcThreshold,
                 test_type=testType,

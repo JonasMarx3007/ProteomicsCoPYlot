@@ -1,7 +1,26 @@
 @echo off
+setlocal EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=5173"
+set "CHAT_MODEL=%~1"
+
+if defined CHAT_MODEL (
+  if "!CHAT_MODEL:~0,2!"=="--" set "CHAT_MODEL=!CHAT_MODEL:~2!"
+)
+
+if defined CHAT_MODEL (
+  where ollama >nul 2>&1
+  if errorlevel 1 (
+    echo Warning: ollama executable not found in PATH. Skipping model pull for "!CHAT_MODEL!".
+  ) else (
+    echo Pulling Ollama model "!CHAT_MODEL!"...
+    ollama pull "!CHAT_MODEL!"
+    if errorlevel 1 (
+      echo Warning: failed to pull model "!CHAT_MODEL!". Continuing startup.
+    )
+  )
+)
 
 for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
 if defined BACKEND_PID (
@@ -15,7 +34,11 @@ if defined FRONTEND_PID (
   timeout /t 1 /nobreak >nul
 )
 
-start "Backend" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=0 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+if defined CHAT_MODEL (
+  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+) else (
+  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+)
 
 set "BACKEND_READY=0"
 for /l %%i in (1,1,20) do (
@@ -32,6 +55,6 @@ if "%BACKEND_READY%"=="0" (
   echo Warning: backend on port %BACKEND_PORT% is not ready yet.
 )
 
-start "Frontend" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"

@@ -15,6 +15,22 @@ if [ ! -x "$PYTHON_BIN" ]; then
   exit 1
 fi
 
+CHAT_MODEL="${1:-}"
+if [[ "$CHAT_MODEL" == --* ]]; then
+  CHAT_MODEL="${CHAT_MODEL#--}"
+fi
+
+if [ -n "$CHAT_MODEL" ]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "Warning: ollama executable not found in PATH. Skipping model pull for '$CHAT_MODEL'."
+  else
+    echo "Pulling Ollama model '$CHAT_MODEL'..."
+    if ! ollama pull "$CHAT_MODEL"; then
+      echo "Warning: failed to pull model '$CHAT_MODEL'. Continuing startup."
+    fi
+  fi
+fi
+
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -31,20 +47,27 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$BACKEND_DIR"
-  COPYLOT_AI_MODE=0 "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+  if [ -n "$CHAT_MODEL" ]; then
+    COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
+      "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+  else
+    COPYLOT_AI_MODE=1 \
+      "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+  fi
 ) &
 BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR"
-  VITE_AI_ENABLED=0 VITE_PROXY_TARGET="http://127.0.0.1:8000" npm run dev -- --port 5173
+  VITE_AI_ENABLED=1 VITE_PROXY_TARGET="http://127.0.0.1:8000" \
+    npm run dev -- --port 5173
 ) &
 FRONTEND_PID=$!
 
 sleep 3
 open "http://localhost:5173" >/dev/null 2>&1 || true
 
-echo "Analysis app started."
+echo "Analysis app (AI mode) started."
 echo "Backend: http://127.0.0.1:8000"
 echo "Frontend: http://localhost:5173"
 

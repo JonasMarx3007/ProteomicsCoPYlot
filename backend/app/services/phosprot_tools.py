@@ -6,11 +6,13 @@ import pandas as pd
 from app.schemas.annotation import (
     AnnotationFilterConfig,
     PhosprotAggregationMode,
+    PhosprotAggregationSource,
 )
 from app.services.annotation_store import get_annotation, save_annotation
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
     filter_data,
+    impute_values_with_diagnostics,
     inverse_log2_transform_data,
     log2_transform_data,
     use_existing_log2_data,
@@ -188,24 +190,88 @@ def _store_phosprot_annotation(
     )
 
 
-def aggregate_from_phospho(mode: PhosprotAggregationMode) -> object:
+def _impute_phospho_source(
+    source: pd.DataFrame,
+    *,
+    sample_columns: list[str],
+    phospho_annotation,
+) -> tuple[pd.DataFrame, str]:
+    imputation = getattr(phospho_annotation, "imputation", None)
+    q_value = 0.01
+    adjust_std = 1.0
+    seed = 1337
+    sample_wise = False
+    config_label = "default settings"
+    if imputation is not None and str(getattr(imputation, "mode", "none")) != "none":
+        q_value = (
+            float(imputation.qValue)
+            if getattr(imputation, "qValue", None) is not None
+            else q_value
+        )
+        adjust_std = (
+            float(imputation.adjustStd)
+            if getattr(imputation, "adjustStd", None) is not None
+            else adjust_std
+        )
+        seed = (
+            int(imputation.seed)
+            if getattr(imputation, "seed", None) is not None
+            else seed
+        )
+        sample_wise = (
+            bool(imputation.sampleWise)
+            if getattr(imputation, "sampleWise", None) is not None
+            else sample_wise
+        )
+        config_label = (
+            f"stored imputation settings (q={q_value}, adjustStd={adjust_std}, "
+            f"seed={seed}, sampleWise={sample_wise})"
+        )
+
+    diagnostics = impute_values_with_diagnostics(
+        data=source,
+        sample_columns=sample_columns,
+        q=q_value,
+        adj_std=adjust_std,
+        seed=seed,
+        sample_wise=sample_wise,
+    )
+    return diagnostics.imputed_data, config_label
+
+
+def aggregate_from_phospho(
+    mode: PhosprotAggregationMode,
+    source: PhosprotAggregationSource = "non_imputed",
+) -> object:
     phospho_annotation = _shared_phospho_annotation()
-    source = phospho_annotation.source_data.copy()
+    source_data = phospho_annotation.source_data.copy()
     sample_columns = phospho_annotation.metadata["sample"].astype(str).tolist()
 
     if phospho_annotation.is_log2_transformed:
-        source = inverse_log2_transform_data(source, sample_columns)
+        source_data = inverse_log2_transform_data(source_data, sample_columns)
 
-    phosprot = transform_phosprot(source, phospho_annotation.metadata, mode=mode)
+    source_label = "non-imputed phospho data"
+    if source == "imputed":
+        source_data, imputation_label = _impute_phospho_source(
+            source_data,
+            sample_columns=sample_columns,
+            phospho_annotation=phospho_annotation,
+        )
+        source_label = f"imputed phospho data ({imputation_label})"
+
+    phosprot = transform_phosprot(source_data, phospho_annotation.metadata, mode=mode)
     save_table_dataset(
-        filename=f"phosprot_aggregated_{mode}.csv",
+        filename=f"phosprot_aggregated_{source}_{mode}.csv",
         kind="phosprot",
         frame=phosprot,
     )
     return _store_phosprot_annotation(
         frame=phosprot,
         is_log2_transformed=False,
-        warning_prefix=f"Phosphoprotein dataset was aggregated from phospho data ({mode}).",
+        warning_prefix=(
+            "Phosphoprotein dataset was aggregated from "
+            f"{source_label} using aggregation mode '{mode}'."
+        ),
     )
 
 

@@ -45,16 +45,31 @@ Windows:
 
 - Analysis: `run_app.bat`
 - Viewer: `run_viewer.bat`
+- Analysis (AI): `run_app_ai.bat [--model-name]`
+- Viewer (AI): `run_viewer_ai.bat [--model-name]`
 
 macOS:
 
 - Analysis: `./run_app_macos.sh`
 - Viewer: `./run_viewer_macos.sh`
+- Analysis (AI): `./run_app_ai_macos.sh [--model-name]`
+- Viewer (AI): `./run_viewer_ai_macos.sh [--model-name]`
 
 Linux:
 
 - Analysis: `./run_app_linux.sh`
 - Viewer: `./run_viewer_linux.sh`
+- Analysis (AI): `./run_app_ai_linux.sh [--model-name]`
+- Viewer (AI): `./run_viewer_ai_linux.sh [--model-name]`
+
+## AI Prerequisite
+
+AI mode requires a local [Ollama](https://ollama.com) installation (system dependency, not a Python `pip` package).
+
+Examples:
+
+- `run_app_ai.bat --deepseek-r1:1.5b`
+- `run_viewer_ai.bat --deepseek-r1:1.5b`
 
 ## Windows Onefile EXE Builds
 

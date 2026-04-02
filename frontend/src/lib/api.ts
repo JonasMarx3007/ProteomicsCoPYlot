@@ -1,4 +1,5 @@
 import type {
+  ChatMessage,
   AnnotationGenerateRequest,
   AnalysisVolcanoRequest,
   AnalysisVolcanoResponse,
@@ -35,6 +36,7 @@ import type {
   PeptideSpecies,
   QcSummaryResponse,
   PhosprotAggregationMode,
+  PhosprotAggregationSource,
   SingleProteinOptionsResponse,
   SingleProteinTableResponse,
   QcPlotOptionsResponse,
@@ -44,6 +46,10 @@ import type {
   StatisticalOptionsResponse,
   SummaryReportRequest,
   SummaryReportResponse,
+  ModuleContextResponse,
+  OllamaGpuStatusResponse,
+  OllamaModelsResponse,
+  OllamaChatResponse,
   SummaryTablesResponse,
   VolcanoControlRequest,
   VolcanoResultResponse,
@@ -642,14 +648,15 @@ export async function downloadIdTranslation(
 }
 
 export async function aggregatePhosprot(
-  mode: PhosprotAggregationMode
+  mode: PhosprotAggregationMode,
+  source: PhosprotAggregationSource
 ): Promise<AnnotationResultResponse> {
   const response = await fetch(`${API_BASE}/api/annotations/phosprot/aggregate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify({ mode, source }),
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -790,7 +797,19 @@ export async function getStatisticalOptions(
         "Failed to load statistical options"
     );
   }
-  return data as StatisticalOptionsResponse;
+  const payloadRaw = data as Partial<StatisticalOptionsResponse>;
+  return {
+    kind: (payloadRaw.kind as AnnotationKind) ?? kind,
+    sourceUsed: payloadRaw.sourceUsed ?? "raw",
+    imputedAvailable: Boolean(payloadRaw.imputedAvailable),
+    availableConditions: Array.isArray(payloadRaw.availableConditions)
+      ? payloadRaw.availableConditions
+      : [],
+    availableIdentifiers: Array.isArray(payloadRaw.availableIdentifiers)
+      ? payloadRaw.availableIdentifiers
+      : [],
+    warnings: Array.isArray(payloadRaw.warnings) ? payloadRaw.warnings : [],
+  };
 }
 
 export async function runVolcanoAnalysis(
@@ -893,6 +912,159 @@ export async function runAnalysisVolcanoData(
   return data as AnalysisVolcanoResponse;
 }
 
+export async function sendOllamaChatMessage(payload: {
+  message: string;
+  messages: ChatMessage[];
+  model?: string;
+  gpuEnabled?: boolean;
+}): Promise<OllamaChatResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/ollama`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: payload.message,
+      messages: payload.messages,
+      model: payload.model,
+      gpuEnabled: payload.gpuEnabled ?? false,
+    }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run Ollama chat request"
+    );
+  }
+  return data as OllamaChatResponse;
+}
+
+export async function streamOllamaChatMessage(
+  payload: {
+    message: string;
+    messages: ChatMessage[];
+    model?: string;
+    gpuEnabled?: boolean;
+  },
+  onChunk: (chunk: string) => void
+): Promise<{ model: string; content: string }> {
+  const response = await fetch(`${API_BASE}/api/chat/ollama-stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: payload.message,
+      messages: payload.messages,
+      model: payload.model,
+      gpuEnabled: payload.gpuEnabled ?? false,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      throw new Error(parsed?.detail || "Failed to run Ollama chat stream");
+    } catch {
+      throw new Error(text || "Failed to run Ollama chat stream");
+    }
+  }
+
+  const model = response.headers.get("X-Ollama-Model")?.trim() || payload.model || "phi3:mini";
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const fallbackText = await response.text();
+    if (fallbackText) onChunk(fallbackText);
+    return { model, content: fallbackText };
+  }
+
+  const decoder = new TextDecoder();
+  let content = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (!chunk) continue;
+    content += chunk;
+    onChunk(chunk);
+  }
+  const tail = decoder.decode();
+  if (tail) {
+    content += tail;
+    onChunk(tail);
+  }
+
+  return { model, content };
+}
+
+export async function getAiModuleContext(moduleKey: string): Promise<ModuleContextResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/module-context`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ moduleKey }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load AI module context"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    moduleKey: String(raw.moduleKey ?? moduleKey),
+    moduleTitle: String(raw.moduleTitle ?? moduleKey),
+    manualTitle: raw.manualTitle == null ? null : String(raw.manualTitle),
+    manualPath: raw.manualPath == null ? null : String(raw.manualPath),
+    contextPrompt: String(raw.contextPrompt ?? ""),
+    contextSummary: String(raw.contextSummary ?? ""),
+    contextData: (raw.contextData && typeof raw.contextData === "object"
+      ? (raw.contextData as Record<string, unknown>)
+      : {}) as Record<string, unknown>,
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
+  };
+}
+
+export async function getOllamaGpuStatus(): Promise<OllamaGpuStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/gpu-status`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load Ollama GPU status"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    gpuEligible: Boolean(raw.gpuEligible),
+    gpuEnabledDefault: Boolean(raw.gpuEnabledDefault),
+    provider: raw.provider == null ? null : String(raw.provider),
+    deviceName: raw.deviceName == null ? null : String(raw.deviceName),
+    reason: raw.reason == null ? null : String(raw.reason),
+  };
+}
+
+export async function getOllamaModels(): Promise<OllamaModelsResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/models`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load Ollama models"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
+    selectedModel: raw.selectedModel == null ? null : String(raw.selectedModel),
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
+  };
+}
+
 export async function getPathwayOptions(): Promise<PathwayOptionsResponse> {
   const response = await fetch(`${API_BASE}/api/stats/pathways`);
   const data = await parseJson(response);
@@ -970,7 +1142,17 @@ export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
         "Failed to load phospho options"
     );
   }
-  return data as PhosphoOptionsResponse;
+  const payloadRaw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    ...payloadRaw,
+    conditions: Array.isArray(payloadRaw.conditions)
+      ? payloadRaw.conditions.map((value) => String(value))
+      : [],
+    features: Array.isArray(payloadRaw.features)
+      ? payloadRaw.features.map((value) => String(value))
+      : [],
+    imputedAvailable: Boolean(payloadRaw.imputedAvailable),
+  } as PhosphoOptionsResponse;
 }
 
 export async function getPhosphoTable(

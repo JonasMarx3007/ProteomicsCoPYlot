@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.schemas.annotation import AnnotationKind
 
 StatsSource = Literal["filtered", "log2", "raw"]
+VolcanoDataSource = Literal["data", "imputed"]
 StatsTestType = Literal["unpaired", "paired"]
 StatsIdentifier = Literal["workflow", "genes"]
 GseaDirection = Literal["up", "down"]
@@ -22,6 +23,7 @@ class IdentifierOption(BaseModel):
 class StatisticalOptionsResponse(BaseModel):
     kind: AnnotationKind
     sourceUsed: StatsSource
+    imputedAvailable: bool = False
     availableConditions: list[str]
     availableIdentifiers: list[IdentifierOption]
     warnings: list[str] = Field(default_factory=list)
@@ -29,6 +31,7 @@ class StatisticalOptionsResponse(BaseModel):
 
 class VolcanoRequest(BaseModel):
     kind: AnnotationKind
+    dataSource: VolcanoDataSource = "imputed"
     condition1: str
     condition2: str
     identifier: StatsIdentifier = "workflow"
@@ -41,6 +44,7 @@ class VolcanoRequest(BaseModel):
 
 class VolcanoControlRequest(BaseModel):
     kind: AnnotationKind
+    dataSource: VolcanoDataSource = "imputed"
     condition1: str
     condition2: str
     condition1Control: str
