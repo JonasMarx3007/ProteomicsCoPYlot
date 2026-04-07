@@ -28,6 +28,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "peptide workflow -> peptides only; phosprot workflow -> phosphoproteins only. "
     "Do not mix these levels unless the user explicitly asks for a cross-level interpretation. "
     "Respond with short, precise answers. "
+    "Messages that start with '[CONTEXT]' are internal context-creation notes; do not answer or acknowledge them. "
     "Use user-facing module names and avoid internal module keys or code-like identifiers in your wording. "
     "If volcano/differential context is available and the user asks for interesting proteins or targets, prioritize statistically significant features and cite direction, log2FC, and -log10 adjusted p-value. "
     "Prioritize factual correctness over speculation. "
