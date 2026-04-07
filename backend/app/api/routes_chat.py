@@ -9,6 +9,8 @@ from app.schemas.chat import (
     OllamaChatRequest,
     OllamaChatResponse,
     OllamaGpuStatusResponse,
+    OllamaModelManageRequest,
+    OllamaModelManageResponse,
     OllamaModelsResponse,
 )
 from app.services.ai_context_tools import build_module_context
@@ -17,7 +19,9 @@ from app.services.chat_tools import (
     ollama_chat,
     ollama_chat_stream,
     ollama_gpu_status,
+    ollama_install_model,
     ollama_models,
+    ollama_remove_model,
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -85,3 +89,27 @@ async def ollama_models_route() -> OllamaModelsResponse:
         return ollama_models()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load Ollama models: {exc}") from exc
+
+
+@router.post("/models/install", response_model=OllamaModelManageResponse)
+async def ollama_models_install_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    try:
+        return ollama_install_model(payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to install Ollama model: {exc}") from exc
+
+
+@router.post("/models/remove", response_model=OllamaModelManageResponse)
+async def ollama_models_remove_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    try:
+        return ollama_remove_model(payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to remove Ollama model: {exc}") from exc

@@ -48,6 +48,7 @@ import type {
   SummaryReportResponse,
   ModuleContextResponse,
   OllamaGpuStatusResponse,
+  OllamaModelManageResponse,
   OllamaModelsResponse,
   OllamaChatResponse,
   SummaryTablesResponse,
@@ -1059,6 +1060,60 @@ export async function getOllamaModels(): Promise<OllamaModelsResponse> {
   }
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
+    models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
+    selectedModel: raw.selectedModel == null ? null : String(raw.selectedModel),
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
+  };
+}
+
+export async function installOllamaModel(model: string): Promise<OllamaModelManageResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/models/install`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to install Ollama model"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    ok: Boolean(raw.ok),
+    action: String(raw.action) === "remove" ? "remove" : "install",
+    model: String(raw.model ?? model),
+    detail: String(raw.detail ?? ""),
+    models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
+    selectedModel: raw.selectedModel == null ? null : String(raw.selectedModel),
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
+  };
+}
+
+export async function removeOllamaModel(model: string): Promise<OllamaModelManageResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/models/remove`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to remove Ollama model"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    ok: Boolean(raw.ok),
+    action: "remove",
+    model: String(raw.model ?? model),
+    detail: String(raw.detail ?? ""),
     models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
     selectedModel: raw.selectedModel == null ? null : String(raw.selectedModel),
     warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
