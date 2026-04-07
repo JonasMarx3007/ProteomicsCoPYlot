@@ -39,6 +39,20 @@ class OllamaModelsResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class OllamaModelManageRequest(BaseModel):
+    model: str = Field(default="", min_length=1)
+
+
+class OllamaModelManageResponse(BaseModel):
+    ok: bool
+    action: Literal["install", "remove"]
+    model: str
+    detail: str
+    models: list[str] = Field(default_factory=list)
+    selectedModel: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ModuleContextRequest(BaseModel):
     moduleKey: str = Field(default="", min_length=1)
 

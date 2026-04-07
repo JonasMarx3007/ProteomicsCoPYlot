@@ -14,6 +14,7 @@ from app.schemas.chat import (
     OllamaChatRequest,
     OllamaChatResponse,
     OllamaGpuStatusResponse,
+    OllamaModelManageResponse,
     OllamaModelsResponse,
 )
 
@@ -43,6 +44,7 @@ _CONTINUATION_USER_PROMPT = (
     "Continue your previous answer from exactly where it ended. "
     "Keep it short and precise. Do not repeat earlier text. Finish the thought cleanly."
 )
+_DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS = 1800
 
 
 def _normalize_message_text(message_obj: dict[str, object]) -> str:
@@ -174,6 +176,11 @@ def _ollama_available_models() -> list[str]:
     return names
 
 
+def _invalidate_models_cache() -> None:
+    global _MODELS_CACHE
+    _MODELS_CACHE = None
+
+
 def ollama_models() -> OllamaModelsResponse:
     warnings: list[str] = []
     try:
@@ -200,6 +207,68 @@ def ollama_models() -> OllamaModelsResponse:
         models=models,
         selectedModel=selected_model,
         warnings=warnings,
+    )
+
+
+def _run_ollama_model_command(command: str, model_name: str) -> str:
+    ollama_bin = shutil.which("ollama")
+    if not ollama_bin:
+        raise ValueError("Ollama CLI was not found on PATH.")
+    timeout_seconds = max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS))
+    process = subprocess.run(
+        [ollama_bin, command, model_name],
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    stdout = str(process.stdout or "").strip()
+    stderr = str(process.stderr or "").strip()
+    if process.returncode != 0:
+        detail = stderr or stdout or f"Ollama command failed with exit code {process.returncode}."
+        raise ValueError(detail)
+    return stderr or stdout
+
+
+def ollama_install_model(model_name: str) -> OllamaModelManageResponse:
+    model = str(model_name or "").strip()
+    if not model:
+        raise ValueError("Model name cannot be empty.")
+    output = _run_ollama_model_command("pull", model)
+    _invalidate_models_cache()
+    refreshed = ollama_models()
+    detail = f"Installed model '{model}'."
+    if output:
+        detail = f"{detail} {output}"
+    return OllamaModelManageResponse(
+        ok=True,
+        action="install",
+        model=model,
+        detail=detail,
+        models=refreshed.models,
+        selectedModel=refreshed.selectedModel,
+        warnings=refreshed.warnings,
+    )
+
+
+def ollama_remove_model(model_name: str) -> OllamaModelManageResponse:
+    model = str(model_name or "").strip()
+    if not model:
+        raise ValueError("Model name cannot be empty.")
+    output = _run_ollama_model_command("rm", model)
+    _invalidate_models_cache()
+    refreshed = ollama_models()
+    detail = f"Removed model '{model}'."
+    if output:
+        detail = f"{detail} {output}"
+    return OllamaModelManageResponse(
+        ok=True,
+        action="remove",
+        model=model,
+        detail=detail,
+        models=refreshed.models,
+        selectedModel=refreshed.selectedModel,
+        warnings=refreshed.warnings,
     )
 
 

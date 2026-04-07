@@ -6,6 +6,8 @@ import {
   getAiModuleContext,
   getOllamaGpuStatus,
   getOllamaModels,
+  installOllamaModel,
+  removeOllamaModel,
   streamOllamaChatMessage,
 } from "../lib/api";
 import { subscribeDatasetStateChanged } from "../lib/datasetEvents";
@@ -98,6 +100,11 @@ export default function AppShell({
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
   const [chatModelError, setChatModelError] = useState<string | null>(null);
+  const [chatModelActionInput, setChatModelActionInput] = useState("");
+  const [chatModelActionBusy, setChatModelActionBusy] = useState<"install" | "remove" | null>(null);
+  const [chatModelActionError, setChatModelActionError] = useState<string | null>(null);
+  const [chatModelActionSuccess, setChatModelActionSuccess] = useState<string | null>(null);
+  const [aiSettingsExpanded, setAiSettingsExpanded] = useState(false);
   const [contextModuleLabel, setContextModuleLabel] = useState("");
   const [gpuEligible, setGpuEligible] = useState(false);
   const [gpuEnabled, setGpuEnabled] = useState(false);
@@ -118,6 +125,42 @@ export default function AppShell({
     setContextModuleLabel(moduleKey ? moduleKeyToLabel(moduleKey) : "");
   }
 
+  function applyChatModelList(
+    available: string[],
+    selectedModel: string | null,
+    warnings: string[],
+    preferredModel = ""
+  ) {
+    const preferred = preferredModel.trim();
+    setChatModels(available);
+    setChatModel((current) => {
+      let next = "";
+      if (preferred && available.includes(preferred)) {
+        next = preferred;
+      } else if (current && available.includes(current)) {
+        next = current;
+      } else if (selectedModel && available.includes(selectedModel)) {
+        next = selectedModel;
+      } else {
+        next = available[0] ?? "";
+      }
+      if (current && current !== next) {
+        window.setTimeout(() => {
+          resetChatForModelChange();
+        }, 0);
+      }
+      return next;
+    });
+    if (available.length === 0) {
+      const warning = warnings[0] || "No Ollama models detected. Install/pull a model first.";
+      setChatModelError(warning);
+    } else if (warnings.length > 0) {
+      setChatModelError(warnings[0]);
+    } else {
+      setChatModelError(null);
+    }
+  }
+
   useEffect(() => {
     if (!chatOpen) return;
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -129,6 +172,11 @@ export default function AppShell({
       setChatModels([]);
       setChatModelsLoading(false);
       setChatModelError(null);
+      setChatModelActionInput("");
+      setChatModelActionBusy(null);
+      setChatModelActionError(null);
+      setChatModelActionSuccess(null);
+      setAiSettingsExpanded(false);
       return;
     }
     let cancelled = false;
@@ -137,21 +185,7 @@ export default function AppShell({
     void getOllamaModels()
       .then((result) => {
         if (cancelled) return;
-        const available = result.models;
-        setChatModels(available);
-        setChatModel((current) => {
-          if (current && available.includes(current)) return current;
-          if (result.selectedModel && available.includes(result.selectedModel)) return result.selectedModel;
-          return available[0] ?? "";
-        });
-        if (available.length === 0) {
-          const warning = result.warnings[0] || "No Ollama models detected. Install/pull a model first.";
-          setChatModelError(warning);
-        } else if (result.warnings.length > 0) {
-          setChatModelError(result.warnings[0]);
-        } else {
-          setChatModelError(null);
-        }
+        applyChatModelList(result.models, result.selectedModel, result.warnings);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -168,6 +202,38 @@ export default function AppShell({
       cancelled = true;
     };
   }, [aiEnabled]);
+
+  async function runChatModelAction(action: "install" | "remove") {
+    const targetModel = (chatModelActionInput.trim() || chatModel.trim()).trim();
+    if (!targetModel) {
+      setChatModelActionError("Enter a model name or select one from the model list.");
+      setChatModelActionSuccess(null);
+      return;
+    }
+    setChatModelActionBusy(action);
+    setChatModelActionError(null);
+    setChatModelActionSuccess(null);
+    try {
+      const response =
+        action === "install" ? await installOllamaModel(targetModel) : await removeOllamaModel(targetModel);
+      applyChatModelList(
+        response.models,
+        response.selectedModel,
+        response.warnings,
+        action === "install" ? targetModel : ""
+      );
+      setChatModelActionInput(action === "install" ? targetModel : "");
+      setChatModelActionSuccess(
+        response.detail || `${action === "install" ? "Installed" : "Removed"} model '${targetModel}'.`
+      );
+    } catch (err) {
+      setChatModelActionError(
+        err instanceof Error ? err.message : `Failed to ${action === "install" ? "install" : "remove"} model.`
+      );
+    } finally {
+      setChatModelActionBusy(null);
+    }
+  }
 
   useEffect(() => {
     if (!aiEnabled) {
@@ -368,67 +434,125 @@ export default function AppShell({
                 <div className="mt-1 text-xs text-slate-500">
                   Model: <span className="font-medium text-slate-700">{chatModel || "Not selected"}</span>
                 </div>
-                <div className="mt-1">
-                  <select
-                    value={chatModel}
-                    onChange={(event) => {
-                      const nextModel = event.target.value;
-                      if (!nextModel || nextModel === chatModel) return;
-                      setChatModel(nextModel);
-                      resetChatForModelChange();
-                    }}
-                    disabled={chatModelsLoading || chatModels.length === 0 || chatLoading}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-                    aria-label="Select chatbot model"
-                  >
-                    {chatModels.length === 0 ? (
-                      <option value="">
-                        {chatModelsLoading ? "Loading models..." : "No models detected"}
-                      </option>
-                    ) : null}
-                    {chatModels.map((modelName) => (
-                      <option key={modelName} value={modelName}>
-                        {modelName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {chatModelError ? (
-                  <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
-                ) : null}
-                <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-                  <div className="text-xs text-slate-600">GPU Acceleration</div>
+                <div className="mt-2">
                   <button
                     type="button"
-                    role="switch"
-                    aria-checked={gpuEligible && gpuEnabled}
-                    disabled={!gpuEligible}
-                    onClick={() => {
-                      if (!gpuEligible) return;
-                      setGpuEnabled((current) => !current);
-                    }}
-                    className={[
-                      "relative inline-flex h-5 w-9 items-center rounded-full transition",
-                      gpuEligible && gpuEnabled ? "bg-slate-900" : "bg-slate-300",
-                      !gpuEligible ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-                    ].join(" ")}
-                    aria-label="Toggle GPU acceleration"
+                    onClick={() => setAiSettingsExpanded((current) => !current)}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-expanded={aiSettingsExpanded}
+                    aria-label="Toggle AI settings"
                   >
-                    <span
-                      className={[
-                        "inline-block h-4 w-4 transform rounded-full bg-white transition",
-                        gpuEligible && gpuEnabled ? "translate-x-4" : "translate-x-1",
-                      ].join(" ")}
-                    />
+                    <span>AI Settings</span>
+                    <span>{aiSettingsExpanded ? "Hide" : "Show"}</span>
                   </button>
-                </div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  {gpuEligible
-                    ? `CUDA GPU detected${gpuDeviceName ? `: ${gpuDeviceName}` : "."}`
-                    : gpuStatusMessage || "No eligible CUDA GPU detected."}
+                  {aiSettingsExpanded ? (
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        <select
+                          value={chatModel}
+                          onChange={(event) => {
+                            const nextModel = event.target.value;
+                            if (!nextModel || nextModel === chatModel) return;
+                            setChatModel(nextModel);
+                            resetChatForModelChange();
+                          }}
+                          disabled={
+                            chatModelsLoading ||
+                            chatModels.length === 0 ||
+                            chatLoading ||
+                            chatModelActionBusy !== null
+                          }
+                          className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          aria-label="Select chatbot model"
+                        >
+                          {chatModels.length === 0 ? (
+                            <option value="">
+                              {chatModelsLoading ? "Loading models..." : "No models detected"}
+                            </option>
+                          ) : null}
+                          {chatModels.map((modelName) => (
+                            <option key={modelName} value={modelName}>
+                              {modelName}
+                            </option>
+                          ))}
+                        </select>
+                        {chatModelError ? (
+                          <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
+                        ) : null}
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                          Model Management
+                        </div>
+                        <input
+                          type="text"
+                          value={chatModelActionInput}
+                          onChange={(event) => setChatModelActionInput(event.target.value)}
+                          placeholder="e.g. deepseek-r1:1.5b"
+                          disabled={chatLoading || chatModelActionBusy !== null}
+                          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                        />
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void runChatModelAction("install")}
+                            disabled={chatLoading || chatModelActionBusy !== null}
+                            className="flex-1 rounded-lg bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                          >
+                            {chatModelActionBusy === "install" ? "Installing..." : "Install"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runChatModelAction("remove")}
+                            disabled={chatLoading || chatModelActionBusy !== null}
+                            className="flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          >
+                            {chatModelActionBusy === "remove" ? "Removing..." : "Remove"}
+                          </button>
+                        </div>
+                        {chatModelActionError ? (
+                          <div className="mt-1 text-[11px] text-red-700">{chatModelActionError}</div>
+                        ) : null}
+                        {chatModelActionSuccess ? (
+                          <div className="mt-1 text-[11px] text-emerald-700">{chatModelActionSuccess}</div>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+                        <div className="text-xs text-slate-600">GPU Acceleration</div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={gpuEligible && gpuEnabled}
+                          disabled={!gpuEligible}
+                          onClick={() => {
+                            if (!gpuEligible) return;
+                            setGpuEnabled((current) => !current);
+                          }}
+                          className={[
+                            "relative inline-flex h-5 w-9 items-center rounded-full transition",
+                            gpuEligible && gpuEnabled ? "bg-slate-900" : "bg-slate-300",
+                            !gpuEligible ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                          ].join(" ")}
+                          aria-label="Toggle GPU acceleration"
+                        >
+                          <span
+                            className={[
+                              "inline-block h-4 w-4 transform rounded-full bg-white transition",
+                              gpuEligible && gpuEnabled ? "translate-x-4" : "translate-x-1",
+                            ].join(" ")}
+                          />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {gpuEligible
+                          ? `CUDA GPU detected${gpuDeviceName ? `: ${gpuDeviceName}` : "."}`
+                          : gpuStatusMessage || "No eligible CUDA GPU detected."}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 {activeModuleKey ? (
-                  <div className="mt-1 text-xs text-slate-500">
+                  <div className="mt-2 text-xs text-slate-500">
                     Context Module:{" "}
                     <span className="font-medium text-slate-700">
                       {contextModuleLabel || moduleKeyToLabel(activeModuleKey)}

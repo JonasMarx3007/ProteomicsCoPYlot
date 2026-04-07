@@ -695,6 +695,16 @@ export type OllamaModelsResponse = {
   warnings: string[];
 };
 
+export type OllamaModelManageResponse = {
+  ok: boolean;
+  action: "install" | "remove";
+  model: string;
+  detail: string;
+  models: string[];
+  selectedModel: string | null;
+  warnings: string[];
+};
+
 export type ModuleContextResponse = {
   moduleKey: string;
   moduleTitle: string;
