@@ -1,263 +1,66 @@
 from __future__ import annotations
 
 import inspect
-import json
+import re
 import time
 from typing import Any
 
-from app.schemas.annotation import AnnotationKind
+import pandas as pd
+
 from app.schemas.chat import ModuleContextResponse
 from app.services import ai_functions
-from app.services.ai_manual import manual_entry_for_module
-from app.services.comparison_tools import comparison_options
-from app.services.dataset_store import get_all_current_datasets, get_current_dataset
-from app.services.single_protein_tools import single_protein_options
+from app.services.dataset_store import get_all_current_datasets
+from app.services import table_functions as _table_functions
 
-_ALL_KINDS: list[AnnotationKind] = ["protein", "phospho", "phosprot"]
 _CONTEXT_CACHE_TTL_SECONDS = 30.0
 _CONTEXT_CACHE: dict[str, tuple[float, ModuleContextResponse]] = {}
 
-
-def _available_kinds() -> list[AnnotationKind]:
-    available: list[AnnotationKind] = []
-    for kind in _ALL_KINDS:
-        try:
-            current = get_current_dataset(kind)
-        except Exception:
-            current = None
-        if current is not None:
-            available.append(kind)
-    return available
+_MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
+    "qc.coverage": ["qc_coverage_plot"],
+}
 
 
-def _pick_kind(preferred_kinds: list[str]) -> AnnotationKind:
-    available = _available_kinds()
-    preferred = [str(kind).strip() for kind in preferred_kinds if str(kind).strip()]
-    for kind in preferred:
-        if kind in available:
-            return kind  # type: ignore[return-value]
-    if available:
-        return available[0]
-    return "protein"
+def _humanize_segment(segment: str) -> str:
+    text = str(segment or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return " ".join(word.capitalize() for word in text.split(" "))
 
 
-def _single_protein_defaults(kind: AnnotationKind, tab: str) -> tuple[str, list[str]]:
-    try:
-        options = single_protein_options(kind, tab=tab, identifier="workflow")
-    except Exception:
-        return "", []
-    proteins = [str(value) for value in options.get("proteins", []) if str(value).strip()]
-    conditions = [str(value) for value in options.get("conditions", []) if str(value).strip()]
-    protein = proteins[0] if proteins else ""
-    if len(conditions) >= 2:
-        return protein, [conditions[0], conditions[1]]
-    return protein, conditions
+def _module_title_from_key(module_key: str) -> str:
+    normalized = str(module_key or "").strip()
+    if not normalized:
+        return "Unknown Module"
+    parts = [_humanize_segment(part) for part in normalized.split(".") if str(part).strip()]
+    if not parts:
+        return "Unknown Module"
+    return " / ".join(parts)
 
 
-def _comparison_defaults(kind: AnnotationKind) -> dict[str, str]:
-    try:
-        options = comparison_options(kind)
-    except Exception:
-        return {}
-    samples = [str(value) for value in options.get("samples", []) if str(value).strip()]
-    conditions = [str(value) for value in options.get("conditions", []) if str(value).strip()]
-    defaults: dict[str, str] = {}
-    if len(samples) >= 2:
-        defaults["sample1"] = samples[0]
-        defaults["sample2"] = samples[1]
-        defaults["first"] = samples[0]
-        defaults["second"] = samples[1]
-    if len(conditions) >= 2:
-        defaults["condition1"] = conditions[0]
-        defaults["condition2"] = conditions[1]
-    return defaults
-
-
-def _resolve_ai_call_args(
-    func_name: str,
-    source_func: Any,
-    preferred_kinds: list[str],
-    argument_defaults: dict[str, Any],
-) -> dict[str, Any]:
-    signature = inspect.signature(source_func)
-    resolved: dict[str, Any] = {}
-    required: list[str] = []
-    for name, parameter in signature.parameters.items():
-        if name in argument_defaults:
-            resolved[name] = argument_defaults[name]
-            continue
-        if parameter.default is not inspect._empty:
-            resolved[name] = parameter.default
-            continue
-        required.append(name)
-
-    selected_kind = _pick_kind(preferred_kinds)
-    if "kind" in signature.parameters:
-        resolved["kind"] = resolved.get("kind", selected_kind)
-
-    if func_name in {"single_protein_boxplot_plot", "single_protein_lineplot_plot"}:
-        protein, conditions = _single_protein_defaults(selected_kind, tab="boxplot" if "boxplot" in func_name else "lineplot")
-        if "protein" in signature.parameters:
-            resolved["protein"] = resolved.get("protein", protein)
-        if "proteins" in signature.parameters:
-            resolved["proteins"] = resolved.get("proteins", [protein] if protein else [])
-        if "conditions" in signature.parameters:
-            resolved["conditions"] = resolved.get("conditions", conditions)
-    elif func_name == "single_protein_heatmap_plot":
-        heatmap_kind = _pick_kind(["phospho", *preferred_kinds])
-        resolved["kind"] = heatmap_kind
-        protein, conditions = _single_protein_defaults(heatmap_kind, tab="heatmap")
-        if "protein" in signature.parameters:
-            resolved["protein"] = resolved.get("protein", protein)
-        if "conditions" in signature.parameters:
-            resolved["conditions"] = resolved.get("conditions", conditions)
-    elif func_name in {"comparison_pearson_png", "comparison_venn_png"}:
-        defaults = _comparison_defaults(selected_kind)
-        for key, value in defaults.items():
-            if key in signature.parameters and key not in resolved:
-                resolved[key] = value
-
-    for name in required:
-        if name in resolved:
-            continue
-        if name == "kind":
-            resolved[name] = selected_kind
-            continue
-        if name == "protein":
-            resolved[name] = ""
-            continue
-        if name == "proteins":
-            resolved[name] = []
-            continue
-        if name == "conditions":
-            resolved[name] = []
-            continue
-        if name in {"sample1", "sample2", "condition1", "condition2", "first", "second"}:
-            resolved[name] = ""
-            continue
-        raise ValueError(f"Could not resolve required argument '{name}' for {func_name}.")
-
-    return resolved
-
-
-def _json_snippet(value: Any, max_chars: int = 12000) -> str:
-    try:
-        text = json.dumps(value, ensure_ascii=False)
-    except Exception:
-        text = str(value)
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars]} ... [truncated {len(text) - max_chars} chars]"
-
-
-def _compact_data_shape(data: Any) -> dict[str, Any]:
-    if isinstance(data, dict):
-        dtype = str(data.get("type", "dict"))
-        out: dict[str, Any] = {"type": dtype}
-        if dtype == "table":
-            out["rows"] = data.get("rows")
-            out["columns"] = data.get("columns")
-            out["truncated"] = data.get("truncated")
-            return out
-        if dtype in {"ndarray", "sequence", "binary"}:
-            for key in ("shape", "length", "byteLength", "truncated"):
-                if key in data:
-                    out[key] = data.get(key)
-            return out
-        out["keys"] = list(data.keys())[:20]
-        return out
-    if isinstance(data, list):
-        return {"type": "list", "length": len(data)}
-    return {"type": type(data).__name__}
-
-
-def _compact_function_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    function_name = str(payload.get("function", "")).strip()
-    summary = str(payload.get("summary", "")).strip()
-    data = payload.get("data")
-    return {
-        "function": function_name,
-        "summary": summary,
-        "dataShape": _compact_data_shape(data),
-    }
-
-
-def _domain_scope_for_module(module_key: str, preferred_kinds: list[str]) -> str:
-    key = str(module_key or "").strip().lower()
-    preferred = [str(item or "").strip().lower() for item in preferred_kinds if str(item or "").strip()]
-
-    if key.startswith("peptide.") or "peptide" in key:
-        return (
-            "Peptide pipeline scope: discuss peptide-level results only. "
-            "Do not switch to protein/phosphosite/phosphoprotein terminology unless explicitly requested."
-        )
-    if "phosprot" in key:
-        return (
-            "Phosphoprotein workflow scope: discuss phosphoprotein-level results only. "
-            "Do not describe phosphosite or peptide-level findings unless explicitly requested."
-        )
-    if key.startswith("phospho."):
-        return (
-            "Phospho workflow scope: discuss phosphorylation-site/phosphosite results only. "
-            "Do not switch to peptide-only or phosphoprotein-only wording unless explicitly requested."
-        )
-
-    if preferred and all(item == "phosprot" for item in preferred):
-        return (
-            "Phosphoprotein workflow scope: discuss phosphoprotein-level results only. "
-            "Do not describe phosphosite or peptide-level findings unless explicitly requested."
-        )
-    if preferred and all(item == "phospho" for item in preferred):
-        return (
-            "Phospho workflow scope: discuss phosphorylation-site/phosphosite results only. "
-            "Do not switch to peptide-only or phosphoprotein-only wording unless explicitly requested."
-        )
-    if preferred and all(item == "protein" for item in preferred):
-        return (
-            "Proteomics workflow scope: discuss protein-level results only. "
-            "Do not switch to phosphosite/peptide/phosphoprotein wording unless explicitly requested."
-        )
-
-    return (
-        "Proteomics workflow scope: discuss protein-level results by default. "
-        "Only use phosphosite/peptide/phosphoprotein wording when the active module clearly indicates it."
-    )
-
-
-def _context_prompt(
-    module_title: str,
-    module_key: str,
-    domain_scope: str,
-    manual_title: str | None,
-    manual_path: str | None,
-    manual_digest: str,
-    function_payloads: list[dict[str, Any]],
-    warnings: list[str],
-) -> tuple[str, str]:
-    lines: list[str] = []
-    lines.append(f"Current analysis module: {module_title}.")
-    lines.append("Domain context: proteomics mass-spectrometry analysis (not DNA/RNA sequencing).")
-    lines.append(domain_scope)
-    if manual_title or manual_path:
-        title = manual_title or "Module Manual"
-        path = manual_path or ""
-        lines.append(f"Manual reference: {title} {path}".strip())
-    if manual_digest:
-        lines.append(f"Manual guidance: {manual_digest}")
-
-    summary_items: list[str] = []
+def _context_prompt(module_title: str, function_payloads: list[dict[str, Any]]) -> tuple[str, str]:
+    function_names = [str(item.get("function", "")).strip() for item in function_payloads]
+    function_names = [name for name in function_names if name]
+    functions_line = ", ".join(function_names) if function_names else "none"
+    context_texts: list[str] = []
     for payload in function_payloads:
-        function_name = str(payload.get("function", "")).strip()
-        summary = str(payload.get("summary", "")).strip()
-        if summary:
-            summary_items.append(f"{function_name}: {summary}")
-            lines.append(f"{function_name} summary: {summary}")
-    if warnings:
-        lines.append("Warnings: " + " | ".join(str(item) for item in warnings))
-
-    context_summary = " ; ".join(summary_items) if summary_items else "No module AI-function payload available."
-    context_prompt = "\n".join(lines)
-    return context_prompt, context_summary
+        data = payload.get("data")
+        if isinstance(data, dict):
+            text = str(data.get("text", "")).strip()
+            if text:
+                context_texts.append(text)
+    lines = [
+        f"Current analysis module: {module_title}.",
+        "Domain context: proteomics mass-spectrometry analysis (not DNA/RNA sequencing).",
+        "General proteomics workflow scope.",
+        f"Active AI context functions: {functions_line}.",
+    ]
+    if context_texts:
+        lines.append("AI function context:")
+        lines.extend(context_texts)
+    return "\n".join(lines), " / ".join(function_names) if function_names else "no_functions"
 
 
 def _dataset_snapshot_token() -> str:
@@ -297,53 +100,116 @@ def _store_cached_context(cache_key: str, payload: ModuleContextResponse) -> Non
     _CONTEXT_CACHE[cache_key] = (time.time(), payload)
 
 
+def _infer_coverage_workflow(module_key: str) -> str:
+    key = str(module_key or "").strip().lower()
+    if key == "qc.coverage":
+        try:
+            datasets = get_all_current_datasets()
+        except Exception:
+            datasets = {}
+        candidates: list[tuple[str, int, int]] = []
+
+        def _condition_count(frame: pd.DataFrame) -> int:
+            if frame.empty or "Condition" not in frame.columns:
+                return 0
+            values = frame["Condition"].astype(str).str.strip()
+            values = values[values != ""]
+            return int(values.nunique())
+
+        for kind, workflow in (
+            ("protein", "protein"),
+            ("phospho", "phosphosite"),
+            ("phosprot", "phosphoprotein"),
+        ):
+            if datasets.get(kind) is None:
+                continue
+            try:
+                table = _table_functions.qc_coverage_table(kind, summary=False).copy()
+            except Exception:
+                continue
+            if table.empty or "Sample" not in table.columns:
+                continue
+            table["Sample"] = table["Sample"].astype(str)
+            mask = ~table["Sample"].str.lower().str.startswith("all sample")
+            filtered = table.loc[mask].copy()
+            sample_count = int(filtered["Sample"].nunique())
+            if sample_count <= 0:
+                continue
+            filtered["Condition"] = filtered["Sample"].map(
+                lambda sample: str(sample).split("_", 1)[0] if "_" in str(sample) else str(sample)
+            )
+            condition_count = _condition_count(filtered)
+            candidates.append((workflow, sample_count, condition_count))
+
+        if candidates:
+            candidates.sort(key=lambda item: (item[1], item[2]), reverse=True)
+            return candidates[0][0]
+        if datasets.get("peptide") is not None:
+            return "peptide"
+    if key.startswith("peptide.") or "peptide" in key:
+        return "peptide"
+    if "phosprot" in key or "phosphoprotein" in key:
+        return "phosphoprotein"
+    if key.startswith("phospho.") or "phosphosite" in key:
+        return "phosphosite"
+    return "protein"
+
+
+def _function_payload(function_name: str, module_key: str) -> tuple[dict[str, Any] | None, str | None]:
+    source_func = getattr(ai_functions, function_name, None)
+    if not callable(source_func):
+        return None, f"AI function '{function_name}' is not available."
+    kwargs: dict[str, Any] = {}
+    try:
+        signature = inspect.signature(source_func)
+        if "workflow" in signature.parameters:
+            kwargs["workflow"] = _infer_coverage_workflow(module_key)
+    except Exception:
+        kwargs = {}
+    try:
+        payload = source_func(**kwargs)
+    except Exception as exc:
+        return None, f"{function_name}: {exc}"
+    if isinstance(payload, dict):
+        return payload, None
+    return {"function": function_name, "data": payload}, None
+
+
 def build_module_context(module_key: str) -> ModuleContextResponse:
     cache_key = _context_cache_key(module_key)
     cached = _get_cached_context(cache_key)
     if cached is not None:
         return cached
 
-    entry = manual_entry_for_module(module_key)
+    normalized_key = str(module_key or "").strip() or "unknown"
+    module_title = _module_title_from_key(normalized_key)
+    function_names = [
+        "general_proteomics_context",
+        *_MODULE_SPECIFIC_AI_FUNCTIONS.get(normalized_key, []),
+    ]
+
     warnings: list[str] = []
     function_payloads: list[dict[str, Any]] = []
-
-    for function_name in entry.ai_functions:
-        source_func = getattr(ai_functions, function_name, None)
-        if not callable(source_func):
-            warnings.append(f"AI function '{function_name}' is not available.")
+    for function_name in function_names:
+        payload, warning = _function_payload(function_name, normalized_key)
+        if warning:
+            warnings.append(warning)
             continue
-        try:
-            kwargs = _resolve_ai_call_args(
-                function_name,
-                source_func,
-                preferred_kinds=entry.preferred_kinds,
-                argument_defaults=entry.argument_defaults,
-            )
-            payload = source_func(**kwargs)
-            function_payloads.append(payload if isinstance(payload, dict) else {"function": function_name, "data": payload})
-        except Exception as exc:
-            warnings.append(f"{function_name}: {exc}")
+        if payload is not None:
+            function_payloads.append(payload)
 
-    domain_scope = _domain_scope_for_module(entry.module_key, entry.preferred_kinds)
     context_prompt, context_summary = _context_prompt(
-        module_title=entry.module_title,
-        module_key=entry.module_key,
-        domain_scope=domain_scope,
-        manual_title=entry.manual_title,
-        manual_path=entry.manual_path,
-        manual_digest=entry.manual_digest,
+        module_title=module_title,
         function_payloads=function_payloads,
-        warnings=warnings,
     )
-    compact_payloads = [_compact_function_payload(payload) for payload in function_payloads]
     response = ModuleContextResponse(
-        moduleKey=entry.module_key,
-        moduleTitle=entry.module_title,
-        manualTitle=entry.manual_title,
-        manualPath=entry.manual_path,
+        moduleKey=normalized_key,
+        moduleTitle=module_title,
+        manualTitle=None,
+        manualPath=None,
         contextPrompt=context_prompt,
         contextSummary=context_summary,
-        contextData={"functions": compact_payloads},
+        contextData={"functions": function_payloads},
         warnings=warnings,
     )
     _store_cached_context(cache_key, response)

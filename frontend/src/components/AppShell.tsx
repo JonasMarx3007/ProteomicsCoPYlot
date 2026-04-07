@@ -27,6 +27,8 @@ type AppShellProps = {
 type AssistantSegmentKind = "thinking" | "answer";
 
 const CHAT_READY_MESSAGE = "Local AI chat is ready. Ask me about your data, plots, or next analysis steps.";
+const MAX_MODEL_HISTORY_MESSAGES = 8;
+const CONTEXT_MESSAGE_PREFIX = "[CONTEXT]";
 
 function moduleKeyToLabel(value: string): string {
   const key = String(value || "").trim();
@@ -43,6 +45,52 @@ function moduleKeyToLabel(value: string): string {
         .replace(/\b\w/g, (match) => match.toUpperCase())
     )
     .join(" / ");
+}
+
+function isGeneralProteomicsModule(moduleKey: string): boolean {
+  const key = String(moduleKey || "").trim().toLowerCase();
+  return key.startsWith("data.") || key.startsWith("analysis.") || key.startsWith("summary.");
+}
+
+const MODULES_WITH_SPECIFIC_CONTEXT = new Set(["qc.coverage"]);
+
+function contextFunctionNames(context: ModuleContextResponse | null | undefined): string[] {
+  if (!context || !context.contextData || typeof context.contextData !== "object") return [];
+  const raw = (context.contextData as Record<string, unknown>).functions;
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const value = (item as Record<string, unknown>).function;
+    const name = String(value ?? "").trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+function contextModuleLabelForUi(
+  moduleKey: string,
+  resolvedModuleLabel: string,
+  context?: ModuleContextResponse | null
+): string {
+  const key = String(moduleKey || "").trim().toLowerCase();
+  const functionNames = contextFunctionNames(context);
+  const hasGeneralOnly =
+    functionNames.length > 0 &&
+    functionNames.every((name) => name === "general_proteomics_context");
+
+  if (hasGeneralOnly) {
+    return "General Proteomics";
+  }
+  if (functionNames.length === 0 && !MODULES_WITH_SPECIFIC_CONTEXT.has(key)) {
+    return "General Proteomics";
+  }
+  if (isGeneralProteomicsModule(moduleKey)) {
+    return "General Proteomics";
+  }
+  const cleaned = String(resolvedModuleLabel || "").trim();
+  if (cleaned) return cleaned;
+  return moduleKeyToLabel(moduleKey);
 }
 
 function parseAssistantSegments(content: string): Array<{ kind: AssistantSegmentKind; text: string }> {
@@ -73,6 +121,28 @@ function parseAssistantSegments(content: string): Array<{ kind: AssistantSegment
     return [{ kind: "answer", text }];
   }
   return segments;
+}
+
+function stripThinkingBlocks(content: string): string {
+  const text = String(content ?? "");
+  if (!text) return "";
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeMessageForModel(message: ChatMessage): ChatMessage {
+  const role = message.role;
+  const base = String(message.content ?? "");
+  if (role === "assistant") {
+    return { role, content: stripThinkingBlocks(base) };
+  }
+  return { role, content: base.trim() };
+}
+
+function isContextUiMessage(content: string): boolean {
+  return String(content ?? "").trimStart().startsWith(CONTEXT_MESSAGE_PREFIX);
 }
 
 export default function AppShell({
@@ -113,6 +183,7 @@ export default function AppShell({
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const contextCacheRef = useRef<Record<string, ModuleContextResponse>>({});
   const contextPendingRef = useRef<Record<string, Promise<ModuleContextResponse | null>>>({});
+  const contextAnnouncementRef = useRef<Record<string, string>>({});
   const chatOpen = aiEnabled && rightPanel === "chat";
   const moduleKey = activeModuleKey.trim();
 
@@ -122,7 +193,8 @@ export default function AppShell({
     setChatError(null);
     contextCacheRef.current = {};
     contextPendingRef.current = {};
-    setContextModuleLabel(moduleKey ? moduleKeyToLabel(moduleKey) : "");
+    contextAnnouncementRef.current = {};
+    setContextModuleLabel(moduleKey ? contextModuleLabelForUi(moduleKey, "", null) : "");
   }
 
   function applyChatModelList(
@@ -292,6 +364,24 @@ export default function AppShell({
     return nextPromise;
   }
 
+  function pushContextMessage(requestedModuleKey: string, context: ModuleContextResponse | null) {
+    if (!context) return;
+    const contextText = String(context.contextPrompt || "").trim();
+    if (!contextText) return;
+    const moduleLabel = contextModuleLabelForUi(requestedModuleKey, context.moduleTitle || "", context);
+    const messageContent = `${CONTEXT_MESSAGE_PREFIX} ${moduleLabel}\n${contextText}`;
+    const signature = `${requestedModuleKey}::${messageContent}`;
+    if (contextAnnouncementRef.current[requestedModuleKey] === signature) return;
+    contextAnnouncementRef.current[requestedModuleKey] = signature;
+    setChatMessages((current) => {
+      const last = current[current.length - 1];
+      if (last?.role === "assistant" && String(last.content || "").trim() === messageContent) {
+        return current;
+      }
+      return [...current, { role: "assistant", content: messageContent }];
+    });
+  }
+
   useEffect(() => {
     if (!aiEnabled || !moduleKey) {
       setContextModuleLabel("");
@@ -300,11 +390,13 @@ export default function AppShell({
 
     let cancelled = false;
     const cached = contextCacheRef.current[moduleKey];
-    setContextModuleLabel(cached?.moduleTitle || moduleKeyToLabel(moduleKey));
+    setContextModuleLabel(contextModuleLabelForUi(moduleKey, cached?.moduleTitle || "", cached));
+    pushContextMessage(moduleKey, cached);
 
     void fetchModuleContext(moduleKey).then((context) => {
       if (cancelled || !context) return;
-      setContextModuleLabel(context.moduleTitle || moduleKeyToLabel(moduleKey));
+      setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
+      pushContextMessage(moduleKey, context);
     });
 
     return () => {
@@ -316,10 +408,12 @@ export default function AppShell({
     if (!aiEnabled) return undefined;
     return subscribeDatasetStateChanged(() => {
       contextCacheRef.current = {};
+      contextAnnouncementRef.current = {};
       if (!moduleKey) return;
       void fetchModuleContext(moduleKey, true).then((context) => {
         if (!context) return;
-        setContextModuleLabel(context.moduleTitle || moduleKeyToLabel(moduleKey));
+        setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
+        pushContextMessage(moduleKey, context);
       });
     });
   }, [aiEnabled, moduleKey]);
@@ -336,6 +430,12 @@ export default function AppShell({
     const nextUserMessage: ChatMessage = { role: "user", content: message };
     const history = [...chatMessages, nextUserMessage];
     setChatMessages([...history, { role: "assistant", content: "" }]);
+    const historyForModelBase = history
+      .map(normalizeMessageForModel)
+      .filter(
+        (item) => String(item.content ?? "").trim().length > 0 && !isContextUiMessage(String(item.content ?? ""))
+      )
+      .slice(-MAX_MODEL_HISTORY_MESSAGES);
     setChatInput("");
     setChatError(null);
     setChatLoading(true);
@@ -360,8 +460,8 @@ export default function AppShell({
       }
 
       const historyForModel: ChatMessage[] = contextPrompt
-        ? [{ role: "system", content: contextPrompt }, ...history]
-        : history;
+        ? [{ role: "system", content: contextPrompt }, ...historyForModelBase]
+        : historyForModelBase;
 
       const response = await streamOllamaChatMessage(
         {
@@ -555,7 +655,8 @@ export default function AppShell({
                   <div className="mt-2 text-xs text-slate-500">
                     Context Module:{" "}
                     <span className="font-medium text-slate-700">
-                      {contextModuleLabel || moduleKeyToLabel(activeModuleKey)}
+                      {contextModuleLabel ||
+                        contextModuleLabelForUi(activeModuleKey, "", contextCacheRef.current[activeModuleKey.trim()])}
                     </span>
                   </div>
                 ) : null}
