@@ -5,20 +5,20 @@ from typing import Any
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
+from app.services.condition_palette_store import build_condition_color_map
 from app.services import plot_images as _plot_images
 from app.services import table_functions as _table_functions
-from app.services.data_tools import get_condition_palette_config
 from app.services.peptide_tools import _extract_id_or_number as _extract_peptide_id
 from app.services.peptide_tools import get_peptide_frame
 
-_GENERAL_PROTEOMICS_CONTEXT_TEXT = (
+_GENERAL_PROTEOMICS_CONTEXT_PREFIX = (
     "This application analyzes proteomics data. "
     "Treat this as mass-spectrometry proteomics analysis, not RNA-seq or transcriptomics. "
     "Focus on data analysis and statistical interpretation. "
-    "Be workflow-sensitive: use protein terms for protein workflows, phosphosite terms for phosphosite workflows, "
-    "phosphoprotein terms for phosphoprotein workflows, and peptide terms for peptide workflows. "
-    "Unless explicitly stated otherwise, assume quantitative values are already collapsed to protein-level values. "
-    "Do not discuss instrumentation or acquisition settings unless the user explicitly asks for them."
+    "Do not discuss instrumentation or acquisition settings unless the user explicitly asks for them. "
+    "When describing plot colors, use color names rather than hex values. "
+    "Avoid ambiguous claims; be explicit and precise. "
+    "Use code-backed calculations for requested math, and do not run extra mathematical operations unless the user explicitly asks for them. "
 )
 
 _WORKFLOW_ENTITY_LABELS: dict[str, tuple[str, str]] = {
@@ -58,6 +58,10 @@ def _normalize_coverage_workflow(workflow: str) -> str:
     if "phosprot" in key or "phosphoprotein" in key:
         return "phosphoprotein"
     return "protein"
+
+
+def _workflow_entity_labels(workflow: str) -> tuple[str, str]:
+    return _WORKFLOW_ENTITY_LABELS.get(workflow, _WORKFLOW_ENTITY_LABELS["protein"])
 
 
 def _workflow_kind(workflow: str) -> AnnotationKind:
@@ -144,13 +148,20 @@ def _coverage_rows_from_peptide() -> tuple[pd.DataFrame, int | None]:
     return summary_df[["Sample", "Condition", "Count"]], int(pivot.shape[0])
 
 
-def _condition_palette_for_workflow(workflow: str) -> dict[str, str]:
+def _condition_palette_for_workflow(workflow: str, conditions: list[str]) -> dict[str, str]:
     kind = _workflow_kind(workflow)
     if workflow == "peptide":
         kind = "protein"
     try:
-        response = get_condition_palette_config(kind)
-        return {str(key): str(value) for key, value in response.palette.items()}
+        ordered_conditions: list[str] = []
+        seen: set[str] = set()
+        for condition in conditions:
+            name = str(condition or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            ordered_conditions.append(name)
+        return build_condition_color_map(kind, ordered_conditions)
     except Exception:
         return {}
 
@@ -203,6 +214,11 @@ def _coverage_text_from_rows(
     lines.append(
         "coverage_visual|bars=detected_features_per_sample|bar_color=condition"
     )
+    lines.append(
+        "coverage_reference_line|color=red|value="
+        f"{total_features if total_features is not None else 'unknown'}|"
+        f"description=total_unique_{entity_plural}_over_all_samples"
+    )
 
     for condition in conditions:
         subset = data[data["Condition"] == condition].copy()
@@ -227,8 +243,19 @@ def _coverage_text_from_rows(
     return "\n".join(lines)
 
 
-def general_proteomics_context() -> dict[str, Any]:
-    return _text_payload("general_proteomics_context", _GENERAL_PROTEOMICS_CONTEXT_TEXT)
+def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
+    text = (
+        f"{_GENERAL_PROTEOMICS_CONTEXT_PREFIX}"
+        f"Current workflow scope is '{workflow_key}'. "
+        f"Use {entity_plural} terminology for this context. "
+        "Do not use generic terms like 'features'; always use the concrete workflow entity name "
+        f"({entity_singular}/{entity_plural}). "
+        "Do not mix proteins, phosphosites, phosphoproteins, and peptides unless the user explicitly asks for cross-level interpretation. "
+        "If workflow scope is unclear from context, ask one focused follow-up question before making level-specific claims."
+    )
+    return _text_payload("general_proteomics_context", text)
 
 
 def qc_coverage_plot(workflow: str = "protein") -> dict[str, Any]:
@@ -238,7 +265,8 @@ def qc_coverage_plot(workflow: str = "protein") -> dict[str, Any]:
             rows, total_features = _coverage_rows_from_peptide()
         else:
             rows, total_features = _coverage_rows_from_wide(_workflow_kind(workflow_key))
-        palette = _condition_palette_for_workflow(workflow_key)
+        conditions = rows["Condition"].astype(str).tolist() if "Condition" in rows.columns else []
+        palette = _condition_palette_for_workflow(workflow_key, conditions)
         text = _coverage_text_from_rows(
             rows,
             workflow=workflow_key,

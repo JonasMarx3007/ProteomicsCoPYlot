@@ -173,6 +173,7 @@ export default function App() {
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
+  const [qcCoverageWorkflowScope, setQcCoverageWorkflowScope] = useState<string>("");
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const showDatasetSwitcher = availablePackages.length >= 2;
@@ -212,6 +213,11 @@ export default function App() {
       setRightPanel("none");
     }
   }, [rightPanel, IS_AI_MODE]);
+
+  useEffect(() => {
+    if (activeSection === "qc" && activeQcTab === "coverage") return;
+    setQcCoverageWorkflowScope("");
+  }, [activeSection, activeQcTab]);
 
   const visibleDataTabs = useMemo(
     () => (IS_VIEWER_MODE ? viewerDataTabs : dataTabs),
@@ -377,6 +383,31 @@ export default function App() {
     activeSummaryTab,
     activeExternalTab,
   ]);
+
+  const activeWorkflowScope = useMemo(() => {
+    if (activeSection === "qc" && activeQcTab === "coverage") {
+      const scoped = qcCoverageWorkflowScope.trim().toLowerCase();
+      if (scoped) return scoped;
+    }
+    if (activeSection === "phospho") {
+      return activePhosphoTab === "phosprotRegulation" ? "phosphoprotein" : "phosphosite";
+    }
+    if (activeSection === "peptide") {
+      return "peptide";
+    }
+    if (activeSection === "singleProtein") {
+      return "protein";
+    }
+
+    const hasProtein = Boolean(datasets?.protein);
+    const hasPhospho = Boolean(datasets?.phospho);
+    const hasPhosprot = Boolean(datasets?.phosprot);
+    if (hasProtein && !hasPhospho && !hasPhosprot) return "protein";
+    if (!hasProtein && hasPhospho && !hasPhosprot) return "phosphosite";
+    if (!hasProtein && !hasPhospho && hasPhosprot) return "phosphoprotein";
+
+    return "";
+  }, [activeSection, activeQcTab, activePhosphoTab, datasets, qcCoverageWorkflowScope]);
 
   const selectorBar = showTopSelector ? (
     <div className="border-b border-slate-200 bg-white px-4 py-2 sm:px-6">
@@ -591,7 +622,7 @@ export default function App() {
 
     if (activeSection === "qc") {
       if (activeQcTab === "coverage") {
-        return <CoveragePlotPage />;
+        return <CoveragePlotPage onWorkflowScopeChange={setQcCoverageWorkflowScope} />;
       }
 
       if (activeQcTab === "histogram") {
@@ -780,6 +811,7 @@ export default function App() {
       sections={visibleSections}
       topBar={combinedTopBar}
       activeModuleKey={activeModuleKey}
+      activeWorkflowScope={activeWorkflowScope}
       aiEnabled={IS_AI_MODE}
       rightPanel={rightPanel}
       onRightPanelChange={setRightPanel}

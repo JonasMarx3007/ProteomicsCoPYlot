@@ -6,6 +6,7 @@ __pycache__/
 
 .env
 .env.*
+dev_ai.local.env
 
 node_modules/
 dist/

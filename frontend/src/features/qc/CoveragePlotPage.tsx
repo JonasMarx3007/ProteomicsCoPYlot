@@ -1,6 +1,9 @@
-﻿import QCPipelinePage from "./QCPipelinePage";
+import QCPipelinePage from "./QCPipelinePage";
 
-export default function CoveragePlotPage() {
-  return <QCPipelinePage activeTab="coverage" />;
+type Props = {
+  onWorkflowScopeChange?: (workflow: string) => void;
+};
+
+export default function CoveragePlotPage({ onWorkflowScopeChange }: Props) {
+  return <QCPipelinePage activeTab="coverage" onWorkflowScopeChange={onWorkflowScopeChange} />;
 }
-

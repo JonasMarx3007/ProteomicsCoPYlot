@@ -1,4 +1,5 @@
 import type {
+  ChatProvider,
   ChatMessage,
   AnnotationGenerateRequest,
   AnalysisVolcanoRequest,
@@ -1000,13 +1001,101 @@ export async function streamOllamaChatMessage(
   return { model, content };
 }
 
-export async function getAiModuleContext(moduleKey: string): Promise<ModuleContextResponse> {
+export async function streamChatMessage(
+  payload: {
+    message: string;
+    messages: ChatMessage[];
+    provider?: ChatProvider;
+    model?: string;
+    gpuEnabled?: boolean;
+    apiKey?: string;
+    temperature?: number;
+    maxTokens?: number;
+    ollamaUrl?: string;
+  },
+  onChunk: (chunk: string) => void
+): Promise<{ provider: ChatProvider; model: string; content: string }> {
+  const provider: ChatProvider = payload.provider ?? "ollama";
+  const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: payload.message,
+      messages: payload.messages,
+      provider,
+      model: payload.model,
+      gpuEnabled: payload.gpuEnabled ?? false,
+      apiKey: payload.apiKey,
+      temperature: payload.temperature,
+      maxTokens: payload.maxTokens,
+      ollamaUrl: payload.ollamaUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      throw new Error(parsed?.detail || "Failed to run chat stream");
+    } catch {
+      throw new Error(text || "Failed to run chat stream");
+    }
+  }
+
+  const resolvedProvider = (response.headers.get("X-Chat-Provider")?.trim() ||
+    provider) as ChatProvider;
+  const model =
+    response.headers.get("X-Chat-Model")?.trim() ||
+    payload.model ||
+    (resolvedProvider === "ollama"
+      ? "phi3:mini"
+      : resolvedProvider === "openai"
+        ? "gpt-4o-mini"
+        : resolvedProvider === "anthropic"
+          ? "claude-3-5-sonnet-latest"
+          : "gemini-2.0-flash");
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const fallbackText = await response.text();
+    if (fallbackText) onChunk(fallbackText);
+    return { provider: resolvedProvider, model, content: fallbackText };
+  }
+
+  const decoder = new TextDecoder();
+  let content = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    if (!chunk) continue;
+    content += chunk;
+    onChunk(chunk);
+  }
+  const tail = decoder.decode();
+  if (tail) {
+    content += tail;
+    onChunk(tail);
+  }
+
+  return { provider: resolvedProvider, model, content };
+}
+
+export async function getAiModuleContext(
+  moduleKey: string,
+  workflow?: string
+): Promise<ModuleContextResponse> {
+  const workflowValue = String(workflow ?? "").trim();
   const response = await fetch(`${API_BASE}/api/chat/module-context`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ moduleKey }),
+    body: JSON.stringify({
+      moduleKey,
+      workflow: workflowValue || undefined,
+    }),
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1030,8 +1119,11 @@ export async function getAiModuleContext(moduleKey: string): Promise<ModuleConte
   };
 }
 
-export async function getOllamaGpuStatus(): Promise<OllamaGpuStatusResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/gpu-status`);
+export async function getOllamaGpuStatus(endpoint?: string): Promise<OllamaGpuStatusResponse> {
+  const url = endpoint?.trim()
+    ? `${API_BASE}/api/chat/gpu-status?endpoint=${encodeURIComponent(endpoint.trim())}`
+    : `${API_BASE}/api/chat/gpu-status`;
+  const response = await fetch(url);
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1046,11 +1138,21 @@ export async function getOllamaGpuStatus(): Promise<OllamaGpuStatusResponse> {
     provider: raw.provider == null ? null : String(raw.provider),
     deviceName: raw.deviceName == null ? null : String(raw.deviceName),
     reason: raw.reason == null ? null : String(raw.reason),
+    remoteEndpoint: Boolean(raw.remoteEndpoint),
+    acceleration:
+      String(raw.acceleration ?? "").toLowerCase() === "gpu"
+        ? "gpu"
+        : String(raw.acceleration ?? "").toLowerCase() === "cpu"
+          ? "cpu"
+          : "unknown",
   };
 }
 
-export async function getOllamaModels(): Promise<OllamaModelsResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/models`);
+export async function getOllamaModels(endpoint?: string): Promise<OllamaModelsResponse> {
+  const url = endpoint?.trim()
+    ? `${API_BASE}/api/chat/models?endpoint=${encodeURIComponent(endpoint.trim())}`
+    : `${API_BASE}/api/chat/models`;
+  const response = await fetch(url);
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1066,13 +1168,13 @@ export async function getOllamaModels(): Promise<OllamaModelsResponse> {
   };
 }
 
-export async function installOllamaModel(model: string): Promise<OllamaModelManageResponse> {
+export async function installOllamaModel(model: string, endpoint?: string): Promise<OllamaModelManageResponse> {
   const response = await fetch(`${API_BASE}/api/chat/models/install`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, endpoint: endpoint?.trim() || null }),
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1093,13 +1195,13 @@ export async function installOllamaModel(model: string): Promise<OllamaModelMana
   };
 }
 
-export async function removeOllamaModel(model: string): Promise<OllamaModelManageResponse> {
+export async function removeOllamaModel(model: string, endpoint?: string): Promise<OllamaModelManageResponse> {
   const response = await fetch(`${API_BASE}/api/chat/models/remove`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, endpoint: endpoint?.trim() || null }),
   });
   const data = await parseJson(response);
   if (!response.ok) {

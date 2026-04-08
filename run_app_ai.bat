@@ -3,10 +3,32 @@ setlocal EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=5173"
-set "CHAT_MODEL=%~1"
+set "CHAT_MODEL="
+set "DEV_MODE=0"
+set "DEV_OLLAMA_ENDPOINT="
 
-if defined CHAT_MODEL (
-  if "!CHAT_MODEL:~0,2!"=="--" set "CHAT_MODEL=!CHAT_MODEL:~2!"
+:parse_args
+if "%~1"=="" goto :args_done
+set "ARG=%~1"
+if /I "!ARG!"=="--dev" (
+  set "DEV_MODE=1"
+) else (
+  if "!ARG:~0,2!"=="--" set "ARG=!ARG:~2!"
+  if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
+)
+shift
+goto :parse_args
+
+:args_done
+if "%DEV_MODE%"=="1" (
+  set "DEV_CONFIG=%ROOT%dev_ai.local.env"
+  if exist "!DEV_CONFIG!" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
+      if /I "%%~A"=="COPYLOT_DEV_OLLAMA_ENDPOINT" set "DEV_OLLAMA_ENDPOINT=%%~B"
+    )
+  ) else (
+    echo Warning: --dev requested but dev config file not found: "!DEV_CONFIG!"
+  )
 )
 
 if defined CHAT_MODEL (
@@ -55,6 +77,10 @@ if "%BACKEND_READY%"=="0" (
   echo Warning: backend on port %BACKEND_PORT% is not ready yet.
 )
 
-start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+if "%DEV_MODE%"=="1" (
+  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+) else (
+  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+)
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"

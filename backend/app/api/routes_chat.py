@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas.chat import (
@@ -16,6 +16,7 @@ from app.schemas.chat import (
 from app.services.ai_context_tools import build_module_context
 from app.services.chat_tools import (
     ai_mode_enabled,
+    chat_stream,
     ollama_chat,
     ollama_chat_stream,
     ollama_gpu_status,
@@ -59,12 +60,33 @@ async def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingRespo
     )
 
 
+@router.post("/stream")
+async def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    try:
+        provider, model, chunk_stream = chat_stream(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start chat stream: {exc}") from exc
+    return StreamingResponse(
+        chunk_stream,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Chat-Provider": provider,
+            "X-Chat-Model": model,
+        },
+    )
+
+
 @router.post("/module-context", response_model=ModuleContextResponse)
 async def module_context_route(payload: ModuleContextRequest) -> ModuleContextResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return build_module_context(payload.moduleKey)
+        return build_module_context(payload.moduleKey, workflow_hint=payload.workflow)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -72,21 +94,21 @@ async def module_context_route(payload: ModuleContextRequest) -> ModuleContextRe
 
 
 @router.get("/gpu-status", response_model=OllamaGpuStatusResponse)
-async def ollama_gpu_status_route() -> OllamaGpuStatusResponse:
+async def ollama_gpu_status_route(endpoint: str | None = Query(default=None)) -> OllamaGpuStatusResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return ollama_gpu_status()
+        return ollama_gpu_status(endpoint_override=endpoint)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to detect GPU status: {exc}") from exc
 
 
 @router.get("/models", response_model=OllamaModelsResponse)
-async def ollama_models_route() -> OllamaModelsResponse:
+async def ollama_models_route(endpoint: str | None = Query(default=None)) -> OllamaModelsResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return ollama_models()
+        return ollama_models(endpoint_override=endpoint)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load Ollama models: {exc}") from exc
 
@@ -96,7 +118,7 @@ async def ollama_models_install_route(payload: OllamaModelManageRequest) -> Olla
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return ollama_install_model(payload.model)
+        return ollama_install_model(payload.model, endpoint_override=payload.endpoint)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -108,7 +130,7 @@ async def ollama_models_remove_route(payload: OllamaModelManageRequest) -> Ollam
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return ollama_remove_model(payload.model)
+        return ollama_remove_model(payload.model, endpoint_override=payload.endpoint)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

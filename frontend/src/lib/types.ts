@@ -663,6 +663,7 @@ export type PhosphoTab =
   | "phosprotRegulation";
 
 export type ChatRole = "system" | "user" | "assistant";
+export type ChatProvider = "ollama" | "openai" | "anthropic" | "gemini";
 
 export type ChatMessage = {
   role: ChatRole;
@@ -672,8 +673,13 @@ export type ChatMessage = {
 export type OllamaChatRequest = {
   messages: ChatMessage[];
   message: string;
+  provider?: ChatProvider;
   model?: string;
   gpuEnabled?: boolean;
+  apiKey?: string;
+  temperature?: number;
+  maxTokens?: number;
+  ollamaUrl?: string;
 };
 
 export type OllamaChatResponse = {
@@ -687,6 +693,8 @@ export type OllamaGpuStatusResponse = {
   provider: string | null;
   deviceName: string | null;
   reason: string | null;
+  remoteEndpoint?: boolean;
+  acceleration?: "gpu" | "cpu" | "unknown";
 };
 
 export type OllamaModelsResponse = {
