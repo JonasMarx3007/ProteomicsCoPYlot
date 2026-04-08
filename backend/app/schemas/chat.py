@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 ChatRole = Literal["system", "user", "assistant"]
+ChatProvider = Literal["ollama", "openai", "anthropic", "gemini"]
 
 
 class ChatMessage(BaseModel):
@@ -16,8 +17,13 @@ class ChatMessage(BaseModel):
 class OllamaChatRequest(BaseModel):
     message: str = Field(default="", min_length=1)
     messages: list[ChatMessage] = Field(default_factory=list)
+    provider: ChatProvider = "ollama"
     model: str | None = Field(default=None, min_length=1)
     gpuEnabled: bool | None = None
+    apiKey: str | None = Field(default=None, min_length=1)
+    temperature: float | None = None
+    maxTokens: int | None = None
+    ollamaUrl: str | None = Field(default=None, min_length=1)
 
 
 class OllamaChatResponse(BaseModel):
@@ -31,6 +37,8 @@ class OllamaGpuStatusResponse(BaseModel):
     provider: str | None = None
     deviceName: str | None = None
     reason: str | None = None
+    remoteEndpoint: bool = False
+    acceleration: Literal["gpu", "cpu", "unknown"] = "unknown"
 
 
 class OllamaModelsResponse(BaseModel):
@@ -41,6 +49,7 @@ class OllamaModelsResponse(BaseModel):
 
 class OllamaModelManageRequest(BaseModel):
     model: str = Field(default="", min_length=1)
+    endpoint: str | None = Field(default=None, min_length=1)
 
 
 class OllamaModelManageResponse(BaseModel):
@@ -55,6 +64,7 @@ class OllamaModelManageResponse(BaseModel):
 
 class ModuleContextRequest(BaseModel):
     moduleKey: str = Field(default="", min_length=1)
+    workflow: str | None = Field(default=None, min_length=1)
 
 
 class ModuleContextResponse(BaseModel):

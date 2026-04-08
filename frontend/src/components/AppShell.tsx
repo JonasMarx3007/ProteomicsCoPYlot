@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
 import type { SidebarSection } from "../lib/types";
-import type { ChatMessage, ModuleContextResponse } from "../lib/types";
+import type { ChatMessage, ChatProvider, ModuleContextResponse } from "../lib/types";
 import {
   getAiModuleContext,
   getOllamaGpuStatus,
   getOllamaModels,
   installOllamaModel,
   removeOllamaModel,
-  streamOllamaChatMessage,
+  streamChatMessage,
 } from "../lib/api";
 import { subscribeDatasetStateChanged } from "../lib/datasetEvents";
 
@@ -18,6 +18,7 @@ type AppShellProps = {
   sections?: SidebarSection[];
   topBar?: ReactNode;
   activeModuleKey?: string;
+  activeWorkflowScope?: string;
   aiEnabled?: boolean;
   rightPanel?: "none" | "list" | "chat";
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
@@ -26,9 +27,24 @@ type AppShellProps = {
 
 type AssistantSegmentKind = "thinking" | "answer";
 
-const CHAT_READY_MESSAGE = "Local AI chat is ready. Ask me about your data, plots, or next analysis steps.";
+const CHAT_READY_MESSAGE = "AI chat is ready. Ask me about your data, plots, or next analysis steps.";
 const MAX_MODEL_HISTORY_MESSAGES = 8;
 const CONTEXT_MESSAGE_PREFIX = "[CONTEXT]";
+const AI_DEV_MODE = (() => {
+  const raw = String(import.meta.env.VITE_AI_DEV_MODE ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
+const DEFAULT_DEV_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
+const API_PROVIDER_DEFAULT_MODELS: Record<Exclude<ChatProvider, "ollama">, string> = {
+  openai: "gpt-4o-mini",
+  anthropic: "claude-3-5-sonnet-latest",
+  gemini: "gemini-2.0-flash",
+};
+const API_PROVIDER_LABELS: Record<Exclude<ChatProvider, "ollama">, string> = {
+  openai: "OpenAI (ChatGPT)",
+  anthropic: "Anthropic (Claude)",
+  gemini: "Google (Gemini)",
+};
 
 function moduleKeyToLabel(value: string): string {
   const key = String(value || "").trim();
@@ -93,6 +109,13 @@ function contextModuleLabelForUi(
   return moduleKeyToLabel(moduleKey);
 }
 
+function contextRequestKey(moduleKey: string, workflowScope: string): string {
+  const moduleValue = String(moduleKey || "").trim();
+  const workflowValue = String(workflowScope || "").trim().toLowerCase();
+  if (!moduleValue) return workflowValue ? `workflow:${workflowValue}` : "";
+  return workflowValue ? `${moduleValue}::${workflowValue}` : moduleValue;
+}
+
 function parseAssistantSegments(content: string): Array<{ kind: AssistantSegmentKind; text: string }> {
   const text = String(content ?? "");
   if (!text) return [];
@@ -151,6 +174,7 @@ export default function AppShell({
   sections,
   topBar,
   activeModuleKey = "",
+  activeWorkflowScope = "",
   aiEnabled = false,
   rightPanel = "none",
   onRightPanelChange,
@@ -166,7 +190,14 @@ export default function AppShell({
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [chatProvider, setChatProvider] = useState<ChatProvider>("ollama");
   const [chatModel, setChatModel] = useState("");
+  const [chatOllamaEndpoint, setChatOllamaEndpoint] = useState(DEFAULT_DEV_OLLAMA_ENDPOINT);
+  const [chatOllamaEndpointActive, setChatOllamaEndpointActive] = useState(DEFAULT_DEV_OLLAMA_ENDPOINT);
+  const [chatRemoteModel, setChatRemoteModel] = useState(API_PROVIDER_DEFAULT_MODELS.openai);
+  const [chatApiKey, setChatApiKey] = useState("");
+  const [chatApiTemperature, setChatApiTemperature] = useState("0.2");
+  const [chatApiMaxTokens, setChatApiMaxTokens] = useState("512");
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
   const [chatModelError, setChatModelError] = useState<string | null>(null);
@@ -180,12 +211,18 @@ export default function AppShell({
   const [gpuEnabled, setGpuEnabled] = useState(false);
   const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
   const [gpuStatusMessage, setGpuStatusMessage] = useState<string | null>(null);
+  const [gpuRemoteEndpoint, setGpuRemoteEndpoint] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatOllamaEndpointAppliedRef = useRef(DEFAULT_DEV_OLLAMA_ENDPOINT);
   const contextCacheRef = useRef<Record<string, ModuleContextResponse>>({});
   const contextPendingRef = useRef<Record<string, Promise<ModuleContextResponse | null>>>({});
   const contextAnnouncementRef = useRef<Record<string, string>>({});
   const chatOpen = aiEnabled && rightPanel === "chat";
   const moduleKey = activeModuleKey.trim();
+  const workflowScope = String(activeWorkflowScope || "").trim().toLowerCase();
+  const activeContextRequestKey = contextRequestKey(moduleKey, workflowScope);
+  const usingOllama = chatProvider === "ollama";
+  const selectedChatModel = usingOllama ? chatModel.trim() : chatRemoteModel.trim();
 
   function resetChatForModelChange() {
     setChatMessages([{ role: "assistant", content: CHAT_READY_MESSAGE }]);
@@ -241,6 +278,14 @@ export default function AppShell({
   useEffect(() => {
     if (!aiEnabled) {
       setChatModel("");
+      setChatProvider("ollama");
+      setChatRemoteModel(API_PROVIDER_DEFAULT_MODELS.openai);
+      setChatOllamaEndpoint(DEFAULT_DEV_OLLAMA_ENDPOINT);
+      setChatOllamaEndpointActive(DEFAULT_DEV_OLLAMA_ENDPOINT);
+      chatOllamaEndpointAppliedRef.current = DEFAULT_DEV_OLLAMA_ENDPOINT;
+      setChatApiKey("");
+      setChatApiTemperature("0.2");
+      setChatApiMaxTokens("512");
       setChatModels([]);
       setChatModelsLoading(false);
       setChatModelError(null);
@@ -251,10 +296,22 @@ export default function AppShell({
       setAiSettingsExpanded(false);
       return;
     }
+    if (chatProvider !== "ollama") {
+      setChatModel("");
+      setChatModels([]);
+      setChatModelsLoading(false);
+      setChatModelError(null);
+      setChatModelActionInput("");
+      setChatModelActionBusy(null);
+      setChatModelActionError(null);
+      setChatModelActionSuccess(null);
+      return;
+    }
     let cancelled = false;
+    const endpoint = chatOllamaEndpointActive.trim();
     setChatModelsLoading(true);
     setChatModelError(null);
-    void getOllamaModels()
+    void getOllamaModels(endpoint)
       .then((result) => {
         if (cancelled) return;
         applyChatModelList(result.models, result.selectedModel, result.warnings);
@@ -273,7 +330,7 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled]);
+  }, [aiEnabled, chatProvider, chatOllamaEndpointActive]);
 
   async function runChatModelAction(action: "install" | "remove") {
     const targetModel = (chatModelActionInput.trim() || chatModel.trim()).trim();
@@ -286,8 +343,11 @@ export default function AppShell({
     setChatModelActionError(null);
     setChatModelActionSuccess(null);
     try {
+      const endpoint = chatOllamaEndpointActive.trim();
       const response =
-        action === "install" ? await installOllamaModel(targetModel) : await removeOllamaModel(targetModel);
+        action === "install"
+          ? await installOllamaModel(targetModel, endpoint)
+          : await removeOllamaModel(targetModel, endpoint);
       applyChatModelList(
         response.models,
         response.selectedModel,
@@ -308,15 +368,17 @@ export default function AppShell({
   }
 
   useEffect(() => {
-    if (!aiEnabled) {
+    if (!aiEnabled || chatProvider !== "ollama") {
       setGpuEligible(false);
       setGpuEnabled(false);
       setGpuDeviceName(null);
       setGpuStatusMessage(null);
+      setGpuRemoteEndpoint(false);
       return;
     }
     let cancelled = false;
-    void getOllamaGpuStatus()
+    const endpoint = chatOllamaEndpointActive.trim();
+    void getOllamaGpuStatus(endpoint)
       .then((status) => {
         if (cancelled) return;
         const eligible = Boolean(status.gpuEligible);
@@ -324,6 +386,7 @@ export default function AppShell({
         setGpuEnabled(eligible && Boolean(status.gpuEnabledDefault));
         setGpuDeviceName(status.deviceName ?? null);
         setGpuStatusMessage(status.reason ?? null);
+        setGpuRemoteEndpoint(Boolean(status.remoteEndpoint));
       })
       .catch((err) => {
         if (cancelled) return;
@@ -331,48 +394,59 @@ export default function AppShell({
         setGpuEnabled(false);
         setGpuDeviceName(null);
         setGpuStatusMessage(err instanceof Error ? err.message : "GPU status unavailable.");
+        setGpuRemoteEndpoint(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled]);
+  }, [aiEnabled, chatProvider, chatOllamaEndpointActive]);
 
   async function fetchModuleContext(
     requestedModuleKey: string,
+    requestedWorkflowScope: string,
     forceRefresh = false
   ): Promise<ModuleContextResponse | null> {
     if (!aiEnabled || !requestedModuleKey) return null;
+    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope);
+    if (!requestKey) return null;
 
     if (!forceRefresh) {
-      const cached = contextCacheRef.current[requestedModuleKey];
+      const cached = contextCacheRef.current[requestKey];
       if (cached) return cached;
     }
 
-    const pending = contextPendingRef.current[requestedModuleKey];
+    const pending = contextPendingRef.current[requestKey];
     if (pending) return pending;
 
-    const nextPromise = getAiModuleContext(requestedModuleKey)
+    const nextPromise = getAiModuleContext(requestedModuleKey, requestedWorkflowScope || undefined)
       .then((context) => {
-        contextCacheRef.current[requestedModuleKey] = context;
+        contextCacheRef.current[requestKey] = context;
         return context;
       })
       .catch(() => null)
       .finally(() => {
-        delete contextPendingRef.current[requestedModuleKey];
+        delete contextPendingRef.current[requestKey];
       });
-    contextPendingRef.current[requestedModuleKey] = nextPromise;
+    contextPendingRef.current[requestKey] = nextPromise;
     return nextPromise;
   }
 
-  function pushContextMessage(requestedModuleKey: string, context: ModuleContextResponse | null) {
+  function pushContextMessage(
+    requestedModuleKey: string,
+    requestedWorkflowScope: string,
+    context: ModuleContextResponse | null
+  ) {
+    if (!AI_DEV_MODE) return;
     if (!context) return;
+    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope);
+    if (!requestKey) return;
     const contextText = String(context.contextPrompt || "").trim();
     if (!contextText) return;
     const moduleLabel = contextModuleLabelForUi(requestedModuleKey, context.moduleTitle || "", context);
     const messageContent = `${CONTEXT_MESSAGE_PREFIX} ${moduleLabel}\n${contextText}`;
-    const signature = `${requestedModuleKey}::${messageContent}`;
-    if (contextAnnouncementRef.current[requestedModuleKey] === signature) return;
-    contextAnnouncementRef.current[requestedModuleKey] = signature;
+    const signature = `${requestKey}::${messageContent}`;
+    if (contextAnnouncementRef.current[requestKey] === signature) return;
+    contextAnnouncementRef.current[requestKey] = signature;
     setChatMessages((current) => {
       const last = current[current.length - 1];
       if (last?.role === "assistant" && String(last.content || "").trim() === messageContent) {
@@ -389,20 +463,20 @@ export default function AppShell({
     }
 
     let cancelled = false;
-    const cached = contextCacheRef.current[moduleKey];
+    const cached = contextCacheRef.current[activeContextRequestKey];
     setContextModuleLabel(contextModuleLabelForUi(moduleKey, cached?.moduleTitle || "", cached));
-    pushContextMessage(moduleKey, cached);
+    pushContextMessage(moduleKey, workflowScope, cached);
 
-    void fetchModuleContext(moduleKey).then((context) => {
+    void fetchModuleContext(moduleKey, workflowScope).then((context) => {
       if (cancelled || !context) return;
       setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
-      pushContextMessage(moduleKey, context);
+      pushContextMessage(moduleKey, workflowScope, context);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, moduleKey]);
+  }, [aiEnabled, moduleKey, workflowScope, activeContextRequestKey]);
 
   useEffect(() => {
     if (!aiEnabled) return undefined;
@@ -410,20 +484,28 @@ export default function AppShell({
       contextCacheRef.current = {};
       contextAnnouncementRef.current = {};
       if (!moduleKey) return;
-      void fetchModuleContext(moduleKey, true).then((context) => {
+      void fetchModuleContext(moduleKey, workflowScope, true).then((context) => {
         if (!context) return;
         setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
-        pushContextMessage(moduleKey, context);
+        pushContextMessage(moduleKey, workflowScope, context);
       });
     });
-  }, [aiEnabled, moduleKey]);
+  }, [aiEnabled, moduleKey, workflowScope]);
 
   async function sendChatMessage() {
     const message = chatInput.trim();
     if (!message || chatLoading) return;
-    const selectedModel = chatModel.trim();
+    const selectedModel = selectedChatModel;
     if (!selectedModel) {
-      setChatError("No chatbot model selected. Choose one from the model list first.");
+      setChatError(
+        usingOllama
+          ? "No chatbot model selected. Choose one from the model list first."
+          : "No API model selected. Set a model name in AI settings first."
+      );
+      return;
+    }
+    if (!usingOllama && !chatApiKey.trim()) {
+      setChatError("No API key provided. Add your API key in AI settings first.");
       return;
     }
 
@@ -433,7 +515,10 @@ export default function AppShell({
     const historyForModelBase = history
       .map(normalizeMessageForModel)
       .filter(
-        (item) => String(item.content ?? "").trim().length > 0 && !isContextUiMessage(String(item.content ?? ""))
+        (item) =>
+          String(item.content ?? "").trim().length > 0 &&
+          !isContextUiMessage(String(item.content ?? "")) &&
+          String(item.content ?? "").trim() !== CHAT_READY_MESSAGE
       )
       .slice(-MAX_MODEL_HISTORY_MESSAGES);
     setChatInput("");
@@ -443,12 +528,12 @@ export default function AppShell({
     try {
       let contextPrompt = "";
       if (aiEnabled && moduleKey) {
-        const cached = contextCacheRef.current[moduleKey];
+        const cached = contextCacheRef.current[activeContextRequestKey];
         if (cached?.contextPrompt) {
           contextPrompt = cached.contextPrompt;
         } else {
           const contextOrNull = await Promise.race<ModuleContextResponse | null>([
-            fetchModuleContext(moduleKey),
+            fetchModuleContext(moduleKey, workflowScope),
             new Promise<null>((resolve) => {
               window.setTimeout(() => resolve(null), 300);
             }),
@@ -462,13 +547,20 @@ export default function AppShell({
       const historyForModel: ChatMessage[] = contextPrompt
         ? [{ role: "system", content: contextPrompt }, ...historyForModelBase]
         : historyForModelBase;
+      const parsedTemperature = Number(chatApiTemperature);
+      const parsedMaxTokens = Number(chatApiMaxTokens);
 
-      const response = await streamOllamaChatMessage(
+      const response = await streamChatMessage(
         {
           message,
           messages: historyForModel,
+          provider: chatProvider,
           model: selectedModel,
-          gpuEnabled: gpuEligible && gpuEnabled,
+          gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
+          apiKey: usingOllama ? undefined : chatApiKey.trim(),
+          temperature: usingOllama ? undefined : Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
+          maxTokens: usingOllama ? undefined : Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : undefined,
+          ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
         },
         (chunk) => {
           setChatMessages((current) => {
@@ -485,7 +577,11 @@ export default function AppShell({
           });
         }
       );
-      setChatModel(response.model || chatModel);
+      if (usingOllama) {
+        setChatModel(response.model || chatModel);
+      } else {
+        setChatRemoteModel(response.model || chatRemoteModel);
+      }
     } catch (err) {
       setChatMessages((current) => {
         const next = [...current];
@@ -532,8 +628,19 @@ export default function AppShell({
               <div className="pr-4">
                 <div className="text-xl font-bold tracking-tight text-slate-900">Chatbot</div>
                 <div className="mt-1 text-xs text-slate-500">
-                  Model: <span className="font-medium text-slate-700">{chatModel || "Not selected"}</span>
+                  Provider:{" "}
+                  <span className="font-medium text-slate-700">
+                    {usingOllama ? "Local (Ollama)" : API_PROVIDER_LABELS[chatProvider]}
+                  </span>
                 </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Model: <span className="font-medium text-slate-700">{selectedChatModel || "Not selected"}</span>
+                </div>
+                {usingOllama && chatOllamaEndpointActive.trim() ? (
+                  <div className="mt-1 text-xs text-slate-500">
+                    Endpoint: <span className="font-medium text-slate-700">{chatOllamaEndpointActive}</span>
+                  </div>
+                ) : null}
                 <div className="mt-2">
                   <button
                     type="button"
@@ -549,105 +656,215 @@ export default function AppShell({
                     <div className="mt-2 space-y-2">
                       <div>
                         <select
-                          value={chatModel}
+                          value={chatProvider}
                           onChange={(event) => {
-                            const nextModel = event.target.value;
-                            if (!nextModel || nextModel === chatModel) return;
-                            setChatModel(nextModel);
+                            const nextProvider = event.target.value as ChatProvider;
+                            if (!nextProvider || nextProvider === chatProvider) return;
+                            setChatProvider(nextProvider);
+                            if (nextProvider !== "ollama") {
+                              setChatRemoteModel(API_PROVIDER_DEFAULT_MODELS[nextProvider]);
+                            }
                             resetChatForModelChange();
                           }}
-                          disabled={
-                            chatModelsLoading ||
-                            chatModels.length === 0 ||
-                            chatLoading ||
-                            chatModelActionBusy !== null
-                          }
+                          disabled={chatLoading}
                           className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-                          aria-label="Select chatbot model"
+                          aria-label="Select chatbot provider"
                         >
-                          {chatModels.length === 0 ? (
-                            <option value="">
-                              {chatModelsLoading ? "Loading models..." : "No models detected"}
-                            </option>
-                          ) : null}
-                          {chatModels.map((modelName) => (
-                            <option key={modelName} value={modelName}>
-                              {modelName}
-                            </option>
-                          ))}
+                          <option value="ollama">Local (Ollama)</option>
+                          <option value="openai">OpenAI (ChatGPT)</option>
+                          <option value="anthropic">Anthropic (Claude)</option>
+                          <option value="gemini">Google (Gemini)</option>
                         </select>
-                        {chatModelError ? (
-                          <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
-                        ) : null}
                       </div>
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                          Model Management
-                        </div>
-                        <input
-                          type="text"
-                          value={chatModelActionInput}
-                          onChange={(event) => setChatModelActionInput(event.target.value)}
-                          placeholder="e.g. deepseek-r1:1.5b"
-                          disabled={chatLoading || chatModelActionBusy !== null}
-                          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-                        />
-                        <div className="mt-2 flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void runChatModelAction("install")}
-                            disabled={chatLoading || chatModelActionBusy !== null}
-                            className="flex-1 rounded-lg bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-                          >
-                            {chatModelActionBusy === "install" ? "Installing..." : "Install"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void runChatModelAction("remove")}
-                            disabled={chatLoading || chatModelActionBusy !== null}
-                            className="flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-                          >
-                            {chatModelActionBusy === "remove" ? "Removing..." : "Remove"}
-                          </button>
-                        </div>
-                        {chatModelActionError ? (
-                          <div className="mt-1 text-[11px] text-red-700">{chatModelActionError}</div>
-                        ) : null}
-                        {chatModelActionSuccess ? (
-                          <div className="mt-1 text-[11px] text-emerald-700">{chatModelActionSuccess}</div>
-                        ) : null}
-                      </div>
-                      <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-                        <div className="text-xs text-slate-600">GPU Acceleration</div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={gpuEligible && gpuEnabled}
-                          disabled={!gpuEligible}
-                          onClick={() => {
-                            if (!gpuEligible) return;
-                            setGpuEnabled((current) => !current);
-                          }}
-                          className={[
-                            "relative inline-flex h-5 w-9 items-center rounded-full transition",
-                            gpuEligible && gpuEnabled ? "bg-slate-900" : "bg-slate-300",
-                            !gpuEligible ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-                          ].join(" ")}
-                          aria-label="Toggle GPU acceleration"
-                        >
-                          <span
-                            className={[
-                              "inline-block h-4 w-4 transform rounded-full bg-white transition",
-                              gpuEligible && gpuEnabled ? "translate-x-4" : "translate-x-1",
-                            ].join(" ")}
+                      {usingOllama ? (
+                        <>
+                          <div>
+                            <input
+                              type="text"
+                              value={chatOllamaEndpoint}
+                              onChange={(event) => {
+                                setChatOllamaEndpoint(event.target.value);
+                              }}
+                              onBlur={() => {
+                                const nextValue = chatOllamaEndpoint.trim();
+                                if (nextValue !== chatOllamaEndpointAppliedRef.current) {
+                                  chatOllamaEndpointAppliedRef.current = nextValue;
+                                  setChatOllamaEndpointActive(nextValue);
+                                  resetChatForModelChange();
+                                }
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  (event.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              placeholder="Ollama endpoint (optional), e.g. http://100.101.102.103:11434"
+                              disabled={chatLoading || chatModelActionBusy !== null}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              Leave empty for local Ollama on this machine.
+                            </div>
+                          </div>
+                          <div>
+                            <select
+                              value={chatModel}
+                              onChange={(event) => {
+                                const nextModel = event.target.value;
+                                if (!nextModel || nextModel === chatModel) return;
+                                setChatModel(nextModel);
+                                resetChatForModelChange();
+                              }}
+                              disabled={
+                                chatModelsLoading ||
+                                chatModels.length === 0 ||
+                                chatLoading ||
+                                chatModelActionBusy !== null
+                              }
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              aria-label="Select chatbot model"
+                            >
+                              {chatModels.length === 0 ? (
+                                <option value="">
+                                  {chatModelsLoading ? "Loading models..." : "No models detected"}
+                                </option>
+                              ) : null}
+                              {chatModels.map((modelName) => (
+                                <option key={modelName} value={modelName}>
+                                  {modelName}
+                                </option>
+                              ))}
+                            </select>
+                            {chatModelError ? (
+                              <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
+                            ) : null}
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                              Model Management
+                            </div>
+                            <input
+                              type="text"
+                              value={chatModelActionInput}
+                              onChange={(event) => setChatModelActionInput(event.target.value)}
+                              placeholder="e.g. deepseek-r1:1.5b"
+                              disabled={chatLoading || chatModelActionBusy !== null}
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                            <div className="mt-2 flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void runChatModelAction("install")}
+                                disabled={chatLoading || chatModelActionBusy !== null}
+                                className="flex-1 rounded-lg bg-slate-900 px-2 py-1.5 text-[11px] font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                              >
+                                {chatModelActionBusy === "install" ? "Installing..." : "Install"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void runChatModelAction("remove")}
+                                disabled={chatLoading || chatModelActionBusy !== null}
+                                className="flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              >
+                                {chatModelActionBusy === "remove" ? "Removing..." : "Remove"}
+                              </button>
+                            </div>
+                            {chatModelActionError ? (
+                              <div className="mt-1 text-[11px] text-red-700">{chatModelActionError}</div>
+                            ) : null}
+                            {chatModelActionSuccess ? (
+                              <div className="mt-1 text-[11px] text-emerald-700">{chatModelActionSuccess}</div>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+                            <div className="text-xs text-slate-600">GPU Acceleration</div>
+                            {(() => {
+                              const remoteLocked = Boolean(gpuRemoteEndpoint);
+                              const checked = remoteLocked ? false : gpuEligible && gpuEnabled;
+                              const disabled = remoteLocked || !gpuEligible;
+                              return (
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={checked}
+                              disabled={disabled}
+                              onClick={() => {
+                                if (disabled) return;
+                                setGpuEnabled((current) => !current);
+                              }}
+                              className={[
+                                "relative inline-flex h-5 w-9 items-center rounded-full transition",
+                                checked ? "bg-slate-900" : "bg-slate-300",
+                                disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                              ].join(" ")}
+                              aria-label="Toggle GPU acceleration"
+                            >
+                              <span
+                                className={[
+                                  "inline-block h-4 w-4 transform rounded-full bg-white transition",
+                                  checked ? "translate-x-4" : "translate-x-1",
+                                ].join(" ")}
+                              />
+                            </button>
+                              );
+                            })()}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {gpuRemoteEndpoint
+                              ? "Remote acceleration status: Unknown. Toggle is locked (managed by remote host)."
+                              : gpuEligible
+                                ? `CUDA GPU detected${gpuDeviceName ? `: ${gpuDeviceName}` : "."}`
+                                : gpuStatusMessage || "No eligible CUDA GPU detected."}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <input
+                            type="password"
+                            value={chatApiKey}
+                            onChange={(event) => setChatApiKey(event.target.value)}
+                            placeholder="API key"
+                            disabled={chatLoading}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
                           />
-                        </button>
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        {gpuEligible
-                          ? `CUDA GPU detected${gpuDeviceName ? `: ${gpuDeviceName}` : "."}`
-                          : gpuStatusMessage || "No eligible CUDA GPU detected."}
-                      </div>
+                          <input
+                            type="text"
+                            value={chatRemoteModel}
+                            onChange={(event) => setChatRemoteModel(event.target.value)}
+                            placeholder="Model (e.g. gpt-4o-mini)"
+                            disabled={chatLoading}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={2}
+                              step={0.1}
+                              value={chatApiTemperature}
+                              onChange={(event) => setChatApiTemperature(event.target.value)}
+                              placeholder="Temperature"
+                              disabled={chatLoading}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                            <input
+                              type="number"
+                              min={64}
+                              max={4096}
+                              step={1}
+                              value={chatApiMaxTokens}
+                              onChange={(event) => setChatApiMaxTokens(event.target.value)}
+                              placeholder="Max tokens"
+                              disabled={chatLoading}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            API key is used only for this session request flow and is not saved as a local model.
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -656,7 +873,7 @@ export default function AppShell({
                     Context Module:{" "}
                     <span className="font-medium text-slate-700">
                       {contextModuleLabel ||
-                        contextModuleLabelForUi(activeModuleKey, "", contextCacheRef.current[activeModuleKey.trim()])}
+                        contextModuleLabelForUi(activeModuleKey, "", contextCacheRef.current[activeContextRequestKey])}
                     </span>
                   </div>
                 ) : null}
@@ -738,7 +955,12 @@ export default function AppShell({
               <button
                 type="button"
                 onClick={() => void sendChatMessage()}
-                disabled={chatLoading || !chatInput.trim() || !chatModel.trim()}
+                disabled={
+                  chatLoading ||
+                  !chatInput.trim() ||
+                  !selectedChatModel ||
+                  (!usingOllama && !chatApiKey.trim())
+                }
                 className="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               >
                 {chatLoading ? "Sending..." : "Send"}

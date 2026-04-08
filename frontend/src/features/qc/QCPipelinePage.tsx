@@ -12,6 +12,7 @@ import type { AnnotationKind, QcTab } from "../../lib/types";
 
 type Props = {
   activeTab: QcTab;
+  onWorkflowScopeChange?: (workflow: string) => void;
 };
 
 type QcTableRequest = {
@@ -25,7 +26,14 @@ function isAnnotationKind(kind: QcKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
 }
 
-export default function QCPipelinePage({ activeTab }: Props) {
+function workflowScopeFromKind(kind: QcKind): string {
+  if (kind === "phospho") return "phosphosite";
+  if (kind === "phosprot") return "phosphoprotein";
+  if (kind === "peptide") return "peptide";
+  return "protein";
+}
+
+export default function QCPipelinePage({ activeTab, onWorkflowScopeChange }: Props) {
   const [kind, setKind] = useState<QcKind>("protein");
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
@@ -146,6 +154,19 @@ export default function QCPipelinePage({ activeTab }: Props) {
       setKind(activeKindOptions[0].value);
     }
   }, [activeKindOptions, kind]);
+
+  useEffect(() => {
+    if (!onWorkflowScopeChange) return;
+    if (activeTab !== "coverage") {
+      onWorkflowScopeChange("");
+      return;
+    }
+    if (activeKindOptions.length === 0) {
+      onWorkflowScopeChange("");
+      return;
+    }
+    onWorkflowScopeChange(workflowScopeFromKind(kind));
+  }, [activeTab, activeKindOptions, kind, onWorkflowScopeChange]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {

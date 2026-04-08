@@ -15,9 +15,40 @@ if [ ! -x "$PYTHON_BIN" ]; then
   exit 1
 fi
 
-CHAT_MODEL="${1:-}"
-if [[ "$CHAT_MODEL" == --* ]]; then
-  CHAT_MODEL="${CHAT_MODEL#--}"
+CHAT_MODEL=""
+DEV_MODE=0
+DEV_OLLAMA_ENDPOINT=""
+
+for arg in "$@"; do
+  if [[ "$arg" == "--dev" ]]; then
+    DEV_MODE=1
+    continue
+  fi
+  if [[ -z "$CHAT_MODEL" ]]; then
+    if [[ "$arg" == --* ]]; then
+      CHAT_MODEL="${arg#--}"
+    else
+      CHAT_MODEL="$arg"
+    fi
+  fi
+done
+
+if [[ "$DEV_MODE" -eq 1 ]]; then
+  DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
+  if [[ -f "$DEV_CONFIG" ]]; then
+    while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
+      key="$(echo "${key:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      value="$(echo "${value:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      if [[ -z "$key" || "$key" == \#* ]]; then
+        continue
+      fi
+      if [[ "$key" == "COPYLOT_DEV_OLLAMA_ENDPOINT" ]]; then
+        DEV_OLLAMA_ENDPOINT="$value"
+      fi
+    done < "$DEV_CONFIG"
+  else
+    echo "Warning: --dev requested but dev config file not found: $DEV_CONFIG"
+  fi
 fi
 
 if [ -n "$CHAT_MODEL" ]; then
@@ -59,8 +90,13 @@ BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR"
-  VITE_AI_ENABLED=1 VITE_PROXY_TARGET="http://127.0.0.1:8000" \
-    npm run dev -- --port 5173
+  if [[ "$DEV_MODE" -eq 1 ]]; then
+    VITE_AI_ENABLED=1 VITE_AI_DEV_MODE=1 VITE_AI_DEFAULT_OLLAMA_ENDPOINT="$DEV_OLLAMA_ENDPOINT" VITE_PROXY_TARGET="http://127.0.0.1:8000" \
+      npm run dev -- --port 5173
+  else
+    VITE_AI_ENABLED=1 VITE_PROXY_TARGET="http://127.0.0.1:8000" \
+      npm run dev -- --port 5173
+  fi
 ) &
 FRONTEND_PID=$!
 
