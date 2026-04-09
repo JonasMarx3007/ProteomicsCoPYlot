@@ -173,7 +173,16 @@ export default function App() {
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
-  const [qcCoverageWorkflowScope, setQcCoverageWorkflowScope] = useState<string>("");
+  const [qcWorkflowScope, setQcWorkflowScope] = useState<string>("");
+  const [qcBoxplotMode, setQcBoxplotMode] = useState<string>("");
+  const [qcPcaContextMode, setQcPcaContextMode] = useState<string>("");
+  const [completenessContextMode, setCompletenessContextMode] = useState<string>("");
+  const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
+  const [statsGseaContextMode, setStatsGseaContextMode] = useState<string>("");
+  const [statsPathwayHeatmapContextMode, setStatsPathwayHeatmapContextMode] = useState<string>("");
+  const [singleProteinBoxplotContextMode, setSingleProteinBoxplotContextMode] = useState<string>("");
+  const [comparisonPearsonContextMode, setComparisonPearsonContextMode] = useState<string>("");
+  const [phosphoContextMode, setPhosphoContextMode] = useState<string>("");
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const showDatasetSwitcher = availablePackages.length >= 2;
@@ -215,9 +224,69 @@ export default function App() {
   }, [rightPanel, IS_AI_MODE]);
 
   useEffect(() => {
-    if (activeSection === "qc" && activeQcTab === "coverage") return;
-    setQcCoverageWorkflowScope("");
+    if (activeSection === "qc") return;
+    setQcWorkflowScope("");
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection === "qc" && activeQcTab === "boxplot") return;
+    setQcBoxplotMode("");
   }, [activeSection, activeQcTab]);
+
+  useEffect(() => {
+    if (activeSection === "qc" && activeQcTab === "pca") return;
+    setQcPcaContextMode("");
+  }, [activeSection, activeQcTab]);
+
+  useEffect(() => {
+    if (
+      activeSection === "completeness" &&
+      (activeCompletenessTab === "missingPlot" || activeCompletenessTab === "heatmap" || activeCompletenessTab === "tables")
+    ) return;
+    setCompletenessContextMode("");
+  }, [activeSection, activeCompletenessTab]);
+
+  useEffect(() => {
+    if (activeSection === "stats" && activeStatsTab === "volcano") return;
+    setStatsVolcanoContextMode("");
+  }, [activeSection, activeStatsTab]);
+
+  useEffect(() => {
+    if (activeSection === "stats" && activeStatsTab === "gsea") return;
+    setStatsGseaContextMode("");
+  }, [activeSection, activeStatsTab]);
+
+  useEffect(() => {
+    if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") return;
+    setStatsPathwayHeatmapContextMode("");
+  }, [activeSection, activeStatsTab]);
+
+  useEffect(() => {
+    if (
+      activeSection === "singleProtein" &&
+      (activeSingleProteinTab === "boxplot" || activeSingleProteinTab === "lineplot" || activeSingleProteinTab === "heatmap")
+    ) return;
+    setSingleProteinBoxplotContextMode("");
+  }, [activeSection, activeSingleProteinTab]);
+
+  useEffect(() => {
+    if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) return;
+    setComparisonPearsonContextMode("");
+  }, [activeSection, activeComparisonTab]);
+
+  useEffect(() => {
+    if (
+      activeSection === "phospho" &&
+      (
+        activePhosphoTab === "phosphositePlot" ||
+        activePhosphoTab === "coverage" ||
+        activePhosphoTab === "distribution" ||
+        activePhosphoTab === "sty" ||
+        activePhosphoTab === "phosprotRegulation"
+      )
+    ) return;
+    setPhosphoContextMode("");
+  }, [activeSection, activePhosphoTab]);
 
   const visibleDataTabs = useMemo(
     () => (IS_VIEWER_MODE ? viewerDataTabs : dataTabs),
@@ -385,8 +454,8 @@ export default function App() {
   ]);
 
   const activeWorkflowScope = useMemo(() => {
-    if (activeSection === "qc" && activeQcTab === "coverage") {
-      const scoped = qcCoverageWorkflowScope.trim().toLowerCase();
+    if (activeSection === "qc") {
+      const scoped = qcWorkflowScope.trim().toLowerCase();
       if (scoped) return scoped;
     }
     if (activeSection === "phospho") {
@@ -396,6 +465,12 @@ export default function App() {
       return "peptide";
     }
     if (activeSection === "singleProtein") {
+      return activeSingleProteinTab === "heatmap" ? "phosphosite" : "protein";
+    }
+    if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) {
+      const mode = comparisonPearsonContextMode.trim().toLowerCase();
+      if (mode.includes("kind=phospho")) return "phosphosite";
+      if (mode.includes("kind=phosprot")) return "phosphoprotein";
       return "protein";
     }
 
@@ -407,7 +482,79 @@ export default function App() {
     if (!hasProtein && !hasPhospho && hasPhosprot) return "phosphoprotein";
 
     return "";
-  }, [activeSection, activeQcTab, activePhosphoTab, datasets, qcCoverageWorkflowScope]);
+  }, [
+    activeSection,
+    activeQcTab,
+    activePhosphoTab,
+    activeSingleProteinTab,
+    activeComparisonTab,
+    comparisonPearsonContextMode,
+    datasets,
+    qcWorkflowScope,
+  ]);
+
+  const activeContextMode = useMemo(() => {
+    if (activeSection === "stats" && activeStatsTab === "volcano") {
+      return statsVolcanoContextMode.trim();
+    }
+    if (activeSection === "stats" && activeStatsTab === "gsea") {
+      return statsGseaContextMode.trim();
+    }
+    if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") {
+      return statsPathwayHeatmapContextMode.trim();
+    }
+    if (
+      activeSection === "completeness" &&
+      (activeCompletenessTab === "missingPlot" || activeCompletenessTab === "heatmap" || activeCompletenessTab === "tables")
+    ) {
+      return completenessContextMode.trim();
+    }
+    if (activeSection === "qc" && activeQcTab === "boxplot") {
+      return qcBoxplotMode.trim();
+    }
+    if (activeSection === "qc" && activeQcTab === "pca") {
+      return qcPcaContextMode.trim();
+    }
+    if (
+      activeSection === "singleProtein" &&
+      (activeSingleProteinTab === "boxplot" || activeSingleProteinTab === "lineplot" || activeSingleProteinTab === "heatmap")
+    ) {
+      return singleProteinBoxplotContextMode.trim();
+    }
+    if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) {
+      return comparisonPearsonContextMode.trim();
+    }
+    if (
+      activeSection === "phospho" &&
+      (
+        activePhosphoTab === "phosphositePlot" ||
+        activePhosphoTab === "coverage" ||
+        activePhosphoTab === "distribution" ||
+        activePhosphoTab === "sty" ||
+        activePhosphoTab === "phosprotRegulation"
+      )
+    ) {
+      return phosphoContextMode.trim();
+    }
+    return "";
+  }, [
+    activeSection,
+    activeStatsTab,
+    activeCompletenessTab,
+    activeQcTab,
+    activeSingleProteinTab,
+    activeComparisonTab,
+    activePhosphoTab,
+    statsVolcanoContextMode,
+    statsGseaContextMode,
+    statsPathwayHeatmapContextMode,
+    completenessContextMode,
+    qcBoxplotMode,
+    qcPcaContextMode,
+    singleProteinBoxplotContextMode,
+    comparisonPearsonContextMode,
+    phosphoContextMode,
+  ]);
 
   const selectorBar = showTopSelector ? (
     <div className="border-b border-slate-200 bg-white px-4 py-2 sm:px-6">
@@ -610,55 +757,65 @@ export default function App() {
   function renderContent() {
     if (activeSection === "completeness") {
       if (activeCompletenessTab === "missingPlot") {
-        return <MissingValuePlotPage />;
+        return <MissingValuePlotPage onContextModeChange={setCompletenessContextMode} />;
       }
 
       if (activeCompletenessTab === "heatmap") {
-        return <MissingValueHeatmapPage />;
+        return <MissingValueHeatmapPage onContextModeChange={setCompletenessContextMode} />;
       }
 
-      return <CompletenessTablesPage />;
+      return <CompletenessTablesPage onContextModeChange={setCompletenessContextMode} />;
     }
 
     if (activeSection === "qc") {
       if (activeQcTab === "coverage") {
-        return <CoveragePlotPage onWorkflowScopeChange={setQcCoverageWorkflowScope} />;
+        return <CoveragePlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
       }
 
       if (activeQcTab === "histogram") {
-        return <HistogramIntensityPage />;
+        return <HistogramIntensityPage onWorkflowScopeChange={setQcWorkflowScope} />;
       }
 
       if (activeQcTab === "boxplot") {
-        return <BoxplotIntensityPage />;
+        return (
+          <BoxplotIntensityPage
+            onModeChange={setQcBoxplotMode}
+            onWorkflowScopeChange={setQcWorkflowScope}
+          />
+        );
       }
 
       if (activeQcTab === "cv") {
-        return <CovPlotPage />;
+        return <CovPlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
       }
 
       if (activeQcTab === "pca") {
-        return <PrincipalComponentAnalysisPage />;
+        return (
+          <PrincipalComponentAnalysisPage
+            onWorkflowScopeChange={setQcWorkflowScope}
+            onPcaContextModeChange={setQcPcaContextMode}
+          />
+        );
       }
 
       if (activeQcTab === "abundance") {
-        return <AbundancePlotPage />;
+        return <AbundancePlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
       }
 
-      return <CorrelationPlotPage />;
+      return <CorrelationPlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
     }
 
     if (activeSection === "stats") {
       if (activeStatsTab === "volcano") {
-        return <VolcanoPlotPage />;
+        return <VolcanoPlotPage onContextModeChange={setStatsVolcanoContextMode} />;
       }
 
       if (activeStatsTab === "gsea") {
-        return <GseaPage />;
+        return <GseaPage onContextModeChange={setStatsGseaContextMode} />;
       }
 
       if (activeStatsTab === "pathwayHeatmap") {
-        return <PathwayHeatmapPage />;
+        return <PathwayHeatmapPage onContextModeChange={setStatsPathwayHeatmapContextMode} />;
       }
 
       if (IS_VIEWER_MODE) {
@@ -686,23 +843,23 @@ export default function App() {
 
     if (activeSection === "singleProtein") {
       if (activeSingleProteinTab === "boxplot") {
-        return <ProteinBoxplotPage />;
+        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
       }
 
       if (activeSingleProteinTab === "lineplot") {
-        return <ProteinLineplotPage />;
+        return <ProteinLineplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
       }
 
-      return <PhosphositesOnProteinHeatmapPage />;
+      return <PhosphositesOnProteinHeatmapPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
     }
 
     if (activeSection === "phospho") {
       if (activePhosphoTab === "phosphositePlot") {
-        return <PhosphositePlotPage />;
+        return <PhosphositePlotPage onContextModeChange={setPhosphoContextMode} />;
       }
 
       if (activePhosphoTab === "coverage") {
-        return <PhosphositeCoveragePage />;
+        return <PhosphositeCoveragePage onContextModeChange={setPhosphoContextMode} />;
       }
 
       if (activePhosphoTab === "ksea") {
@@ -713,21 +870,21 @@ export default function App() {
       }
 
       if (activePhosphoTab === "distribution") {
-        return <PhosphositeDistributionPage />;
+        return <PhosphositeDistributionPage onContextModeChange={setPhosphoContextMode} />;
       }
 
       if (activePhosphoTab === "phosprotRegulation") {
-        return <PhosprotRegulationPage />;
+        return <PhosprotRegulationPage onContextModeChange={setPhosphoContextMode} />;
       }
 
-      return <StyPlotPage />;
+      return <StyPlotPage onContextModeChange={setPhosphoContextMode} />;
     }
 
     if (activeSection === "comparison") {
       if (activeComparisonTab === "pearson") {
-        return <PearsonCorrelationPage />;
+        return <PearsonCorrelationPage onContextModeChange={setComparisonPearsonContextMode} />;
       }
-      return <VennDiagramPage />;
+      return <VennDiagramPage onContextModeChange={setComparisonPearsonContextMode} />;
     }
 
     if (activeSection === "summary") {
@@ -812,6 +969,7 @@ export default function App() {
       topBar={combinedTopBar}
       activeModuleKey={activeModuleKey}
       activeWorkflowScope={activeWorkflowScope}
+      activeContextMode={activeContextMode}
       aiEnabled={IS_AI_MODE}
       rightPanel={rightPanel}
       onRightPanelChange={setRightPanel}

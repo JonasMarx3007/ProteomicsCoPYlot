@@ -1,6 +1,9 @@
-﻿import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
+import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
 
-export default function GseaPage() {
-  return <StatisticalAnalysisPage activeTab="gsea" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function GseaPage({ onContextModeChange }: Props) {
+  return <StatisticalAnalysisPage activeTab="gsea" onContextModeChange={onContextModeChange} />;
 }
-

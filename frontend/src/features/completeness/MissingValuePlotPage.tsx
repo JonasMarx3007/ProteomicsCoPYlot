@@ -1,5 +1,9 @@
 import CompletenessPage from "./CompletenessPage";
 
-export default function MissingValuePlotPage() {
-  return <CompletenessPage activeTab="missingPlot" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function MissingValuePlotPage({ onContextModeChange }: Props) {
+  return <CompletenessPage activeTab="missingPlot" onContextModeChange={onContextModeChange} />;
 }

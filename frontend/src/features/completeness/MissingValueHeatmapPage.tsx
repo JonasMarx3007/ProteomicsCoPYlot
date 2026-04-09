@@ -1,5 +1,9 @@
 import CompletenessPage from "./CompletenessPage";
 
-export default function MissingValueHeatmapPage() {
-  return <CompletenessPage activeTab="heatmap" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function MissingValueHeatmapPage({ onContextModeChange }: Props) {
+  return <CompletenessPage activeTab="heatmap" onContextModeChange={onContextModeChange} />;
 }

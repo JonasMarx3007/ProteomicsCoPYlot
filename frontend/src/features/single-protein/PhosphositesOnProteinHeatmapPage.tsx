@@ -1,6 +1,9 @@
-﻿import SingleProteinPage from "./SingleProteinPage";
+import SingleProteinPage from "./SingleProteinPage";
 
-export default function PhosphositesOnProteinHeatmapPage() {
-  return <SingleProteinPage activeTab="heatmap" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function PhosphositesOnProteinHeatmapPage({ onContextModeChange }: Props) {
+  return <SingleProteinPage activeTab="heatmap" onContextModeChange={onContextModeChange} />;
 }
-

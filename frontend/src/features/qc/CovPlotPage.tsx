@@ -1,6 +1,9 @@
-﻿import QCPipelinePage from "./QCPipelinePage";
+import QCPipelinePage from "./QCPipelinePage";
 
-export default function CovPlotPage() {
-  return <QCPipelinePage activeTab="cv" />;
+type Props = {
+  onWorkflowScopeChange?: (workflow: string) => void;
+};
+
+export default function CovPlotPage({ onWorkflowScopeChange }: Props) {
+  return <QCPipelinePage activeTab="cv" onWorkflowScopeChange={onWorkflowScopeChange} />;
 }
-

@@ -16,6 +16,7 @@ import type {
 
 type Props = {
   activeTab: SingleProteinTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
 type PlotView = {
@@ -30,7 +31,7 @@ type TableRequest = {
   params: Record<string, string | number | boolean>;
 };
 
-export default function SingleProteinPage({ activeTab }: Props) {
+export default function SingleProteinPage({ activeTab, onContextModeChange }: Props) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [options, setOptions] = useState<SingleProteinOptionsResponse | null>(null);
@@ -325,6 +326,79 @@ export default function SingleProteinPage({ activeTab }: Props) {
       cancelled = true;
     };
   }, [tableRequest]);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    if (activeTab !== "boxplot" && activeTab !== "lineplot" && activeTab !== "heatmap") {
+      onContextModeChange("");
+      return;
+    }
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts =
+      activeTab === "boxplot"
+        ? [
+            `kind=${effectiveKind}`,
+            `tab=boxplot`,
+            `identifier=${box.identifier}`,
+            `protein=${sanitize(box.protein)}`,
+            `conditions=${box.conditions.map((value) => sanitize(value)).join(",")}`,
+            `outliers=${box.outliers ? "true" : "false"}`,
+            `dots=${box.dots ? "true" : "false"}`,
+            `header=${box.header ? "true" : "false"}`,
+            `legend=${box.legend ? "true" : "false"}`,
+          ]
+        : activeTab === "lineplot"
+        ? [
+            `kind=${effectiveKind}`,
+            `tab=lineplot`,
+            `identifier=${line.identifier}`,
+            `proteins=${line.proteins.map((value) => sanitize(value)).join(",")}`,
+            `conditions=${line.conditions.map((value) => sanitize(value)).join(",")}`,
+            `includeId=${line.includeId ? "true" : "false"}`,
+            `header=${line.header ? "true" : "false"}`,
+            `legend=${line.legend ? "true" : "false"}`,
+          ]
+        : [
+            `kind=phospho`,
+            `tab=heatmap`,
+            `identifier=${heatmap.identifier}`,
+            `protein=${sanitize(heatmap.protein)}`,
+            `conditions=${heatmap.conditions.map((value) => sanitize(value)).join(",")}`,
+            `includeId=${heatmap.includeId ? "true" : "false"}`,
+            `header=${heatmap.header ? "true" : "false"}`,
+            `filterM1=${heatmap.filterM1 ? "true" : "false"}`,
+            `clusterRows=${heatmap.clusterRows ? "true" : "false"}`,
+            `clusterCols=${heatmap.clusterCols ? "true" : "false"}`,
+            `valueType=${heatmap.valueType}`,
+          ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    activeTab,
+    effectiveKind,
+    box.identifier,
+    box.protein,
+    box.conditions,
+    box.outliers,
+    box.dots,
+    box.header,
+    box.legend,
+    line.identifier,
+    line.proteins,
+    line.conditions,
+    line.includeId,
+    line.header,
+    line.legend,
+    heatmap.identifier,
+    heatmap.protein,
+    heatmap.conditions,
+    heatmap.includeId,
+    heatmap.header,
+    heatmap.filterM1,
+    heatmap.clusterRows,
+    heatmap.clusterCols,
+    heatmap.valueType,
+  ]);
 
   const tableCsvUrl = useMemo(() => {
     if (tableRows.length === 0) return null;

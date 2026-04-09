@@ -1,5 +1,9 @@
 import PhosphoSpecificPage from "./PhosphoSpecificPage";
 
-export default function PhosphositeCoveragePage() {
-  return <PhosphoSpecificPage activeTab="coverage" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function PhosphositeCoveragePage({ onContextModeChange }: Props) {
+  return <PhosphoSpecificPage activeTab="coverage" onContextModeChange={onContextModeChange} />;
 }

@@ -1,6 +1,9 @@
-﻿import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
+import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
 
-export default function PathwayHeatmapPage() {
-  return <StatisticalAnalysisPage activeTab="pathwayHeatmap" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function PathwayHeatmapPage({ onContextModeChange }: Props) {
+  return <StatisticalAnalysisPage activeTab="pathwayHeatmap" onContextModeChange={onContextModeChange} />;
 }
-

@@ -19,13 +19,13 @@ type AppShellProps = {
   topBar?: ReactNode;
   activeModuleKey?: string;
   activeWorkflowScope?: string;
+  activeContextMode?: string;
   aiEnabled?: boolean;
   rightPanel?: "none" | "list" | "chat";
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
   children: ReactNode;
 };
 
-type AssistantSegmentKind = "thinking" | "answer";
 
 const CHAT_READY_MESSAGE = "AI chat is ready. Ask me about your data, plots, or next analysis steps.";
 const MAX_MODEL_HISTORY_MESSAGES = 8;
@@ -68,7 +68,13 @@ function isGeneralProteomicsModule(moduleKey: string): boolean {
   return key.startsWith("data.") || key.startsWith("analysis.") || key.startsWith("summary.");
 }
 
-const MODULES_WITH_SPECIFIC_CONTEXT = new Set(["qc.coverage"]);
+const MODULES_WITH_SPECIFIC_CONTEXT = new Set([
+  "qc.coverage",
+  "qc.histogram",
+  "qc.boxplot",
+  "qc.cv",
+  "qc.pca",
+]);
 
 function contextFunctionNames(context: ModuleContextResponse | null | undefined): string[] {
   if (!context || !context.contextData || typeof context.contextData !== "object") return [];
@@ -109,48 +115,84 @@ function contextModuleLabelForUi(
   return moduleKeyToLabel(moduleKey);
 }
 
-function contextRequestKey(moduleKey: string, workflowScope: string): string {
+function contextRequestKey(moduleKey: string, workflowScope: string, contextMode: string): string {
   const moduleValue = String(moduleKey || "").trim();
   const workflowValue = String(workflowScope || "").trim().toLowerCase();
-  if (!moduleValue) return workflowValue ? `workflow:${workflowValue}` : "";
-  return workflowValue ? `${moduleValue}::${workflowValue}` : moduleValue;
+  const modeValue = String(contextMode || "").trim().toLowerCase();
+  if (!moduleValue) {
+    if (workflowValue && modeValue) return `workflow:${workflowValue}::mode:${modeValue}`;
+    if (workflowValue) return `workflow:${workflowValue}`;
+    if (modeValue) return `mode:${modeValue}`;
+    return "";
+  }
+  if (workflowValue && modeValue) return `${moduleValue}::${workflowValue}::${modeValue}`;
+  if (workflowValue) return `${moduleValue}::${workflowValue}`;
+  if (modeValue) return `${moduleValue}::${modeValue}`;
+  return moduleValue;
 }
 
-function parseAssistantSegments(content: string): Array<{ kind: AssistantSegmentKind; text: string }> {
-  const text = String(content ?? "");
-  if (!text) return [];
-  const segments: Array<{ kind: AssistantSegmentKind; text: string }> = [];
+function normalizeThinkingMarkup(content: string): string {
+  let text = String(content ?? "");
+  if (!text) return "";
+  text = text.replace(
+    /```(?:thinking|reasoning|thought)\s*([\s\S]*?)```/gi,
+    (_match, body: string) => `<think>${String(body ?? "")}</think>`
+  );
+  text = text.replace(/<\s*(thinking|reasoning|thought)(?:\s+[^>]*)?>/gi, "<think>");
+  text = text.replace(/<\s*\/\s*(thinking|reasoning|thought)\s*>/gi, "</think>");
+  text = text.replace(/<\s*think(?:\s+[^>]*)?>/gi, "<think>");
+  text = text.replace(/<\s*\/\s*think\s*>/gi, "</think>");
+  return text;
+}
+
+function splitAssistantContent(content: string): { thinking: string; answer: string } {
+  const text = normalizeThinkingMarkup(content);
+  if (!text) return { thinking: "", answer: "" };
   const tagRegex = /<\/?think>/gi;
   let cursor = 0;
-  let mode: AssistantSegmentKind = "answer";
+  let inThinking = false;
+  const thinkingParts: string[] = [];
+  const answerParts: string[] = [];
   let match: RegExpExecArray | null;
 
   while ((match = tagRegex.exec(text)) !== null) {
     const index = match.index;
     if (index > cursor) {
       const chunk = text.slice(cursor, index);
-      if (chunk) segments.push({ kind: mode, text: chunk });
+      if (chunk) {
+        if (inThinking) {
+          thinkingParts.push(chunk);
+        } else {
+          answerParts.push(chunk);
+        }
+      }
     }
-    mode = String(match[0]).toLowerCase() === "<think>" ? "thinking" : "answer";
+    inThinking = String(match[0]).toLowerCase() === "<think>";
     cursor = tagRegex.lastIndex;
   }
 
   if (cursor < text.length) {
     const tail = text.slice(cursor);
-    if (tail) segments.push({ kind: mode, text: tail });
+    if (tail) {
+      if (inThinking) {
+        thinkingParts.push(tail);
+      } else {
+        answerParts.push(tail);
+      }
+    }
   }
 
-  if (segments.length === 0) {
-    return [{ kind: "answer", text }];
-  }
-  return segments;
+  const thinking = thinkingParts.join("").replace(/\n{3,}/g, "\n\n").trim();
+  const answer = answerParts.join("").replace(/\n{3,}/g, "\n\n").trim();
+  return { thinking, answer };
 }
 
 function stripThinkingBlocks(content: string): string {
-  const text = String(content ?? "");
+  const text = normalizeThinkingMarkup(content);
   if (!text) return "";
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -175,6 +217,7 @@ export default function AppShell({
   topBar,
   activeModuleKey = "",
   activeWorkflowScope = "",
+  activeContextMode = "",
   aiEnabled = false,
   rightPanel = "none",
   onRightPanelChange,
@@ -220,7 +263,8 @@ export default function AppShell({
   const chatOpen = aiEnabled && rightPanel === "chat";
   const moduleKey = activeModuleKey.trim();
   const workflowScope = String(activeWorkflowScope || "").trim().toLowerCase();
-  const activeContextRequestKey = contextRequestKey(moduleKey, workflowScope);
+  const contextMode = String(activeContextMode || "").trim();
+  const activeContextRequestKey = contextRequestKey(moduleKey, workflowScope, contextMode);
   const usingOllama = chatProvider === "ollama";
   const selectedChatModel = usingOllama ? chatModel.trim() : chatRemoteModel.trim();
 
@@ -404,10 +448,11 @@ export default function AppShell({
   async function fetchModuleContext(
     requestedModuleKey: string,
     requestedWorkflowScope: string,
+    requestedContextMode: string,
     forceRefresh = false
   ): Promise<ModuleContextResponse | null> {
     if (!aiEnabled || !requestedModuleKey) return null;
-    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope);
+    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope, requestedContextMode);
     if (!requestKey) return null;
 
     if (!forceRefresh) {
@@ -418,7 +463,11 @@ export default function AppShell({
     const pending = contextPendingRef.current[requestKey];
     if (pending) return pending;
 
-    const nextPromise = getAiModuleContext(requestedModuleKey, requestedWorkflowScope || undefined)
+    const nextPromise = getAiModuleContext(
+      requestedModuleKey,
+      requestedWorkflowScope || undefined,
+      requestedContextMode || undefined
+    )
       .then((context) => {
         contextCacheRef.current[requestKey] = context;
         return context;
@@ -434,11 +483,12 @@ export default function AppShell({
   function pushContextMessage(
     requestedModuleKey: string,
     requestedWorkflowScope: string,
+    requestedContextMode: string,
     context: ModuleContextResponse | null
   ) {
     if (!AI_DEV_MODE) return;
     if (!context) return;
-    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope);
+    const requestKey = contextRequestKey(requestedModuleKey, requestedWorkflowScope, requestedContextMode);
     if (!requestKey) return;
     const contextText = String(context.contextPrompt || "").trim();
     if (!contextText) return;
@@ -465,18 +515,18 @@ export default function AppShell({
     let cancelled = false;
     const cached = contextCacheRef.current[activeContextRequestKey];
     setContextModuleLabel(contextModuleLabelForUi(moduleKey, cached?.moduleTitle || "", cached));
-    pushContextMessage(moduleKey, workflowScope, cached);
+    pushContextMessage(moduleKey, workflowScope, contextMode, cached);
 
-    void fetchModuleContext(moduleKey, workflowScope).then((context) => {
+    void fetchModuleContext(moduleKey, workflowScope, contextMode).then((context) => {
       if (cancelled || !context) return;
       setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
-      pushContextMessage(moduleKey, workflowScope, context);
+      pushContextMessage(moduleKey, workflowScope, contextMode, context);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, moduleKey, workflowScope, activeContextRequestKey]);
+  }, [aiEnabled, moduleKey, workflowScope, contextMode, activeContextRequestKey]);
 
   useEffect(() => {
     if (!aiEnabled) return undefined;
@@ -484,13 +534,13 @@ export default function AppShell({
       contextCacheRef.current = {};
       contextAnnouncementRef.current = {};
       if (!moduleKey) return;
-      void fetchModuleContext(moduleKey, workflowScope, true).then((context) => {
+      void fetchModuleContext(moduleKey, workflowScope, contextMode, true).then((context) => {
         if (!context) return;
         setContextModuleLabel(contextModuleLabelForUi(moduleKey, context.moduleTitle || "", context));
-        pushContextMessage(moduleKey, workflowScope, context);
+        pushContextMessage(moduleKey, workflowScope, contextMode, context);
       });
     });
-  }, [aiEnabled, moduleKey, workflowScope]);
+  }, [aiEnabled, moduleKey, workflowScope, contextMode]);
 
   async function sendChatMessage() {
     const message = chatInput.trim();
@@ -533,7 +583,7 @@ export default function AppShell({
           contextPrompt = cached.contextPrompt;
         } else {
           const contextOrNull = await Promise.race<ModuleContextResponse | null>([
-            fetchModuleContext(moduleKey, workflowScope),
+            fetchModuleContext(moduleKey, workflowScope, contextMode),
             new Promise<null>((resolve) => {
               window.setTimeout(() => resolve(null), 300);
             }),
@@ -900,31 +950,26 @@ export default function AppShell({
                     ].join(" ")}
                   >
                     {item.role === "assistant" ? (
-                      <div className="space-y-2">
-                        {parseAssistantSegments(item.content).map((segment, segmentIndex) => (
-                          <div
-                            key={`${index}-${segmentIndex}-${segment.kind}`}
-                            className={
-                              segment.kind === "thinking"
-                                ? "rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5"
-                                : ""
-                            }
-                          >
-                            <div
-                              className={
-                                segment.kind === "thinking"
-                                  ? "mb-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
-                                  : "mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500"
-                              }
-                            >
-                              {segment.kind === "thinking" ? "Thinking" : "Answer"}
-                            </div>
-                            <div className="whitespace-pre-wrap break-words">
-                              {segment.text}
-                            </div>
+                      (() => {
+                        const parsed = splitAssistantContent(item.content);
+                        return (
+                          <div className="space-y-2">
+                            {parsed.thinking ? (
+                              <details className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
+                                <summary className="cursor-pointer select-none text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                                  Thinking
+                                </summary>
+                                <div className="mt-1 whitespace-pre-wrap break-words text-slate-800">
+                                  {parsed.thinking}
+                                </div>
+                              </details>
+                            ) : null}
+                            {parsed.answer ? (
+                              <div className="whitespace-pre-wrap break-words">{parsed.answer}</div>
+                            ) : null}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })()
                     ) : (
                       <div className="whitespace-pre-wrap break-words">{item.content}</div>
                     )}

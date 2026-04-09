@@ -1,6 +1,9 @@
-﻿import SingleProteinPage from "./SingleProteinPage";
+import SingleProteinPage from "./SingleProteinPage";
 
-export default function ProteinLineplotPage() {
-  return <SingleProteinPage activeTab="lineplot" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function ProteinLineplotPage({ onContextModeChange }: Props) {
+  return <SingleProteinPage activeTab="lineplot" onContextModeChange={onContextModeChange} />;
 }
-

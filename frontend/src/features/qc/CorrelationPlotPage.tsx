@@ -1,6 +1,9 @@
-﻿import QCPipelinePage from "./QCPipelinePage";
+import QCPipelinePage from "./QCPipelinePage";
 
-export default function CorrelationPlotPage() {
-  return <QCPipelinePage activeTab="correlation" />;
+type Props = {
+  onWorkflowScopeChange?: (workflow: string) => void;
+};
+
+export default function CorrelationPlotPage({ onWorkflowScopeChange }: Props) {
+  return <QCPipelinePage activeTab="correlation" onWorkflowScopeChange={onWorkflowScopeChange} />;
 }
-

@@ -34,9 +34,10 @@ import type {
 
 type Props = {
   activeTab: StatsTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
-export default function StatisticalAnalysisPage({ activeTab }: Props) {
+export default function StatisticalAnalysisPage({ activeTab, onContextModeChange }: Props) {
   const { kindOptions } = useCurrentDatasetsSnapshot();
 
   if (kindOptions.length === 0) {
@@ -49,9 +50,9 @@ export default function StatisticalAnalysisPage({ activeTab }: Props) {
     );
   }
 
-  if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} />;
-  if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} />;
-  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} />;
+  if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
+  if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
+  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
   return <SimulationPanel kindOptions={kindOptions} />;
 }
 
@@ -341,8 +342,10 @@ function InfoSection({ message }: { message: string }) {
 
 function VolcanoPanel({
   kindOptions,
+  onContextModeChange,
 }: {
   kindOptions: { value: string; label: string }[];
+  onContextModeChange?: (mode: string) => void;
 }) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">("volcano");
@@ -434,6 +437,40 @@ function VolcanoPanel({
     testType,
     useUncorrected,
     highlightTerms,
+  ]);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts = [
+      `source=${sourceMode}`,
+      `kind=${kind}`,
+      `dataSource=${dataSource}`,
+      `condition1=${sanitize(condition1)}`,
+      `condition2=${sanitize(condition2)}`,
+      `condition1Control=${sanitize(condition1Control)}`,
+      `condition2Control=${sanitize(condition2Control)}`,
+      `identifier=${identifier}`,
+      `testType=${testType}`,
+      `pValueThreshold=${pValueThreshold}`,
+      `log2fcThreshold=${log2fcThreshold}`,
+      `useUncorrected=${useUncorrected ? "true" : "false"}`,
+    ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    sourceMode,
+    kind,
+    dataSource,
+    condition1,
+    condition2,
+    condition1Control,
+    condition2Control,
+    identifier,
+    testType,
+    pValueThreshold,
+    log2fcThreshold,
+    useUncorrected,
   ]);
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
 
@@ -704,8 +741,10 @@ function VolcanoPanel({
 
 function GseaPanel({
   kindOptions,
+  onContextModeChange,
 }: {
   kindOptions: { value: string; label: string }[];
+  onContextModeChange?: (mode: string) => void;
 }) {
   const gseaKindOptions = useMemo(
     () => kindOptions.filter((option) => option.value === "protein" || option.value === "phosprot"),
@@ -766,6 +805,42 @@ function GseaPanel({
       condition1 !== condition2 &&
       controlSelectionValid
   );
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts = [
+      `source=${sourceMode}`,
+      `kind=${kind}`,
+      `condition1=${sanitize(condition1)}`,
+      `condition2=${sanitize(condition2)}`,
+      `condition1Control=${sanitize(condition1Control)}`,
+      `condition2Control=${sanitize(condition2Control)}`,
+      `testType=${testType}`,
+      `pValueThreshold=${pValueThreshold}`,
+      `log2fcThreshold=${log2fcThreshold}`,
+      `useUncorrected=${useUncorrected ? "true" : "false"}`,
+      `topN=${topN}`,
+      `minTermSize=${minTermSize}`,
+      `maxTermSize=${maxTermSize}`,
+    ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    sourceMode,
+    kind,
+    condition1,
+    condition2,
+    condition1Control,
+    condition2Control,
+    testType,
+    pValueThreshold,
+    log2fcThreshold,
+    useUncorrected,
+    topN,
+    minTermSize,
+    maxTermSize,
+  ]);
 
   useEffect(() => {
     if (!geneNamesAvailable || !canRun) {
@@ -973,8 +1048,10 @@ function GseaPanel({
 
 function PathwayHeatmapPanel({
   kindOptions,
+  onContextModeChange,
 }: {
   kindOptions: { value: string; label: string }[];
+  onContextModeChange?: (mode: string) => void;
 }) {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
@@ -1022,6 +1099,34 @@ function PathwayHeatmapPanel({
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load pathway options"));
   }, []);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts = [
+      `kind=${kind}`,
+      `pathway=${sanitize(pathway)}`,
+      `conditions=${selectedConditions.map((value) => sanitize(value)).join(",")}`,
+      `valueType=${valueType}`,
+      `removeEmpty=${removeEmpty ? "true" : "false"}`,
+      `includeId=${includeId ? "true" : "false"}`,
+      `header=${header ? "true" : "false"}`,
+      `clusterRows=${clusterRows ? "true" : "false"}`,
+      `clusterCols=${clusterCols ? "true" : "false"}`,
+    ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    kind,
+    pathway,
+    selectedConditions,
+    valueType,
+    removeEmpty,
+    includeId,
+    header,
+    clusterRows,
+    clusterCols,
+  ]);
 
   const heatmapUrl = buildPlotUrl(`/api/plots/stats/${kind}/pathway-heatmap.png`, {
     pathway,
