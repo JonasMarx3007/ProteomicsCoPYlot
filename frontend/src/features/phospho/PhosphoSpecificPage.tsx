@@ -13,6 +13,7 @@ import type { PhosphoOptionsResponse, PhosphoTab } from "../../lib/types";
 
 type Props = {
   activeTab: PhosphoTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
 type PlotView = {
@@ -27,7 +28,7 @@ type TableRequest = {
   params?: Record<string, string | number | boolean>;
 } | null;
 
-export default function PhosphoSpecificPage({ activeTab }: Props) {
+export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: Props) {
   const { datasets } = useCurrentDatasetsSnapshot();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
@@ -418,6 +419,73 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
     };
   }, [tableRequest, hasPhosphoDataset]);
 
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    if (
+      !hasPhosphoDataset ||
+      (
+        activeTab !== "phosphositePlot" &&
+        activeTab !== "coverage" &&
+        activeTab !== "distribution" &&
+        activeTab !== "sty" &&
+        activeTab !== "phosprotRegulation"
+      )
+    ) {
+      onContextModeChange("");
+      return;
+    }
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts =
+      activeTab === "phosphositePlot"
+        ? [
+            "tab=phosphositePlot",
+            `cutoff=${debouncedPhosphositePlot.cutoff}`,
+          ]
+        : activeTab === "distribution"
+        ? [
+            "tab=distribution",
+            `cutoff=${debouncedDistribution.cutoff}`,
+          ]
+        : activeTab === "sty"
+        ? ["tab=sty"]
+        : activeTab === "phosprotRegulation"
+        ? [
+            "tab=phosprotRegulation",
+            `condition1=${sanitize(debouncedPhosprotRegulation.condition1)}`,
+            `condition2=${sanitize(debouncedPhosprotRegulation.condition2)}`,
+            `pValueThreshold=${debouncedPhosprotRegulation.pValueThreshold}`,
+            `log2fcThreshold=${debouncedPhosprotRegulation.log2fcThreshold}`,
+            `testType=${debouncedPhosprotRegulation.testType}`,
+            `useUncorrected=${debouncedPhosprotRegulation.useUncorrected ? "true" : "false"}`,
+            `maxHoverSites=${debouncedPhosprotRegulation.maxHoverSites}`,
+            `showPhosphosites=${debouncedPhosprotRegulation.showPhosphosites ? "true" : "false"}`,
+          ]
+        : [
+            "tab=coverage",
+            `mode=${coverage.mode}`,
+            `includeId=${coverage.includeId ? "true" : "false"}`,
+            `conditions=${coverage.conditions.map((value) => sanitize(value)).join(",")}`,
+          ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    hasPhosphoDataset,
+    activeTab,
+    debouncedPhosphositePlot.cutoff,
+    debouncedDistribution.cutoff,
+    debouncedPhosprotRegulation.condition1,
+    debouncedPhosprotRegulation.condition2,
+    debouncedPhosprotRegulation.pValueThreshold,
+    debouncedPhosprotRegulation.log2fcThreshold,
+    debouncedPhosprotRegulation.testType,
+    debouncedPhosprotRegulation.useUncorrected,
+    debouncedPhosprotRegulation.maxHoverSites,
+    debouncedPhosprotRegulation.showPhosphosites,
+    coverage.mode,
+    coverage.includeId,
+    coverage.conditions,
+  ]);
+
   const tableCsvUrl = useMemo(() => {
     if (tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
@@ -444,10 +512,6 @@ export default function PhosphoSpecificPage({ activeTab }: Props) {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Phospho-specific Pipeline</h2>
-      </section>
-
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         {!hasPhosphoDataset ? (

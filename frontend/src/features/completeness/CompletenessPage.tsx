@@ -11,6 +11,7 @@ import type { AnnotationKind, CompletenessTab, CompletenessTablesResponse } from
 
 type Props = {
   activeTab: CompletenessTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
 type CompletenessKind = AnnotationKind | "peptide" | "precursor";
@@ -19,7 +20,7 @@ function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
 }
 
-export default function CompletenessPage({ activeTab }: Props) {
+export default function CompletenessPage({ activeTab, onContextModeChange }: Props) {
   const [kind, setKind] = useState<CompletenessKind>("protein");
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
@@ -91,6 +92,21 @@ export default function CompletenessPage({ activeTab }: Props) {
       setKind(activeKindOptions[0].value);
     }
   }, [activeKindOptions, kind]);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    if (activeTab !== "missingPlot" && activeTab !== "heatmap" && activeTab !== "tables") {
+      onContextModeChange("");
+      return;
+    }
+    if (activeTab === "tables") {
+      onContextModeChange(
+        `kind=${kind}|outlierThreshold=${tables.outlierThreshold}|includeId=${tables.includeId ? "true" : "false"}`
+      );
+      return;
+    }
+    onContextModeChange(`kind=${kind}`);
+  }, [activeTab, kind, tables.outlierThreshold, tables.includeId, onContextModeChange]);
 
   useEffect(() => {
     if (activeTab !== "tables") return;

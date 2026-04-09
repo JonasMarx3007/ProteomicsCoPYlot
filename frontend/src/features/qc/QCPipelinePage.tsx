@@ -13,6 +13,8 @@ import type { AnnotationKind, QcTab } from "../../lib/types";
 type Props = {
   activeTab: QcTab;
   onWorkflowScopeChange?: (workflow: string) => void;
+  onBoxplotModeChange?: (mode: string) => void;
+  onPcaContextModeChange?: (mode: string) => void;
 };
 
 type QcTableRequest = {
@@ -33,7 +35,12 @@ function workflowScopeFromKind(kind: QcKind): string {
   return "protein";
 }
 
-export default function QCPipelinePage({ activeTab, onWorkflowScopeChange }: Props) {
+export default function QCPipelinePage({
+  activeTab,
+  onWorkflowScopeChange,
+  onBoxplotModeChange,
+  onPcaContextModeChange,
+}: Props) {
   const [kind, setKind] = useState<QcKind>("protein");
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
@@ -157,16 +164,38 @@ export default function QCPipelinePage({ activeTab, onWorkflowScopeChange }: Pro
 
   useEffect(() => {
     if (!onWorkflowScopeChange) return;
-    if (activeTab !== "coverage") {
-      onWorkflowScopeChange("");
-      return;
-    }
     if (activeKindOptions.length === 0) {
       onWorkflowScopeChange("");
       return;
     }
     onWorkflowScopeChange(workflowScopeFromKind(kind));
-  }, [activeTab, activeKindOptions, kind, onWorkflowScopeChange]);
+  }, [activeKindOptions, kind, onWorkflowScopeChange]);
+
+  useEffect(() => {
+    if (!onBoxplotModeChange) return;
+    if (activeTab !== "boxplot") {
+      onBoxplotModeChange("");
+      return;
+    }
+    onBoxplotModeChange(String(box.mode || "").trim());
+  }, [activeTab, box.mode, onBoxplotModeChange]);
+
+  useEffect(() => {
+    if (!onPcaContextModeChange) return;
+    if (activeTab !== "pca") {
+      onPcaContextModeChange("");
+      return;
+    }
+    const method = String(pca.method || "").trim();
+    const plotDim = String(pca.plotDim || "").trim();
+    const type = String(pca.type || "").trim();
+    const parts = [
+      `method=${method || "PCA"}`,
+      `plotDim=${plotDim || "2D"}`,
+      `type=${type || "Normal"}`,
+    ];
+    onPcaContextModeChange(parts.join("|"));
+  }, [activeTab, pca.method, pca.plotDim, pca.type, onPcaContextModeChange]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {

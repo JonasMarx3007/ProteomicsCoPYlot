@@ -11,6 +11,7 @@ import type { AnnotationKind, ComparisonOptionsResponse, ComparisonTab } from ".
 
 type Props = {
   activeTab: ComparisonTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
 type PlotView = {
@@ -24,7 +25,7 @@ type TableRequest = {
   params: Record<string, string | number | boolean>;
 } | null;
 
-export default function ComparisonPipelinePage({ activeTab }: Props) {
+export default function ComparisonPipelinePage({ activeTab, onContextModeChange }: Props) {
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const [options, setOptions] = useState<ComparisonOptionsResponse | null>(null);
@@ -257,6 +258,65 @@ export default function ComparisonPipelinePage({ activeTab }: Props) {
       params,
     };
   }, [activeTab, hasKind, pearson, pearsonReady, venn, vennReady]);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    if (!hasKind) {
+      onContextModeChange("");
+      return;
+    }
+    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const parts =
+      activeTab === "pearson"
+        ? [
+            `kind=${kind}`,
+            "tab=pearson",
+            `mode=${pearson.mode}`,
+            `sample1=${sanitize(pearson.sample1)}`,
+            `sample2=${sanitize(pearson.sample2)}`,
+            `condition1=${sanitize(pearson.condition1)}`,
+            `condition2=${sanitize(pearson.condition2)}`,
+            `alias1=${sanitize(pearson.alias1)}`,
+            `alias2=${sanitize(pearson.alias2)}`,
+          ]
+        : [
+            `kind=${kind}`,
+            "tab=venn",
+            `mode=${venn.mode}`,
+            `first=${sanitize(venn.first)}`,
+            `second=${sanitize(venn.second)}`,
+            `third=${sanitize(venn.third)}`,
+            `alias1=${sanitize(venn.alias1)}`,
+            `alias2=${sanitize(venn.alias2)}`,
+            `alias3=${sanitize(venn.alias3)}`,
+            `color1=${sanitize(venn.color1)}`,
+            `color2=${sanitize(venn.color2)}`,
+            `color3=${sanitize(venn.color3)}`,
+          ];
+    onContextModeChange(parts.join("|"));
+  }, [
+    onContextModeChange,
+    activeTab,
+    hasKind,
+    kind,
+    pearson.mode,
+    pearson.sample1,
+    pearson.sample2,
+    pearson.condition1,
+    pearson.condition2,
+    pearson.alias1,
+    pearson.alias2,
+    venn.mode,
+    venn.first,
+    venn.second,
+    venn.third,
+    venn.alias1,
+    venn.alias2,
+    venn.alias3,
+    venn.color1,
+    venn.color2,
+    venn.color3,
+  ]);
 
   useEffect(() => {
     if (!tableRequest || !hasKind) {

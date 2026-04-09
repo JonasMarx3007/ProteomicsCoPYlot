@@ -1,6 +1,9 @@
-﻿import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
+import StatisticalAnalysisPage from "./StatisticalAnalysisPage";
 
-export default function VolcanoPlotPage() {
-  return <StatisticalAnalysisPage activeTab="volcano" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function VolcanoPlotPage({ onContextModeChange }: Props) {
+  return <StatisticalAnalysisPage activeTab="volcano" onContextModeChange={onContextModeChange} />;
 }
-

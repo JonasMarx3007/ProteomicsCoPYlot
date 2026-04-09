@@ -1,5 +1,9 @@
 import CompletenessPage from "./CompletenessPage";
 
-export default function CompletenessTablesPage() {
-  return <CompletenessPage activeTab="tables" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function CompletenessTablesPage({ onContextModeChange }: Props) {
+  return <CompletenessPage activeTab="tables" onContextModeChange={onContextModeChange} />;
 }

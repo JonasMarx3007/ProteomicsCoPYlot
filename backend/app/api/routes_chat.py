@@ -86,7 +86,11 @@ async def module_context_route(payload: ModuleContextRequest) -> ModuleContextRe
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
-        return build_module_context(payload.moduleKey, workflow_hint=payload.workflow)
+        return build_module_context(
+            payload.moduleKey,
+            workflow_hint=payload.workflow,
+            mode_hint=payload.mode,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

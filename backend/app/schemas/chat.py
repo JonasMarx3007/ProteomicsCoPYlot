@@ -65,6 +65,7 @@ class OllamaModelManageResponse(BaseModel):
 class ModuleContextRequest(BaseModel):
     moduleKey: str = Field(default="", min_length=1)
     workflow: str | None = Field(default=None, min_length=1)
+    mode: str | None = Field(default=None, min_length=1)
 
 
 class ModuleContextResponse(BaseModel):

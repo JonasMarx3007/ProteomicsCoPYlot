@@ -1,6 +1,9 @@
-﻿import SingleProteinPage from "./SingleProteinPage";
+import SingleProteinPage from "./SingleProteinPage";
 
-export default function ProteinBoxplotPage() {
-  return <SingleProteinPage activeTab="boxplot" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function ProteinBoxplotPage({ onContextModeChange }: Props) {
+  return <SingleProteinPage activeTab="boxplot" onContextModeChange={onContextModeChange} />;
 }
-

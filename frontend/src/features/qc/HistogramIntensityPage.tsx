@@ -1,6 +1,9 @@
-﻿import QCPipelinePage from "./QCPipelinePage";
+import QCPipelinePage from "./QCPipelinePage";
 
-export default function HistogramIntensityPage() {
-  return <QCPipelinePage activeTab="histogram" />;
+type Props = {
+  onWorkflowScopeChange?: (workflow: string) => void;
+};
+
+export default function HistogramIntensityPage({ onWorkflowScopeChange }: Props) {
+  return <QCPipelinePage activeTab="histogram" onWorkflowScopeChange={onWorkflowScopeChange} />;
 }
-

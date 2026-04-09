@@ -1084,9 +1084,11 @@ export async function streamChatMessage(
 
 export async function getAiModuleContext(
   moduleKey: string,
-  workflow?: string
+  workflow?: string,
+  mode?: string
 ): Promise<ModuleContextResponse> {
   const workflowValue = String(workflow ?? "").trim();
+  const modeValue = String(mode ?? "").trim();
   const response = await fetch(`${API_BASE}/api/chat/module-context`, {
     method: "POST",
     headers: {
@@ -1095,6 +1097,7 @@ export async function getAiModuleContext(
     body: JSON.stringify({
       moduleKey,
       workflow: workflowValue || undefined,
+      mode: modeValue || undefined,
     }),
   });
   const data = await parseJson(response);

@@ -1,5 +1,9 @@
 import ComparisonPipelinePage from "./ComparisonPipelinePage";
 
-export default function VennDiagramPage() {
-  return <ComparisonPipelinePage activeTab="venn" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function VennDiagramPage({ onContextModeChange }: Props) {
+  return <ComparisonPipelinePage activeTab="venn" onContextModeChange={onContextModeChange} />;
 }

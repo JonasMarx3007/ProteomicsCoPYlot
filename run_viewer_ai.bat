@@ -13,6 +13,8 @@ if "%~1"=="" goto :args_done
 set "ARG=%~1"
 if /I "!ARG!"=="--dev" (
   set "DEV_MODE=1"
+) else if /I "!ARG!"=="--dev0" (
+  set "DEV_MODE=2"
 ) else (
   if "!ARG:~0,2!"=="--" set "ARG=!ARG:~2!"
   if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
@@ -29,6 +31,16 @@ if "%DEV_MODE%"=="1" (
     )
   ) else (
     echo Warning: --dev requested but dev config file not found: "!DEV_CONFIG!"
+  )
+)
+if "%DEV_MODE%"=="2" (
+  set "DEV_CONFIG=%ROOT%dev_ai.local.env"
+  if exist "!DEV_CONFIG!" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
+      if /I "%%~A"=="COPYLOT_DEV_OLLAMA_ENDPOINT" set "DEV_OLLAMA_ENDPOINT=%%~B"
+    )
+  ) else (
+    echo Warning: --dev0 requested but dev config file not found: "!DEV_CONFIG!"
   )
 )
 
@@ -80,6 +92,8 @@ if "%BACKEND_READY%"=="0" (
 
 if "%DEV_MODE%"=="1" (
   start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+ ) else if "%DEV_MODE%"=="2" (
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 ) else (
   start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 )

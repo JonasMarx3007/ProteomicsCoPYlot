@@ -1,6 +1,9 @@
-﻿import QCPipelinePage from "./QCPipelinePage";
+import QCPipelinePage from "./QCPipelinePage";
 
-export default function AbundancePlotPage() {
-  return <QCPipelinePage activeTab="abundance" />;
+type Props = {
+  onWorkflowScopeChange?: (workflow: string) => void;
+};
+
+export default function AbundancePlotPage({ onWorkflowScopeChange }: Props) {
+  return <QCPipelinePage activeTab="abundance" onWorkflowScopeChange={onWorkflowScopeChange} />;
 }
-
