@@ -10,6 +10,7 @@ import type {
   StatsTestType,
   StatisticalOptionsResponse,
 } from "../../lib/types";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 
 type TileType = "volcano" | "volcanoControl" | "proteinBoxplot" | "proteinLineplot" | "gseaList";
 type BoxplotSourceMode = "active" | "manual";
@@ -41,6 +42,79 @@ type AnalysisTile =
       proteinsText: string;
     }
   | { id: string; type: "gseaList" };
+
+const ANALYSIS_UI_STATE_KEY = "analysis.v1";
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
+
+function asStringRecordArray(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+  const result: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) continue;
+    result[normalizedKey] = asStringArray(raw);
+  }
+  return result;
+}
+
+function asAnalysisTiles(value: unknown): AnalysisTile[] {
+  if (!Array.isArray(value)) return [];
+  const result: AnalysisTile[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const id = asString(item.id);
+    const type = asString(item.type);
+    if (!id) continue;
+    if (type === "volcano" || type === "volcanoControl" || type === "gseaList") {
+      result.push({ id, type });
+      continue;
+    }
+    if (type === "proteinBoxplot") {
+      const sourceMode = asString(item.sourceMode, "active");
+      result.push({
+        id,
+        type,
+        sourceMode:
+          sourceMode === "active" || sourceMode === "manual"
+            ? sourceMode
+            : "active",
+        protein: asString(item.protein),
+      });
+      continue;
+    }
+    if (type === "proteinLineplot") {
+      const sourceMode = asString(item.sourceMode, "active");
+      result.push({
+        id,
+        type,
+        sourceMode:
+          sourceMode === "active" ||
+          sourceMode === "selected" ||
+          sourceMode === "list" ||
+          sourceMode === "manual"
+            ? sourceMode
+            : "active",
+        listName: asString(item.listName),
+        proteinsText: asString(item.proteinsText),
+      });
+      continue;
+    }
+  }
+  return result;
+}
 
 function uid() {
   return `tile_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
@@ -121,48 +195,84 @@ export default function AnalysisPage({
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
   aiEnabled?: boolean;
 }) {
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>(ANALYSIS_UI_STATE_KEY, {}),
+    []
+  );
+  const persistedVolcano = (persisted.volcanoSettings as Record<string, unknown>) ?? {};
+  const persistedVolcanoControl = (persisted.volcanoControlSettings as Record<string, unknown>) ?? {};
   const { kindOptions } = useCurrentDatasetsSnapshot();
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = asString(persisted.kind, "protein");
+    return value === "protein" || value === "phospho" || value === "phosprot"
+      ? value
+      : "protein";
+  });
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
 
-  const [identifier, setIdentifier] = useState<StatsIdentifier>("workflow");
-  const [volcanoSettings, setVolcanoSettings] = useState<VolcanoSettings>({
-    condition1: "",
-    condition2: "",
-    testType: "unpaired",
-    pValueThreshold: 0.05,
-    log2fcThreshold: 1,
-    pValueMode: "corrected",
+  const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
+    const value = asString(persisted.identifier, "workflow");
+    return value === "genes" ? "genes" : "workflow";
   });
-  const [volcanoControlSettings, setVolcanoControlSettings] = useState<VolcanoControlSettings>({
-    condition1: "",
-    condition2: "",
-    condition1Control: "",
-    condition2Control: "",
-    testType: "unpaired",
-    pValueThreshold: 0.05,
-    log2fcThreshold: 1,
-    pValueMode: "corrected",
+  const [volcanoSettings, setVolcanoSettings] = useState<VolcanoSettings>(() => {
+    const testType = asString(persistedVolcano.testType, "unpaired");
+    const pValueMode = asString(persistedVolcano.pValueMode, "corrected");
+    return {
+      condition1: asString(persistedVolcano.condition1),
+      condition2: asString(persistedVolcano.condition2),
+      testType: testType === "paired" ? "paired" : "unpaired",
+      pValueThreshold: asNumber(persistedVolcano.pValueThreshold, 0.05),
+      log2fcThreshold: asNumber(persistedVolcano.log2fcThreshold, 1),
+      pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
+    };
+  });
+  const [volcanoControlSettings, setVolcanoControlSettings] = useState<VolcanoControlSettings>(() => {
+    const testType = asString(persistedVolcanoControl.testType, "unpaired");
+    const pValueMode = asString(persistedVolcanoControl.pValueMode, "corrected");
+    return {
+      condition1: asString(persistedVolcanoControl.condition1),
+      condition2: asString(persistedVolcanoControl.condition2),
+      condition1Control: asString(persistedVolcanoControl.condition1Control),
+      condition2Control: asString(persistedVolcanoControl.condition2Control),
+      testType: testType === "paired" ? "paired" : "unpaired",
+      pValueThreshold: asNumber(persistedVolcanoControl.pValueThreshold, 0.05),
+      log2fcThreshold: asNumber(persistedVolcanoControl.log2fcThreshold, 1),
+      pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
+    };
   });
 
-  const [tiles, setTiles] = useState<AnalysisTile[]>([]);
-  const [addType, setAddType] = useState<TileType>("volcano");
+  const [tiles, setTiles] = useState<AnalysisTile[]>(() => asAnalysisTiles(persisted.tiles));
+  const [addType, setAddType] = useState<TileType>(() => {
+    const value = asString(persisted.addType, "volcano");
+    return value === "volcano" ||
+      value === "volcanoControl" ||
+      value === "proteinBoxplot" ||
+      value === "proteinLineplot" ||
+      value === "gseaList"
+      ? value
+      : "volcano";
+  });
 
   const [volcanoData, setVolcanoData] = useState<AnalysisVolcanoResponse | null>(null);
   const [volcanoControlData, setVolcanoControlData] = useState<AnalysisVolcanoResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const [activeProtein, setActiveProtein] = useState("");
-  const [selectedProteins, setSelectedProteins] = useState<string[]>([]);
+  const [activeProtein, setActiveProtein] = useState(() => asString(persisted.activeProtein));
+  const [selectedProteins, setSelectedProteins] = useState<string[]>(() => asStringArray(persisted.selectedProteins));
 
-  const [lists, setLists] = useState<Record<string, string[]>>({});
-  const [newListName, setNewListName] = useState("");
-  const [activeList, setActiveList] = useState("");
-  const [activeListDraft, setActiveListDraft] = useState("");
-  const [opA, setOpA] = useState("");
-  const [opB, setOpB] = useState("");
-  const [opMode, setOpMode] = useState<"intersection" | "union" | "a_minus_b" | "b_minus_a">("intersection");
-  const [opTarget, setOpTarget] = useState("");
+  const [lists, setLists] = useState<Record<string, string[]>>(() => asStringRecordArray(persisted.lists));
+  const [newListName, setNewListName] = useState(() => asString(persisted.newListName));
+  const [activeList, setActiveList] = useState(() => asString(persisted.activeList));
+  const [activeListDraft, setActiveListDraft] = useState(() => asString(persisted.activeListDraft));
+  const [opA, setOpA] = useState(() => asString(persisted.opA));
+  const [opB, setOpB] = useState(() => asString(persisted.opB));
+  const [opMode, setOpMode] = useState<"intersection" | "union" | "a_minus_b" | "b_minus_a">(() => {
+    const value = asString(persisted.opMode, "intersection");
+    return value === "intersection" || value === "union" || value === "a_minus_b" || value === "b_minus_a"
+      ? value
+      : "intersection";
+  });
+  const [opTarget, setOpTarget] = useState(() => asString(persisted.opTarget));
   const listSidebarOpen = rightPanel === "list";
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
@@ -303,6 +413,44 @@ export default function AnalysisPage({
   ]);
 
   const listNames = useMemo(() => Object.keys(lists).sort(), [lists]);
+
+  useEffect(() => {
+    writePersistedUiState(ANALYSIS_UI_STATE_KEY, {
+      kind,
+      identifier,
+      volcanoSettings,
+      volcanoControlSettings,
+      tiles,
+      addType,
+      activeProtein,
+      selectedProteins,
+      lists,
+      newListName,
+      activeList,
+      activeListDraft,
+      opA,
+      opB,
+      opMode,
+      opTarget,
+    });
+  }, [
+    kind,
+    identifier,
+    volcanoSettings,
+    volcanoControlSettings,
+    tiles,
+    addType,
+    activeProtein,
+    selectedProteins,
+    lists,
+    newListName,
+    activeList,
+    activeListDraft,
+    opA,
+    opB,
+    opMode,
+    opTarget,
+  ]);
 
   useEffect(() => {
     if (listNames.length === 0) {

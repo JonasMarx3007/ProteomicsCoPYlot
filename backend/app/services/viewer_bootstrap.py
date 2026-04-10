@@ -115,7 +115,12 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 continue
 
             frame = _read_table_from_path(absolute_path)
-            save_table_dataset(filename=absolute_path.name, kind=kind, frame=frame)
+            save_table_dataset(
+                filename=absolute_path.name,
+                kind=kind,
+                frame=frame,
+                source_path=str(absolute_path),
+            )
             frames[kind] = frame
             result.loaded_datasets.append(f"{package_name}:{kind}")
 

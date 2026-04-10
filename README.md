@@ -30,14 +30,13 @@ It provides the full analysis workflow and a separate read-only viewer workflow.
 
 ## Installation
 
-Use the concise install/run guide in [readme.txt](./readme.txt) for:
+Use the ordered install/run/build guide in [readme.txt](./readme.txt), organized as:
 
-- Windows
-- macOS
-- Linux
-- Development run
-- Production run
-- Windows onefile executable builds
+- Global notes and AI prerequisites
+- Windows: install, run, production run, onefile EXE build
+- macOS: install, run, production run, onefile app build
+- Linux: install, run, production run, onefile app build
+- Remote Ollama hosting over Tailscale
 
 ## Usage
 

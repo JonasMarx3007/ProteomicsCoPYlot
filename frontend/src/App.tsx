@@ -11,6 +11,7 @@ import DistributionPage from "./features/data/DistributionPage";
 import VerificationPage from "./features/data/VerificationPage";
 import IdTranslatorPage from "./features/data/IdTranslatorPage";
 import ColorsPage from "./features/data/ColorsPage";
+import RestorePage from "./features/data/RestorePage";
 import MissingValuePlotPage from "./features/completeness/MissingValuePlotPage";
 import MissingValueHeatmapPage from "./features/completeness/MissingValueHeatmapPage";
 import CompletenessTablesPage from "./features/completeness/CompletenessTablesPage";
@@ -59,6 +60,10 @@ import type {
 } from "./lib/types";
 import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
+import {
+  applyCopylotLocalStorageState,
+  captureCopylotLocalStorageState,
+} from "./lib/restoreUiState";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -68,6 +73,7 @@ const dataTabs: { key: DataTab; label: string }[] = [
   { key: "verification", label: "Verification" },
   { key: "translator", label: "ID Translator" },
   { key: "conditionPalette", label: "Colors" },
+  { key: "restore", label: "Restore" },
 ];
 
 const qcTabs: { key: QcTab; label: string }[] = [
@@ -754,6 +760,87 @@ export default function App() {
     </>
   ) : null;
 
+  function buildUiStateSnapshot(): Record<string, unknown> {
+    return {
+      version: 1,
+      app: {
+        activeSection,
+        activeDataTab,
+        activeQcTab,
+        activeCompletenessTab,
+        activeStatsTab,
+        activePeptideTab,
+        activeSingleProteinTab,
+        activePhosphoTab,
+        activeComparisonTab,
+        activeSummaryTab,
+        activeExternalTab,
+        rightPanel,
+      },
+      localStorageState: captureCopylotLocalStorageState(),
+    };
+  }
+
+  function applyUiStateSnapshot(payload: Record<string, unknown>) {
+    const appState = payload?.app;
+    const localStorageState = payload?.localStorageState ?? payload?.reportLocalStorage;
+    if (localStorageState && typeof localStorageState === "object") {
+      applyCopylotLocalStorageState(localStorageState as Record<string, unknown>);
+    }
+    if (!appState || typeof appState !== "object") return;
+    const next = appState as Record<string, unknown>;
+
+    const nextSection = String(next.activeSection ?? "").trim() as SidebarSection;
+    if (allSidebarSections.includes(nextSection)) {
+      setActiveSection(nextSection);
+    }
+
+    const nextData = String(next.activeDataTab ?? "").trim() as DataTab;
+    if (dataTabs.some((item) => item.key === nextData)) {
+      setActiveDataTab(nextData);
+    }
+    const nextQc = String(next.activeQcTab ?? "").trim() as QcTab;
+    if (qcTabs.some((item) => item.key === nextQc)) {
+      setActiveQcTab(nextQc);
+    }
+    const nextCompleteness = String(next.activeCompletenessTab ?? "").trim() as CompletenessTab;
+    if (completenessTabs.some((item) => item.key === nextCompleteness)) {
+      setActiveCompletenessTab(nextCompleteness);
+    }
+    const nextStats = String(next.activeStatsTab ?? "").trim() as StatsTab;
+    if (statsTabs.some((item) => item.key === nextStats)) {
+      setActiveStatsTab(nextStats);
+    }
+    const nextPeptide = String(next.activePeptideTab ?? "").trim() as PeptideTab;
+    if (peptideTabs.some((item) => item.key === nextPeptide)) {
+      setActivePeptideTab(nextPeptide);
+    }
+    const nextSingle = String(next.activeSingleProteinTab ?? "").trim() as SingleProteinTab;
+    if (singleProteinTabs.some((item) => item.key === nextSingle)) {
+      setActiveSingleProteinTab(nextSingle);
+    }
+    const nextPhospho = String(next.activePhosphoTab ?? "").trim() as PhosphoTab;
+    if (phosphoTabs.some((item) => item.key === nextPhospho)) {
+      setActivePhosphoTab(nextPhospho);
+    }
+    const nextComparison = String(next.activeComparisonTab ?? "").trim() as ComparisonTab;
+    if (comparisonTabs.some((item) => item.key === nextComparison)) {
+      setActiveComparisonTab(nextComparison);
+    }
+    const nextSummary = String(next.activeSummaryTab ?? "").trim() as SummaryTab;
+    if (summaryTabs.some((item) => item.key === nextSummary)) {
+      setActiveSummaryTab(nextSummary);
+    }
+    const nextExternal = String(next.activeExternalTab ?? "").trim() as ExternalTab;
+    if (externalTabs.some((item) => item.key === nextExternal)) {
+      setActiveExternalTab(nextExternal);
+    }
+    const nextRightPanel = String(next.rightPanel ?? "").trim() as RightPanel;
+    if (nextRightPanel === "none" || nextRightPanel === "list" || nextRightPanel === "chat") {
+      setRightPanel(nextRightPanel);
+    }
+  }
+
   function renderContent() {
     if (activeSection === "completeness") {
       if (activeCompletenessTab === "missingPlot") {
@@ -936,6 +1023,15 @@ export default function App() {
 
       if (activeDataTab === "conditionPalette") {
         return <ColorsPage />;
+      }
+
+      if (activeDataTab === "restore") {
+        return (
+          <RestorePage
+            getUiState={buildUiStateSnapshot}
+            onApplyUiState={applyUiStateSnapshot}
+          />
+        );
       }
     }
 

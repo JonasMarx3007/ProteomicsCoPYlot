@@ -117,7 +117,7 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
     return () => window.clearTimeout(timer);
   }, [current, readOnly, viewerRefreshAttempts, refreshCurrentDatasets]);
 
-  async function handleFileSubmit(
+async function handleFileSubmit(
     file: File,
     uploadKind: "protein" | "phospho" | "phosprot"
   ) {
@@ -125,7 +125,8 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
       setLoading(true);
       setError(null);
 
-      await uploadDataset(file, uploadKind);
+      const sourcePath = (file as LocalFile).path?.trim() || "";
+      await uploadDataset(file, uploadKind, undefined, sourcePath);
       const updated = await refreshCurrentDatasets();
 
       onDatasetUploaded?.(updated[uploadKind]);

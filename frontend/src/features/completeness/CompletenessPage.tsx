@@ -7,6 +7,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { AnnotationKind, CompletenessTab, CompletenessTablesResponse } from "../../lib/types";
 
 type Props = {
@@ -21,35 +22,59 @@ function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
 }
 
 export default function CompletenessPage({ activeTab, onContextModeChange }: Props) {
-  const [kind, setKind] = useState<CompletenessKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("completeness.v1", {}),
+    []
+  );
+  const persistedMissing = (persisted.missingPlot as Record<string, unknown>) ?? {};
+  const persistedHeatmap = (persisted.heatmap as Record<string, unknown>) ?? {};
+  const persistedTables = (persisted.tables as Record<string, unknown>) ?? {};
+  const [kind, setKind] = useState<CompletenessKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
+    return "protein";
+  });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png").trim();
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
 
   const [missingPlot, setMissingPlot] = useState({
-    header: true,
-    text: true,
-    binCount: 0,
-    textSize: 8,
-    color: "#2563eb",
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    header: Boolean(persistedMissing.header ?? true),
+    text: Boolean(persistedMissing.text ?? true),
+    binCount: Number(persistedMissing.binCount ?? 0),
+    textSize: Number(persistedMissing.textSize ?? 8),
+    color: String(persistedMissing.color ?? "#2563eb"),
+    widthCm: Number(persistedMissing.widthCm ?? 20),
+    heightCm: Number(persistedMissing.heightCm ?? 10),
+    dpi: Number(persistedMissing.dpi ?? 300),
   });
   const [heatmap, setHeatmap] = useState({
-    includeId: true,
-    header: true,
-    widthCm: 10,
-    heightCm: 10,
-    dpi: 300,
+    includeId: Boolean(persistedHeatmap.includeId ?? true),
+    header: Boolean(persistedHeatmap.header ?? true),
+    widthCm: Number(persistedHeatmap.widthCm ?? 10),
+    heightCm: Number(persistedHeatmap.heightCm ?? 10),
+    dpi: Number(persistedHeatmap.dpi ?? 300),
   });
   const [tables, setTables] = useState({
-    includeId: true,
-    outlierThreshold: 50,
+    includeId: Boolean(persistedTables.includeId ?? true),
+    outlierThreshold: Number(persistedTables.outlierThreshold ?? 50),
   });
+
+  useEffect(() => {
+    writePersistedUiState("completeness.v1", {
+      kind,
+      downloadFormat,
+      missingPlot,
+      heatmap,
+      tables,
+    });
+  }, [kind, downloadFormat, missingPlot, heatmap, tables]);
 
   const activeKindOptions = useMemo<Array<{ value: CompletenessKind; label: string }>>(() => {
     if (activeTab !== "missingPlot") return kindOptions;

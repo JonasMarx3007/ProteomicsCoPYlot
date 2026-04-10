@@ -12,6 +12,7 @@ export type DatasetPreviewResponse = {
   columnNames: string[];
   preview: Record<string, unknown>[];
   suggestedIsLog2Transformed: boolean;
+  sourcePath?: string | null;
 };
 
 export type PeptidePathResponse = {
@@ -641,7 +642,8 @@ export type DataTab =
   | "distribution"
   | "verification"
   | "translator"
-  | "conditionPalette";
+  | "conditionPalette"
+  | "restore";
 
 export type QcTab =
   | "coverage"
@@ -722,4 +724,23 @@ export type ModuleContextResponse = {
   contextSummary: string;
   contextData: Record<string, unknown>;
   warnings: string[];
+};
+
+export type RestoreDatasetKind = "protein" | "phospho" | "phosprot" | "peptide";
+
+export type RestoreMissingFile = {
+  packageName: string;
+  kind: RestoreDatasetKind;
+  filename?: string | null;
+  expectedPath?: string | null;
+  message: string;
+};
+
+export type RestoreImportResponse = {
+  ok: boolean;
+  uiState: Record<string, unknown>;
+  warnings: string[];
+  missingFiles: RestoreMissingFile[];
+  restoredDatasets: string[];
+  restoredAnnotations: string[];
 };

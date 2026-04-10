@@ -98,3 +98,10 @@ def build_condition_color_map(kind: AnnotationKind, conditions: list[str]) -> di
         override = _normalize_hex(overrides.get(condition, ""))
         result[condition] = override if override is not None else _generated_color_hex(index)
     return result
+
+
+def reset_condition_palettes() -> None:
+    _CONDITION_PALETTES["protein"] = {}
+    _CONDITION_PALETTES["phospho"] = {}
+    _CONDITION_PALETTES["phosprot"] = {}
+    invalidate_runtime_cache("palette:reset-all")

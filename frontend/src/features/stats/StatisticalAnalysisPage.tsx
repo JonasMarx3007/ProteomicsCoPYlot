@@ -17,6 +17,7 @@ import {
 } from "../../lib/reportState";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   AnnotationKind,
   EnrichmentRequest,
@@ -347,20 +348,39 @@ function VolcanoPanel({
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
 }) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
-  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">("volcano");
-  const [dataSource, setDataSource] = useState<"data" | "imputed">("data");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("stats.volcano.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
+  });
+  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">(() => {
+    const value = String(persisted.sourceMode ?? "volcano").trim();
+    return value === "volcano_control" ? "volcano_control" : "volcano";
+  });
+  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
+    const value = String(persisted.dataSource ?? "data").trim();
+    return value === "imputed" ? "imputed" : "data";
+  });
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
-  const [condition1, setCondition1] = useState("");
-  const [condition2, setCondition2] = useState("");
-  const [condition1Control, setCondition1Control] = useState("");
-  const [condition2Control, setCondition2Control] = useState("");
-  const [identifier, setIdentifier] = useState<StatsIdentifier>("workflow");
-  const [testType, setTestType] = useState<StatsTestType>("unpaired");
-  const [pValueThreshold, setPValueThreshold] = useState(0.05);
-  const [log2fcThreshold, setLog2fcThreshold] = useState(1);
-  const [useUncorrected, setUseUncorrected] = useState(false);
-  const [highlightText, setHighlightText] = useState("");
+  const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
+  const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
+  const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
+  const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
+  const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
+    const value = String(persisted.identifier ?? "workflow").trim();
+    return value === "genes" ? "genes" : "workflow";
+  });
+  const [testType, setTestType] = useState<StatsTestType>(() => {
+    const value = String(persisted.testType ?? "unpaired").trim();
+    return value === "paired" ? "paired" : "unpaired";
+  });
+  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
+  const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const [highlightText, setHighlightText] = useState(() => String(persisted.highlightText ?? ""));
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<VolcanoResultResponse | null>(null);
   const [reportLogMessage, setReportLogMessage] = useState<string | null>(null);
@@ -525,6 +545,38 @@ function VolcanoPanel({
         : "This volcano configuration is already in the report list."
     );
   }
+
+  useEffect(() => {
+    writePersistedUiState("stats.volcano.v1", {
+      kind,
+      sourceMode,
+      dataSource,
+      condition1,
+      condition2,
+      condition1Control,
+      condition2Control,
+      identifier,
+      testType,
+      pValueThreshold,
+      log2fcThreshold,
+      useUncorrected,
+      highlightText,
+    });
+  }, [
+    kind,
+    sourceMode,
+    dataSource,
+    condition1,
+    condition2,
+    condition1Control,
+    condition2Control,
+    identifier,
+    testType,
+    pValueThreshold,
+    log2fcThreshold,
+    useUncorrected,
+    highlightText,
+  ]);
 
   function handleRemoveFromReport() {
     const removed = removeVolcanoReportEntry(currentReportEntry);
@@ -750,20 +802,33 @@ function GseaPanel({
     () => kindOptions.filter((option) => option.value === "protein" || option.value === "phosprot"),
     [kindOptions]
   );
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("stats.gsea.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
+  });
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
-  const [condition1, setCondition1] = useState("");
-  const [condition2, setCondition2] = useState("");
-  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">("volcano");
-  const [condition1Control, setCondition1Control] = useState("");
-  const [condition2Control, setCondition2Control] = useState("");
-  const [testType, setTestType] = useState<StatsTestType>("unpaired");
-  const [pValueThreshold, setPValueThreshold] = useState(0.05);
-  const [log2fcThreshold, setLog2fcThreshold] = useState(1);
-  const [useUncorrected, setUseUncorrected] = useState(false);
-  const [topN, setTopN] = useState(10);
-  const [minTermSize, setMinTermSize] = useState(20);
-  const [maxTermSize, setMaxTermSize] = useState(300);
+  const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
+  const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
+  const [sourceMode, setSourceMode] = useState<"volcano" | "volcano_control">(() => {
+    const value = String(persisted.sourceMode ?? "volcano").trim();
+    return value === "volcano_control" ? "volcano_control" : "volcano";
+  });
+  const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
+  const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
+  const [testType, setTestType] = useState<StatsTestType>(() => {
+    const value = String(persisted.testType ?? "unpaired").trim();
+    return value === "paired" ? "paired" : "unpaired";
+  });
+  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
+  const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const [topN, setTopN] = useState(() => Number(persisted.topN ?? 10));
+  const [minTermSize, setMinTermSize] = useState(() => Number(persisted.minTermSize ?? 20));
+  const [maxTermSize, setMaxTermSize] = useState(() => Number(persisted.maxTermSize ?? 300));
   const [result, setResult] = useState<EnrichmentResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -929,6 +994,38 @@ function GseaPanel({
     maxTermSize,
   });
 
+  useEffect(() => {
+    writePersistedUiState("stats.gsea.v1", {
+      kind,
+      condition1,
+      condition2,
+      sourceMode,
+      condition1Control,
+      condition2Control,
+      testType,
+      pValueThreshold,
+      log2fcThreshold,
+      useUncorrected,
+      topN,
+      minTermSize,
+      maxTermSize,
+    });
+  }, [
+    kind,
+    condition1,
+    condition2,
+    sourceMode,
+    condition1Control,
+    condition2Control,
+    testType,
+    pValueThreshold,
+    log2fcThreshold,
+    useUncorrected,
+    topN,
+    minTermSize,
+    maxTermSize,
+  ]);
+
   if (gseaKindOptions.length === 0) {
     return (
       <div className="space-y-6">
@@ -1053,20 +1150,33 @@ function PathwayHeatmapPanel({
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
 }) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("stats.pathwayHeatmap.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
+  });
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [pathways, setPathways] = useState<PathwayOptionsResponse | null>(null);
-  const [pathway, setPathway] = useState("");
-  const [selectedConditions, setSelectedConditions] = useState<string[]>([]);
-  const [valueType, setValueType] = useState<"log2" | "z">("z");
-  const [includeId, setIncludeId] = useState(false);
-  const [header, setHeader] = useState(true);
-  const [removeEmpty, setRemoveEmpty] = useState(true);
-  const [clusterRows, setClusterRows] = useState(false);
-  const [clusterCols, setClusterCols] = useState(false);
-  const [widthCm, setWidthCm] = useState(20);
-  const [heightCm, setHeightCm] = useState(12);
-  const [dpi, setDpi] = useState(300);
+  const [pathway, setPathway] = useState(() => String(persisted.pathway ?? ""));
+  const [selectedConditions, setSelectedConditions] = useState<string[]>(() =>
+    Array.isArray(persisted.selectedConditions)
+      ? persisted.selectedConditions.map((value) => String(value ?? ""))
+      : []
+  );
+  const [valueType, setValueType] = useState<"log2" | "z">(() =>
+    String(persisted.valueType ?? "z") === "log2" ? "log2" : "z"
+  );
+  const [includeId, setIncludeId] = useState(() => Boolean(persisted.includeId ?? false));
+  const [header, setHeader] = useState(() => Boolean(persisted.header ?? true));
+  const [removeEmpty, setRemoveEmpty] = useState(() => Boolean(persisted.removeEmpty ?? true));
+  const [clusterRows, setClusterRows] = useState(() => Boolean(persisted.clusterRows ?? false));
+  const [clusterCols, setClusterCols] = useState(() => Boolean(persisted.clusterCols ?? false));
+  const [widthCm, setWidthCm] = useState(() => Number(persisted.widthCm ?? 20));
+  const [heightCm, setHeightCm] = useState(() => Number(persisted.heightCm ?? 12));
+  const [dpi, setDpi] = useState(() => Number(persisted.dpi ?? 300));
   const [error, setError] = useState<string | null>(null);
   const geneNamesAvailable = hasGeneNameSupport(options);
   const kindAvailable = kindOptions.some((option) => option.value === kind);
@@ -1142,6 +1252,36 @@ function PathwayHeatmapPanel({
     dpi,
   });
 
+  useEffect(() => {
+    writePersistedUiState("stats.pathwayHeatmap.v1", {
+      kind,
+      pathway,
+      selectedConditions,
+      valueType,
+      includeId,
+      header,
+      removeEmpty,
+      clusterRows,
+      clusterCols,
+      widthCm,
+      heightCm,
+      dpi,
+    });
+  }, [
+    kind,
+    pathway,
+    selectedConditions,
+    valueType,
+    includeId,
+    header,
+    removeEmpty,
+    clusterRows,
+    clusterCols,
+    widthCm,
+    heightCm,
+    dpi,
+  ]);
+
   return (
     <div className="space-y-6">
       <SectionCard title="Pathway Heatmap">
@@ -1186,14 +1326,21 @@ function SimulationPanel({
 }: {
   kindOptions: { value: string; label: string }[];
 }) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("stats.simulation.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
+  });
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
-  const [condition1, setCondition1] = useState("");
-  const [condition2, setCondition2] = useState("");
-  const [pValueThreshold, setPValueThreshold] = useState(0.05);
-  const [log2fcThreshold, setLog2fcThreshold] = useState(1);
-  const [varianceMultiplier, setVarianceMultiplier] = useState(1);
-  const [sampleSizeOverride, setSampleSizeOverride] = useState(0);
+  const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
+  const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
+  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
+  const [varianceMultiplier, setVarianceMultiplier] = useState(() => Number(persisted.varianceMultiplier ?? 1));
+  const [sampleSizeOverride, setSampleSizeOverride] = useState(() => Number(persisted.sampleSizeOverride ?? 0));
   const [result, setResult] = useState<SimulationResultResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const kindAvailable = kindOptions.some((option) => option.value === kind);
@@ -1269,6 +1416,26 @@ function SimulationPanel({
   ]);
 
   const plotUrl = buildPlotUrl(`/api/plots/stats/${kind}/simulation.html`, { condition1, condition2, pValueThreshold, log2fcThreshold, varianceMultiplier, sampleSizeOverride });
+
+  useEffect(() => {
+    writePersistedUiState("stats.simulation.v1", {
+      kind,
+      condition1,
+      condition2,
+      pValueThreshold,
+      log2fcThreshold,
+      varianceMultiplier,
+      sampleSizeOverride,
+    });
+  }, [
+    kind,
+    condition1,
+    condition2,
+    pValueThreshold,
+    log2fcThreshold,
+    varianceMultiplier,
+    sampleSizeOverride,
+  ]);
 
   return (
     <div className="space-y-6">
