@@ -188,3 +188,9 @@ def rename_metadata_profile(
     invalidate_runtime_cache(
         f"annotation:{resolved_package}:metadata-profile:{old_key}:renamed:{new_key}"
     )
+
+
+def reset_all_annotations() -> None:
+    global _ANNOTATIONS_BY_PACKAGE
+    _ANNOTATIONS_BY_PACKAGE = {}
+    invalidate_runtime_cache("annotation:reset-all")

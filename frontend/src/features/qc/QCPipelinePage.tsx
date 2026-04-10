@@ -8,6 +8,7 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { saveQcReportSettings } from "../../lib/reportState";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { AnnotationKind, QcTab } from "../../lib/types";
 
 type Props = {
@@ -41,94 +42,126 @@ export default function QCPipelinePage({
   onBoxplotModeChange,
   onPcaContextModeChange,
 }: Props) {
-  const [kind, setKind] = useState<QcKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("qc.pipeline.v1", {}),
+    []
+  );
+  const persistedCoverage = (persisted.coverage as Record<string, unknown>) ?? {};
+  const persistedHist = (persisted.hist as Record<string, unknown>) ?? {};
+  const persistedBox = (persisted.box as Record<string, unknown>) ?? {};
+  const persistedCv = (persisted.cv as Record<string, unknown>) ?? {};
+  const persistedPca = (persisted.pca as Record<string, unknown>) ?? {};
+  const persistedAbundance = (persisted.abundance as Record<string, unknown>) ?? {};
+  const persistedCorrelation = (persisted.correlation as Record<string, unknown>) ?? {};
+  const [kind, setKind] = useState<QcKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide") return value;
+    return "protein";
+  });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png").trim();
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
 
   const [coverage, setCoverage] = useState({
-    includeId: false,
-    header: true,
-    legend: true,
-    summary: false,
-    text: false,
-    textSize: 9,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    includeId: Boolean(persistedCoverage.includeId ?? false),
+    header: Boolean(persistedCoverage.header ?? true),
+    legend: Boolean(persistedCoverage.legend ?? true),
+    summary: Boolean(persistedCoverage.summary ?? false),
+    text: Boolean(persistedCoverage.text ?? false),
+    textSize: Number(persistedCoverage.textSize ?? 9),
+    widthCm: Number(persistedCoverage.widthCm ?? 20),
+    heightCm: Number(persistedCoverage.heightCm ?? 10),
+    dpi: Number(persistedCoverage.dpi ?? 300),
   });
   const [hist, setHist] = useState({
-    header: true,
-    legend: true,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    header: Boolean(persistedHist.header ?? true),
+    legend: Boolean(persistedHist.legend ?? true),
+    widthCm: Number(persistedHist.widthCm ?? 20),
+    heightCm: Number(persistedHist.heightCm ?? 10),
+    dpi: Number(persistedHist.dpi ?? 300),
   });
   const [box, setBox] = useState({
-    mode: "Mean",
-    outliers: false,
-    includeId: false,
-    header: true,
-    legend: true,
-    text: false,
-    textSize: 9,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    mode: String(persistedBox.mode ?? "Mean"),
+    outliers: Boolean(persistedBox.outliers ?? false),
+    includeId: Boolean(persistedBox.includeId ?? false),
+    header: Boolean(persistedBox.header ?? true),
+    legend: Boolean(persistedBox.legend ?? true),
+    text: Boolean(persistedBox.text ?? false),
+    textSize: Number(persistedBox.textSize ?? 9),
+    widthCm: Number(persistedBox.widthCm ?? 20),
+    heightCm: Number(persistedBox.heightCm ?? 10),
+    dpi: Number(persistedBox.dpi ?? 300),
   });
   const [cv, setCv] = useState({
-    outliers: false,
-    header: true,
-    legend: true,
-    text: false,
-    textSize: 9,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    outliers: Boolean(persistedCv.outliers ?? false),
+    header: Boolean(persistedCv.header ?? true),
+    legend: Boolean(persistedCv.legend ?? true),
+    text: Boolean(persistedCv.text ?? false),
+    textSize: Number(persistedCv.textSize ?? 9),
+    widthCm: Number(persistedCv.widthCm ?? 20),
+    heightCm: Number(persistedCv.heightCm ?? 10),
+    dpi: Number(persistedCv.dpi ?? 300),
   });
   const [pca, setPca] = useState({
-    type: "Normal",
-    header: true,
-    legend: true,
-    method: "PCA",
-    plotDim: "2D",
-    addEllipses: false,
-    dotSize: 5,
-    clusterMethod: "None",
-    clusterCount: 3,
-    colorBy: "Condition",
-    umapNNeighbors: 15,
-    umapMinDist: 0.1,
-    tsnePerplexity: 30,
-    tsneLearningRate: 200,
-    dbscanEps: 0.5,
-    dbscanMinSamples: 2,
-    randomState: 42,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    type: String(persistedPca.type ?? "Normal"),
+    header: Boolean(persistedPca.header ?? true),
+    legend: Boolean(persistedPca.legend ?? true),
+    method: String(persistedPca.method ?? "PCA"),
+    plotDim: String(persistedPca.plotDim ?? "2D"),
+    addEllipses: Boolean(persistedPca.addEllipses ?? false),
+    dotSize: Number(persistedPca.dotSize ?? 5),
+    clusterMethod: String(persistedPca.clusterMethod ?? "None"),
+    clusterCount: Number(persistedPca.clusterCount ?? 3),
+    colorBy: String(persistedPca.colorBy ?? "Condition"),
+    umapNNeighbors: Number(persistedPca.umapNNeighbors ?? 15),
+    umapMinDist: Number(persistedPca.umapMinDist ?? 0.1),
+    tsnePerplexity: Number(persistedPca.tsnePerplexity ?? 30),
+    tsneLearningRate: Number(persistedPca.tsneLearningRate ?? 200),
+    dbscanEps: Number(persistedPca.dbscanEps ?? 0.5),
+    dbscanMinSamples: Number(persistedPca.dbscanMinSamples ?? 2),
+    randomState: Number(persistedPca.randomState ?? 42),
+    widthCm: Number(persistedPca.widthCm ?? 20),
+    heightCm: Number(persistedPca.heightCm ?? 10),
+    dpi: Number(persistedPca.dpi ?? 300),
   });
   const [abundance, setAbundance] = useState({
-    type: "Normal",
-    header: true,
-    legend: true,
-    condition: "All Conditions",
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    type: String(persistedAbundance.type ?? "Normal"),
+    header: Boolean(persistedAbundance.header ?? true),
+    legend: Boolean(persistedAbundance.legend ?? true),
+    condition: String(persistedAbundance.condition ?? "All Conditions"),
+    widthCm: Number(persistedAbundance.widthCm ?? 20),
+    heightCm: Number(persistedAbundance.heightCm ?? 10),
+    dpi: Number(persistedAbundance.dpi ?? 300),
   });
   const [correlation, setCorrelation] = useState({
-    method: "Matrix",
-    includeId: false,
-    fullRange: false,
-    widthCm: 20,
-    heightCm: 16,
-    dpi: 400,
+    method: String(persistedCorrelation.method ?? "Matrix"),
+    includeId: Boolean(persistedCorrelation.includeId ?? false),
+    fullRange: Boolean(persistedCorrelation.fullRange ?? false),
+    widthCm: Number(persistedCorrelation.widthCm ?? 20),
+    heightCm: Number(persistedCorrelation.heightCm ?? 16),
+    dpi: Number(persistedCorrelation.dpi ?? 400),
   });
+
+  useEffect(() => {
+    writePersistedUiState("qc.pipeline.v1", {
+      kind,
+      downloadFormat,
+      coverage,
+      hist,
+      box,
+      cv,
+      pca,
+      abundance,
+      correlation,
+    });
+  }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) return;

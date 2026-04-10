@@ -9,6 +9,7 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { PhosphoOptionsResponse, PhosphoTab } from "../../lib/types";
 
 type Props = {
@@ -29,6 +30,16 @@ type TableRequest = {
 } | null;
 
 export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: Props) {
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("phospho.specific.v1", {}),
+    []
+  );
+  const persistedPhosphositePlot = (persisted.phosphositePlot as Record<string, unknown>) ?? {};
+  const persistedCoverage = (persisted.coverage as Record<string, unknown>) ?? {};
+  const persistedDistribution = (persisted.distribution as Record<string, unknown>) ?? {};
+  const persistedSty = (persisted.sty as Record<string, unknown>) ?? {};
+  const persistedKsea = (persisted.ksea as Record<string, unknown>) ?? {};
+  const persistedPhosprotRegulation = (persisted.phosprotRegulation as Record<string, unknown>) ?? {};
   const { datasets } = useCurrentDatasetsSnapshot();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
@@ -38,71 +49,76 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: 
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png").trim();
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
 
   const [phosphositePlot, setPhosphositePlot] = useState({
-    cutoff: 0,
-    color: "#87CEEB",
-    widthCm: 15,
-    heightCm: 10,
-    dpi: 100,
+    cutoff: Number(persistedPhosphositePlot.cutoff ?? 0),
+    color: String(persistedPhosphositePlot.color ?? "#87CEEB"),
+    widthCm: Number(persistedPhosphositePlot.widthCm ?? 15),
+    heightCm: Number(persistedPhosphositePlot.heightCm ?? 10),
+    dpi: Number(persistedPhosphositePlot.dpi ?? 100),
   });
 
   const [coverage, setCoverage] = useState({
-    includeId: false,
-    header: true,
-    legend: true,
-    mode: "Normal",
-    colorClassI: "#2563eb",
-    colorNotClassI: "#f59e0b",
-    conditions: [] as string[],
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    includeId: Boolean(persistedCoverage.includeId ?? false),
+    header: Boolean(persistedCoverage.header ?? true),
+    legend: Boolean(persistedCoverage.legend ?? true),
+    mode: String(persistedCoverage.mode ?? "Normal"),
+    colorClassI: String(persistedCoverage.colorClassI ?? "#2563eb"),
+    colorNotClassI: String(persistedCoverage.colorNotClassI ?? "#f59e0b"),
+    conditions: Array.isArray(persistedCoverage.conditions)
+      ? persistedCoverage.conditions.map((value) => String(value ?? ""))
+      : ([] as string[]),
+    widthCm: Number(persistedCoverage.widthCm ?? 20),
+    heightCm: Number(persistedCoverage.heightCm ?? 10),
+    dpi: Number(persistedCoverage.dpi ?? 300),
   });
 
   const [distribution, setDistribution] = useState({
-    cutoff: 0,
-    header: true,
-    color: "#87CEEB",
-    widthCm: 20,
-    heightCm: 15,
-    dpi: 300,
+    cutoff: Number(persistedDistribution.cutoff ?? 0),
+    header: Boolean(persistedDistribution.header ?? true),
+    color: String(persistedDistribution.color ?? "#87CEEB"),
+    widthCm: Number(persistedDistribution.widthCm ?? 20),
+    heightCm: Number(persistedDistribution.heightCm ?? 15),
+    dpi: Number(persistedDistribution.dpi ?? 300),
   });
 
   const [sty, setSty] = useState({
-    header: true,
-    widthCm: 17.78,
-    heightCm: 11.43,
-    dpi: 140,
+    header: Boolean(persistedSty.header ?? true),
+    widthCm: Number(persistedSty.widthCm ?? 17.78),
+    heightCm: Number(persistedSty.heightCm ?? 11.43),
+    dpi: Number(persistedSty.dpi ?? 140),
   });
 
   const [ksea, setKsea] = useState({
-    condition1: "",
-    condition2: "",
-    pValueThreshold: 0.05,
-    log2fcThreshold: 1,
-    testType: "unpaired",
-    useUncorrected: false,
-    header: true,
-    widthCm: 20,
-    heightCm: 12,
-    dpi: 220,
+    condition1: String(persistedKsea.condition1 ?? ""),
+    condition2: String(persistedKsea.condition2 ?? ""),
+    pValueThreshold: Number(persistedKsea.pValueThreshold ?? 0.05),
+    log2fcThreshold: Number(persistedKsea.log2fcThreshold ?? 1),
+    testType: String(persistedKsea.testType ?? "unpaired"),
+    useUncorrected: Boolean(persistedKsea.useUncorrected ?? false),
+    header: Boolean(persistedKsea.header ?? true),
+    widthCm: Number(persistedKsea.widthCm ?? 20),
+    heightCm: Number(persistedKsea.heightCm ?? 12),
+    dpi: Number(persistedKsea.dpi ?? 220),
   });
 
   const [phosprotRegulation, setPhosprotRegulation] = useState({
-    condition1: "",
-    condition2: "",
-    pValueThreshold: 0.05,
-    log2fcThreshold: 1,
-    testType: "unpaired",
-    useUncorrected: false,
-    maxHoverSites: 20,
-    showPhosphosites: true,
-    header: true,
-    widthCm: 20,
-    heightCm: 12,
-    dpi: 220,
+    condition1: String(persistedPhosprotRegulation.condition1 ?? ""),
+    condition2: String(persistedPhosprotRegulation.condition2 ?? ""),
+    pValueThreshold: Number(persistedPhosprotRegulation.pValueThreshold ?? 0.05),
+    log2fcThreshold: Number(persistedPhosprotRegulation.log2fcThreshold ?? 1),
+    testType: String(persistedPhosprotRegulation.testType ?? "unpaired"),
+    useUncorrected: Boolean(persistedPhosprotRegulation.useUncorrected ?? false),
+    maxHoverSites: Number(persistedPhosprotRegulation.maxHoverSites ?? 20),
+    showPhosphosites: Boolean(persistedPhosprotRegulation.showPhosphosites ?? true),
+    header: Boolean(persistedPhosprotRegulation.header ?? true),
+    widthCm: Number(persistedPhosprotRegulation.widthCm ?? 20),
+    heightCm: Number(persistedPhosprotRegulation.heightCm ?? 12),
+    dpi: Number(persistedPhosprotRegulation.dpi ?? 220),
   });
   const debouncedPhosphositePlot = useDebouncedValue(phosphositePlot, 650);
   const debouncedCoverage = useDebouncedValue(coverage, 650);
@@ -110,6 +126,18 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: 
   const debouncedSty = useDebouncedValue(sty, 650);
   const debouncedKsea = useDebouncedValue(ksea, 650);
   const debouncedPhosprotRegulation = useDebouncedValue(phosprotRegulation, 650);
+
+  useEffect(() => {
+    writePersistedUiState("phospho.specific.v1", {
+      downloadFormat,
+      phosphositePlot,
+      coverage,
+      distribution,
+      sty,
+      ksea,
+      phosprotRegulation,
+    });
+  }, [downloadFormat, phosphositePlot, coverage, distribution, sty, ksea, phosprotRegulation]);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {

@@ -85,6 +85,7 @@ def _table_preview_response(stored) -> DatasetPreviewResponse:
         suggestedIsLog2Transformed=getattr(
             stored, "suggested_is_log2_transformed", True
         ),
+        sourcePath=getattr(stored, "source_path", None),
     )
 
 
@@ -246,6 +247,7 @@ async def upload_dataset(
     file: UploadFile = File(...),
     kind: Literal["protein", "phospho", "phosprot"] = Form(...),
     package_name: str | None = Form(default=None, alias="packageName"),
+    source_path: str | None = Form(default=None, alias="sourcePath"),
 ) -> DatasetPreviewResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
@@ -267,7 +269,7 @@ async def upload_dataset(
         clear_annotation("phosprot", clear_all_profiles=True)
         clear_dataset("phosprot")
 
-    stored = save_table_dataset(file.filename, kind, df)
+    stored = save_table_dataset(file.filename, kind, df, source_path=source_path)
     if kind in ("protein", "phospho"):
         clear_uploaded_metadata(kind, clear_all_profiles=True)
     return _table_preview_response(stored)

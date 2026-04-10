@@ -19,6 +19,7 @@ from app.api.routes_peptide import router as peptide_router
 from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
 from app.api.routes_summary import router as summary_router
+from app.api.routes_restore import router as restore_router
 from app.services.viewer_bootstrap import bootstrap_viewer_mode_if_enabled
 
 app = FastAPI(title="Proteomics CoPYlot API")
@@ -162,6 +163,7 @@ app.include_router(peptide_router)
 app.include_router(plots_router)
 app.include_router(external_router)
 app.include_router(summary_router)
+app.include_router(restore_router)
 
 _FRONTEND_DIST = _resolve_frontend_dist()
 if _FRONTEND_DIST is not None:

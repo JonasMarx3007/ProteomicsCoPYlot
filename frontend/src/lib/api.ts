@@ -42,6 +42,7 @@ import type {
   SingleProteinTableResponse,
   QcPlotOptionsResponse,
   QcTableResponse,
+  RestoreImportResponse,
   SimulationRequest,
   SimulationResultResponse,
   StatisticalOptionsResponse,
@@ -82,13 +83,17 @@ async function parseJson(response: Response) {
 export async function uploadDataset(
   file: File,
   kind: Extract<DatasetKind, "protein" | "phospho" | "phosprot">,
-  packageName?: string
+  packageName?: string,
+  sourcePath?: string
 ): Promise<DatasetPreviewResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", kind);
   if (packageName && packageName.trim()) {
     form.append("packageName", packageName.trim());
+  }
+  if (sourcePath && sourcePath.trim()) {
+    form.append("sourcePath", sourcePath.trim());
   }
 
   const response = await fetch(`${API_BASE}/api/datasets/upload`, {
@@ -108,6 +113,81 @@ export async function uploadDataset(
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
   return data as DatasetPreviewResponse;
+}
+
+function resolveDownloadFilename(response: Response, fallback: string): string {
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  if (!match || !match[1]) return fallback;
+  return match[1].trim() || fallback;
+}
+
+export async function downloadRestoreState(
+  uiState: Record<string, unknown>
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE}/api/restore/export`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ uiState }),
+  });
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to export restore state"
+    );
+  }
+  const blob = await response.blob();
+  const filename = resolveDownloadFilename(response, "copylot_state.copylotstate");
+  return { blob, filename };
+}
+
+export async function importRestoreState(
+  stateFile: File,
+  replacements: Array<{ packageName: string; kind: "protein" | "phospho" | "phosprot" | "peptide"; file: File }> = []
+): Promise<RestoreImportResponse> {
+  const form = new FormData();
+  form.append("stateFile", stateFile);
+  if (replacements.length > 0) {
+    const manifest = replacements.map((item) => ({
+      packageName: item.packageName,
+      kind: item.kind,
+    }));
+    form.append("replacementsManifest", JSON.stringify(manifest));
+    for (const item of replacements) {
+      form.append("replacements", item.file);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/api/restore/import`, {
+    method: "POST",
+    body: form,
+  });
+  const data = await parseJson(response);
+
+  if (response.status === 409) {
+    return (data ?? {
+      ok: false,
+      uiState: {},
+      warnings: [],
+      missingFiles: [],
+      restoredDatasets: [],
+      restoredAnnotations: [],
+    }) as RestoreImportResponse;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to import restore state"
+    );
+  }
+
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged();
+  return data as RestoreImportResponse;
 }
 
 export async function savePeptidePath(path: string, packageName?: string): Promise<PeptidePathResponse> {

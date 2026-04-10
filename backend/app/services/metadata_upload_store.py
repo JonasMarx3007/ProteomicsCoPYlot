@@ -492,3 +492,13 @@ def rename_package(old_name: str, new_name: str) -> None:
             old_key
         )
     invalidate_runtime_cache(f"metadata-package:{old_key}:renamed:{new_key}")
+
+
+def reset_all_uploaded_metadata() -> None:
+    global _UPLOADED_METADATA_BY_PACKAGE, _ACTIVE_PROFILE_BY_PACKAGE
+    global _AUTO_COMBINED_PROFILES_BY_PACKAGE, _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE
+    _UPLOADED_METADATA_BY_PACKAGE = {}
+    _ACTIVE_PROFILE_BY_PACKAGE = {}
+    _AUTO_COMBINED_PROFILES_BY_PACKAGE = {}
+    _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE = {}
+    invalidate_runtime_cache("metadata:reset-all")

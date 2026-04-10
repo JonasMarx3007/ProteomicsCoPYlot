@@ -15,6 +15,7 @@ class DatasetPreviewResponse(BaseModel):
     columnNames: list[str]
     preview: list[dict[str, Any]]
     suggestedIsLog2Transformed: bool = True
+    sourcePath: str | None = None
 
 
 class PeptidePathResponse(BaseModel):

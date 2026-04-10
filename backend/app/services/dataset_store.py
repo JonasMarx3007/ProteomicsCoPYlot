@@ -20,6 +20,7 @@ class StoredTableDataset:
     kind: TableDatasetKind
     frame: pd.DataFrame
     suggested_is_log2_transformed: bool = True
+    source_path: str | None = None
 
 
 @dataclass
@@ -152,6 +153,7 @@ def save_table_dataset(
     frame: pd.DataFrame,
     *,
     package_name: str | None = None,
+    source_path: str | None = None,
 ) -> StoredTableDataset:
     resolved_package = _normalize_package_name(package_name)
     state = _package_state(resolved_package)
@@ -161,6 +163,7 @@ def save_table_dataset(
         kind=kind,
         frame=frame,
         suggested_is_log2_transformed=_guess_log2_transformed(frame),
+        source_path=str(source_path).strip() or None if source_path is not None else None,
     )
     state[kind] = stored
     invalidate_runtime_cache(f"dataset:{resolved_package}:{kind}:updated")
@@ -199,3 +202,12 @@ def clear_dataset(kind: DatasetKind, *, package_name: str | None = None) -> None
     state = _package_state(resolved_package)
     state[kind] = None
     invalidate_runtime_cache(f"dataset:{resolved_package}:{kind}:cleared")
+
+
+def reset_all_datasets() -> None:
+    global _DATASETS_BY_PACKAGE, _ACTIVE_PACKAGE
+    _DATASETS_BY_PACKAGE = {
+        DEFAULT_PACKAGE_NAME: _empty_package_state(),
+    }
+    _ACTIVE_PACKAGE = DEFAULT_PACKAGE_NAME
+    invalidate_runtime_cache("dataset:reset-all")

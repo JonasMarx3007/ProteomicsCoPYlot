@@ -7,6 +7,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { AnnotationKind, ComparisonOptionsResponse, ComparisonTab } from "../../lib/types";
 
 type Props = {
@@ -26,8 +27,19 @@ type TableRequest = {
 } | null;
 
 export default function ComparisonPipelinePage({ activeTab, onContextModeChange }: Props) {
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("comparison.pipeline.v1", {}),
+    []
+  );
+  const persistedPearson = (persisted.pearson as Record<string, unknown>) ?? {};
+  const persistedVenn = (persisted.venn as Record<string, unknown>) ?? {};
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot"
+      ? value
+      : "protein";
+  });
   const [options, setOptions] = useState<ComparisonOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
@@ -35,40 +47,52 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png").trim();
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
 
   const [pearson, setPearson] = useState({
-    mode: "Single",
-    sample1: "",
-    sample2: "",
-    condition1: "",
-    condition2: "",
-    alias1: "",
-    alias2: "",
-    color: "#1f77b4",
-    dotSize: 60,
-    header: true,
-    widthCm: 20,
-    heightCm: 12,
-    dpi: 300,
+    mode: String(persistedPearson.mode ?? "Single"),
+    sample1: String(persistedPearson.sample1 ?? ""),
+    sample2: String(persistedPearson.sample2 ?? ""),
+    condition1: String(persistedPearson.condition1 ?? ""),
+    condition2: String(persistedPearson.condition2 ?? ""),
+    alias1: String(persistedPearson.alias1 ?? ""),
+    alias2: String(persistedPearson.alias2 ?? ""),
+    color: String(persistedPearson.color ?? "#1f77b4"),
+    dotSize: Number(persistedPearson.dotSize ?? 60),
+    header: Boolean(persistedPearson.header ?? true),
+    widthCm: Number(persistedPearson.widthCm ?? 20),
+    heightCm: Number(persistedPearson.heightCm ?? 12),
+    dpi: Number(persistedPearson.dpi ?? 300),
   });
 
   const [venn, setVenn] = useState({
-    mode: "Single",
-    first: "",
-    second: "",
-    third: "",
-    alias1: "",
-    alias2: "",
-    alias3: "",
-    color1: "#1f77b4",
-    color2: "#ff7f0e",
-    color3: "#2ca02c",
-    header: true,
-    widthCm: 15,
-    heightCm: 12,
-    dpi: 300,
+    mode: String(persistedVenn.mode ?? "Single"),
+    first: String(persistedVenn.first ?? ""),
+    second: String(persistedVenn.second ?? ""),
+    third: String(persistedVenn.third ?? ""),
+    alias1: String(persistedVenn.alias1 ?? ""),
+    alias2: String(persistedVenn.alias2 ?? ""),
+    alias3: String(persistedVenn.alias3 ?? ""),
+    color1: String(persistedVenn.color1 ?? "#1f77b4"),
+    color2: String(persistedVenn.color2 ?? "#ff7f0e"),
+    color3: String(persistedVenn.color3 ?? "#2ca02c"),
+    header: Boolean(persistedVenn.header ?? true),
+    widthCm: Number(persistedVenn.widthCm ?? 15),
+    heightCm: Number(persistedVenn.heightCm ?? 12),
+    dpi: Number(persistedVenn.dpi ?? 300),
   });
+
+  useEffect(() => {
+    writePersistedUiState("comparison.pipeline.v1", {
+      kind,
+      downloadFormat,
+      pearson,
+      venn,
+    });
+  }, [kind, downloadFormat, pearson, venn]);
 
   const hasKind = availableKinds.includes(kind);
 

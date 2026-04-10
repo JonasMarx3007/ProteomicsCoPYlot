@@ -7,6 +7,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   AnnotationKind,
   SingleProteinIdentifier,
@@ -32,7 +33,19 @@ type TableRequest = {
 };
 
 export default function SingleProteinPage({ activeTab, onContextModeChange }: Props) {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("single.protein.v1", {}),
+    []
+  );
+  const persistedBox = (persisted.box as Record<string, unknown>) ?? {};
+  const persistedLine = (persisted.line as Record<string, unknown>) ?? {};
+  const persistedHeatmap = (persisted.heatmap as Record<string, unknown>) ?? {};
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot"
+      ? value
+      : "protein";
+  });
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [options, setOptions] = useState<SingleProteinOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
@@ -41,46 +54,59 @@ export default function SingleProteinPage({ activeTab, onContextModeChange }: Pr
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png").trim();
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
 
   const [box, setBox] = useState({
-    identifier: "workflow" as SingleProteinIdentifier,
-    protein: "",
-    conditions: [] as string[],
-    outliers: false,
-    dots: false,
-    header: true,
-    legend: true,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    identifier: (String(persistedBox.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
+    protein: String(persistedBox.protein ?? ""),
+    conditions: Array.isArray(persistedBox.conditions) ? persistedBox.conditions.map((value) => String(value ?? "")) : ([] as string[]),
+    outliers: Boolean(persistedBox.outliers ?? false),
+    dots: Boolean(persistedBox.dots ?? false),
+    header: Boolean(persistedBox.header ?? true),
+    legend: Boolean(persistedBox.legend ?? true),
+    widthCm: Number(persistedBox.widthCm ?? 20),
+    heightCm: Number(persistedBox.heightCm ?? 10),
+    dpi: Number(persistedBox.dpi ?? 300),
   });
   const [line, setLine] = useState({
-    identifier: "workflow" as SingleProteinIdentifier,
-    proteins: [] as string[],
-    conditions: [] as string[],
-    includeId: false,
-    header: true,
-    legend: true,
-    widthCm: 20,
-    heightCm: 10,
-    dpi: 300,
+    identifier: (String(persistedLine.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
+    proteins: Array.isArray(persistedLine.proteins) ? persistedLine.proteins.map((value) => String(value ?? "")) : ([] as string[]),
+    conditions: Array.isArray(persistedLine.conditions) ? persistedLine.conditions.map((value) => String(value ?? "")) : ([] as string[]),
+    includeId: Boolean(persistedLine.includeId ?? false),
+    header: Boolean(persistedLine.header ?? true),
+    legend: Boolean(persistedLine.legend ?? true),
+    widthCm: Number(persistedLine.widthCm ?? 20),
+    heightCm: Number(persistedLine.heightCm ?? 10),
+    dpi: Number(persistedLine.dpi ?? 300),
   });
   const [heatmap, setHeatmap] = useState({
-    identifier: "workflow" as SingleProteinIdentifier,
-    protein: "",
-    conditions: [] as string[],
-    includeId: false,
-    header: true,
-    filterM1: true,
-    clusterRows: false,
-    clusterCols: false,
-    valueType: "log2",
-    cmap: "plasma",
-    widthCm: 20,
-    heightCm: 12,
-    dpi: 300,
+    identifier: (String(persistedHeatmap.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
+    protein: String(persistedHeatmap.protein ?? ""),
+    conditions: Array.isArray(persistedHeatmap.conditions) ? persistedHeatmap.conditions.map((value) => String(value ?? "")) : ([] as string[]),
+    includeId: Boolean(persistedHeatmap.includeId ?? false),
+    header: Boolean(persistedHeatmap.header ?? true),
+    filterM1: Boolean(persistedHeatmap.filterM1 ?? true),
+    clusterRows: Boolean(persistedHeatmap.clusterRows ?? false),
+    clusterCols: Boolean(persistedHeatmap.clusterCols ?? false),
+    valueType: String(persistedHeatmap.valueType ?? "log2"),
+    cmap: String(persistedHeatmap.cmap ?? "plasma"),
+    widthCm: Number(persistedHeatmap.widthCm ?? 20),
+    heightCm: Number(persistedHeatmap.heightCm ?? 12),
+    dpi: Number(persistedHeatmap.dpi ?? 300),
   });
+
+  useEffect(() => {
+    writePersistedUiState("single.protein.v1", {
+      kind,
+      downloadFormat,
+      box,
+      line,
+      heatmap,
+    });
+  }, [kind, downloadFormat, box, line, heatmap]);
 
   const effectiveKind: AnnotationKind = activeTab === "heatmap" ? "phospho" : kind;
   const activeIdentifier: SingleProteinIdentifier =
