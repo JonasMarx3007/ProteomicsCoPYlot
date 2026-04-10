@@ -16,6 +16,10 @@ _CONTEXT_CACHE_TTL_SECONDS = 30.0
 _CONTEXT_CACHE: dict[str, tuple[float, ModuleContextResponse]] = {}
 
 _MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
+    "peptide.rtPlot": ["peptide_rt_plot"],
+    "peptide.modification": ["peptide_modification_plot"],
+    "peptide.missedCleavage": ["peptide_missed_cleavage_plot"],
+    "peptide.sequenceCoverage": ["peptide_sequence_coverage"],
     "completeness.missingPlot": ["completeness_missing_value_plot"],
     "completeness.heatmap": ["completeness_missing_value_heatmap"],
     "completeness.tables": ["completeness_missing_value_tables"],

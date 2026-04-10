@@ -1,6 +1,9 @@
-﻿import PeptideLevelPage from "./PeptideLevelPage";
+import PeptideLevelPage from "./PeptideLevelPage";
 
-export default function ModificationPlotPage() {
-  return <PeptideLevelPage activeTab="modification" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function ModificationPlotPage({ onContextModeChange }: Props) {
+  return <PeptideLevelPage activeTab="modification" onContextModeChange={onContextModeChange} />;
 }
-

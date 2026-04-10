@@ -1,6 +1,9 @@
-﻿import PeptideLevelPage from "./PeptideLevelPage";
+import PeptideLevelPage from "./PeptideLevelPage";
 
-export default function RtPlotPage() {
-  return <PeptideLevelPage activeTab="rtPlot" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function RtPlotPage({ onContextModeChange }: Props) {
+  return <PeptideLevelPage activeTab="rtPlot" onContextModeChange={onContextModeChange} />;
 }
-

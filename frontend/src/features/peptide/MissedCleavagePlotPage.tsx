@@ -1,6 +1,9 @@
-﻿import PeptideLevelPage from "./PeptideLevelPage";
+import PeptideLevelPage from "./PeptideLevelPage";
 
-export default function MissedCleavagePlotPage() {
-  return <PeptideLevelPage activeTab="missedCleavage" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function MissedCleavagePlotPage({ onContextModeChange }: Props) {
+  return <PeptideLevelPage activeTab="missedCleavage" onContextModeChange={onContextModeChange} />;
 }
-

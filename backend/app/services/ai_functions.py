@@ -17,6 +17,8 @@ from app.services import phospho_tools as _phospho_tools
 from app.services import table_functions as _table_functions
 from app.services.peptide_tools import _extract_id_or_number as _extract_peptide_id
 from app.services.peptide_tools import get_peptide_frame
+from app.services.peptide_tools import peptide_overview as _peptide_overview
+from app.services.peptide_tools import peptide_sequence_coverage as _peptide_sequence_coverage
 
 _GENERAL_PROTEOMICS_CONTEXT_PREFIX = (
     "This application analyzes proteomics data. "
@@ -1114,6 +1116,530 @@ def qc_correlation_plot(workflow: str = "protein") -> dict[str, Any]:
     )
 
     return _text_payload("qc_correlation_plot", "\n".join(lines))
+
+
+def peptide_rt_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    mode_pairs = _parse_mode_pairs(mode)
+
+    method = str(mode_pairs.get("method", "Hexbin Plot")).strip() or "Hexbin Plot"
+    add_line = _bool_from_mode(mode_pairs, "addline", "add_line", default=False)
+    header = _bool_from_mode(mode_pairs, "header", default=True)
+    bins = int(_float_from_mode(mode_pairs, "bins", default=1000.0, minimum=10.0, maximum=2000.0))
+    width_cm = _float_from_mode(mode_pairs, "widthcm", "width_cm", default=20.0, minimum=5.0, maximum=200.0)
+    height_cm = _float_from_mode(mode_pairs, "heightcm", "height_cm", default=15.0, minimum=5.0, maximum=200.0)
+    dpi = int(_float_from_mode(mode_pairs, "dpi", default=100.0, minimum=72.0, maximum=2000.0))
+
+    lines: list[str] = []
+    lines.append(f"peptide_rt_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
+    lines.append(
+        f"peptide_rt_parameters|method={_safe_context_text(method)}|add_line={'true' if add_line else 'false'}|header={'true' if header else 'false'}|bins={bins}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
+    )
+    lines.append(
+        "peptide_rt_general|description=retention_time_agreement_plot_between_predicted_and_observed_retention_times_for_peptide_entries"
+    )
+    lines.append("peptide_rt_axes|x_axis=predicted_RT|y_axis=actual_RT|point_definition=one_peptide_measurement")
+    lines.append(
+        "peptide_rt_methods|scatter=points|hexbin=hexagonal_bin_counts|density=2D_histogram_density"
+    )
+    lines.append(
+        "peptide_rt_diagonal_rule|optional_identity_line_if_enabled=predicted_RT_equals_actual_RT_reference"
+    )
+
+    try:
+        frame = get_peptide_frame()
+    except Exception as exc:
+        lines.append(f"peptide_rt_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_rt_plot", "\n".join(lines))
+
+    def _predicted_rt_column(df: pd.DataFrame) -> str | None:
+        if "Predicted.RT" in df.columns:
+            return "Predicted.RT"
+        for column in df.columns:
+            normalized = str(column).strip().lower()
+            if "predicted" in normalized and "rt" in normalized:
+                return str(column)
+        return None
+
+    def _actual_rt_column(df: pd.DataFrame) -> str | None:
+        if "RT" in df.columns:
+            return "RT"
+        for column in df.columns:
+            normalized = str(column).strip().lower()
+            if normalized == "rt":
+                return str(column)
+        for column in df.columns:
+            normalized = str(column).strip().lower()
+            if "rt" in normalized and "predicted" not in normalized:
+                return str(column)
+        return None
+
+    predicted_col = _predicted_rt_column(frame)
+    actual_col = _actual_rt_column(frame)
+    if predicted_col is None or actual_col is None:
+        lines.append(
+            "peptide_rt_data|status=error|detail=missing_required_columns_for_rt_plot"
+        )
+        return _text_payload("peptide_rt_plot", "\n".join(lines))
+
+    data = frame[[predicted_col, actual_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    lines.append(
+        f"peptide_rt_columns|predicted_column={_safe_context_text(predicted_col)}|actual_column={_safe_context_text(actual_col)}"
+    )
+    lines.append(
+        f"peptide_rt_table|status=available|rows={int(data.shape[0])}|columns={int(data.shape[1])}"
+    )
+    if data.empty:
+        lines.append("peptide_rt_table|status=empty_after_numeric_filter")
+        return _text_payload("peptide_rt_plot", "\n".join(lines))
+
+    predicted_vals = data[predicted_col].astype(float)
+    actual_vals = data[actual_col].astype(float)
+    correlation = float(predicted_vals.corr(actual_vals)) if int(data.shape[0]) >= 2 else float("nan")
+
+    lines.append(
+        "peptide_rt_summary|"
+        f"points={int(data.shape[0])}|"
+        f"predicted_min={_fmt_value(predicted_vals.min())}|predicted_max={_fmt_value(predicted_vals.max())}|predicted_mean={_fmt_value(predicted_vals.mean())}|predicted_median={_fmt_value(predicted_vals.median())}|"
+        f"actual_min={_fmt_value(actual_vals.min())}|actual_max={_fmt_value(actual_vals.max())}|actual_mean={_fmt_value(actual_vals.mean())}|actual_median={_fmt_value(actual_vals.median())}|"
+        f"pearson_r={_fmt_value(correlation) if pd.notna(correlation) else 'na'}"
+    )
+    lines.append(
+        "peptide_rt_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
+    )
+    lines.append(
+        "peptide_rt_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    return _text_payload("peptide_rt_plot", "\n".join(lines))
+
+
+def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    mode_pairs = _parse_mode_pairs(mode)
+
+    include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
+    header = _bool_from_mode(mode_pairs, "header", default=True)
+    legend = _bool_from_mode(mode_pairs, "legend", default=True)
+    width_cm = _float_from_mode(mode_pairs, "widthcm", "width_cm", default=25.0, minimum=5.0, maximum=200.0)
+    height_cm = _float_from_mode(mode_pairs, "heightcm", "height_cm", default=15.0, minimum=5.0, maximum=200.0)
+    dpi = int(_float_from_mode(mode_pairs, "dpi", default=100.0, minimum=72.0, maximum=2000.0))
+
+    lines: list[str] = []
+    lines.append(f"peptide_modification_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
+    lines.append(
+        f"peptide_modification_parameters|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|legend={'true' if legend else 'false'}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
+    )
+    lines.append(
+        "peptide_modification_general|description=bar_plot_of_modified_peptide_counts_per_sample_for_selected_modification_classes"
+    )
+    lines.append(
+        "peptide_modification_classes|tracked=Carbamylation_Oxidation_Acetylation"
+    )
+    lines.append(
+        "peptide_modification_logic|count_rule=for_each_modification_count_sequences_matching_pattern_that_have_non_missing_quantity_per_sample"
+    )
+    lines.append(
+        "peptide_modification_metadata_rule|protein_annotation_metadata_with_sample_and_condition_is_required_for_sample_mapping"
+    )
+
+    try:
+        frame = get_peptide_frame()
+    except Exception as exc:
+        lines.append(f"peptide_modification_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+    try:
+        file_col = _plot_images._peptide_file_column(frame)
+    except Exception as exc:
+        lines.append(f"peptide_modification_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+    sequence_col = "Modified.Sequence" if "Modified.Sequence" in frame.columns else None
+    if sequence_col is None:
+        for column in frame.columns:
+            normalized = str(column).strip().lower()
+            if "modified" in normalized and "sequence" in normalized:
+                sequence_col = str(column)
+                break
+    if sequence_col is None:
+        lines.append("peptide_modification_data|status=error|detail=missing_modified_sequence_column")
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+    quantity_col = (
+        "Precursor.Quantity"
+        if "Precursor.Quantity" in frame.columns
+        else _plot_images._peptide_quantity_column(frame)
+    )
+
+    try:
+        meta = _plot_images._peptide_coverage_metadata(frame, include_id=include_id).copy()
+    except Exception as exc:
+        lines.append(
+            f"peptide_modification_data|status=error|detail=metadata_required:{_safe_context_text(exc)}"
+        )
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+    wide = (
+        frame.pivot_table(index=file_col, columns=sequence_col, values=quantity_col, aggfunc="max")
+        .T.reset_index()
+    )
+    wide.columns = [
+        _extract_peptide_id(column) if str(column) != sequence_col else sequence_col
+        for column in wide.columns
+    ]
+
+    rename_map = {
+        str(sample_id): str(label)
+        for sample_id, label in zip(meta["id"].astype(str), meta["label"].astype(str))
+    }
+    wide = wide.rename(columns=rename_map)
+    ordered_samples = [str(label) for label in meta["label"].astype(str).tolist()]
+    annotated_cols = [column for column in ordered_samples if column in wide.columns]
+    if not annotated_cols:
+        lines.append(
+            "peptide_modification_data|status=error|detail=metadata_sample_mapping_did_not_match_peptide_samples"
+        )
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+    filtered = wide[[sequence_col, *annotated_cols]].copy()
+
+    def _mod_count(pattern: str) -> pd.Series:
+        subset = filtered[filtered[sequence_col].astype(str).str.contains(pattern, na=False)].copy()
+        if subset.empty:
+            return pd.Series(0, index=filtered.columns[1:], dtype=float)
+        for column in subset.columns[1:]:
+            subset[column] = subset[column].notna().astype(int)
+        return subset.iloc[:, 1:].sum(axis=0)
+
+    carb = _mod_count("UniMod:4|Carbamidomethyl")
+    oxi = _mod_count("UniMod:35|Oxidation")
+    ace = _mod_count("UniMod:1|Acetyl")
+
+    summary = pd.DataFrame(
+        {
+            "Sample": [str(sample) for sample in annotated_cols],
+            "Carbamylation": [int(carb.get(sample, 0)) for sample in annotated_cols],
+            "Oxidation": [int(oxi.get(sample, 0)) for sample in annotated_cols],
+            "Acetylation": [int(ace.get(sample, 0)) for sample in annotated_cols],
+        }
+    )
+    summary["Total"] = (
+        summary["Carbamylation"].astype(int)
+        + summary["Oxidation"].astype(int)
+        + summary["Acetylation"].astype(int)
+    )
+
+    condition_by_sample = {
+        str(label): str(condition)
+        for label, condition in zip(meta["label"].astype(str), meta["condition"].astype(str))
+    }
+    summary["Condition"] = summary["Sample"].map(condition_by_sample).fillna("unknown")
+
+    lines.append(
+        f"peptide_modification_columns|file_column={_safe_context_text(file_col)}|sequence_column={_safe_context_text(sequence_col)}|quantity_column={_safe_context_text(quantity_col)}"
+    )
+    lines.append(
+        f"peptide_modification_table|status=available|rows={int(summary.shape[0])}|columns={int(summary.shape[1])}"
+    )
+    lines.append(
+        f"peptide_modification_counts|sample_count={int(summary['Sample'].nunique())}|condition_count={int(summary['Condition'].nunique())}"
+    )
+    lines.append(
+        "peptide_modification_totals|"
+        f"carbamylation={int(summary['Carbamylation'].sum())}|oxidation={int(summary['Oxidation'].sum())}|acetylation={int(summary['Acetylation'].sum())}|total={int(summary['Total'].sum())}"
+    )
+
+    for _, row in summary.iterrows():
+        lines.append(
+            "peptide_modification_sample|"
+            f"condition={_safe_context_text(row['Condition'])}|sample={_safe_context_text(row['Sample'])}|"
+            f"carbamylation={int(row['Carbamylation'])}|oxidation={int(row['Oxidation'])}|acetylation={int(row['Acetylation'])}|total={int(row['Total'])}"
+        )
+
+    for condition in _condition_order(summary[["Condition"]].copy()):
+        subset = summary[summary["Condition"] == condition].copy()
+        if subset.empty:
+            continue
+        lines.append(
+            "peptide_modification_condition|"
+            f"name={_safe_context_text(condition)}|sample_count={int(subset.shape[0])}|"
+            f"carbamylation={int(subset['Carbamylation'].sum())}|oxidation={int(subset['Oxidation'].sum())}|acetylation={int(subset['Acetylation'].sum())}|total={int(subset['Total'].sum())}"
+        )
+
+    lines.append(
+        "peptide_modification_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
+    )
+    lines.append(
+        "peptide_modification_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    return _text_payload("peptide_modification_plot", "\n".join(lines))
+
+
+def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    mode_pairs = _parse_mode_pairs(mode)
+
+    include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
+    show_text = _bool_from_mode(mode_pairs, "text", default=True)
+    text_size = int(_float_from_mode(mode_pairs, "textsize", "text_size", default=8.0, minimum=6.0, maximum=100.0))
+    header = _bool_from_mode(mode_pairs, "header", default=True)
+    width_cm = _float_from_mode(mode_pairs, "widthcm", "width_cm", default=25.0, minimum=5.0, maximum=200.0)
+    height_cm = _float_from_mode(mode_pairs, "heightcm", "height_cm", default=15.0, minimum=5.0, maximum=200.0)
+    dpi = int(_float_from_mode(mode_pairs, "dpi", default=100.0, minimum=72.0, maximum=2000.0))
+
+    lines: list[str] = []
+    lines.append(f"peptide_missed_cleavage_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
+    lines.append(
+        f"peptide_missed_cleavage_parameters|include_id={'true' if include_id else 'false'}|text={'true' if show_text else 'false'}|text_size={text_size}|header={'true' if header else 'false'}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
+    )
+    lines.append(
+        "peptide_missed_cleavage_general|description=stacked_bar_distribution_of_missed_cleavage_counts_per_sample_reported_as_percentages"
+    )
+    lines.append(
+        "peptide_missed_cleavage_logic|count_definition=for_each_peptide_sequence_count_R_plus_K_minus_1_with_lower_bound_zero"
+    )
+    lines.append(
+        "peptide_missed_cleavage_logic|sample_assignment=count_is_included_for_a_sample_when_the_peptide_has_non_missing_quantity_in_that_sample"
+    )
+    lines.append(
+        "peptide_missed_cleavage_metadata_rule|protein_annotation_metadata_with_sample_and_condition_is_required_for_sample_mapping"
+    )
+
+    try:
+        frame = get_peptide_frame()
+    except Exception as exc:
+        lines.append(f"peptide_missed_cleavage_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+    try:
+        file_col = _plot_images._peptide_file_column(frame)
+        seq_col = _plot_images._peptide_sequence_column(frame)
+    except Exception as exc:
+        lines.append(f"peptide_missed_cleavage_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+    quantity_col = (
+        "Precursor.Quantity"
+        if "Precursor.Quantity" in frame.columns
+        else _plot_images._peptide_quantity_column(frame)
+    )
+
+    try:
+        meta = _plot_images._peptide_coverage_metadata(frame, include_id=include_id).copy()
+    except Exception as exc:
+        lines.append(
+            f"peptide_missed_cleavage_data|status=error|detail=metadata_required:{_safe_context_text(exc)}"
+        )
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+    wide = (
+        frame.pivot_table(index=file_col, columns=seq_col, values=quantity_col, aggfunc="max")
+        .T.reset_index()
+    )
+    wide = wide.rename(columns={"index": seq_col})
+    wide.columns = [
+        _extract_peptide_id(column) if str(column) != seq_col else seq_col
+        for column in wide.columns
+    ]
+
+    rename_map = {
+        str(sample_id): str(label)
+        for sample_id, label in zip(meta["id"].astype(str), meta["label"].astype(str))
+    }
+    wide = wide.rename(columns=rename_map)
+    sample_order = [str(label) for label in meta["label"].astype(str).tolist()]
+    annotated_cols = [column for column in sample_order if column in wide.columns]
+    if not annotated_cols:
+        lines.append(
+            "peptide_missed_cleavage_data|status=error|detail=metadata_sample_mapping_did_not_match_peptide_samples"
+        )
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+    filtered = wide[[seq_col, *annotated_cols]].copy()
+
+    def _rk_count(sequence: str) -> int:
+        seq_text = str(sequence or "")
+        return max(0, seq_text.count("R") + seq_text.count("K") - 1)
+
+    rk_counts = [_rk_count(sequence) for sequence in filtered[seq_col].tolist()]
+    for column in filtered.columns[1:]:
+        presence = filtered[column].notna().tolist()
+        filtered[column] = [rk if flag else pd.NA for rk, flag in zip(rk_counts, presence)]
+
+    plot_data = filtered.melt(id_vars=seq_col, var_name="Sample", value_name="Count").dropna()
+    if plot_data.empty:
+        lines.append("peptide_missed_cleavage_table|status=empty_after_filtering")
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+    plot_data["Count"] = pd.to_numeric(plot_data["Count"], errors="coerce")
+    plot_data = plot_data.dropna(subset=["Count"]).copy()
+    plot_data["Count"] = plot_data["Count"].astype(int)
+    if plot_data.empty:
+        lines.append("peptide_missed_cleavage_table|status=empty_after_numeric_filter")
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+    summary = plot_data.groupby(["Sample", "Count"]).size().reset_index(name="Occurrences")
+    summary["Total"] = summary.groupby("Sample")["Occurrences"].transform("sum")
+    summary["Percentage"] = (summary["Occurrences"] / summary["Total"]) * 100.0
+    summary["Sample"] = pd.Categorical(summary["Sample"], categories=sample_order, ordered=True)
+
+    condition_by_sample = {
+        str(label): str(condition)
+        for label, condition in zip(meta["label"].astype(str), meta["condition"].astype(str))
+    }
+
+    sample_totals = summary.groupby("Sample", observed=False)["Total"].max()
+    counts_sorted = sorted(summary["Count"].astype(int).unique().tolist())
+    pivot = (
+        summary.pivot_table(
+            index="Sample",
+            columns="Count",
+            values="Percentage",
+            aggfunc="first",
+        )
+        .reindex(sample_order)
+        .fillna(0.0)
+    )
+
+    lines.append(
+        f"peptide_missed_cleavage_columns|file_column={_safe_context_text(file_col)}|sequence_column={_safe_context_text(seq_col)}|quantity_column={_safe_context_text(quantity_col)}"
+    )
+    lines.append(
+        f"peptide_missed_cleavage_table|status=available|rows={int(summary.shape[0])}|columns={int(summary.shape[1])}"
+    )
+    lines.append(
+        f"peptide_missed_cleavage_counts|sample_count={len(sample_order)}|cleavage_count_levels={len(counts_sorted)}"
+    )
+    lines.append(
+        f"peptide_missed_cleavage_levels|values={_safe_context_text(';'.join([str(value) for value in counts_sorted]))}"
+    )
+
+    single_percent = (
+        summary[summary["Count"] == 1]
+        .set_index("Sample")["Percentage"]
+        .reindex(sample_order)
+        .fillna(0.0)
+    )
+    for sample in sample_order:
+        if sample not in pivot.index:
+            continue
+        distribution_parts = [
+            f"{count}:{_fmt_value(float(pivot.loc[sample, count]))}"
+            for count in counts_sorted
+        ]
+        n_total = int(sample_totals.get(sample, 0))
+        lines.append(
+            "peptide_missed_cleavage_sample|"
+            f"condition={_safe_context_text(condition_by_sample.get(sample, 'unknown'))}|sample={_safe_context_text(sample)}|"
+            f"n_detected_peptides={n_total}|single_missed_cleavage_percent={_fmt_value(float(single_percent.get(sample, 0.0)))}|"
+            f"distribution_percent={_safe_context_text(';'.join(distribution_parts))}"
+        )
+
+    global_dist = (plot_data["Count"].value_counts(normalize=True).sort_index() * 100.0)
+    lines.append(
+        f"peptide_missed_cleavage_global|total_detected_entries={int(plot_data.shape[0])}"
+    )
+    for count, percent in global_dist.items():
+        lines.append(
+            f"peptide_missed_cleavage_global_bin|count={int(count)}|percentage={_fmt_value(float(percent))}"
+        )
+
+    lines.append(
+        "peptide_missed_cleavage_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
+    )
+    lines.append(
+        "peptide_missed_cleavage_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
+
+
+def peptide_sequence_coverage(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    mode_pairs = _parse_mode_pairs(mode)
+
+    species = str(mode_pairs.get("species", "human")).strip().lower()
+    if species not in {"human", "mouse"}:
+        species = "human"
+    protein = str(mode_pairs.get("protein", "")).strip()
+    chunk_size = int(_float_from_mode(mode_pairs, "chunksize", "chunk_size", default=100.0, minimum=10.0, maximum=5000.0))
+    max_protein_preview = int(
+        _float_from_mode(
+            mode_pairs,
+            "maxproteinpreview",
+            "max_protein_preview",
+            default=150.0,
+            minimum=10.0,
+            maximum=2000.0,
+        )
+    )
+
+    lines: list[str] = []
+    lines.append(f"peptide_sequence_coverage_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
+    lines.append(
+        f"peptide_sequence_coverage_parameters|species={species}|protein={_safe_context_text(protein or 'not_selected')}|chunk_size={chunk_size}"
+    )
+    lines.append(
+        "peptide_sequence_coverage_general|description=textual_sequence_map_of_selected_protein_with_matched_peptides_overlay_and_coverage_percent"
+    )
+    lines.append(
+        "peptide_sequence_coverage_logic|coverage_percent=covered_amino_acid_positions_divided_by_total_protein_length_times_100"
+    )
+    lines.append(
+        "peptide_sequence_coverage_database|supported_species=human_or_mouse_fasta_database_selected_by_ui_parameter"
+    )
+
+    try:
+        overview = _peptide_overview()
+    except Exception as exc:
+        lines.append(f"peptide_sequence_coverage_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_sequence_coverage", "\n".join(lines))
+
+    available_proteins = [str(value) for value in list(overview.get("availableProteins") or []) if str(value).strip()]
+    protein_preview, protein_preview_truncated = _preview_items(available_proteins, max_protein_preview)
+    lines.append(
+        f"peptide_sequence_coverage_dataset|filename={_safe_context_text(overview.get('filename'))}|rows={int(overview.get('rows') or 0)}|available_proteins={len(available_proteins)}|metadata_loaded={'true' if bool(overview.get('metadataLoaded')) else 'false'}"
+    )
+    lines.append(
+        f"peptide_sequence_coverage_available_proteins|count={len(available_proteins)}|preview_count={len(protein_preview)}|preview_truncated={'true' if protein_preview_truncated else 'false'}|values={_safe_context_text(';'.join(protein_preview))}"
+    )
+
+    if not protein:
+        suggested = available_proteins[0] if available_proteins else ""
+        lines.append(
+            f"peptide_sequence_coverage_data|status=incomplete_parameters|detail=protein_not_selected|suggested_protein={_safe_context_text(suggested or 'none_available')}"
+        )
+        return _text_payload("peptide_sequence_coverage", "\n".join(lines))
+
+    try:
+        payload = _peptide_sequence_coverage(
+            species=species,  # type: ignore[arg-type]
+            protein=protein,
+            chunk_size=chunk_size,
+        )
+    except Exception as exc:
+        lines.append(f"peptide_sequence_coverage_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("peptide_sequence_coverage", "\n".join(lines))
+
+    coverage_percent = float(payload.get("coveragePercent", 0.0))
+    matching_peptide_count = int(payload.get("matchingPeptideCount", 0) or 0)
+    sequence_text = str(payload.get("sequenceText", "") or "")
+    sequence_lines = [line for line in sequence_text.splitlines() if line.strip()]
+    sequence_preview, sequence_preview_truncated = _preview_items(sequence_lines, 12)
+
+    lines.append(
+        "peptide_sequence_coverage_result|"
+        f"protein={_safe_context_text(str(payload.get('protein') or protein))}|species={_safe_context_text(str(payload.get('species') or species))}|"
+        f"coverage_percent={_fmt_value(coverage_percent)}|matching_peptide_count={matching_peptide_count}|sequence_text_lines={len(sequence_lines)}"
+    )
+    lines.append(
+        f"peptide_sequence_coverage_sequence_preview|line_count={len(sequence_preview)}|preview_truncated={'true' if sequence_preview_truncated else 'false'}|lines={_safe_context_text(' || '.join(sequence_preview))}"
+    )
+    lines.append(
+        "peptide_sequence_coverage_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
+    )
+    lines.append(
+        "peptide_sequence_coverage_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    return _text_payload("peptide_sequence_coverage", "\n".join(lines))
 
 
 def completeness_missing_value_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
@@ -3103,6 +3629,10 @@ __all__ = [
     "single_protein_boxplot",
     "single_protein_lineplot",
     "single_protein_phosphosite_heatmap",
+    "peptide_rt_plot",
+    "peptide_modification_plot",
+    "peptide_missed_cleavage_plot",
+    "peptide_sequence_coverage",
     "qc_coverage_plot",
     "qc_histogram_intensity",
     "qc_boxplot_intensity",
