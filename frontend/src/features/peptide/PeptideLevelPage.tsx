@@ -19,9 +19,10 @@ import type {
 
 type Props = {
   activeTab: PeptideTab;
+  onContextModeChange?: (mode: string) => void;
 };
 
-export default function PeptideLevelPage({ activeTab }: Props) {
+export default function PeptideLevelPage({ activeTab, onContextModeChange }: Props) {
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -61,6 +62,84 @@ export default function PeptideLevelPage({ activeTab }: Props) {
   const [coverageResult, setCoverageResult] = useState<PeptideCoverageResponse | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    if (activeTab === "rtPlot") {
+      onContextModeChange(
+        [
+          `method=${rt.method}`,
+          `addLine=${String(rt.addLine)}`,
+          `header=${String(rt.header)}`,
+          `bins=${String(rt.bins)}`,
+          `widthCm=${String(rt.widthCm)}`,
+          `heightCm=${String(rt.heightCm)}`,
+          `dpi=${String(rt.dpi)}`,
+        ].join("|")
+      );
+      return;
+    }
+    if (activeTab === "modification") {
+      onContextModeChange(
+        [
+          `includeId=${String(modification.includeId)}`,
+          `header=${String(modification.header)}`,
+          `legend=${String(modification.legend)}`,
+          `widthCm=${String(modification.widthCm)}`,
+          `heightCm=${String(modification.heightCm)}`,
+          `dpi=${String(modification.dpi)}`,
+        ].join("|")
+      );
+      return;
+    }
+    if (activeTab === "missedCleavage") {
+      onContextModeChange(
+        [
+          `includeId=${String(missedCleavage.includeId)}`,
+          `text=${String(missedCleavage.text)}`,
+          `textSize=${String(missedCleavage.textSize)}`,
+          `header=${String(missedCleavage.header)}`,
+          `widthCm=${String(missedCleavage.widthCm)}`,
+          `heightCm=${String(missedCleavage.heightCm)}`,
+          `dpi=${String(missedCleavage.dpi)}`,
+        ].join("|")
+      );
+      return;
+    }
+    onContextModeChange(
+      [
+        `species=${coverage.species}`,
+        `protein=${coverage.protein}`,
+        `chunkSize=${String(coverage.chunkSize)}`,
+      ].join("|")
+    );
+  }, [
+    onContextModeChange,
+    activeTab,
+    rt.method,
+    rt.addLine,
+    rt.header,
+    rt.bins,
+    rt.widthCm,
+    rt.heightCm,
+    rt.dpi,
+    modification.includeId,
+    modification.header,
+    modification.legend,
+    modification.widthCm,
+    modification.heightCm,
+    modification.dpi,
+    missedCleavage.includeId,
+    missedCleavage.text,
+    missedCleavage.textSize,
+    missedCleavage.header,
+    missedCleavage.widthCm,
+    missedCleavage.heightCm,
+    missedCleavage.dpi,
+    coverage.species,
+    coverage.protein,
+    coverage.chunkSize,
+  ]);
 
   useEffect(() => {
     refresh().catch((err) => {

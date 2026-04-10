@@ -1,6 +1,9 @@
-﻿import PeptideLevelPage from "./PeptideLevelPage";
+import PeptideLevelPage from "./PeptideLevelPage";
 
-export default function SequenceCoveragePage() {
-  return <PeptideLevelPage activeTab="sequenceCoverage" />;
+type Props = {
+  onContextModeChange?: (mode: string) => void;
+};
+
+export default function SequenceCoveragePage({ onContextModeChange }: Props) {
+  return <PeptideLevelPage activeTab="sequenceCoverage" onContextModeChange={onContextModeChange} />;
 }
-

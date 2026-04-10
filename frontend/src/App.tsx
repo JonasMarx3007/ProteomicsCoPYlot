@@ -186,6 +186,7 @@ export default function App() {
   const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
   const [statsGseaContextMode, setStatsGseaContextMode] = useState<string>("");
   const [statsPathwayHeatmapContextMode, setStatsPathwayHeatmapContextMode] = useState<string>("");
+  const [peptideContextMode, setPeptideContextMode] = useState<string>("");
   const [singleProteinBoxplotContextMode, setSingleProteinBoxplotContextMode] = useState<string>("");
   const [comparisonPearsonContextMode, setComparisonPearsonContextMode] = useState<string>("");
   const [phosphoContextMode, setPhosphoContextMode] = useState<string>("");
@@ -266,6 +267,11 @@ export default function App() {
     if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") return;
     setStatsPathwayHeatmapContextMode("");
   }, [activeSection, activeStatsTab]);
+
+  useEffect(() => {
+    if (activeSection === "peptide") return;
+    setPeptideContextMode("");
+  }, [activeSection]);
 
   useEffect(() => {
     if (
@@ -522,6 +528,17 @@ export default function App() {
       return qcPcaContextMode.trim();
     }
     if (
+      activeSection === "peptide" &&
+      (
+        activePeptideTab === "rtPlot" ||
+        activePeptideTab === "modification" ||
+        activePeptideTab === "missedCleavage" ||
+        activePeptideTab === "sequenceCoverage"
+      )
+    ) {
+      return peptideContextMode.trim();
+    }
+    if (
       activeSection === "singleProtein" &&
       (activeSingleProteinTab === "boxplot" || activeSingleProteinTab === "lineplot" || activeSingleProteinTab === "heatmap")
     ) {
@@ -548,6 +565,7 @@ export default function App() {
     activeStatsTab,
     activeCompletenessTab,
     activeQcTab,
+    activePeptideTab,
     activeSingleProteinTab,
     activeComparisonTab,
     activePhosphoTab,
@@ -557,6 +575,7 @@ export default function App() {
     completenessContextMode,
     qcBoxplotMode,
     qcPcaContextMode,
+    peptideContextMode,
     singleProteinBoxplotContextMode,
     comparisonPearsonContextMode,
     phosphoContextMode,
@@ -914,18 +933,18 @@ export default function App() {
 
     if (activeSection === "peptide") {
       if (activePeptideTab === "rtPlot") {
-        return <RtPlotPage />;
+        return <RtPlotPage onContextModeChange={setPeptideContextMode} />;
       }
 
       if (activePeptideTab === "modification") {
-        return <ModificationPlotPage />;
+        return <ModificationPlotPage onContextModeChange={setPeptideContextMode} />;
       }
 
       if (activePeptideTab === "missedCleavage") {
-        return <MissedCleavagePlotPage />;
+        return <MissedCleavagePlotPage onContextModeChange={setPeptideContextMode} />;
       }
 
-      return <SequenceCoveragePage />;
+      return <SequenceCoveragePage onContextModeChange={setPeptideContextMode} />;
     }
 
     if (activeSection === "singleProtein") {
