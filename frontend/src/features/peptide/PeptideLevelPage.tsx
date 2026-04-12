@@ -22,6 +22,9 @@ type Props = {
   onContextModeChange?: (mode: string) => void;
 };
 
+const MISSING_PEPTIDE_DATASET_MESSAGE =
+  "No peptide dataset path is currently loaded. Upload a peptide dataset path first.";
+
 export default function PeptideLevelPage({ activeTab, onContextModeChange }: Props) {
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -195,6 +198,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
 
   const hasDataset = Boolean(overview);
   const hasMetadata = Boolean(overview?.metadataLoaded);
+  const showMissingDatasetInfoOnly =
+    !hasDataset && error?.trim() === MISSING_PEPTIDE_DATASET_MESSAGE;
 
   const rtPlotUrl = useMemo(() => buildPlotUrl("/api/plots/peptide/rt.png", rt), [rt]);
   const modificationPlotUrl = useMemo(
@@ -237,7 +242,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
         <SectionCard title="Peptide Level">
           <InfoBanner message="Load a peptide dataset path in the Upload section before using the peptide pipeline." />
         </SectionCard>
-        {error ? <ErrorBanner message={error} /> : null}
+        {error && !showMissingDatasetInfoOnly ? <ErrorBanner message={error} /> : null}
       </div>
     );
   }

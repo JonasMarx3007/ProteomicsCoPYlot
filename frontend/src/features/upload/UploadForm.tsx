@@ -5,7 +5,11 @@ type UploadFormProps = {
   kind: DatasetKind;
   loading: boolean;
   onKindChange: (kind: DatasetKind) => void;
-  onFileSubmit: (file: File, kind: "protein" | "phospho" | "phosprot") => void;
+  onFileSubmit: (
+    file: File,
+    kind: "protein" | "phospho" | "phosprot",
+    inputValue: string
+  ) => void;
   onPeptideSubmit: (file: File, inputValue: string) => void;
 };
 
@@ -17,6 +21,7 @@ export default function UploadForm({
   onPeptideSubmit,
 }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
+  const [tableInputValue, setTableInputValue] = useState("");
   const [peptideInputValue, setPeptideInputValue] = useState("");
 
   const isTableKind = kind === "protein" || kind === "phospho" || kind === "phosprot";
@@ -24,6 +29,7 @@ export default function UploadForm({
 
   useEffect(() => {
     setFile(null);
+    setTableInputValue("");
     setPeptideInputValue("");
   }, [kind]);
 
@@ -32,8 +38,9 @@ export default function UploadForm({
       <div className="mb-4">
         <h2 className="text-lg font-semibold">Upload Dataset</h2>
         <p className="text-sm text-slate-500">
-          Protein, phospho, and phosphoprotein datasets are uploaded and previewed. Peptide stores
-          only the selected local file path.
+          Protein, phospho, and phosphoprotein prefer the selected local file path when the desktop
+          picker exposes it, and otherwise store an app-managed local copy for restore. Peptide
+          stores only the selected local file path.
         </p>
       </div>
 
@@ -64,13 +71,16 @@ export default function UploadForm({
                 key={`upload-file-${kind}`}
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] ?? null);
+                  setTableInputValue(e.target.value);
+                }}
                 className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
               />
             </div>
 
             <button
-              onClick={() => file && onFileSubmit(file, kind)}
+              onClick={() => file && onFileSubmit(file, kind, tableInputValue)}
               disabled={!file || loading}
               className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
             >

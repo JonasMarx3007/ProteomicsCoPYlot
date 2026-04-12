@@ -387,6 +387,16 @@ function VolcanoPanel({
   const [reportLogVersion, setReportLogVersion] = useState(0);
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
+  const volcanoDataSourceOptions = useMemo(
+    () =>
+      options?.imputedAvailable
+        ? [
+            { value: "data", label: "Data" },
+            { value: "imputed", label: "Imputed Data" },
+          ]
+        : [{ value: "data", label: "Data" }],
+    [options?.imputedAvailable]
+  );
 
   useEffect(() => {
     if (kindOptions.length === 0) return;
@@ -404,7 +414,11 @@ function VolcanoPanel({
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
-        setDataSource(data.imputedAvailable ? "imputed" : "data");
+        setDataSource((current) =>
+          data.imputedAvailable
+            ? (current === "imputed" ? "imputed" : "data")
+            : "data"
+        );
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
@@ -705,10 +719,7 @@ function VolcanoPanel({
             label="Data Source"
             value={dataSource}
             onChange={(value) => setDataSource(value as "data" | "imputed")}
-            options={[
-              { value: "data", label: "Data" },
-              { value: "imputed", label: "Imputed Data" },
-            ]}
+            options={volcanoDataSourceOptions}
           />
         </div>
         {sourceMode === "volcano_control" ? (

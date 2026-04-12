@@ -94,6 +94,11 @@ function TableDatasetInfo({ dataset }: { dataset: DatasetPreviewResponse }) {
       <InfoRow label="Format" value={dataset.format} />
       <InfoRow label="Rows" value={String(dataset.rows)} />
       <InfoRow label="Columns" value={String(dataset.columns)} />
+      <InfoRow
+        label="Restore Path"
+        value={dataset.sourcePath || "Not stored yet"}
+        truncate
+      />
     </dl>
   );
 }

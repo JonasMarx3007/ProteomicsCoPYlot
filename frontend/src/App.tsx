@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
@@ -60,10 +60,21 @@ import type {
 } from "./lib/types";
 import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
+import { downloadRestoreState } from "./lib/api";
 import {
   applyCopylotLocalStorageState,
   captureCopylotLocalStorageState,
 } from "./lib/restoreUiState";
+import {
+  clearPersistedSaveStateTarget,
+  isPickerAbortError,
+  loadPersistedSaveStateTarget,
+  openRestoreStateFileWithPicker,
+  persistSaveStateTarget,
+  saveRestoreStateBlob,
+  supportsNativeOpenStatePicker,
+  type SaveStateFileHandle,
+} from "./lib/saveStateFile";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -155,6 +166,10 @@ const allSidebarSections: SidebarSection[] = [
 ];
 
 type RightPanel = "none" | "list" | "chat";
+type SaveStateStatus = {
+  tone: "success" | "error";
+  message: string;
+};
 
 export default function App() {
   const {
@@ -192,6 +207,10 @@ export default function App() {
   const [phosphoContextMode, setPhosphoContextMode] = useState<string>("");
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [saveStateHandle, setSaveStateHandle] = useState<SaveStateFileHandle | null>(null);
+  const [saveStateFileName, setSaveStateFileName] = useState<string | null>(null);
+  const [saveStateStatus, setSaveStateStatus] = useState<SaveStateStatus | null>(null);
+  const saveStateStatusTimerRef = useRef<number | null>(null);
   const showDatasetSwitcher = availablePackages.length >= 2;
   const annotationMode = activeSection === "data" && activeDataTab === "annotation";
   const metadataOptions = useMemo(() => {
@@ -216,6 +235,27 @@ export default function App() {
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
+  }, []);
+
+  useEffect(() => {
+    loadPersistedSaveStateTarget().then((target) => {
+      if (target.handle) {
+        setSaveStateHandle(target.handle);
+      }
+      if (target.fileName) {
+        setSaveStateFileName(target.fileName);
+      }
+    }).catch(() => {
+      // Ignore persisted-handle load failures.
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (saveStateStatusTimerRef.current != null) {
+        window.clearTimeout(saveStateStatusTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -779,6 +819,17 @@ export default function App() {
     </>
   ) : null;
 
+  function showSaveStateMessage(tone: SaveStateStatus["tone"], message: string) {
+    setSaveStateStatus({ tone, message });
+    if (saveStateStatusTimerRef.current != null) {
+      window.clearTimeout(saveStateStatusTimerRef.current);
+    }
+    saveStateStatusTimerRef.current = window.setTimeout(() => {
+      setSaveStateStatus(null);
+      saveStateStatusTimerRef.current = null;
+    }, 2800);
+  }
+
   function buildUiStateSnapshot(): Record<string, unknown> {
     return {
       version: 1,
@@ -859,6 +910,72 @@ export default function App() {
       setRightPanel(nextRightPanel);
     }
   }
+
+  async function writeSaveState(forcePicker = false): Promise<void> {
+    const { blob, filename } = await downloadRestoreState(buildUiStateSnapshot());
+    const result = await saveRestoreStateBlob({
+      blob,
+      suggestedName: saveStateFileName || filename,
+      existingHandle: forcePicker ? null : saveStateHandle,
+      forcePicker,
+    });
+    setSaveStateHandle(result.handle);
+    setSaveStateFileName(result.fileName);
+    if (result.handle) {
+      await persistSaveStateTarget(result.handle);
+    } else if (forcePicker) {
+      await clearPersistedSaveStateTarget();
+    }
+    showSaveStateMessage(
+      "success",
+      result.method === "handle"
+        ? `Save state written to ${result.fileName}`
+        : `Save state downloaded as ${result.fileName}`
+    );
+  }
+
+  async function handleQuickSave(forcePicker = false): Promise<void> {
+    try {
+      await writeSaveState(forcePicker);
+    } catch (error) {
+      if (isPickerAbortError(error)) return;
+      const message = error instanceof Error ? error.message : "Failed to save state.";
+      showSaveStateMessage("error", message);
+      throw error;
+    }
+  }
+
+  async function handleOpenRestoreStateFile(): Promise<File | null> {
+    try {
+      const opened = await openRestoreStateFileWithPicker();
+      setSaveStateHandle(opened.handle);
+      setSaveStateFileName(opened.file.name);
+      await persistSaveStateTarget(opened.handle);
+      showSaveStateMessage("success", `Opened save state ${opened.file.name}`);
+      return opened.file;
+    } catch (error) {
+      if (isPickerAbortError(error)) return null;
+      const message = error instanceof Error ? error.message : "Failed to open save state.";
+      showSaveStateMessage("error", message);
+      throw error;
+    }
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.repeat) return;
+      if (event.altKey) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (String(event.key || "").toLowerCase() !== "s") return;
+      event.preventDefault();
+      void handleQuickSave(false).catch(() => {
+        // Status is already surfaced through the shared save-state banner.
+      });
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [saveStateHandle, saveStateFileName, activeSection, activeDataTab, activeQcTab, activeCompletenessTab, activeStatsTab, activePeptideTab, activeSingleProteinTab, activePhosphoTab, activeComparisonTab, activeSummaryTab, activeExternalTab, rightPanel]);
 
   function renderContent() {
     if (activeSection === "completeness") {
@@ -1047,8 +1164,11 @@ export default function App() {
       if (activeDataTab === "restore") {
         return (
           <RestorePage
-            getUiState={buildUiStateSnapshot}
             onApplyUiState={applyUiStateSnapshot}
+            onQuickSave={() => handleQuickSave(false)}
+            onQuickSaveAs={() => handleQuickSave(true)}
+            onOpenStateFile={supportsNativeOpenStatePicker() ? handleOpenRestoreStateFile : null}
+            currentSaveFileName={saveStateFileName}
           />
         );
       }
@@ -1089,6 +1209,18 @@ export default function App() {
       rightPanel={rightPanel}
       onRightPanelChange={setRightPanel}
     >
+      {saveStateStatus ? (
+        <div
+          className={[
+            "fixed bottom-4 right-4 z-50 rounded-xl border px-4 py-3 text-sm shadow-lg",
+            saveStateStatus.tone === "error"
+              ? "border-red-200 bg-red-50 text-red-700"
+              : "border-sky-200 bg-sky-50 text-sky-800",
+          ].join(" ")}
+        >
+          {saveStateStatus.message}
+        </div>
+      ) : null}
       <div key={`${activePackage}:${activeMetadataProfile}:${activeSection}`}>{renderContent()}</div>
     </AppShell>
   );

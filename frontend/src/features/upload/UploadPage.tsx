@@ -4,6 +4,7 @@ import {
   getCurrentDatasets,
   renameDatasetPackage,
   savePeptidePath,
+  saveTableDatasetPath,
   setActiveDatasetPackage,
   uploadPeptideFile,
   uploadDataset,
@@ -28,7 +29,7 @@ type LocalFile = File & {
   path?: string;
 };
 
-function resolveSelectedPeptidePath(file: File, inputValue: string): string | null {
+function resolveSelectedLocalPath(file: File, inputValue: string): string | null {
   const localPath = (file as LocalFile).path?.trim();
   if (localPath) {
     return localPath;
@@ -38,7 +39,6 @@ function resolveSelectedPeptidePath(file: File, inputValue: string): string | nu
   if (raw && !raw.toLowerCase().includes("fakepath")) {
     return raw;
   }
-
   return null;
 }
 
@@ -117,16 +117,21 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
     return () => window.clearTimeout(timer);
   }, [current, readOnly, viewerRefreshAttempts, refreshCurrentDatasets]);
 
-async function handleFileSubmit(
+  async function handleFileSubmit(
     file: File,
-    uploadKind: "protein" | "phospho" | "phosprot"
+    uploadKind: "protein" | "phospho" | "phosprot",
+    inputValue: string
   ) {
     try {
       setLoading(true);
       setError(null);
 
-      const sourcePath = (file as LocalFile).path?.trim() || "";
-      await uploadDataset(file, uploadKind, undefined, sourcePath);
+      const resolvedPath = resolveSelectedLocalPath(file, inputValue);
+      if (resolvedPath) {
+        await saveTableDatasetPath(resolvedPath, uploadKind);
+      } else {
+        await uploadDataset(file, uploadKind);
+      }
       const updated = await refreshCurrentDatasets();
 
       onDatasetUploaded?.(updated[uploadKind]);
@@ -142,7 +147,7 @@ async function handleFileSubmit(
       setLoading(true);
       setError(null);
 
-      const resolvedPath = resolveSelectedPeptidePath(file, inputValue);
+      const resolvedPath = resolveSelectedLocalPath(file, inputValue);
       if (resolvedPath) {
         await savePeptidePath(resolvedPath);
       } else {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { generateSummaryReport, getSummaryTables } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { getSummaryReportContext } from "../../lib/reportState";
 import type {
   SummaryTab,
@@ -10,6 +11,15 @@ import type {
 } from "../../lib/types";
 
 type TextPosition = "Above" | "Below";
+type SummaryEditorState = {
+  textEntries?: Record<string, unknown>;
+  selectedPlot?: unknown;
+  position?: unknown;
+  editorValue?: unknown;
+  showEntries?: unknown;
+  reportTitle?: unknown;
+  reportAuthor?: unknown;
+};
 
 const peptideTextKeys = ["RT", "Modification", "MissedCleavage"] as const;
 const proteinTextKeys = [
@@ -41,19 +51,49 @@ type Props = {
   activeTab: SummaryTab;
 };
 
+const SUMMARY_EDITOR_STATE_KEY = "summary.editor.v1";
+
+function asStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  const entries = Object.entries(value as Record<string, unknown>);
+  return Object.fromEntries(entries.map(([key, item]) => [key, String(item ?? "")]));
+}
+
+function asTextPosition(value: unknown): TextPosition {
+  return String(value ?? "").trim() === "Below" ? "Below" : "Above";
+}
+
 export default function SummaryPage({ activeTab }: Props) {
+  const persisted = useMemo(
+    () => readPersistedUiState<SummaryEditorState>(SUMMARY_EDITOR_STATE_KEY, {}),
+    []
+  );
   const [tables, setTables] = useState<SummaryTablesResponse | null>(null);
   const [tablesLoading, setTablesLoading] = useState(false);
   const [tablesError, setTablesError] = useState<string | null>(null);
 
-  const [textEntries, setTextEntries] = useState<Record<string, string>>({});
-  const [selectedPlot, setSelectedPlot] = useState("Introduction");
-  const [position, setPosition] = useState<TextPosition>("Above");
-  const [editorValue, setEditorValue] = useState("");
-  const [showEntries, setShowEntries] = useState(false);
+  const [textEntries, setTextEntries] = useState<Record<string, string>>(() =>
+    asStringRecord(persisted.textEntries)
+  );
+  const [selectedPlot, setSelectedPlot] = useState(() =>
+    String(persisted.selectedPlot ?? "Introduction")
+  );
+  const [position, setPosition] = useState<TextPosition>(() =>
+    asTextPosition(persisted.position)
+  );
+  const [editorValue, setEditorValue] = useState(() =>
+    String(persisted.editorValue ?? "")
+  );
+  const [showEntries, setShowEntries] = useState(() =>
+    Boolean(persisted.showEntries ?? false)
+  );
 
-  const [reportTitle, setReportTitle] = useState("");
-  const [reportAuthor, setReportAuthor] = useState("");
+  const [reportTitle, setReportTitle] = useState(() =>
+    String(persisted.reportTitle ?? "")
+  );
+  const [reportAuthor, setReportAuthor] = useState(() =>
+    String(persisted.reportAuthor ?? "")
+  );
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportResult, setReportResult] = useState<SummaryReportResponse | null>(null);
@@ -82,6 +122,18 @@ export default function SummaryPage({ activeTab }: Props) {
   useEffect(() => {
     setEditorValue(textEntries[currentTextKey] ?? "");
   }, [currentTextKey, textEntries]);
+
+  useEffect(() => {
+    writePersistedUiState(SUMMARY_EDITOR_STATE_KEY, {
+      textEntries,
+      selectedPlot,
+      position,
+      editorValue,
+      showEntries,
+      reportTitle,
+      reportAuthor,
+    });
+  }, [textEntries, selectedPlot, position, editorValue, showEntries, reportTitle, reportAuthor]);
 
   useEffect(() => {
     refreshTables();

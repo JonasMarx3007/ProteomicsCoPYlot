@@ -22,11 +22,11 @@ from app.schemas.dataset import (
     MetadataProfileRenameRequest,
     PeptidePathRequest,
     PeptidePathResponse,
+    TableDatasetPathRequest,
 )
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.dataset_store import (
-    clear_dataset,
     create_package,
     get_active_package,
     get_all_current_datasets,
@@ -72,6 +72,12 @@ def _peptide_upload_dir() -> Path:
     return base
 
 
+def _table_upload_dir() -> Path:
+    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "table_uploads"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def _table_preview_response(stored) -> DatasetPreviewResponse:
     df = stored.frame
     return DatasetPreviewResponse(
@@ -107,6 +113,14 @@ def _resolve_target_package(raw_package_name: str | None) -> str:
     if not text:
         return get_active_package()
     return set_active_package(text)
+
+
+def _read_table_from_local_path(path_text: str):
+    candidate = Path(path_text.strip()).expanduser()
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError(f"File not found: {candidate}")
+    with candidate.open("rb") as handle:
+        return candidate, read_dataframe(candidate.name, handle)
 
 
 def _current_datasets_response() -> CurrentDatasetsResponse:
@@ -252,11 +266,24 @@ async def upload_dataset(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
+    normalized_source_path = str(source_path or "").strip() or None
+    safe_name = Path(file.filename).name
+
     try:
         _ = get_extension(file.filename)
-        df = read_dataframe(file.filename, file.file)
+        if normalized_source_path:
+            df = read_dataframe(file.filename, file.file)
+        else:
+            target = _table_upload_dir() / f"{uuid4().hex}_{safe_name}"
+            with target.open("wb") as handle:
+                shutil.copyfileobj(file.file, handle)
+            with target.open("rb") as handle:
+                df = read_dataframe(safe_name, handle)
+            normalized_source_path = str(target.resolve())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store uploaded file: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
 
@@ -264,14 +291,40 @@ async def upload_dataset(
 
     # Re-uploading a dataset invalidates existing annotation state for that level.
     clear_annotation(kind, clear_all_profiles=True)
-    if kind == "phospho":
-        # Phosphoprotein data depends on phospho source + phospho annotation.
-        clear_annotation("phosprot", clear_all_profiles=True)
-        clear_dataset("phosprot")
 
-    stored = save_table_dataset(file.filename, kind, df, source_path=source_path)
+    stored = save_table_dataset(file.filename, kind, df, source_path=normalized_source_path)
     if kind in ("protein", "phospho"):
         clear_uploaded_metadata(kind, clear_all_profiles=True)
+    return _table_preview_response(stored)
+
+
+@router.post("/table-path", response_model=DatasetPreviewResponse)
+async def set_table_path(payload: TableDatasetPathRequest) -> DatasetPreviewResponse:
+    path_text = payload.path.strip()
+    if not path_text:
+        raise HTTPException(status_code=400, detail="Path must not be empty")
+
+    try:
+        candidate, df = _read_table_from_local_path(path_text)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
+
+    _resolve_target_package(payload.packageName)
+
+    clear_annotation(payload.kind, clear_all_profiles=True)
+
+    stored = save_table_dataset(
+        candidate.name,
+        payload.kind,
+        df,
+        source_path=str(candidate),
+    )
+    if payload.kind in ("protein", "phospho"):
+        clear_uploaded_metadata(payload.kind, clear_all_profiles=True)
     return _table_preview_response(stored)
 
 

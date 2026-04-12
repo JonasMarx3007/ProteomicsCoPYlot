@@ -11,6 +11,7 @@ from app.services.restore_state import (
     RestoreStateError,
     apply_restore_state,
     decode_restore_blob,
+    describe_restore_version_warning,
     export_state_blob,
     inspect_missing_files,
     parse_replacements_manifest,
@@ -46,6 +47,7 @@ async def import_restore_state(
         state = decode_restore_blob(blob)
         replacement_map = parse_replacements_manifest(replacementsManifest, replacements)
         missing = inspect_missing_files(state, replacement_map)
+        version_warning = describe_restore_version_warning(state)
     except RestoreStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -56,7 +58,7 @@ async def import_restore_state(
         payload = RestoreImportResponse(
             ok=False,
             uiState=ui_state if isinstance(ui_state, dict) else {},
-            warnings=[],
+            warnings=[version_warning] if version_warning else [],
             missingFiles=[
                 RestoreMissingFile(
                     packageName=item.package_name,
@@ -82,7 +84,7 @@ async def import_restore_state(
     return RestoreImportResponse(
         ok=True,
         uiState=ui_state if isinstance(ui_state, dict) else {},
-        warnings=restored.warnings,
+        warnings=([version_warning] if version_warning else []) + restored.warnings,
         missingFiles=[],
         restoredDatasets=restored.restored_datasets,
         restoredAnnotations=restored.restored_annotations,
