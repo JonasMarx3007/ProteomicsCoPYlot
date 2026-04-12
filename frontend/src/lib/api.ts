@@ -115,6 +115,37 @@ export async function uploadDataset(
   return data as DatasetPreviewResponse;
 }
 
+export async function saveTableDatasetPath(
+  path: string,
+  kind: Extract<DatasetKind, "protein" | "phospho" | "phosprot">,
+  packageName?: string
+): Promise<DatasetPreviewResponse> {
+  const response = await fetch(`${API_BASE}/api/datasets/table-path`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      path,
+      kind,
+      packageName: packageName?.trim() || null,
+    }),
+  });
+
+  const data = await parseJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Saving dataset path failed"
+    );
+  }
+
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged();
+  return data as DatasetPreviewResponse;
+}
+
 function resolveDownloadFilename(response: Response, fallback: string): string {
   const disposition = response.headers.get("content-disposition") || "";
   const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
@@ -146,7 +177,12 @@ export async function downloadRestoreState(
 
 export async function importRestoreState(
   stateFile: File,
-  replacements: Array<{ packageName: string; kind: "protein" | "phospho" | "phosprot" | "peptide"; file: File }> = []
+  replacements: Array<{
+    packageName: string;
+    kind: "protein" | "phospho" | "phosprot" | "peptide";
+    file: File;
+    sourcePath?: string | null;
+  }> = []
 ): Promise<RestoreImportResponse> {
   const form = new FormData();
   form.append("stateFile", stateFile);
@@ -154,6 +190,7 @@ export async function importRestoreState(
     const manifest = replacements.map((item) => ({
       packageName: item.packageName,
       kind: item.kind,
+      sourcePath: item.sourcePath?.trim() || null,
     }));
     form.append("replacementsManifest", JSON.stringify(manifest));
     for (const item of replacements) {
@@ -752,11 +789,13 @@ export async function aggregatePhosprot(
 
 export async function uploadPhosprot(
   file: File,
-  isLog2Transformed: boolean
+  isLog2Transformed?: boolean
 ): Promise<AnnotationResultResponse> {
   const form = new FormData();
   form.append("file", file);
-  form.append("isLog2Transformed", String(isLog2Transformed));
+  if (typeof isLog2Transformed === "boolean") {
+    form.append("isLog2Transformed", String(isLog2Transformed));
+  }
 
   const response = await fetch(`${API_BASE}/api/annotations/phosprot/upload`, {
     method: "POST",

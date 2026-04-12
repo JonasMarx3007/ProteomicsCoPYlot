@@ -18,7 +18,7 @@ from app.services.annotation_processor import (
 )
 from app.services.annotation_store import clear_annotation, get_annotation, save_annotation
 from app.services.dataset_reader import get_extension, read_dataframe
-from app.services.dataset_store import clear_dataset, get_current_dataset
+from app.services.dataset_store import get_current_dataset
 from app.services.metadata_upload_store import (
     get_active_profile,
     clear_uploaded_metadata,
@@ -162,9 +162,17 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
 
     filter_config = payload.filter or AnnotationFilterConfig()
 
+    metadata_kind: MetadataAnnotationKind | None
+    if payload.kind == "protein":
+        metadata_kind = "protein"
+    elif payload.kind in {"phospho", "phosprot"}:
+        metadata_kind = "phospho"
+    else:
+        metadata_kind = None
+
     uploaded_metadata = (
-        get_uploaded_metadata(payload.kind)
-        if payload.kind in ("protein", "phospho")
+        get_uploaded_metadata(metadata_kind)
+        if metadata_kind is not None
         else None
     )
 
@@ -177,7 +185,7 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
             )
-            metadata_source = "uploaded"
+            metadata_source = "shared_phospho" if payload.kind == "phosprot" else "uploaded"
         else:
             computed = compute_annotation(
                 data=current_dataset.frame,
@@ -204,11 +212,6 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
     )
-
-    if payload.kind == "phospho":
-        # Keep phosphoprotein output strictly user-triggered via aggregate/upload actions.
-        clear_annotation("phosprot")
-        clear_dataset("phosprot")
 
     return _response_from_stored(stored)
 
@@ -241,7 +244,7 @@ async def aggregate_phosprot_annotation(
 @router.post("/phosprot/upload", response_model=AnnotationResultResponse)
 async def upload_phosprot_annotation(
     file: UploadFile = File(...),
-    isLog2Transformed: bool = Form(False),
+    isLog2Transformed: bool | None = Form(default=None),
 ) -> AnnotationResultResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")

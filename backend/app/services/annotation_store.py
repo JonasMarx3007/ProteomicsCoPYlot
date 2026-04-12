@@ -132,6 +132,25 @@ def get_annotation(
     return state.get(kind)
 
 
+def list_annotation_profiles(
+    *,
+    package_name: str | None = None,
+    include_empty: bool = False,
+) -> list[str]:
+    resolved_package = _ensure_package(package_name)
+    profiles = _ANNOTATIONS_BY_PACKAGE[resolved_package]
+    names = [
+        profile_name
+        for profile_name, state in profiles.items()
+        if include_empty or any(value is not None for value in state.values())
+    ]
+    active = get_active_profile(package_name=resolved_package)
+    names_sorted = sorted(names, key=lambda value: value.lower())
+    if active in names_sorted:
+        return [active] + [name for name in names_sorted if name != active]
+    return names_sorted
+
+
 def clear_annotation(
     kind: AnnotationKind,
     *,

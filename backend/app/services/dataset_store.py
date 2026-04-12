@@ -65,8 +65,33 @@ def _package_state(package_name: str | None = None) -> dict[str, StoredTableData
     return _DATASETS_BY_PACKAGE[resolved]
 
 
-def _guess_log2_transformed(frame: pd.DataFrame) -> bool:
+_NON_INTENSITY_NUMERIC_COLUMNS: dict[TableDatasetKind, set[str]] = {
+    "protein": set(),
+    "phospho": {
+        "PTM_localization",
+        "PTM_0_num",
+        "PTM_pep_pos",
+    },
+    "phosprot": {
+        "site_num",
+        "PTM_localization",
+        "PTM_0_num",
+        "PTM_pep_pos",
+    },
+}
+
+
+def _guess_log2_transformed(frame: pd.DataFrame, kind: TableDatasetKind) -> bool:
     numeric = frame.select_dtypes(include=["number"]).replace([np.inf, -np.inf], np.nan)
+    if numeric.empty:
+        return True
+
+    excluded_columns = _NON_INTENSITY_NUMERIC_COLUMNS.get(kind, set())
+    candidate_columns = [
+        column for column in numeric.columns if str(column) not in excluded_columns
+    ]
+    if candidate_columns:
+        numeric = numeric[candidate_columns]
     if numeric.empty:
         return True
 
@@ -162,7 +187,7 @@ def save_table_dataset(
         filename=filename,
         kind=kind,
         frame=frame,
-        suggested_is_log2_transformed=_guess_log2_transformed(frame),
+        suggested_is_log2_transformed=_guess_log2_transformed(frame, kind),
         source_path=str(source_path).strip() or None if source_path is not None else None,
     )
     state[kind] = stored

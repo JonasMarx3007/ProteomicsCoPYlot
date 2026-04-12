@@ -113,6 +113,7 @@ function Invoke-PyInstallerBuild {
     --collect-all "openpyxl" `
     --add-data "frontend\dist;frontend_dist" `
     --add-data "data\db;data\db" `
+    --add-data "data\report;data\report" `
     --add-data "viewer_config.json;." `
     --add-data "viewer_data;viewer_data" `
     $EntryPoint

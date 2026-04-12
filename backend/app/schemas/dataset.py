@@ -46,6 +46,12 @@ class PeptidePathRequest(BaseModel):
     packageName: str | None = None
 
 
+class TableDatasetPathRequest(BaseModel):
+    path: str
+    kind: TableDatasetKind
+    packageName: str | None = None
+
+
 class ActiveDatasetPackageRequest(BaseModel):
     packageName: str
 

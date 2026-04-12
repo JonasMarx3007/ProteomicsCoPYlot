@@ -13,9 +13,15 @@ from uuid import uuid4
 import pandas as pd
 from fastapi import UploadFile
 
+from app.app_version import APP_VERSION
 from app.schemas.annotation import AnnotationFilterConfig, AnnotationImputationInfo, AnnotationKind
 from app.services.annotation_processor import compute_annotation_from_metadata
-from app.services.annotation_store import get_annotation, reset_all_annotations, save_annotation
+from app.services.annotation_store import (
+    get_annotation,
+    list_annotation_profiles,
+    reset_all_annotations,
+    save_annotation,
+)
 from app.services.condition_palette_store import get_condition_palette, reset_condition_palettes, set_condition_palette
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import (
@@ -70,10 +76,25 @@ class PreparedRestoreInput:
 
 
 @dataclass
+class ReplacementInput:
+    file: UploadFile
+    source_path: str | None = None
+
+
+@dataclass
 class RestoreApplyResult:
     warnings: list[str]
     restored_datasets: list[str]
     restored_annotations: list[str]
+
+
+@dataclass
+class DeferredAutoMetadataRestore:
+    package_name: str
+    profile_name: str
+    metadata_kind: Literal["protein", "phospho"]
+    filename: str
+    frame_payload: Any
 
 
 def _frame_to_payload(frame: pd.DataFrame) -> dict[str, Any]:
@@ -99,6 +120,17 @@ def _read_table_from_path(path_text: str) -> pd.DataFrame:
     path = Path(path_text).expanduser()
     with path.open("rb") as handle:
         return read_dataframe(path.name, handle)
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null"}:
+        return None
+    return text
 
 
 def _normalize_dataset_kind(value: Any) -> DatasetKind | None:
@@ -150,6 +182,36 @@ def _restore_upload_dir() -> Path:
     return base
 
 
+def _table_backup_dir() -> Path:
+    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "table_uploads"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _ensure_exportable_table_path(stored: Any) -> str | None:
+    existing_path = _optional_text(getattr(stored, "source_path", None))
+    if existing_path:
+        return existing_path
+
+    frame = getattr(stored, "frame", None)
+    if not isinstance(frame, pd.DataFrame):
+        return None
+
+    filename = Path(str(getattr(stored, "filename", "") or "dataset")).stem or "dataset"
+    target = _table_backup_dir() / f"{uuid4().hex}_{filename}.tsv"
+    try:
+        frame.to_csv(target, sep="\t", index=False)
+    except Exception:
+        return None
+
+    resolved = str(target.resolve())
+    try:
+        setattr(stored, "source_path", resolved)
+    except Exception:
+        pass
+    return resolved
+
+
 def _parse_state_blob(blob: bytes) -> dict[str, Any]:
     if not blob:
         raise RestoreStateError("Restore file is empty.")
@@ -172,9 +234,49 @@ def _parse_state_blob(blob: bytes) -> dict[str, Any]:
     return parsed
 
 
+def describe_restore_version_warning(state: dict[str, Any]) -> str | None:
+    saved_version = _optional_text(state.get("appVersion"))
+    if not saved_version or saved_version == APP_VERSION:
+        return None
+    return (
+        f"Save state was created with app version {saved_version}. "
+        f"Current app version is {APP_VERSION}."
+    )
+
+
 def _serialize_state_payload(payload: dict[str, Any]) -> bytes:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return gzip.compress(raw, compresslevel=6)
+
+
+def _export_profile_names(package_name: str) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for profile_name in list_profiles(package_name=package_name):
+        normalized = str(profile_name).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    for profile_name in list_annotation_profiles(package_name=package_name):
+        normalized = str(profile_name).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    if DEFAULT_METADATA_PROFILE_NAME not in seen:
+        default_has_annotation = any(
+            get_annotation(
+                kind,
+                package_name=package_name,
+                metadata_profile_name=DEFAULT_METADATA_PROFILE_NAME,
+            )
+            is not None
+            for kind in _TABLE_KINDS
+        )
+        if default_has_annotation:
+            ordered.append(DEFAULT_METADATA_PROFILE_NAME)
+    return ordered
 
 
 def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
@@ -191,7 +293,7 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                 continue
             dataset_payload[kind] = {
                 "filename": str(getattr(stored, "filename", "") or ""),
-                "path": str(getattr(stored, "source_path", "") or "") or None,
+                "path": _ensure_exportable_table_path(stored),
             }
         peptide_stored = current.get("peptide")
         dataset_payload["peptide"] = (
@@ -199,11 +301,11 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
             if peptide_stored is None
             else {
                 "filename": str(getattr(peptide_stored, "filename", "") or ""),
-                "path": str(getattr(peptide_stored, "path", "") or "") or None,
+                "path": _optional_text(getattr(peptide_stored, "path", None)),
             }
         )
 
-        profiles = list_profiles(package_name=package_name)
+        profiles = _export_profile_names(package_name)
         metadata_profiles_payload: list[dict[str, Any]] = []
         for profile_name in profiles:
             profile_payload: dict[str, Any] = {"name": profile_name}
@@ -219,6 +321,12 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                 profile_payload[kind] = {
                     "filename": stored_metadata.filename,
                     "frame": _frame_to_payload(stored_metadata.frame),
+                    "autoGenerated": bool(stored_metadata.auto_generated),
+                    "sourceProfiles": (
+                        list(stored_metadata.source_profiles)
+                        if stored_metadata.source_profiles is not None
+                        else None
+                    ),
                 }
             metadata_profiles_payload.append(profile_payload)
 
@@ -266,6 +374,7 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
     peptide_metadata = get_peptide_metadata()
     payload: dict[str, Any] = {
         "format": _STATE_FORMAT,
+        "appVersion": APP_VERSION,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "uiState": ui_state or {},
         "backend": {
@@ -292,7 +401,7 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
 def parse_replacements_manifest(
     manifest_text: str | None,
     replacement_files: Iterable[UploadFile] | None,
-) -> dict[tuple[str, DatasetKind], UploadFile]:
+) -> dict[tuple[str, DatasetKind], ReplacementInput]:
     files = list(replacement_files or [])
     if not files:
         return {}
@@ -307,21 +416,25 @@ def parse_replacements_manifest(
     if len(parsed) != len(files):
         raise RestoreStateError("Replacement manifest size does not match number of replacement files.")
 
-    mapped: dict[tuple[str, DatasetKind], UploadFile] = {}
+    mapped: dict[tuple[str, DatasetKind], ReplacementInput] = {}
     for index, entry in enumerate(parsed):
         if not isinstance(entry, dict):
             raise RestoreStateError("Replacement manifest entries must be objects.")
         package_name = str(entry.get("packageName", "")).strip()
         kind = _normalize_dataset_kind(entry.get("kind"))
+        source_path = _optional_text(entry.get("sourcePath"))
         if not package_name or kind is None:
             raise RestoreStateError("Replacement manifest entry is missing packageName or kind.")
-        mapped[(package_name, kind)] = files[index]
+        mapped[(package_name, kind)] = ReplacementInput(
+            file=files[index],
+            source_path=source_path,
+        )
     return mapped
 
 
 def inspect_missing_files(
     state: dict[str, Any],
-    replacements: dict[tuple[str, DatasetKind], UploadFile],
+    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
 ) -> list[MissingStateFile]:
     backend = state.get("backend")
     if not isinstance(backend, dict):
@@ -356,12 +469,12 @@ def inspect_missing_files(
                 )
                 continue
 
-            filename = str(dataset_entry.get("filename", "")).strip() or None
-            path_text = str(dataset_entry.get("path", "")).strip() or None
+            filename = _optional_text(dataset_entry.get("filename"))
+            path_text = _optional_text(dataset_entry.get("path"))
             has_replacement = (package_name, kind) in replacements
             if path_text:
                 candidate = Path(path_text).expanduser()
-                if candidate.exists():
+                if candidate.exists() and candidate.is_file():
                     continue
                 if has_replacement:
                     continue
@@ -396,7 +509,7 @@ def inspect_missing_files(
 
 def _prepare_restore_inputs(
     state: dict[str, Any],
-    replacements: dict[tuple[str, DatasetKind], UploadFile],
+    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
 ) -> PreparedRestoreInput:
     backend = state.get("backend")
     if not isinstance(backend, dict):
@@ -426,12 +539,12 @@ def _prepare_restore_inputs(
                 raise RestoreStateError(
                     f"Saved dataset entry for {package_name}:{kind} is invalid."
                 )
-            filename = str(dataset_entry.get("filename", "")).strip() or f"{kind}.csv"
-            path_text = str(dataset_entry.get("path", "")).strip() or None
+            filename = _optional_text(dataset_entry.get("filename")) or f"{kind}.csv"
+            path_text = _optional_text(dataset_entry.get("path"))
             replacement = replacements.get((package_name, kind))
             if path_text:
                 candidate = Path(path_text).expanduser()
-                if candidate.exists():
+                if candidate.exists() and candidate.is_file():
                     frame_by_package_kind[(package_name, kind)] = (
                         _read_table_from_path(str(candidate)),
                         filename or candidate.name,
@@ -443,11 +556,11 @@ def _prepare_restore_inputs(
                     f"Missing replacement for dataset {package_name}:{kind}."
                 )
             content = replacement.file.read()
-            frame = read_dataframe(replacement.filename or filename, io.BytesIO(content))
+            frame = read_dataframe(replacement.file.filename or filename, io.BytesIO(content))
             frame_by_package_kind[(package_name, kind)] = (
                 frame,
-                replacement.filename or filename,
-                None,
+                replacement.file.filename or filename,
+                replacement.source_path,
             )
             warnings.append(f"Restored {package_name}:{kind} from uploaded replacement file.")
 
@@ -456,22 +569,28 @@ def _prepare_restore_inputs(
             continue
         if not isinstance(peptide_entry, dict):
             raise RestoreStateError(f"Saved dataset entry for {package_name}:peptide is invalid.")
-        peptide_filename = str(peptide_entry.get("filename", "")).strip() or "peptide.tsv"
-        peptide_path = str(peptide_entry.get("path", "")).strip() or None
+        peptide_filename = _optional_text(peptide_entry.get("filename")) or "peptide.tsv"
+        peptide_path = _optional_text(peptide_entry.get("path"))
         replacement = replacements.get((package_name, "peptide"))
         if peptide_path:
             candidate = Path(peptide_path).expanduser()
-            if candidate.exists():
+            if candidate.exists() and candidate.is_file():
                 peptide_path_by_package[package_name] = (str(candidate), str(candidate))
                 continue
         if replacement is None:
             raise RestoreStateError(
                 f"Missing replacement for dataset {package_name}:peptide."
             )
-        content = replacement.file.read()
-        target = _restore_upload_dir() / f"{uuid4().hex}_{Path(peptide_filename).name}"
-        target.write_bytes(content)
-        peptide_path_by_package[package_name] = (str(target.resolve()), None)
+        if replacement.source_path:
+            peptide_path_by_package[package_name] = (
+                replacement.source_path,
+                replacement.source_path,
+            )
+        else:
+            content = replacement.file.read()
+            target = _restore_upload_dir() / f"{uuid4().hex}_{Path(peptide_filename).name}"
+            target.write_bytes(content)
+            peptide_path_by_package[package_name] = (str(target.resolve()), None)
         warnings.append(f"Restored {package_name}:peptide from uploaded replacement file.")
 
     return PreparedRestoreInput(
@@ -483,7 +602,7 @@ def _prepare_restore_inputs(
 
 def apply_restore_state(
     state: dict[str, Any],
-    replacements: dict[tuple[str, DatasetKind], UploadFile],
+    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
 ) -> RestoreApplyResult:
     prepared = _prepare_restore_inputs(state, replacements)
     backend = state.get("backend")
@@ -504,6 +623,8 @@ def apply_restore_state(
     warnings = list(prepared.warnings)
 
     package_names: list[str] = []
+    deferred_auto_metadata: list[DeferredAutoMetadataRestore] = []
+    metadata_active_profile_by_package: dict[str, str] = {}
     for package_entry in packages:
         if not isinstance(package_entry, dict):
             continue
@@ -555,6 +676,7 @@ def apply_restore_state(
             metadata_active_profile = str(
                 metadata_block.get("activeProfile", DEFAULT_METADATA_PROFILE_NAME)
             ).strip() or DEFAULT_METADATA_PROFILE_NAME
+            metadata_active_profile_by_package[package_name] = metadata_active_profile
             metadata_profiles = metadata_block.get("profiles")
             if isinstance(metadata_profiles, list):
                 for profile_entry in metadata_profiles:
@@ -568,12 +690,33 @@ def apply_restore_state(
                             create_metadata_profile(profile_name, package_name=package_name)
                         except ValueError:
                             pass
+                for profile_entry in metadata_profiles:
+                    if not isinstance(profile_entry, dict):
+                        continue
+                    profile_name = str(profile_entry.get("name", "")).strip()
+                    if not profile_name:
+                        continue
                     for metadata_kind in _METADATA_KINDS:
                         metadata_payload = profile_entry.get(metadata_kind)
                         if not isinstance(metadata_payload, dict):
                             continue
                         frame_payload = metadata_payload.get("frame")
                         if frame_payload is None:
+                            continue
+                        metadata_filename = (
+                            str(metadata_payload.get("filename", "")).strip()
+                            or f"{metadata_kind}_metadata.csv"
+                        )
+                        if bool(metadata_payload.get("autoGenerated")):
+                            deferred_auto_metadata.append(
+                                DeferredAutoMetadataRestore(
+                                    package_name=package_name,
+                                    profile_name=profile_name,
+                                    metadata_kind=metadata_kind,
+                                    filename=metadata_filename,
+                                    frame_payload=frame_payload,
+                                )
+                            )
                             continue
                         try:
                             metadata_frame = _frame_from_payload(frame_payload)
@@ -582,7 +725,6 @@ def apply_restore_state(
                                 f"Skipped invalid metadata frame for {package_name}:{profile_name}:{metadata_kind}."
                             )
                             continue
-                        metadata_filename = str(metadata_payload.get("filename", "")).strip() or f"{metadata_kind}_metadata.csv"
                         save_uploaded_metadata(
                             metadata_kind,
                             metadata_filename,
@@ -591,6 +733,40 @@ def apply_restore_state(
                             profile_name=profile_name,
                         )
 
+    for deferred in deferred_auto_metadata:
+        restored_metadata = get_uploaded_metadata(
+            deferred.metadata_kind,
+            package_name=deferred.package_name,
+            profile_name=deferred.profile_name,
+        )
+        if restored_metadata is not None and restored_metadata.auto_generated:
+            continue
+        try:
+            metadata_frame = _frame_from_payload(deferred.frame_payload)
+        except Exception:
+            warnings.append(
+                f"Skipped invalid metadata frame for {deferred.package_name}:{deferred.profile_name}:{deferred.metadata_kind}."
+            )
+            continue
+        save_uploaded_metadata(
+            deferred.metadata_kind,
+            deferred.filename,
+            metadata_frame,
+            package_name=deferred.package_name,
+            profile_name=deferred.profile_name,
+        )
+        warnings.append(
+            f"Restored {deferred.package_name}:{deferred.profile_name}:{deferred.metadata_kind} "
+            "as a manual metadata profile because the derived profile could not be regenerated."
+        )
+
+    for package_entry in packages:
+        if not isinstance(package_entry, dict):
+            continue
+        package_name = str(package_entry.get("name", "")).strip()
+        if not package_name:
+            continue
+        set_active_package(package_name)
         annotations_payload = package_entry.get("annotations")
         if isinstance(annotations_payload, list):
             for annotation_entry in annotations_payload:
@@ -652,7 +828,13 @@ def apply_restore_state(
                     )
 
         try:
-            set_active_profile(metadata_active_profile, package_name=package_name)
+            set_active_profile(
+                metadata_active_profile_by_package.get(
+                    package_name,
+                    DEFAULT_METADATA_PROFILE_NAME,
+                ),
+                package_name=package_name,
+            )
         except Exception:
             try:
                 set_active_profile(DEFAULT_METADATA_PROFILE_NAME, package_name=package_name)

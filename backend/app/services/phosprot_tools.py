@@ -275,11 +275,26 @@ def aggregate_from_phospho(
     )
 
 
-def upload_phosprot(frame: pd.DataFrame, filename: str, is_log2_transformed: bool) -> object:
+def upload_phosprot(
+    frame: pd.DataFrame,
+    filename: str,
+    is_log2_transformed: bool | None = None,
+) -> object:
     _shared_phospho_annotation()
-    save_table_dataset(filename=filename, kind="phosprot", frame=frame)
+    stored_dataset = save_table_dataset(filename=filename, kind="phosprot", frame=frame)
+    resolved_is_log2_transformed = (
+        bool(is_log2_transformed)
+        if is_log2_transformed is not None
+        else bool(getattr(stored_dataset, "suggested_is_log2_transformed", True))
+    )
+    warning_prefix = (
+        "Phosphoprotein dataset was uploaded manually. "
+        "Log2 state was auto-detected from the uploaded dataset."
+        if is_log2_transformed is None
+        else "Phosphoprotein dataset was uploaded manually."
+    )
     return _store_phosprot_annotation(
         frame=frame,
-        is_log2_transformed=is_log2_transformed,
-        warning_prefix="Phosphoprotein dataset was uploaded manually.",
+        is_log2_transformed=resolved_is_log2_transformed,
+        warning_prefix=warning_prefix,
     )
