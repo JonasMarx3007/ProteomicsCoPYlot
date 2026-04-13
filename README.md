@@ -69,6 +69,14 @@ Examples:
 
 - `run_app_ai.bat --deepseek-r1:1.5b`
 - `run_viewer_ai.bat --deepseek-r1:1.5b`
+- `run_app_ai.bat --dev`
+- `run_app_ai.bat --dev0`
+- `run_app_ai.bat --dev2`
+- `run_app_ai.bat --dev20`
+- `run_viewer_ai.bat --dev`
+- `run_viewer_ai.bat --dev0`
+- `run_viewer_ai.bat --dev2`
+- `run_viewer_ai.bat --dev20`
 
 ## Windows Onefile EXE Builds
 
@@ -86,6 +94,63 @@ Outputs:
 
 - `dist/ProteomicsCoPYlot.exe`
 - `dist/DataViewer.exe`
+
+## Windows AI Onefile EXE Builds
+
+Build note:
+
+- AI-enabled builds require frontend AI flags at build time.
+- Runtime AI still requires `COPYLOT_AI_MODE=1` when launching the EXE.
+
+Tool (AI):
+
+```powershell
+cd C:\PythonProject\ProteomicsCoPYlot\frontend
+cmd /c "set VITE_APP_MODE=analysis&& set VITE_AI_ENABLED=1&& npm run build"
+Set-Content -Path .\dist\.copylot_mode.txt -Value analysis -NoNewline
+cd ..
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Tool -SkipFrontendBuild
+```
+
+Tool (AI dev20 default endpoint):
+
+```powershell
+cd C:\PythonProject\ProteomicsCoPYlot\frontend
+$DEV20_ENDPOINT = (Get-Content ..\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
+cmd /c "set VITE_APP_MODE=analysis&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=$DEV20_ENDPOINT&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build"
+Set-Content -Path .\dist\.copylot_mode.txt -Value analysis -NoNewline
+cd ..
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Tool -SkipFrontendBuild
+```
+
+Viewer (AI):
+
+```powershell
+cd C:\PythonProject\ProteomicsCoPYlot\frontend
+cmd /c "set VITE_APP_MODE=viewer&& set VITE_AI_ENABLED=1&& npm run build"
+Set-Content -Path .\dist\.copylot_mode.txt -Value viewer -NoNewline
+cd ..
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Viewer -SkipFrontendBuild
+```
+
+Viewer (AI dev20 default endpoint):
+
+```powershell
+cd C:\PythonProject\ProteomicsCoPYlot\frontend
+$DEV20_ENDPOINT = (Get-Content ..\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
+cmd /c "set VITE_APP_MODE=viewer&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=$DEV20_ENDPOINT&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build"
+Set-Content -Path .\dist\.copylot_mode.txt -Value viewer -NoNewline
+cd ..
+powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Viewer -SkipFrontendBuild
+```
+
+Run AI EXEs:
+
+```powershell
+set COPYLOT_AI_MODE=1
+.\dist\ProteomicsCoPYlot.exe
+.\dist\DataViewer.exe
+```
 
 ## Project Structure
 

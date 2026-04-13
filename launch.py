@@ -75,6 +75,18 @@ def _open_browser_later(url: str) -> None:
     timer.start()
 
 
+def _set_ai_mode_from_executable_name() -> None:
+    # Keep explicit user/system configuration authoritative.
+    if str(os.getenv("COPYLOT_AI_MODE", "")).strip():
+        return
+    if not getattr(sys, "frozen", False):
+        return
+
+    stem = Path(sys.executable).stem.lower()
+    if stem.endswith("ai") or "aidev" in stem:
+        os.environ["COPYLOT_AI_MODE"] = "1"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Start Proteomics CoPYlot")
     parser.add_argument("--host", default="127.0.0.1")
@@ -86,6 +98,7 @@ def main() -> None:
 
     project_root = _project_root()
     bundle_root = _bundle_root()
+    _set_ai_mode_from_executable_name()
     _ensure_backend_on_path(project_root, bundle_root)
     _set_frontend_dist_env(project_root, bundle_root)
     _set_viewer_env(project_root, bundle_root, args)
