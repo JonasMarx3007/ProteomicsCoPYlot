@@ -35,6 +35,7 @@ const AI_DEV_MODE = (() => {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 })();
 const DEFAULT_DEV_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
+const DEFAULT_DEV_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
 const API_PROVIDER_DEFAULT_MODELS: Record<Exclude<ChatProvider, "ollama">, string> = {
   openai: "gpt-4o-mini",
   anthropic: "claude-3-5-sonnet-latest",
@@ -358,7 +359,7 @@ export default function AppShell({
     void getOllamaModels(endpoint)
       .then((result) => {
         if (cancelled) return;
-        applyChatModelList(result.models, result.selectedModel, result.warnings);
+        applyChatModelList(result.models, result.selectedModel, result.warnings, DEFAULT_DEV_OLLAMA_MODEL);
       })
       .catch((err) => {
         if (cancelled) return;
