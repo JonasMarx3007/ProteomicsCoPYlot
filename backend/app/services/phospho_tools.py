@@ -814,6 +814,7 @@ def ksea_uploaded_volcano_html(
     condition1: str = "",
     condition2: str = "",
     highlight_grk: bool = False,
+    annotate_hits: bool = False,
 ) -> str:
     go = _get_plotly_go()
     df = pd.concat([st_results.copy(), tnc_results.copy()], ignore_index=True)
@@ -922,6 +923,37 @@ def ksea_uploaded_volcano_html(
                 ),
             )
         )
+
+    if annotate_hits:
+        significant_main = frame_main[frame_main["regulation"] != "Not significant"]
+        if not significant_main.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=significant_main["log2ff"],
+                    y=significant_main["neg_log10_pval"],
+                    mode="text",
+                    text=significant_main["kinase"],
+                    textposition="top right",
+                    textfont=dict(color="black", size=10),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+        if highlight_grk and not frame_grk.empty:
+            significant_grk = frame_grk[frame_grk["regulation"] != "Not significant"]
+            if not significant_grk.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=significant_grk["log2ff"],
+                        y=significant_grk["neg_log10_pval"],
+                        mode="text",
+                        text=significant_grk["kinase"],
+                        textposition="top right",
+                        textfont=dict(color="black", size=10),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+                )
 
     y_line = float(-np.log10(max(float(p_value_threshold), 1e-300)))
     fig.add_hline(y=y_line, line_dash="dash", line_color="green")

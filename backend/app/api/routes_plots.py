@@ -174,12 +174,14 @@ async def stats_gsea_route(
     condition1: str,
     condition2: str,
     source: str = "volcano",
+    dataSource: str = "data",
     condition1Control: str | None = None,
     condition2Control: str | None = None,
     pValueThreshold: float = 0.05,
     log2fcThreshold: float = 1.0,
     testType: str = "unpaired",
     useUncorrected: bool = False,
+    adjPValueCutoff: float = 0.05,
     topN: int = 10,
     minTermSize: int = 20,
     maxTermSize: int = 300,
@@ -188,6 +190,7 @@ async def stats_gsea_route(
         payload = EnrichmentRequest(
             kind=kind,
             source=source,
+            dataSource=dataSource,
             condition1=condition1,
             condition2=condition2,
             condition1Control=condition1Control,
@@ -196,6 +199,7 @@ async def stats_gsea_route(
             log2fcThreshold=log2fcThreshold,
             testType=testType,
             useUncorrected=useUncorrected,
+            adjPValueCutoff=adjPValueCutoff,
             topN=topN,
             minTermSize=minTermSize,
             maxTermSize=maxTermSize,
@@ -1350,6 +1354,7 @@ async def phospho_ksea_uploaded_volcano_route(
     condition1: str = Form(""),
     condition2: str = Form(""),
     highlightGrk: bool = Form(False),
+    annotateHits: bool = Form(False),
 ) -> HTMLResponse:
     if not fileSt.filename or not fileTnc.filename:
         raise HTTPException(status_code=400, detail="Both KSEA result files are required.")
@@ -1366,6 +1371,7 @@ async def phospho_ksea_uploaded_volcano_route(
                 condition1=condition1,
                 condition2=condition2,
                 highlight_grk=highlightGrk,
+                annotate_hits=annotateHits,
             )
         )
     except ValueError as e:

@@ -39,6 +39,7 @@ export default function KseaPage() {
   const [volcanoPValueThreshold, setVolcanoPValueThreshold] = useState(0.1);
   const [volcanoHeader, setVolcanoHeader] = useState(true);
   const [highlightGrk, setHighlightGrk] = useState(false);
+  const [annotateHits, setAnnotateHits] = useState(false);
   const [volcanoHtml, setVolcanoHtml] = useState("");
   const [volcanoLoading, setVolcanoLoading] = useState(false);
   const [volcanoError, setVolcanoError] = useState<string | null>(null);
@@ -201,6 +202,7 @@ export default function KseaPage() {
         condition1,
         condition2,
         highlightGrk,
+        annotateHits,
       });
       setVolcanoHtml(html);
     } catch (err) {
@@ -393,6 +395,7 @@ export default function KseaPage() {
         <div className="mt-4 flex flex-wrap gap-3">
           <Checkbox label="Toggle Header" checked={volcanoHeader} onChange={setVolcanoHeader} />
           <Checkbox label="Highlight GRK Kinases" checked={highlightGrk} onChange={setHighlightGrk} />
+          <Checkbox label="Annotate Hits" checked={annotateHits} onChange={setAnnotateHits} />
         </div>
         {!validSelection ? (
           <div className="mt-4">

@@ -157,24 +157,25 @@ def _append_combined_subset_columns(metadata: pd.DataFrame) -> pd.DataFrame:
     if len(subset_columns) < 2:
         return out
 
-    def _combine_pair(left: str, right: str) -> pd.Series:
+    def _combine_columns(columns: tuple[str, ...]) -> pd.Series:
         def _combine_row(row: pd.Series) -> str:
-            first = str(row[left]).strip()
-            second = str(row[right]).strip()
-            if not first or not second:
+            values = [str(row[column]).strip() for column in columns]
+            if any(not value for value in values):
                 return ""
-            return f"{first}-{second}"
+            return "-".join(values)
 
         return out.apply(_combine_row, axis=1)
 
-    for left, right in combinations(subset_columns, 2):
-        forward_name = f"{left}-{right}"
-        if forward_name not in out.columns:
-            out[forward_name] = _combine_pair(left, right)
+    for size in range(2, len(subset_columns) + 1):
+        for selected in combinations(subset_columns, size):
+            forward_name = "-".join(selected)
+            if forward_name not in out.columns:
+                out[forward_name] = _combine_columns(selected)
 
-        reverse_name = f"{right}-{left}"
-        if reverse_name not in out.columns:
-            out[reverse_name] = _combine_pair(right, left)
+            reverse = tuple(reversed(selected))
+            reverse_name = "-".join(reverse)
+            if reverse_name not in out.columns:
+                out[reverse_name] = _combine_columns(reverse)
     return out
 
 

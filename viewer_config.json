@@ -26,9 +26,9 @@
       "filter_min_protein": 3,
       "filter_min_phospho": 3,
       "filter_min_phosphoprotein": 3,
-      "filter_mode_protein": "in at least one group",
-      "filter_mode_phospho": "in at least one group",
-      "filter_mode_phosphoprotein": "in at least one group",
+      "filter_mode_protein": "in each group",
+      "filter_mode_phospho": "in each group",
+      "filter_mode_phosphoprotein": "in each group",
       "log2_transform_protein": true,
       "log2_transform_phospho": true,
       "log2_transform_phosphoprotein": true

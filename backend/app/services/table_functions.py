@@ -30,6 +30,25 @@ def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns
     return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)})
 
 
+def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
+    if meta.empty:
+        return meta.copy()
+
+    ordered = meta.copy()
+    ordered["condition"] = ordered["condition"].astype(str)
+    condition_order = ordered["condition"].dropna().drop_duplicates().tolist()
+    if not condition_order:
+        return ordered.reset_index(drop=True)
+
+    ordered["_condition_order"] = pd.Categorical(
+        ordered["condition"],
+        categories=condition_order,
+        ordered=True,
+    )
+    ordered = ordered.sort_values("_condition_order", kind="stable")
+    return ordered.drop(columns="_condition_order").reset_index(drop=True)
+
+
 def _coverage_frame(kind: AnnotationKind) -> pd.DataFrame:
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
@@ -63,7 +82,7 @@ def _verification_frame(kind: AnnotationKind) -> pd.DataFrame:
 
 def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
     data = data.replace(0, np.nan).copy()
-    meta = meta.copy()
+    meta = _grouped_meta_order(meta.copy())
     meta["sample"] = meta["sample"].astype(str)
     meta["new_sample"] = meta.groupby("condition").cumcount() + 1
     meta["new_sample"] = meta.apply(lambda row: f"{row['condition']}_{row['new_sample']}", axis=1)
@@ -114,7 +133,7 @@ def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = Fal
 
 def prepare_coverage_summary_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     data = data.replace(0, np.nan).copy()
-    meta = meta.copy()
+    meta = _grouped_meta_order(meta.copy())
     meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
     condition_order = meta["condition"].dropna().unique().tolist()
