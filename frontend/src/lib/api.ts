@@ -1464,6 +1464,7 @@ export async function renderKseaVolcanoFromFiles(payload: {
   condition1: string;
   condition2: string;
   highlightGrk: boolean;
+  annotateHits: boolean;
 }): Promise<string> {
   const form = new FormData();
   form.append("fileSt", payload.fileSt);
@@ -1473,6 +1474,7 @@ export async function renderKseaVolcanoFromFiles(payload: {
   form.append("condition1", payload.condition1);
   form.append("condition2", payload.condition2);
   form.append("highlightGrk", String(payload.highlightGrk));
+  form.append("annotateHits", String(payload.annotateHits));
 
   const response = await fetch(`${API_BASE}/api/plots/phospho/ksea-volcano.html`, {
     method: "POST",

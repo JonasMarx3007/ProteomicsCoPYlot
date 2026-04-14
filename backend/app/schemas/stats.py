@@ -84,6 +84,7 @@ class EnrichmentTerm(BaseModel):
 class EnrichmentRequest(BaseModel):
     kind: AnnotationKind
     source: EnrichmentSource = "volcano"
+    dataSource: VolcanoDataSource = "data"
     condition1: str
     condition2: str
     condition1Control: str | None = None
@@ -92,6 +93,7 @@ class EnrichmentRequest(BaseModel):
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
+    adjPValueCutoff: float = Field(default=0.05, gt=0.0, le=1.0)
     topN: int = Field(default=10, ge=1, le=100)
     minTermSize: int = Field(default=20, ge=1)
     maxTermSize: int = Field(default=300, ge=1)

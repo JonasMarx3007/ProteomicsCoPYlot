@@ -710,6 +710,7 @@ def pathway_options() -> PathwayOptionsResponse:
 
 def _different_genes(
     kind: AnnotationKind,
+    data_source: VolcanoDataSource,
     condition1: str,
     condition2: str,
     p_value_threshold: float,
@@ -728,6 +729,7 @@ def _different_genes(
         log2fc_threshold=log2fc_threshold,
         test_type=test_type,
         use_uncorrected=use_uncorrected,
+        data_source=data_source,
         condition1_control=condition1_control,
         condition2_control=condition2_control,
     )
@@ -767,7 +769,13 @@ def _validate_enrichment_kind(kind: AnnotationKind) -> None:
         )
 
 
-def _enrichment_terms(gene_list: list[str], top_n: int, min_term_size: int, max_term_size: int) -> list[EnrichmentTerm]:
+def _enrichment_terms(
+    gene_list: list[str],
+    top_n: int,
+    min_term_size: int,
+    max_term_size: int,
+    adj_p_value_cutoff: float | None = None,
+) -> list[EnrichmentTerm]:
     genes = sorted({gene.strip() for gene in gene_list if gene and gene.strip()})
     if not genes:
         return []
@@ -808,6 +816,9 @@ def _enrichment_terms(gene_list: list[str], top_n: int, min_term_size: int, max_
     terms: list[EnrichmentTerm] = []
     for idx, (row, overlap, p_value) in enumerate(raw_rows):
         term_genes = row["gene_list"]
+        adj_p_value = float(adj[idx])
+        if adj_p_value_cutoff is not None and adj_p_value > float(adj_p_value_cutoff):
+            continue
         terms.append(
             EnrichmentTerm(
                 source=str(row.get("source", "")),
@@ -817,7 +828,7 @@ def _enrichment_terms(gene_list: list[str], top_n: int, min_term_size: int, max_
                 intersectionSize=len(overlap),
                 hitPercent=(len(overlap) / max(1, len(term_genes))) * 100.0,
                 pValue=float(p_value),
-                adjPValue=float(adj[idx]),
+                adjPValue=adj_p_value,
                 intersectingGenes=overlap,
             )
         )
@@ -844,6 +855,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
 
     source_used, up_genes, down_genes, warnings = _different_genes(
         kind=payload.kind,
+        data_source=payload.dataSource,
         condition1=payload.condition1,
         condition2=payload.condition2,
         p_value_threshold=payload.pValueThreshold,
@@ -858,8 +870,20 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         sourceUsed=source_used,
         upGenes=up_genes,
         downGenes=down_genes,
-        upTerms=_enrichment_terms(up_genes, payload.topN, payload.minTermSize, payload.maxTermSize),
-        downTerms=_enrichment_terms(down_genes, payload.topN, payload.minTermSize, payload.maxTermSize),
+        upTerms=_enrichment_terms(
+            up_genes,
+            payload.topN,
+            payload.minTermSize,
+            payload.maxTermSize,
+            payload.adjPValueCutoff,
+        ),
+        downTerms=_enrichment_terms(
+            down_genes,
+            payload.topN,
+            payload.minTermSize,
+            payload.maxTermSize,
+            payload.adjPValueCutoff,
+        ),
         warnings=warnings,
     )
 
@@ -886,6 +910,8 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
 
 def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection) -> bytes:
     plt = _get_plt()
+    from matplotlib.colors import Normalize
+
     result = run_enrichment(payload)
     terms = result.upTerms if direction == "up" else result.downTerms
     if not terms:
@@ -899,16 +925,21 @@ def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection) -> bytes
             "score": [_safe_neg_log10(np.asarray([term.adjPValue]))[0] for term in terms],
         }
     )
+    frame = frame.sort_values(by="score", ascending=False, kind="mergesort").reset_index(drop=True)
+    y_positions = np.arange(len(frame))
+    score_norm = Normalize(vmin=float(frame["score"].min()), vmax=float(frame["score"].max()))
     fig, ax = plt.subplots(figsize=(8, 6))
     scatter = ax.scatter(
         frame["hitPercent"],
-        np.arange(len(frame)),
+        y_positions,
         s=frame["intersectionSize"] * 30,
         c=frame["score"],
-        cmap="RdBu_r",
+        cmap="YlOrRd",
+        norm=score_norm,
     )
-    ax.set_yticks(np.arange(len(frame)))
+    ax.set_yticks(y_positions)
     ax.set_yticklabels(frame["name"])
+    ax.invert_yaxis()
     ax.set_xlabel("Hits (%)")
     ax.set_title(f"{'Up' if direction == 'up' else 'Down'}regulated Gene Set Enrichment")
     cbar = fig.colorbar(scatter, ax=ax, pad=0.15)

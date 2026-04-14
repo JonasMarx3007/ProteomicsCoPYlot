@@ -360,6 +360,7 @@ export type VolcanoResultResponse = {
 export type EnrichmentRequest = {
   kind: AnnotationKind;
   source: "volcano" | "volcano_control";
+  dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
   condition1Control?: string | null;
@@ -368,6 +369,7 @@ export type EnrichmentRequest = {
   log2fcThreshold: number;
   testType: StatsTestType;
   useUncorrected: boolean;
+  adjPValueCutoff: number;
   topN: number;
   minTermSize: number;
   maxTermSize: number;

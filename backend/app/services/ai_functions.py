@@ -1872,6 +1872,9 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
     source = str(mode_pairs.get("source", "volcano")).strip().lower()
     if source not in {"volcano", "volcano_control"}:
         source = "volcano"
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "imputed"}:
+        data_source = "data"
     condition1 = str(mode_pairs.get("condition1", "")).strip()
     condition2 = str(mode_pairs.get("condition2", "")).strip()
     condition1_control = str(mode_pairs.get("condition1control", "")).strip()
@@ -2099,6 +2102,9 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
     source = str(mode_pairs.get("source", "volcano")).strip().lower()
     if source not in {"volcano", "volcano_control"}:
         source = "volcano"
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "imputed"}:
+        data_source = "data"
     condition1 = str(mode_pairs.get("condition1", "")).strip()
     condition2 = str(mode_pairs.get("condition2", "")).strip()
     condition1_control = str(mode_pairs.get("condition1control", "")).strip()
@@ -2194,7 +2200,7 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
         "gsea_flow|downregulated_cluster=downregulated_genes_to_enriched_pathways"
     )
     lines.append(
-        f"gsea_parameters|source={source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}"
+        f"gsea_parameters|source={source}|data_source={data_source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}"
     )
     lines.append(
         f"gsea_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
@@ -2216,6 +2222,7 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
         payload = EnrichmentRequest(
             kind=kind,  # type: ignore[arg-type]
             source=source,  # type: ignore[arg-type]
+            dataSource=data_source,  # type: ignore[arg-type]
             condition1=condition1,
             condition2=condition2,
             condition1Control=condition1_control if source == "volcano_control" else None,

@@ -828,6 +828,10 @@ function GseaPanel({
     const value = String(persisted.sourceMode ?? "volcano").trim();
     return value === "volcano_control" ? "volcano_control" : "volcano";
   });
+  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
+    const value = String(persisted.dataSource ?? "data").trim();
+    return value === "imputed" ? "imputed" : "data";
+  });
   const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
   const [testType, setTestType] = useState<StatsTestType>(() => {
@@ -837,6 +841,7 @@ function GseaPanel({
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const [adjPValueCutoff, setAdjPValueCutoff] = useState(() => Number(persisted.adjPValueCutoff ?? 0.05));
   const [topN, setTopN] = useState(() => Number(persisted.topN ?? 10));
   const [minTermSize, setMinTermSize] = useState(() => Number(persisted.minTermSize ?? 20));
   const [maxTermSize, setMaxTermSize] = useState(() => Number(persisted.maxTermSize ?? 300));
@@ -844,6 +849,16 @@ function GseaPanel({
   const [error, setError] = useState<string | null>(null);
 
   const kindAvailable = gseaKindOptions.some((option) => option.value === kind);
+  const gseaDataSourceOptions = useMemo(
+    () =>
+      options?.imputedAvailable
+        ? [
+            { value: "data", label: "Data" },
+            { value: "imputed", label: "Imputed Data" },
+          ]
+        : [{ value: "data", label: "Data" }],
+    [options?.imputedAvailable]
+  );
 
   useEffect(() => {
     if (gseaKindOptions.length === 0) return;
@@ -861,6 +876,11 @@ function GseaPanel({
     getStatisticalOptions(kind)
       .then((data) => {
         setOptions(data);
+        setDataSource((current) =>
+          data.imputedAvailable
+            ? (current === "imputed" ? "imputed" : "data")
+            : "data"
+        );
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
@@ -888,6 +908,7 @@ function GseaPanel({
     const parts = [
       `source=${sourceMode}`,
       `kind=${kind}`,
+      `dataSource=${dataSource}`,
       `condition1=${sanitize(condition1)}`,
       `condition2=${sanitize(condition2)}`,
       `condition1Control=${sanitize(condition1Control)}`,
@@ -896,6 +917,7 @@ function GseaPanel({
       `pValueThreshold=${pValueThreshold}`,
       `log2fcThreshold=${log2fcThreshold}`,
       `useUncorrected=${useUncorrected ? "true" : "false"}`,
+      `adjPValueCutoff=${adjPValueCutoff}`,
       `topN=${topN}`,
       `minTermSize=${minTermSize}`,
       `maxTermSize=${maxTermSize}`,
@@ -905,6 +927,7 @@ function GseaPanel({
     onContextModeChange,
     sourceMode,
     kind,
+    dataSource,
     condition1,
     condition2,
     condition1Control,
@@ -913,6 +936,7 @@ function GseaPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
@@ -931,6 +955,7 @@ function GseaPanel({
     runEnrichmentAnalysis({
       kind,
       source: sourceMode,
+      dataSource,
       condition1,
       condition2,
       condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
@@ -939,6 +964,7 @@ function GseaPanel({
       log2fcThreshold,
       testType,
       useUncorrected,
+      adjPValueCutoff,
       topN,
       minTermSize,
       maxTermSize,
@@ -963,6 +989,7 @@ function GseaPanel({
     canRun,
     kind,
     sourceMode,
+    dataSource,
     condition1,
     condition2,
     condition1Control,
@@ -971,6 +998,7 @@ function GseaPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
@@ -978,6 +1006,7 @@ function GseaPanel({
 
   const upPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/up.png`, {
     source: sourceMode,
+    dataSource,
     condition1,
     condition2,
     condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
@@ -986,12 +1015,14 @@ function GseaPanel({
     log2fcThreshold,
     testType,
     useUncorrected,
+    adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
   });
   const downPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/gsea/down.png`, {
     source: sourceMode,
+    dataSource,
     condition1,
     condition2,
     condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
@@ -1000,6 +1031,7 @@ function GseaPanel({
     log2fcThreshold,
     testType,
     useUncorrected,
+    adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
@@ -1011,12 +1043,14 @@ function GseaPanel({
       condition1,
       condition2,
       sourceMode,
+      dataSource,
       condition1Control,
       condition2Control,
       testType,
       pValueThreshold,
       log2fcThreshold,
       useUncorrected,
+      adjPValueCutoff,
       topN,
       minTermSize,
       maxTermSize,
@@ -1026,12 +1060,14 @@ function GseaPanel({
     condition1,
     condition2,
     sourceMode,
+    dataSource,
     condition1Control,
     condition2Control,
     testType,
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
@@ -1056,53 +1092,69 @@ function GseaPanel({
       </SectionCard>
 
       <SectionCard title="Options">
-        <div className="max-w-xs">
-          <SelectField
-            label="Source"
-            value={sourceMode}
-            onChange={(value) => setSourceMode(value as "volcano" | "volcano_control")}
-            options={[
-              { value: "volcano", label: "Volcano" },
-              { value: "volcano_control", label: "Volcano Control" },
-            ]}
-          />
-        </div>
-        {sourceMode === "volcano_control" ? (
-          <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+        <div>
+          <h4 className="text-sm font-semibold text-slate-900">Volcano Options</h4>
+          <div className="mt-3 grid gap-4 lg:grid-cols-2">
             <SelectField
-              label="Condition 1 Control"
-              value={condition1Control}
-              onChange={setCondition1Control}
-              options={conditionOptions(options)}
+              label="Source"
+              value={sourceMode}
+              onChange={(value) => setSourceMode(value as "volcano" | "volcano_control")}
+              options={[
+                { value: "volcano", label: "Volcano" },
+                { value: "volcano_control", label: "Volcano Control" },
+              ]}
             />
-            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
             <SelectField
-              label="Condition 2 Control"
-              value={condition2Control}
-              onChange={setCondition2Control}
-              options={conditionOptions(options)}
+              label="Data Source"
+              value={dataSource}
+              onChange={(value) => setDataSource(value as "data" | "imputed")}
+              options={gseaDataSourceOptions}
             />
           </div>
-        ) : (
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+          {sourceMode === "volcano_control" ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+              <SelectField
+                label="Condition 1 Control"
+                value={condition1Control}
+                onChange={setCondition1Control}
+                options={conditionOptions(options)}
+              />
+              <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+              <SelectField
+                label="Condition 2 Control"
+                value={condition2Control}
+                onChange={setCondition2Control}
+                options={conditionOptions(options)}
+              />
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
+              <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
+            </div>
+          )}
+          <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={[{ value: "unpaired", label: "Unpaired" }, { value: "paired", label: "Paired" }]} />
+            <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
+            <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
           </div>
-        )}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-          <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={[{ value: "unpaired", label: "Unpaired" }, { value: "paired", label: "Paired" }]} />
-          <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
-          <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
-          <NumberField label="Top terms" value={topN} onChange={(value) => setTopN(Math.max(1, Math.round(value)))} />
-        </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          <NumberField label="Min term size" value={minTermSize} onChange={(value) => setMinTermSize(Math.max(1, Math.round(value)))} />
-          <NumberField label="Max term size" value={maxTermSize} onChange={(value) => setMaxTermSize(Math.max(1, Math.round(value)))} />
-        </div>
-        <div className="mt-4">
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
+          </div>
+        </div>
+        <div className="mt-6 border-t border-slate-200 pt-6">
+          <h4 className="text-sm font-semibold text-slate-900">GSEA Options</h4>
+          <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+            <NumberField
+              label="Adj p-value cutoff"
+              value={adjPValueCutoff}
+              onChange={(value) => setAdjPValueCutoff(Math.max(1e-12, Math.min(1, value)))}
+              step={0.001}
+            />
+            <NumberField label="Top terms" value={topN} onChange={(value) => setTopN(Math.max(1, Math.round(value)))} />
+            <NumberField label="Min term size" value={minTermSize} onChange={(value) => setMinTermSize(Math.max(1, Math.round(value)))} />
+            <NumberField label="Max term size" value={maxTermSize} onChange={(value) => setMaxTermSize(Math.max(1, Math.round(value)))} />
           </div>
         </div>
         <Notice error={error} warnings={options?.warnings} />

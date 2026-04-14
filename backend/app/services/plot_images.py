@@ -226,6 +226,25 @@ def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns
     return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)}).copy()
 
 
+def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
+    if meta.empty:
+        return meta.copy()
+
+    ordered = meta.copy()
+    ordered["condition"] = ordered["condition"].astype(str)
+    condition_order = ordered["condition"].dropna().drop_duplicates().tolist()
+    if not condition_order:
+        return ordered.reset_index(drop=True)
+
+    ordered["__condition_order"] = pd.Categorical(
+        ordered["condition"],
+        categories=condition_order,
+        ordered=True,
+    )
+    ordered = ordered.sort_values("__condition_order", kind="stable")
+    return ordered.drop(columns="__condition_order").reset_index(drop=True)
+
+
 def _extract_id_or_number(sample: str) -> str:
     match = re.search(r"\d+|[A-Za-z]+", str(sample))
     return match.group(0) if match else str(sample)
@@ -528,7 +547,7 @@ def qc_coverage_plot(
         raise ValueError(f"No sample columns found for {kind} dataset.")
 
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
-    meta = _metadata_for_kind(kind, frame, sample_columns).copy()
+    meta = _grouped_meta_order(_metadata_for_kind(kind, frame, sample_columns).copy())
     meta["id"] = meta["sample"].astype(str).apply(_extract_id_or_number)
     meta["sample_index"] = meta.groupby("condition").cumcount() + 1
     if include_id:
@@ -545,7 +564,7 @@ def qc_coverage_plot(
     if summary:
         sample_summary = meta[["label", "condition", "count"]].rename(columns={"label": "Sample", "count": "Value"})
         condition_summary = (
-            sample_summary.groupby("condition", as_index=False)
+            sample_summary.groupby("condition", as_index=False, sort=False)
             .agg(mean_value=("Value", "mean"), sd_value=("Value", "std"))
             .fillna({"sd_value": 0.0})
         )

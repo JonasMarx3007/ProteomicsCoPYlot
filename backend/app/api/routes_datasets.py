@@ -8,6 +8,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+import pandas as pd
 
 from app.schemas.annotation import AnnotationFilterConfig
 from app.schemas.dataset import (
@@ -162,40 +163,33 @@ def _ensure_profile_annotation_for_kind(
     )
     if metadata_frame is None:
         source_profiles = get_auto_generated_profile_sources(profile_name)
-        if source_profiles is not None:
-            left_name, right_name = source_profiles
+        if source_profiles:
+            source_frames: list[pd.DataFrame] = []
+            for source_name in source_profiles:
+                source_uploaded = get_uploaded_metadata(kind, profile_name=source_name)
+                source_frame = (
+                    source_uploaded.frame
+                    if source_uploaded is not None and not source_uploaded.frame.empty
+                    else None
+                )
+                if source_frame is None:
+                    source_annotation = get_annotation(kind, metadata_profile_name=source_name)
+                    if source_annotation is not None and not source_annotation.metadata.empty:
+                        source_frame = source_annotation.metadata
+                if source_frame is None:
+                    source_frames = []
+                    break
+                source_frames.append(source_frame)
 
-            left_uploaded = get_uploaded_metadata(kind, profile_name=left_name)
-            left_frame = (
-                left_uploaded.frame
-                if left_uploaded is not None and not left_uploaded.frame.empty
-                else None
-            )
-            if left_frame is None:
-                left_annotation = get_annotation(kind, metadata_profile_name=left_name)
-                if left_annotation is not None and not left_annotation.metadata.empty:
-                    left_frame = left_annotation.metadata
-
-            right_uploaded = get_uploaded_metadata(kind, profile_name=right_name)
-            right_frame = (
-                right_uploaded.frame
-                if right_uploaded is not None and not right_uploaded.frame.empty
-                else None
-            )
-            if right_frame is None:
-                right_annotation = get_annotation(kind, metadata_profile_name=right_name)
-                if right_annotation is not None and not right_annotation.metadata.empty:
-                    right_frame = right_annotation.metadata
-
-            if left_frame is not None and right_frame is not None:
-                combined = build_combined_metadata_frame(left_frame, right_frame)
+            if len(source_frames) >= 2:
+                combined = build_combined_metadata_frame(*source_frames)
                 if not combined.empty:
                     metadata_frame = combined
 
     if metadata_frame is None or metadata_frame.empty:
         raise ValueError(
             f"Mixed metadata profile '{profile_name}' has no generated rows for {kind}. "
-            "Generate both source metadata profiles first."
+            "Generate all source metadata profiles first."
         )
 
     source_annotation = (
