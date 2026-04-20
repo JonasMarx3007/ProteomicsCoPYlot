@@ -57,6 +57,8 @@ def _set_viewer_env(project_root: Path, bundle_root: Path, args: argparse.Namesp
         return
 
     candidates = [
+        project_root / "viewer_config.local.json",
+        bundle_root / "viewer_config.local.json",
         project_root / "viewer_config.json",
         bundle_root / "viewer_config.json",
     ]

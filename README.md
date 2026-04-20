@@ -15,6 +15,7 @@ It provides the full analysis workflow and a separate read-only viewer workflow.
 
 - Analysis tool: full workflow with upload, annotation, analysis, and report generation
 - Viewer: read-only mode for provided datasets via `viewer_config.json`
+- Local viewer override: place a `viewer_config.local.json` in project root for local-only viewer settings (ignored by git and preferred automatically).
 
 ## Pipelines
 
