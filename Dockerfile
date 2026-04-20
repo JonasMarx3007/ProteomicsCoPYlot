@@ -23,6 +23,7 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/backend/requirements.txt
 
 COPY backend /app/backend
+RUN test -f /app/backend/app/services/session_context.py
 COPY launch.py /app/launch.py
 COPY launch_tool.py /app/launch_tool.py
 COPY launch_viewer.py /app/launch_viewer.py
