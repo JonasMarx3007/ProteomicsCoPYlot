@@ -728,6 +728,19 @@ export type ModuleContextResponse = {
   warnings: string[];
 };
 
+export type ViewerAuthStatusResponse = {
+  enabled: boolean;
+  authenticated: boolean;
+  project: string | null;
+  projectLabel: string | null;
+};
+
+export type ViewerAuthLoginResponse = {
+  ok: boolean;
+  project: string;
+  projectLabel: string;
+};
+
 export type RestoreDatasetKind = "protein" | "phospho" | "phosprot" | "peptide";
 
 export type RestoreMissingFile = {

@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import re
+import secrets
+from dataclasses import dataclass
+from pathlib import Path
+from threading import RLock
+from typing import Any
+
+from app.services.annotation_store import reset_all_annotations
+from app.services.condition_palette_store import reset_condition_palettes
+from app.services.dataset_store import reset_all_datasets
+from app.services.metadata_upload_store import reset_all_uploaded_metadata
+from app.services.peptide_metadata_store import clear_peptide_metadata
+from app.services.session_context import get_session_id, session_isolation_enabled
+from app.services.viewer_bootstrap import (
+    load_viewer_state,
+    resolve_viewer_project_config,
+    viewer_mode_enabled,
+)
+
+LOGGER = logging.getLogger(__name__)
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+@dataclass(frozen=True)
+class ViewerAccessEntry:
+    project: str
+    project_label: str
+    password: str
+    password_sha256: str
+
+
+@dataclass(frozen=True)
+class ViewerSessionAuth:
+    project: str
+    project_label: str
+
+
+_LOCK = RLock()
+_SESSION_AUTH: dict[str, ViewerSessionAuth] = {}
+_BOOTSTRAPPED_SESSION_PROJECT: dict[str, str] = {}
+_ACCESS_FILE_CACHE_KEY: tuple[str, float, int] | None = None
+_ACCESS_FILE_CACHE: list[ViewerAccessEntry] = []
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in TRUTHY_VALUES
+
+
+def viewer_portal_enabled() -> bool:
+    if not viewer_mode_enabled():
+        return False
+    if not session_isolation_enabled():
+        return False
+    return _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED", "0")
+
+
+def _default_access_file_candidates(project_root: Path) -> list[Path]:
+    return [
+        project_root / "viewer_access.local.json",
+        project_root / "viewer_access.json",
+    ]
+
+
+def _resolve_access_file(project_root: Path) -> Path | None:
+    raw = str(os.getenv("COPYLOT_VIEWER_ACCESS_FILE", "")).strip()
+    if raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        return candidate.resolve()
+
+    for candidate in _default_access_file_candidates(project_root):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _normalize_project_name(value: str) -> str:
+    project = str(value or "").strip()
+    if not _PROJECT_NAME_RE.fullmatch(project):
+        raise ValueError(
+            "Viewer access entry project name is invalid. Allowed characters: "
+            "letters, numbers, dot, underscore, hyphen."
+        )
+    return project
+
+
+def _normalize_sha256(value: str) -> str:
+    digest = str(value or "").strip().lower()
+    if not digest:
+        return ""
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("password_sha256 must be a 64-character lowercase hex digest.")
+    return digest
+
+
+def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
+    project = _normalize_project_name(str(raw.get("project", "")))
+    project_label = str(raw.get("label", project)).strip() or project
+    password = str(raw.get("password", ""))
+    password_sha256 = _normalize_sha256(str(raw.get("password_sha256", "")))
+    if not password and not password_sha256:
+        raise ValueError(
+            f"Viewer access entry #{index} must define either password or password_sha256."
+        )
+    return ViewerAccessEntry(
+        project=project,
+        project_label=project_label,
+        password=password,
+        password_sha256=password_sha256,
+    )
+
+
+def _parse_access_entries(raw: Any) -> list[ViewerAccessEntry]:
+    entries: list[ViewerAccessEntry] = []
+    if isinstance(raw, dict):
+        if isinstance(raw.get("credentials"), list):
+            for idx, item in enumerate(raw["credentials"], start=1):
+                if not isinstance(item, dict):
+                    raise ValueError("viewer access credentials items must be objects.")
+                entries.append(_entry_from_object(item, index=idx))
+            return entries
+
+        passwords = raw.get("passwords")
+        if isinstance(passwords, dict):
+            for password, target in passwords.items():
+                project = ""
+                label = ""
+                password_sha256 = ""
+                if isinstance(target, str):
+                    project = target
+                elif isinstance(target, dict):
+                    project = str(target.get("project", ""))
+                    label = str(target.get("label", "")).strip()
+                    password_sha256 = _normalize_sha256(str(target.get("password_sha256", "")))
+                else:
+                    raise ValueError("viewer access passwords values must be strings or objects.")
+                entries.append(
+                    ViewerAccessEntry(
+                        project=_normalize_project_name(project),
+                        project_label=label or _normalize_project_name(project),
+                        password=str(password),
+                        password_sha256=password_sha256,
+                    )
+                )
+            return entries
+
+    raise ValueError(
+        "viewer access file must contain either a 'credentials' list or a 'passwords' object."
+    )
+
+
+def _load_access_entries(project_root: Path) -> list[ViewerAccessEntry]:
+    global _ACCESS_FILE_CACHE_KEY
+    global _ACCESS_FILE_CACHE
+
+    path = _resolve_access_file(project_root)
+    if path is None:
+        return []
+
+    stat = path.stat()
+    cache_key = (str(path), stat.st_mtime, stat.st_size)
+
+    with _LOCK:
+        if _ACCESS_FILE_CACHE_KEY == cache_key:
+            return list(_ACCESS_FILE_CACHE)
+
+    with path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    parsed = _parse_access_entries(raw)
+
+    with _LOCK:
+        _ACCESS_FILE_CACHE_KEY = cache_key
+        _ACCESS_FILE_CACHE = list(parsed)
+    return parsed
+
+
+def _password_matches(raw_password: str, entry: ViewerAccessEntry) -> bool:
+    if entry.password and secrets.compare_digest(raw_password, entry.password):
+        return True
+    if entry.password_sha256:
+        digest = hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
+        if secrets.compare_digest(digest, entry.password_sha256):
+            return True
+    return False
+
+
+def _reset_current_session_data() -> None:
+    reset_all_annotations()
+    reset_all_uploaded_metadata()
+    reset_all_datasets()
+    reset_condition_palettes()
+    clear_peptide_metadata()
+
+
+def _load_project_into_current_session(project_name: str, *, force_reload: bool) -> None:
+    session_id = get_session_id()
+    project = _normalize_project_name(project_name)
+    if not force_reload:
+        with _LOCK:
+            if _BOOTSTRAPPED_SESSION_PROJECT.get(session_id) == project:
+                return
+
+    config_path = resolve_viewer_project_config(project)
+    if config_path is None:
+        raise FileNotFoundError(
+            f"Viewer project '{project}' has no viewer_config.json in "
+            "viewer_data/<project>/ or viewer_data/projects/<project>/."
+        )
+
+    _reset_current_session_data()
+    result = load_viewer_state(config_path)
+    LOGGER.info(
+        "Viewer portal loaded project '%s' from %s (datasets=%d, annotations=%d).",
+        project,
+        config_path,
+        len(result.loaded_datasets),
+        len(result.loaded_annotations),
+    )
+    for warning in result.warnings:
+        LOGGER.warning("Viewer portal bootstrap warning (%s): %s", project, warning)
+
+    with _LOCK:
+        _BOOTSTRAPPED_SESSION_PROJECT[session_id] = project
+
+
+def viewer_session_authenticated() -> bool:
+    with _LOCK:
+        return get_session_id() in _SESSION_AUTH
+
+
+def viewer_session_auth() -> ViewerSessionAuth | None:
+    with _LOCK:
+        return _SESSION_AUTH.get(get_session_id())
+
+
+def authenticate_viewer_session(password: str, *, project_root: Path | None = None) -> ViewerSessionAuth:
+    if not viewer_portal_enabled():
+        raise RuntimeError("Viewer portal auth is not enabled.")
+
+    candidate_password = str(password or "")
+    if not candidate_password:
+        raise ValueError("Password must not be empty.")
+
+    root = project_root or Path(__file__).resolve().parents[3]
+    entries = _load_access_entries(root)
+    if not entries:
+        raise RuntimeError(
+            "Viewer portal is enabled but no credentials are configured. "
+            "Create viewer_access.local.json."
+        )
+
+    selected: ViewerAccessEntry | None = None
+    for entry in entries:
+        if _password_matches(candidate_password, entry):
+            selected = entry
+            break
+
+    if selected is None:
+        raise ValueError("Invalid viewer password.")
+
+    session_id = get_session_id()
+    session_auth = ViewerSessionAuth(
+        project=selected.project,
+        project_label=selected.project_label,
+    )
+    with _LOCK:
+        _SESSION_AUTH[session_id] = session_auth
+        _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
+
+    _load_project_into_current_session(selected.project, force_reload=True)
+    return session_auth
+
+
+def clear_viewer_session_auth(*, reset_data: bool = False) -> None:
+    session_id = get_session_id()
+    with _LOCK:
+        _SESSION_AUTH.pop(session_id, None)
+        _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
+    if reset_data:
+        _reset_current_session_data()
+
+
+def ensure_viewer_session_bootstrapped(*, force_reload: bool = False) -> ViewerSessionAuth:
+    auth = viewer_session_auth()
+    if auth is None:
+        raise PermissionError("Viewer authentication is required.")
+    _load_project_into_current_session(auth.project, force_reload=force_reload)
+    return auth

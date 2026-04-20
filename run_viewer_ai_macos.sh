@@ -18,10 +18,28 @@ fi
 CHAT_MODEL=""
 DEV_MODE=0
 DEV_OLLAMA_ENDPOINT=""
+VIEWER_PROJECT=""
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+  arg="$1"
   if [[ "$arg" == "--dev" ]]; then
     DEV_MODE=1
+    shift
+    continue
+  fi
+  if [[ "$arg" == "--project" ]]; then
+    shift
+    VIEWER_PROJECT="${1:-}"
+    if [[ -z "$VIEWER_PROJECT" ]]; then
+      echo "Error: --project requires a project name."
+      exit 1
+    fi
+    shift
+    continue
+  fi
+  if [[ "$arg" == --project=* ]]; then
+    VIEWER_PROJECT="${arg#--project=}"
+    shift
     continue
   fi
   if [[ -z "$CHAT_MODEL" ]]; then
@@ -31,7 +49,27 @@ for arg in "$@"; do
       CHAT_MODEL="$arg"
     fi
   fi
+  shift
 done
+
+VIEWER_CONFIG="$ROOT_DIR/viewer_config.json"
+if [[ -n "$VIEWER_PROJECT" ]]; then
+  if [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.local.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json"
+  else
+    echo "Viewer project '$VIEWER_PROJECT' not found or missing viewer_config.json."
+    echo "Expected one of:"
+    echo "  $ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
+    echo "  $ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json"
+    exit 1
+  fi
+fi
 
 if [[ "$DEV_MODE" -eq 1 ]]; then
   DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
@@ -79,10 +117,10 @@ trap cleanup EXIT INT TERM
 (
   cd "$BACKEND_DIR"
   if [ -n "$CHAT_MODEL" ]; then
-    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_CONFIG="$ROOT_DIR/viewer_config.json" COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
+    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
       "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
   else
-    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_CONFIG="$ROOT_DIR/viewer_config.json" COPYLOT_AI_MODE=1 \
+    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 \
       "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
   fi
 ) &
@@ -103,7 +141,11 @@ FRONTEND_PID=$!
 sleep 3
 open "http://localhost:5174" >/dev/null 2>&1 || true
 
-echo "Viewer app (AI mode) started."
+if [[ -n "$VIEWER_PROJECT" ]]; then
+  echo "Viewer app (AI mode) started (project: $VIEWER_PROJECT)."
+else
+  echo "Viewer app (AI mode) started."
+fi
 echo "Backend: http://127.0.0.1:8001"
 echo "Frontend: http://localhost:5174"
 

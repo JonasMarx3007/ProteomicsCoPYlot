@@ -20,6 +20,7 @@ from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
 from app.api.routes_summary import router as summary_router
 from app.api.routes_restore import router as restore_router
+from app.api.routes_viewer_auth import router as viewer_auth_router
 from app.services.session_context import (
     new_session_id,
     normalize_session_id,
@@ -30,7 +31,16 @@ from app.services.session_context import (
     session_isolation_enabled,
     set_session_id,
 )
-from app.services.viewer_bootstrap import bootstrap_viewer_mode_if_enabled
+from app.services.viewer_bootstrap import (
+    bootstrap_current_viewer_session,
+    bootstrap_viewer_mode_if_enabled,
+    viewer_mode_enabled,
+)
+from app.services.viewer_portal import (
+    ensure_viewer_session_bootstrapped,
+    viewer_portal_enabled,
+    viewer_session_authenticated,
+)
 
 app = FastAPI(title="Proteomics CoPYlot API")
 
@@ -127,6 +137,43 @@ async def session_scope_middleware(request: Request, call_next):
 
     token = set_session_id(resolved)
     try:
+        path = request.url.path
+        if (
+            path.startswith("/api/")
+            and path != "/api/health"
+            and not path.startswith("/api/viewer/auth")
+        ):
+            if viewer_portal_enabled():
+                if not viewer_session_authenticated():
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Viewer password required."},
+                    )
+                try:
+                    ensure_viewer_session_bootstrapped(force_reload=False)
+                except FileNotFoundError as exc:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"detail": str(exc)},
+                    )
+                except Exception as exc:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"detail": f"Failed to initialize viewer project: {exc}"},
+                    )
+            elif viewer_mode_enabled():
+                try:
+                    bootstrap_current_viewer_session(force_reload=False)
+                except FileNotFoundError as exc:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"detail": str(exc)},
+                    )
+                except Exception as exc:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"detail": f"Failed to initialize viewer session: {exc}"},
+                    )
         response = await call_next(request)
     finally:
         reset_session_id(token)
@@ -204,6 +251,7 @@ app.include_router(plots_router)
 app.include_router(external_router)
 app.include_router(summary_router)
 app.include_router(restore_router)
+app.include_router(viewer_auth_router)
 
 _FRONTEND_DIST = _resolve_frontend_dist()
 

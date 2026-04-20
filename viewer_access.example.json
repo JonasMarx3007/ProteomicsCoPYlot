@@ -1,0 +1,14 @@
+{
+  "credentials": [
+    {
+      "password": "replace-with-strong-password",
+      "project": "GRK_project",
+      "label": "GRK Project"
+    },
+    {
+      "password": "replace-with-another-strong-password",
+      "project": "TKI_project",
+      "label": "TKI Project"
+    }
+  ]
+}

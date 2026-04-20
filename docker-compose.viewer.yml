@@ -1,0 +1,54 @@
+services:
+  proteomics-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FRONTEND_APP_MODE: viewer
+        FRONTEND_AI_ENABLED: "0"
+        FRONTEND_BASE_PATH: "/viewer/"
+        FRONTEND_API_BASE: "/viewer"
+    image: proteomics-copylot-viewer:latest
+    container_name: proteomics-viewer
+    restart: unless-stopped
+    ports:
+      - "18081:10000"
+    environment:
+      PORT: "10000"
+      COPYLOT_VIEWER_MODE: "1"
+      COPYLOT_AI_MODE: "0"
+      COPYLOT_VIEWER_PORTAL_ENABLED: "1"
+      COPYLOT_VIEWER_ACCESS_FILE: "/app/viewer_access.local.json"
+      COPYLOT_SESSION_ISOLATION: "1"
+      COPYLOT_RESET_ON_BROWSER_LOAD: "1"
+      COPYLOT_SESSION_COOKIE_SECURE: "1"
+    volumes:
+      - ./viewer_data:/app/viewer_data
+      - ./viewer_access.local.json:/app/viewer_access.local.json:ro
+
+  proteomics-viewer-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FRONTEND_APP_MODE: viewer
+        FRONTEND_AI_ENABLED: "1"
+        FRONTEND_BASE_PATH: "/viewer-ai/"
+        FRONTEND_API_BASE: "/viewer-ai"
+    image: proteomics-copylot-viewer-ai:latest
+    container_name: proteomics-viewer-ai
+    restart: unless-stopped
+    ports:
+      - "18082:10000"
+    environment:
+      PORT: "10000"
+      COPYLOT_VIEWER_MODE: "1"
+      COPYLOT_AI_MODE: "1"
+      COPYLOT_VIEWER_PORTAL_ENABLED: "1"
+      COPYLOT_VIEWER_ACCESS_FILE: "/app/viewer_access.local.json"
+      COPYLOT_SESSION_ISOLATION: "1"
+      COPYLOT_RESET_ON_BROWSER_LOAD: "1"
+      COPYLOT_SESSION_COOKIE_SECURE: "1"
+    volumes:
+      - ./viewer_data:/app/viewer_data
+      - ./viewer_access.local.json:/app/viewer_access.local.json:ro

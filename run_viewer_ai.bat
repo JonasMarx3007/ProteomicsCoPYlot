@@ -9,6 +9,8 @@ set "DEV_MODE=0"
 set "DEV_OLLAMA_ENDPOINT="
 set "DEV_ENDPOINT_KEY="
 set "DEV_MODE_FLAG="
+set "VIEWER_PROJECT="
+set "VIEWER_CONFIG=%ROOT%viewer_config.json"
 
 :parse_args
 if "%~1"=="" goto :args_done
@@ -21,6 +23,15 @@ if /I "!ARG!"=="--dev" (
   set "DEV_MODE=3"
 ) else if /I "!ARG!"=="--dev20" (
   set "DEV_MODE=4"
+) else if /I "!ARG!"=="--project" (
+  shift
+  if "%~1"=="" (
+    echo Error: --project requires a project name.
+    exit /b 1
+  )
+  set "VIEWER_PROJECT=%~1"
+) else if /I "!ARG:~0,10!"=="--project=" (
+  set "VIEWER_PROJECT=!ARG:~10!"
 ) else (
   if "!ARG:~0,2!"=="--" set "ARG=!ARG:~2!"
   if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
@@ -29,6 +40,24 @@ shift
 goto :parse_args
 
 :args_done
+if defined VIEWER_PROJECT (
+  if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json"
+  ) else if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json"
+  ) else if exist "%ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.local.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.local.json"
+  ) else if exist "%ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.json"
+  ) else (
+    echo Viewer project "%VIEWER_PROJECT%" not found or missing viewer_config.json.
+    echo Expected one of:
+    echo   %ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json
+    echo   %ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.json
+    exit /b 1
+  )
+)
+
 if "%DEV_MODE%"=="1" (
   set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
   set "DEV_MODE_FLAG=--dev"
@@ -83,9 +112,9 @@ if defined FRONTEND_PID (
 )
 
 if defined CHAT_MODEL (
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_CONFIG=%ROOT%viewer_config.json && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 ) else (
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_CONFIG=%ROOT%viewer_config.json && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
 set "BACKEND_READY=0"

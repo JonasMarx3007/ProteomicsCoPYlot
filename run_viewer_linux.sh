@@ -15,6 +15,53 @@ if [ ! -x "$PYTHON_BIN" ]; then
   exit 1
 fi
 
+VIEWER_PROJECT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      shift
+      VIEWER_PROJECT="${1:-}"
+      if [[ -z "$VIEWER_PROJECT" ]]; then
+        echo "Error: --project requires a project name."
+        exit 1
+      fi
+      ;;
+    --project=*)
+      VIEWER_PROJECT="${1#--project=}"
+      ;;
+    --*)
+      if [[ -z "$VIEWER_PROJECT" ]]; then
+        VIEWER_PROJECT="${1#--}"
+      fi
+      ;;
+    *)
+      if [[ -z "$VIEWER_PROJECT" ]]; then
+        VIEWER_PROJECT="$1"
+      fi
+      ;;
+  esac
+  shift || true
+done
+
+VIEWER_CONFIG="$ROOT_DIR/viewer_config.json"
+if [[ -n "$VIEWER_PROJECT" ]]; then
+  if [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.local.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json"
+  else
+    echo "Viewer project '$VIEWER_PROJECT' not found or missing viewer_config.json."
+    echo "Expected one of:"
+    echo "  $ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
+    echo "  $ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json"
+    exit 1
+  fi
+fi
+
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -31,7 +78,7 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$BACKEND_DIR"
-  COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_CONFIG="$ROOT_DIR/viewer_config.json" \
+  COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" \
     "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ) &
 BACKEND_PID=$!
@@ -48,7 +95,11 @@ if command -v xdg-open >/dev/null 2>&1; then
   xdg-open "http://localhost:5174" >/dev/null 2>&1 || true
 fi
 
-echo "Viewer app started."
+if [[ -n "$VIEWER_PROJECT" ]]; then
+  echo "Viewer app started (project: $VIEWER_PROJECT)."
+else
+  echo "Viewer app started."
+fi
 echo "Backend: http://127.0.0.1:8001"
 echo "Frontend: http://localhost:5174"
 
