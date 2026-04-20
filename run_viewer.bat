@@ -1,10 +1,15 @@
 @echo off
+setlocal EnableDelayedExpansion
 set "ROOT=%~dp0"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
 set "VIEWER_PROJECT="
-set "VIEWER_CONFIG=%ROOT%viewer_config.json"
+if exist "%ROOT%viewer_config.local.json" (
+  set "VIEWER_CONFIG=%ROOT%viewer_config.local.json"
+) else (
+  set "VIEWER_CONFIG=%ROOT%viewer_config.json"
+)
 
 :parse_args
 if "%~1"=="" goto :args_done

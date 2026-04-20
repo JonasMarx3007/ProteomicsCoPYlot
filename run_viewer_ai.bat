@@ -10,7 +10,11 @@ set "DEV_OLLAMA_ENDPOINT="
 set "DEV_ENDPOINT_KEY="
 set "DEV_MODE_FLAG="
 set "VIEWER_PROJECT="
-set "VIEWER_CONFIG=%ROOT%viewer_config.json"
+if exist "%ROOT%viewer_config.local.json" (
+  set "VIEWER_CONFIG=%ROOT%viewer_config.local.json"
+) else (
+  set "VIEWER_CONFIG=%ROOT%viewer_config.json"
+)
 
 :parse_args
 if "%~1"=="" goto :args_done

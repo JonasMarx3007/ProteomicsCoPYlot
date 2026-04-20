@@ -52,7 +52,11 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-VIEWER_CONFIG="$ROOT_DIR/viewer_config.json"
+if [[ -f "$ROOT_DIR/viewer_config.local.json" ]]; then
+  VIEWER_CONFIG="$ROOT_DIR/viewer_config.local.json"
+else
+  VIEWER_CONFIG="$ROOT_DIR/viewer_config.json"
+fi
 if [[ -n "$VIEWER_PROJECT" ]]; then
   if [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
     VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json"
