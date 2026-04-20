@@ -29,7 +29,6 @@ DatasetKind = Literal["protein", "phospho", "phosprot"]
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_VIEWER_CONFIG_PATH = PROJECT_ROOT / "viewer_config.json"
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
@@ -552,11 +551,18 @@ def _viewer_mode_enabled() -> bool:
 def _resolve_config_path() -> Path:
     raw_path = os.getenv("COPYLOT_VIEWER_CONFIG", "").strip()
     if not raw_path:
-        return DEFAULT_VIEWER_CONFIG_PATH
+        return _default_viewer_config_path()
     path = Path(raw_path)
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def _default_viewer_config_path() -> Path:
+    local_override = PROJECT_ROOT / "viewer_config.local.json"
+    if local_override.is_file():
+        return local_override
+    return PROJECT_ROOT / "viewer_config.json"
 
 
 def _resolve_data_path(raw_path: str, base_dir: Path) -> Path:
