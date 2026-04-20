@@ -20,6 +20,16 @@ from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
 from app.api.routes_summary import router as summary_router
 from app.api.routes_restore import router as restore_router
+from app.services.session_context import (
+    new_session_id,
+    normalize_session_id,
+    reset_session_id,
+    session_cookie_name,
+    session_cookie_secure,
+    session_header_name,
+    session_isolation_enabled,
+    set_session_id,
+)
 from app.services.viewer_bootstrap import bootstrap_viewer_mode_if_enabled
 
 app = FastAPI(title="Proteomics CoPYlot API")
@@ -101,6 +111,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def session_scope_middleware(request: Request, call_next):
+    if not session_isolation_enabled():
+        return await call_next(request)
+
+    cookie_name = session_cookie_name()
+    header_name = session_header_name()
+    raw_cookie = str(request.cookies.get(cookie_name, "")).strip()
+    raw_header = str(request.headers.get(header_name, "")).strip()
+    resolved = normalize_session_id(raw_cookie or raw_header or new_session_id())
+    should_set_cookie = raw_cookie != resolved
+
+    token = set_session_id(resolved)
+    try:
+        response = await call_next(request)
+    finally:
+        reset_session_id(token)
+
+    if should_set_cookie:
+        response.set_cookie(
+            key=cookie_name,
+            value=resolved,
+            httponly=True,
+            secure=session_cookie_secure(),
+            samesite="lax",
+            path="/",
+        )
+    return response
 
 
 @app.middleware("http")

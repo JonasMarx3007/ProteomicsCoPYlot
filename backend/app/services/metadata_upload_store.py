@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +9,7 @@ import pandas as pd
 from app.schemas.annotation import MetadataAnnotationKind
 from app.services.dataset_store import get_active_package
 from app.services.runtime_cache import invalidate_runtime_cache
+from app.services.session_context import get_session_id
 
 DEFAULT_METADATA_PROFILE_NAME = "Metadata"
 SAMPLE_COLUMN_ALIASES = (
@@ -39,14 +40,53 @@ def _empty_metadata_state() -> dict[MetadataAnnotationKind, StoredUploadedMetada
     }
 
 
-_UPLOADED_METADATA_BY_PACKAGE: dict[
+@dataclass
+class _MetadataSessionState:
+    uploaded_metadata_by_package: dict[
+        str, dict[str, dict[MetadataAnnotationKind, StoredUploadedMetadata | None]]
+    ]
+    active_profile_by_package: dict[str, str]
+    auto_combined_profiles_by_package: dict[str, set[str]]
+    auto_combined_profile_sources_by_package: dict[str, dict[str, tuple[str, ...]]]
+
+
+def _new_session_state() -> _MetadataSessionState:
+    return _MetadataSessionState(
+        uploaded_metadata_by_package={},
+        active_profile_by_package={},
+        auto_combined_profiles_by_package={},
+        auto_combined_profile_sources_by_package={},
+    )
+
+
+_METADATA_SESSIONS: dict[str, _MetadataSessionState] = {}
+
+
+def _session_state() -> _MetadataSessionState:
+    session_id = get_session_id()
+    state = _METADATA_SESSIONS.get(session_id)
+    if state is None:
+        state = _new_session_state()
+        _METADATA_SESSIONS[session_id] = state
+    return state
+
+
+def _uploaded_metadata_by_package() -> dict[
     str, dict[str, dict[MetadataAnnotationKind, StoredUploadedMetadata | None]]
-] = {}
-_ACTIVE_PROFILE_BY_PACKAGE: dict[str, str] = {}
-_AUTO_COMBINED_PROFILES_BY_PACKAGE: dict[str, set[str]] = {}
-_AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE: dict[
-    str, dict[str, tuple[str, ...]]
-] = {}
+]:
+    return _session_state().uploaded_metadata_by_package
+
+
+def _active_profile_by_package() -> dict[str, str]:
+    return _session_state().active_profile_by_package
+
+
+def _auto_combined_profiles_by_package() -> dict[str, set[str]]:
+    return _session_state().auto_combined_profiles_by_package
+
+
+def _auto_combined_profile_sources_by_package() -> dict[str, dict[str, tuple[str, ...]]]:
+    return _session_state().auto_combined_profile_sources_by_package
 
 
 def _resolve_package(package_name: str | None) -> str:
@@ -56,18 +96,18 @@ def _resolve_package(package_name: str | None) -> str:
 
 def _ensure_package(package_name: str | None = None) -> str:
     resolved = _resolve_package(package_name)
-    if resolved not in _UPLOADED_METADATA_BY_PACKAGE:
-        _UPLOADED_METADATA_BY_PACKAGE[resolved] = {
+    if resolved not in _uploaded_metadata_by_package():
+        _uploaded_metadata_by_package()[resolved] = {
             DEFAULT_METADATA_PROFILE_NAME: _empty_metadata_state()
         }
-    if resolved not in _AUTO_COMBINED_PROFILES_BY_PACKAGE:
-        _AUTO_COMBINED_PROFILES_BY_PACKAGE[resolved] = set()
-    if resolved not in _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE:
-        _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE[resolved] = {}
-    if resolved not in _ACTIVE_PROFILE_BY_PACKAGE:
-        _ACTIVE_PROFILE_BY_PACKAGE[resolved] = DEFAULT_METADATA_PROFILE_NAME
-    if _ACTIVE_PROFILE_BY_PACKAGE[resolved] not in _UPLOADED_METADATA_BY_PACKAGE[resolved]:
-        _UPLOADED_METADATA_BY_PACKAGE[resolved][_ACTIVE_PROFILE_BY_PACKAGE[resolved]] = (
+    if resolved not in _auto_combined_profiles_by_package():
+        _auto_combined_profiles_by_package()[resolved] = set()
+    if resolved not in _auto_combined_profile_sources_by_package():
+        _auto_combined_profile_sources_by_package()[resolved] = {}
+    if resolved not in _active_profile_by_package():
+        _active_profile_by_package()[resolved] = DEFAULT_METADATA_PROFILE_NAME
+    if _active_profile_by_package()[resolved] not in _uploaded_metadata_by_package()[resolved]:
+        _uploaded_metadata_by_package()[resolved][_active_profile_by_package()[resolved]] = (
             _empty_metadata_state()
         )
     return resolved
@@ -81,7 +121,7 @@ def _normalize_profile_name(
     text = str(profile_name or "").strip()
     if text:
         return text
-    return _ACTIVE_PROFILE_BY_PACKAGE.get(package, DEFAULT_METADATA_PROFILE_NAME)
+    return _active_profile_by_package().get(package, DEFAULT_METADATA_PROFILE_NAME)
 
 
 def _ensure_profile(
@@ -91,7 +131,7 @@ def _ensure_profile(
 ) -> tuple[str, str]:
     package = _ensure_package(package_name)
     resolved_profile = _normalize_profile_name(profile_name, package)
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
+    profiles = _uploaded_metadata_by_package()[package]
     if resolved_profile not in profiles:
         profiles[resolved_profile] = _empty_metadata_state()
         invalidate_runtime_cache(f"metadata:{package}:profile:{resolved_profile}:created")
@@ -107,7 +147,7 @@ def _profile_state(
         profile_name=profile_name,
         package_name=package_name,
     )
-    return _UPLOADED_METADATA_BY_PACKAGE[package][resolved_profile]
+    return _uploaded_metadata_by_package()[package][resolved_profile]
 
 
 def _combined_profile_sources(profile_names: list[str]) -> list[tuple[str, ...]]:
@@ -119,9 +159,9 @@ def _combined_profile_sources(profile_names: list[str]) -> list[tuple[str, ...]]
 
 def _refresh_combined_profile_keys(package_name: str) -> None:
     package = _ensure_package(package_name)
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
-    auto_profiles = _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(package, set())
-    auto_sources = _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE.setdefault(package, {})
+    profiles = _uploaded_metadata_by_package()[package]
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
+    auto_sources = _auto_combined_profile_sources_by_package().setdefault(package, {})
 
     manual_profiles = [
         name
@@ -149,7 +189,7 @@ def _refresh_combined_profile_keys(package_name: str) -> None:
             auto_profiles.discard(name)
             auto_sources.pop(name, None)
             continue
-        if _ACTIVE_PROFILE_BY_PACKAGE.get(package) == name:
+        if _active_profile_by_package().get(package) == name:
             continue
         if any(value is not None for value in state.values()):
             continue
@@ -256,8 +296,8 @@ def build_combined_metadata_frame(
 def _regenerate_combined_profiles(package_name: str, kind: MetadataAnnotationKind) -> None:
     package = _ensure_package(package_name)
     _refresh_combined_profile_keys(package)
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
-    auto_profiles = _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(package, set())
+    profiles = _uploaded_metadata_by_package()[package]
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
 
     # Remove previous auto-generated combined metadata for this kind.
     for profile_name, state in list(profiles.items()):
@@ -265,7 +305,7 @@ def _regenerate_combined_profiles(package_name: str, kind: MetadataAnnotationKin
         if stored is not None and stored.auto_generated:
             state[kind] = None
             if all(value is None for value in state.values()) and profile_name in auto_profiles:
-                if _ACTIVE_PROFILE_BY_PACKAGE.get(package) != profile_name:
+                if _active_profile_by_package().get(package) != profile_name:
                     profiles.pop(profile_name, None)
                     auto_profiles.discard(profile_name)
 
@@ -312,16 +352,16 @@ def _regenerate_combined_profiles(package_name: str, kind: MetadataAnnotationKin
 
 def get_active_profile(*, package_name: str | None = None) -> str:
     package = _ensure_package(package_name)
-    return _ACTIVE_PROFILE_BY_PACKAGE.get(package, DEFAULT_METADATA_PROFILE_NAME)
+    return _active_profile_by_package().get(package, DEFAULT_METADATA_PROFILE_NAME)
 
 
 def list_profiles(*, package_name: str | None = None) -> list[str]:
     package = _ensure_package(package_name)
     active = get_active_profile(package_name=package)
-    names = list(_UPLOADED_METADATA_BY_PACKAGE[package].keys())
+    names = list(_uploaded_metadata_by_package()[package].keys())
     # Hide empty legacy default profile once custom profiles exist.
     if DEFAULT_METADATA_PROFILE_NAME in names and len(names) > 1:
-        state = _UPLOADED_METADATA_BY_PACKAGE[package][DEFAULT_METADATA_PROFILE_NAME]
+        state = _uploaded_metadata_by_package()[package][DEFAULT_METADATA_PROFILE_NAME]
         if all(value is None for value in state.values()) and active != DEFAULT_METADATA_PROFILE_NAME:
             names = [name for name in names if name != DEFAULT_METADATA_PROFILE_NAME]
     if active in names:
@@ -332,8 +372,8 @@ def list_profiles(*, package_name: str | None = None) -> list[str]:
 def list_auto_generated_profiles(*, package_name: str | None = None) -> list[str]:
     package = _ensure_package(package_name)
     _refresh_combined_profile_keys(package)
-    profiles = set(_UPLOADED_METADATA_BY_PACKAGE[package].keys())
-    auto = _AUTO_COMBINED_PROFILES_BY_PACKAGE.get(package, set())
+    profiles = set(_uploaded_metadata_by_package()[package].keys())
+    auto = _auto_combined_profiles_by_package().get(package, set())
     names = sorted((profiles & auto), key=lambda value: value.lower())
     return names
 
@@ -348,7 +388,7 @@ def get_auto_generated_profile_sources(
     key = str(profile_name or "").strip()
     if not key:
         return None
-    sources = _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE.get(package, {})
+    sources = _auto_combined_profile_sources_by_package().get(package, {})
     return sources.get(key)
 
 
@@ -357,10 +397,10 @@ def set_active_profile(profile_name: str, *, package_name: str | None = None) ->
     resolved_profile = str(profile_name or "").strip()
     if not resolved_profile:
         raise ValueError("Metadata profile name must not be empty.")
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
+    profiles = _uploaded_metadata_by_package()[package]
     if resolved_profile not in profiles:
         raise ValueError(f"Metadata profile '{resolved_profile}' does not exist.")
-    _ACTIVE_PROFILE_BY_PACKAGE[package] = resolved_profile
+    _active_profile_by_package()[package] = resolved_profile
     invalidate_runtime_cache(f"metadata:{package}:profile:{resolved_profile}:active")
     return resolved_profile
 
@@ -370,13 +410,13 @@ def create_profile(profile_name: str, *, package_name: str | None = None) -> str
     if not name:
         raise ValueError("Metadata profile name must not be empty.")
     package = _ensure_package(package_name)
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
+    profiles = _uploaded_metadata_by_package()[package]
     if name in profiles:
         raise ValueError(f"Metadata profile '{name}' already exists.")
     profiles[name] = _empty_metadata_state()
-    _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(package, set()).discard(name)
+    _auto_combined_profiles_by_package().setdefault(package, set()).discard(name)
     _refresh_combined_profile_keys(package)
-    _ACTIVE_PROFILE_BY_PACKAGE[package] = name
+    _active_profile_by_package()[package] = name
     invalidate_runtime_cache(f"metadata:{package}:profile:{name}:created")
     return name
 
@@ -392,7 +432,7 @@ def rename_profile(
     new_key = str(new_name or "").strip()
     if not old_key or not new_key:
         raise ValueError("Both original and new metadata profile names are required.")
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[package]
+    profiles = _uploaded_metadata_by_package()[package]
     if old_key not in profiles:
         raise ValueError(f"Metadata profile '{old_key}' does not exist.")
     if new_key in profiles and new_key != old_key:
@@ -401,13 +441,13 @@ def rename_profile(
         return old_key
 
     profiles[new_key] = profiles.pop(old_key)
-    auto_profiles = _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(package, set())
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
     if old_key in auto_profiles:
         auto_profiles.discard(old_key)
         auto_profiles.add(new_key)
     _refresh_combined_profile_keys(package)
-    if _ACTIVE_PROFILE_BY_PACKAGE.get(package) == old_key:
-        _ACTIVE_PROFILE_BY_PACKAGE[package] = new_key
+    if _active_profile_by_package().get(package) == old_key:
+        _active_profile_by_package()[package] = new_key
     _regenerate_combined_profiles(package, "protein")
     _regenerate_combined_profiles(package, "phospho")
     invalidate_runtime_cache(f"metadata:{package}:profile:{old_key}:renamed:{new_key}")
@@ -440,7 +480,7 @@ def save_uploaded_metadata(
         source_profiles=None,
     )
     state[kind] = stored
-    _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(resolved_package, set()).discard(
+    _auto_combined_profiles_by_package().setdefault(resolved_package, set()).discard(
         resolved_profile
     )
     _regenerate_combined_profiles(resolved_package, kind)
@@ -468,14 +508,14 @@ def clear_uploaded_metadata(
     clear_all_profiles: bool = False,
 ) -> None:
     resolved_package = _ensure_package(package_name)
-    profiles = _UPLOADED_METADATA_BY_PACKAGE[resolved_package]
-    auto_profiles = _AUTO_COMBINED_PROFILES_BY_PACKAGE.setdefault(resolved_package, set())
+    profiles = _uploaded_metadata_by_package()[resolved_package]
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(resolved_package, set())
     if clear_all_profiles:
         for profile, state in list(profiles.items()):
             state[kind] = None
             invalidate_runtime_cache(f"metadata:{resolved_package}:{profile}:{kind}:cleared")
             if all(value is None for value in state.values()) and profile in auto_profiles:
-                if _ACTIVE_PROFILE_BY_PACKAGE.get(resolved_package) != profile:
+                if _active_profile_by_package().get(resolved_package) != profile:
                     profiles.pop(profile, None)
                     auto_profiles.discard(profile)
         return
@@ -492,27 +532,26 @@ def rename_package(old_name: str, new_name: str) -> None:
     new_key = str(new_name or "").strip()
     if not old_key or not new_key or old_key == new_key:
         return
-    if old_key not in _UPLOADED_METADATA_BY_PACKAGE:
+    if old_key not in _uploaded_metadata_by_package():
         return
-    if new_key in _UPLOADED_METADATA_BY_PACKAGE:
+    if new_key in _uploaded_metadata_by_package():
         raise ValueError(f"Metadata package '{new_key}' already exists.")
-    _UPLOADED_METADATA_BY_PACKAGE[new_key] = _UPLOADED_METADATA_BY_PACKAGE.pop(old_key)
-    if old_key in _ACTIVE_PROFILE_BY_PACKAGE:
-        _ACTIVE_PROFILE_BY_PACKAGE[new_key] = _ACTIVE_PROFILE_BY_PACKAGE.pop(old_key)
-    if old_key in _AUTO_COMBINED_PROFILES_BY_PACKAGE:
-        _AUTO_COMBINED_PROFILES_BY_PACKAGE[new_key] = _AUTO_COMBINED_PROFILES_BY_PACKAGE.pop(old_key)
-    if old_key in _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE:
-        _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE[new_key] = _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE.pop(
+    _uploaded_metadata_by_package()[new_key] = _uploaded_metadata_by_package().pop(old_key)
+    if old_key in _active_profile_by_package():
+        _active_profile_by_package()[new_key] = _active_profile_by_package().pop(old_key)
+    if old_key in _auto_combined_profiles_by_package():
+        _auto_combined_profiles_by_package()[new_key] = _auto_combined_profiles_by_package().pop(old_key)
+    if old_key in _auto_combined_profile_sources_by_package():
+        _auto_combined_profile_sources_by_package()[new_key] = _auto_combined_profile_sources_by_package().pop(
             old_key
         )
     invalidate_runtime_cache(f"metadata-package:{old_key}:renamed:{new_key}")
 
 
-def reset_all_uploaded_metadata() -> None:
-    global _UPLOADED_METADATA_BY_PACKAGE, _ACTIVE_PROFILE_BY_PACKAGE
-    global _AUTO_COMBINED_PROFILES_BY_PACKAGE, _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE
-    _UPLOADED_METADATA_BY_PACKAGE = {}
-    _ACTIVE_PROFILE_BY_PACKAGE = {}
-    _AUTO_COMBINED_PROFILES_BY_PACKAGE = {}
-    _AUTO_COMBINED_PROFILE_SOURCES_BY_PACKAGE = {}
+def reset_all_uploaded_metadata(*, all_sessions: bool = False) -> None:
+    if all_sessions:
+        _METADATA_SESSIONS.clear()
+    else:
+        _METADATA_SESSIONS[get_session_id()] = _new_session_state()
     invalidate_runtime_cache("metadata:reset-all")
+

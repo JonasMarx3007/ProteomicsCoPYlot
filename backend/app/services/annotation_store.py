@@ -14,6 +14,7 @@ from app.schemas.annotation import (
 from app.services.dataset_store import get_active_package
 from app.services.metadata_upload_store import get_active_profile
 from app.services.runtime_cache import invalidate_runtime_cache
+from app.services.session_context import get_session_id
 
 
 @dataclass
@@ -40,9 +41,16 @@ def _empty_annotation_state() -> dict[AnnotationKind, StoredAnnotation | None]:
     }
 
 
-_ANNOTATIONS_BY_PACKAGE: dict[
-    str, dict[str, dict[AnnotationKind, StoredAnnotation | None]]
+_ANNOTATIONS_BY_SESSION: dict[
+    str, dict[str, dict[str, dict[AnnotationKind, StoredAnnotation | None]]]
 ] = {}
+
+
+def _annotations_by_package() -> dict[str, dict[str, dict[AnnotationKind, StoredAnnotation | None]]]:
+    session_id = get_session_id()
+    if session_id not in _ANNOTATIONS_BY_SESSION:
+        _ANNOTATIONS_BY_SESSION[session_id] = {}
+    return _ANNOTATIONS_BY_SESSION[session_id]
 
 
 def _resolve_package(package_name: str | None) -> str:
@@ -59,8 +67,9 @@ def _resolve_metadata_profile(package_name: str, metadata_profile_name: str | No
 
 def _ensure_package(package_name: str | None = None) -> str:
     resolved = _resolve_package(package_name)
-    if resolved not in _ANNOTATIONS_BY_PACKAGE:
-        _ANNOTATIONS_BY_PACKAGE[resolved] = {}
+    annotations = _annotations_by_package()
+    if resolved not in annotations:
+        annotations[resolved] = {}
     return resolved
 
 
@@ -71,7 +80,7 @@ def _profile_state(
 ) -> dict[AnnotationKind, StoredAnnotation | None]:
     resolved_package = _ensure_package(package_name)
     resolved_profile = _resolve_metadata_profile(resolved_package, metadata_profile_name)
-    package_profiles = _ANNOTATIONS_BY_PACKAGE[resolved_package]
+    package_profiles = _annotations_by_package()[resolved_package]
     if resolved_profile not in package_profiles:
         package_profiles[resolved_profile] = _empty_annotation_state()
     return package_profiles[resolved_profile]
@@ -138,7 +147,7 @@ def list_annotation_profiles(
     include_empty: bool = False,
 ) -> list[str]:
     resolved_package = _ensure_package(package_name)
-    profiles = _ANNOTATIONS_BY_PACKAGE[resolved_package]
+    profiles = _annotations_by_package()[resolved_package]
     names = [
         profile_name
         for profile_name, state in profiles.items()
@@ -159,8 +168,9 @@ def clear_annotation(
     clear_all_profiles: bool = False,
 ) -> None:
     resolved_package = _ensure_package(package_name)
+    annotations = _annotations_by_package()
     if clear_all_profiles:
-        for profile, state in _ANNOTATIONS_BY_PACKAGE[resolved_package].items():
+        for profile, state in annotations[resolved_package].items():
             state[kind] = None
             invalidate_runtime_cache(f"annotation:{resolved_package}:{profile}:{kind}:cleared")
         return
@@ -179,11 +189,12 @@ def rename_package(old_name: str, new_name: str) -> None:
     new_key = str(new_name or "").strip()
     if not old_key or not new_key or old_key == new_key:
         return
-    if old_key not in _ANNOTATIONS_BY_PACKAGE:
+    annotations = _annotations_by_package()
+    if old_key not in annotations:
         return
-    if new_key in _ANNOTATIONS_BY_PACKAGE:
+    if new_key in annotations:
         raise ValueError(f"Annotation package '{new_key}' already exists.")
-    _ANNOTATIONS_BY_PACKAGE[new_key] = _ANNOTATIONS_BY_PACKAGE.pop(old_key)
+    annotations[new_key] = annotations.pop(old_key)
     invalidate_runtime_cache(f"annotation-package:{old_key}:renamed:{new_key}")
 
 
@@ -198,7 +209,7 @@ def rename_metadata_profile(
     new_key = str(new_name or "").strip()
     if not old_key or not new_key or old_key == new_key:
         return
-    package_profiles = _ANNOTATIONS_BY_PACKAGE[resolved_package]
+    package_profiles = _annotations_by_package()[resolved_package]
     if old_key not in package_profiles:
         return
     if new_key in package_profiles:
@@ -209,7 +220,9 @@ def rename_metadata_profile(
     )
 
 
-def reset_all_annotations() -> None:
-    global _ANNOTATIONS_BY_PACKAGE
-    _ANNOTATIONS_BY_PACKAGE = {}
+def reset_all_annotations(*, all_sessions: bool = False) -> None:
+    if all_sessions:
+        _ANNOTATIONS_BY_SESSION.clear()
+    else:
+        _ANNOTATIONS_BY_SESSION[get_session_id()] = {}
     invalidate_runtime_cache("annotation:reset-all")

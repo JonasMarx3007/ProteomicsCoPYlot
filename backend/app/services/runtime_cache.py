@@ -7,6 +7,8 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any, Callable, TypeVar
 
+from app.services.session_context import get_session_id
+
 T = TypeVar("T")
 
 _LOCK = RLock()
@@ -86,7 +88,7 @@ def cached_call(
     copy_result: bool = False,
 ) -> T:
     version = runtime_cache_version()
-    key = (namespace, version, _freeze(key_data))
+    key = (namespace, version, get_session_id(), _freeze(key_data))
 
     with _LOCK:
         cached = _CACHE.get(key)

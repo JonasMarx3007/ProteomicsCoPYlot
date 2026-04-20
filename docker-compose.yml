@@ -1,0 +1,20 @@
+services:
+  proteomics-copylot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: proteomics-copylot
+    restart: unless-stopped
+    ports:
+      - "8081:10000"
+    environment:
+      PORT: "10000"
+      COPYLOT_AI_MODE: "0"
+      COPYLOT_SESSION_ISOLATION: "1"
+      COPYLOT_RESET_ON_BROWSER_LOAD: "1"
+      COPYLOT_SESSION_COOKIE_SECURE: "0"
+    volumes:
+      - copylot_viewer_data:/app/viewer_data
+
+volumes:
+  copylot_viewer_data:

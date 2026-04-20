@@ -5,6 +5,7 @@ import re
 
 from app.schemas.annotation import AnnotationKind
 from app.services.runtime_cache import invalidate_runtime_cache
+from app.services.session_context import get_session_id
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -31,11 +32,23 @@ _BASE_CONDITION_COLORS = [
     "#9edae5",
 ]
 
-_CONDITION_PALETTES: dict[AnnotationKind, dict[str, str]] = {
-    "protein": {},
-    "phospho": {},
-    "phosprot": {},
-}
+
+def _empty_palette_state() -> dict[AnnotationKind, dict[str, str]]:
+    return {
+        "protein": {},
+        "phospho": {},
+        "phosprot": {},
+    }
+
+
+_PALETTE_SESSIONS: dict[str, dict[AnnotationKind, dict[str, str]]] = {}
+
+
+def _session_palettes() -> dict[AnnotationKind, dict[str, str]]:
+    session_id = get_session_id()
+    if session_id not in _PALETTE_SESSIONS:
+        _PALETTE_SESSIONS[session_id] = _empty_palette_state()
+    return _PALETTE_SESSIONS[session_id]
 
 
 def _normalize_conditions(conditions: list[str]) -> list[str]:
@@ -72,7 +85,7 @@ def _normalize_hex(value: str) -> str | None:
 
 
 def get_condition_palette(kind: AnnotationKind) -> dict[str, str]:
-    return dict(_CONDITION_PALETTES.get(kind, {}))
+    return dict(_session_palettes().get(kind, {}))
 
 
 def set_condition_palette(kind: AnnotationKind, palette: dict[str, str]) -> dict[str, str]:
@@ -85,14 +98,14 @@ def set_condition_palette(kind: AnnotationKind, palette: dict[str, str]) -> dict
         if hex_color is None:
             continue
         normalized[condition_name] = hex_color
-    _CONDITION_PALETTES[kind] = normalized
+    _session_palettes()[kind] = normalized
     invalidate_runtime_cache(f"palette:{kind}:updated")
     return dict(normalized)
 
 
 def build_condition_color_map(kind: AnnotationKind, conditions: list[str]) -> dict[str, str]:
     ordered = _normalize_conditions(conditions)
-    overrides = _CONDITION_PALETTES.get(kind, {})
+    overrides = _session_palettes().get(kind, {})
     result: dict[str, str] = {}
     for index, condition in enumerate(ordered):
         override = _normalize_hex(overrides.get(condition, ""))
@@ -100,8 +113,9 @@ def build_condition_color_map(kind: AnnotationKind, conditions: list[str]) -> di
     return result
 
 
-def reset_condition_palettes() -> None:
-    _CONDITION_PALETTES["protein"] = {}
-    _CONDITION_PALETTES["phospho"] = {}
-    _CONDITION_PALETTES["phosprot"] = {}
+def reset_condition_palettes(*, all_sessions: bool = False) -> None:
+    if all_sessions:
+        _PALETTE_SESSIONS.clear()
+    else:
+        _PALETTE_SESSIONS[get_session_id()] = _empty_palette_state()
     invalidate_runtime_cache("palette:reset-all")
