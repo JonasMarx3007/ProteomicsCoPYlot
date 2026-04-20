@@ -162,6 +162,28 @@ set COPYLOT_AI_MODE=1
 - `launch_tool.py`: analysis launcher entrypoint
 - `launch_viewer.py`: viewer launcher entrypoint
 
+## Deploy on Render (Docker)
+
+This repository now includes:
+
+- `Dockerfile` for combined frontend+backend deployment
+- `.dockerignore` for smaller and faster Docker builds
+- `render.yaml` Blueprint for one-click Render setup
+
+Steps:
+
+1. Push this repository to GitHub.
+2. In Render, create a Blueprint and point it to this repo (it will detect `render.yaml`).
+3. If `proteomics-copylot` is already taken in your Render workspace, rename the service in `render.yaml` and push again.
+4. Wait for the first deploy to finish, then open the generated `*.onrender.com` URL.
+5. Confirm health endpoint works at `/api/health`.
+
+Notes:
+
+- Free plan instances have important limits and can sleep when idle.
+- Service filesystems are ephemeral; runtime-written local files are not durable across redeploys.
+- AI mode is disabled by default in `render.yaml` (`COPYLOT_AI_MODE=0`).
+
 ## License
 
 Licensed under the GNU GPL version 3. See [LICENSE](./LICENSE).

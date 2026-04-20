@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: proteomics-copylot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: COPYLOT_AI_MODE
+        value: "0"

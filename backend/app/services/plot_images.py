@@ -1494,7 +1494,23 @@ def qc_pca_interactive_html(
     return _plotly_html(fig)
 
 
-def _abundance_rank_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str], str]:
+def _abundance_key_column(frame: pd.DataFrame, workflow: str, kind: AnnotationKind) -> str:
+    if workflow == "Protein":
+        candidates = ["ProteinNames", "Protein_group", "GeneNames"]
+    elif workflow == "Phosphoprotein" or kind == "phosprot":
+        candidates = ["Phosphoprotein", "Protein_group", "Gene_group", "ProteinNames"]
+    else:
+        candidates = ["PTM_Collapse_key", "Phosphosite"]
+
+    for candidate in candidates:
+        if candidate in frame.columns:
+            return candidate
+    return str(frame.columns[0])
+
+
+def _abundance_mean_intensities(
+    kind: AnnotationKind,
+) -> tuple[pd.DataFrame, list[str], str, str]:
     frame = _verification_frame(kind).replace(0, np.nan)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
@@ -1503,9 +1519,10 @@ def _abundance_rank_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str]
     _, _, _, workflow = _feature_context(frame)
     if workflow == "Feature":
         workflow = "Protein" if kind == "protein" else "Phosphosite"
-    key_col = "ProteinNames" if workflow == "Protein" else "PTM_Collapse_key"
-    if key_col not in frame.columns:
-        key_col = frame.columns[0]
+    key_col = _abundance_key_column(frame, workflow, kind)
+    sample_columns = [column for column in sample_columns if column in frame.columns and column != key_col]
+    if not sample_columns:
+        raise ValueError("No sample columns available for abundance plot.")
 
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
     unique_conditions = meta["condition"].astype(str).dropna().unique().tolist()
@@ -1513,17 +1530,37 @@ def _abundance_rank_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str]
         raise ValueError("No conditions available for abundance plot.")
 
     data_filtered = frame[[key_col] + sample_columns].copy()
-    mean_intensities = pd.DataFrame({key_col: data_filtered[key_col]})
+    key_values = data_filtered[key_col]
+    if isinstance(key_values, pd.DataFrame):
+        key_values = key_values.iloc[:, 0]
+    mean_intensities = key_values.rename(key_col).to_frame()
+    valid_conditions: list[str] = []
     for cond in unique_conditions:
-        cols = meta.loc[meta["condition"] == cond, "sample"].tolist()
+        cols = [
+            column
+            for column in meta.loc[meta["condition"] == cond, "sample"].tolist()
+            if column in data_filtered.columns and column != key_col
+        ]
+        if not cols:
+            continue
         means = data_filtered[cols].apply(pd.to_numeric, errors="coerce").mean(axis=1, skipna=True)
         mean_intensities[cond] = np.log10(means + 1)
+        valid_conditions.append(cond)
 
-    if len(unique_conditions) > 1:
-        keep_mask = mean_intensities[unique_conditions].isna().sum(axis=1) < (len(unique_conditions) - 1)
+    if not valid_conditions:
+        raise ValueError("No conditions available for abundance plot.")
+
+    if len(valid_conditions) > 1:
+        keep_mask = mean_intensities[valid_conditions].isna().sum(axis=1) < (len(valid_conditions) - 1)
         mean_intensities = mean_intensities.loc[keep_mask]
     else:
-        mean_intensities = mean_intensities.dropna(subset=[unique_conditions[0]])
+        mean_intensities = mean_intensities.dropna(subset=[valid_conditions[0]])
+
+    return mean_intensities, valid_conditions, workflow, key_col
+
+
+def _abundance_rank_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str], str]:
+    mean_intensities, unique_conditions, workflow, key_col = _abundance_mean_intensities(kind)
 
     long_intensities = mean_intensities.melt(
         id_vars=[key_col], var_name="Condition", value_name="log10Intensity"
@@ -1547,35 +1584,7 @@ def qc_abundance_plot(
     dpi: int = 300,
 ) -> bytes:
     plt = _get_plt()
-    frame = _verification_frame(kind).replace(0, np.nan)
-    sample_columns = _get_sample_columns(kind, frame)
-    if not sample_columns:
-        raise ValueError("No sample columns available for abundance plot.")
-
-    _, _, _, workflow = _feature_context(frame)
-    if workflow == "Feature":
-        workflow = "Protein" if kind == "protein" else "Phosphosite"
-    key_col = "ProteinNames" if workflow == "Protein" else "PTM_Collapse_key"
-    if key_col not in frame.columns:
-        key_col = frame.columns[0]
-
-    meta = _metadata_for_kind(kind, frame, sample_columns).copy()
-    unique_conditions = meta["condition"].astype(str).dropna().unique().tolist()
-    if not unique_conditions:
-        raise ValueError("No conditions available for abundance plot.")
-
-    data_filtered = frame[[key_col] + sample_columns].copy()
-    mean_intensities = pd.DataFrame({key_col: data_filtered[key_col]})
-    for cond in unique_conditions:
-        cols = meta.loc[meta["condition"] == cond, "sample"].tolist()
-        means = data_filtered[cols].apply(pd.to_numeric, errors="coerce").mean(axis=1, skipna=True)
-        mean_intensities[cond] = np.log10(means + 1)
-
-    if len(unique_conditions) > 1:
-        keep_mask = mean_intensities[unique_conditions].isna().sum(axis=1) < (len(unique_conditions) - 1)
-        mean_intensities = mean_intensities.loc[keep_mask]
-    else:
-        mean_intensities = mean_intensities.dropna(subset=[unique_conditions[0]])
+    mean_intensities, unique_conditions, workflow, key_col = _abundance_mean_intensities(kind)
 
     color_map = _condition_colors(kind, plt, unique_conditions)
     fig, ax = _make_fig(plt, width_cm, height_cm)

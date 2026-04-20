@@ -166,8 +166,6 @@ app.include_router(summary_router)
 app.include_router(restore_router)
 
 _FRONTEND_DIST = _resolve_frontend_dist()
-if _FRONTEND_DIST is not None:
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
 
 
 @app.on_event("startup")
@@ -187,3 +185,5 @@ if _FRONTEND_DIST is None:
     @app.get("/")
     async def root():
         return {"message": "Backend is running"}
+else:
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
