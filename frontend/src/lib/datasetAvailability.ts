@@ -9,6 +9,10 @@ import type { AnnotationKind, CurrentDatasetsResponse } from "./types";
 import { IS_VIEWER_MODE } from "./appMode";
 import { subscribeDatasetStateChanged } from "./datasetEvents";
 
+// Ensure browser-session reset happens once per page load, even if multiple
+// pipeline pages mount/unmount this hook.
+let browserSessionResetAttempted = false;
+
 export type AnnotationKindOption = {
   value: AnnotationKind;
   label: string;
@@ -66,10 +70,13 @@ export function useCurrentDatasetsSnapshot() {
     let cancelled = false;
 
     async function initialize() {
-      try {
-        await resetBrowserSessionState();
-      } catch {
-        // Keep app usable if reset endpoint is unavailable.
+      if (!browserSessionResetAttempted) {
+        browserSessionResetAttempted = true;
+        try {
+          await resetBrowserSessionState();
+        } catch {
+          // Keep app usable if reset endpoint is unavailable.
+        }
       }
       if (cancelled) return;
       await refresh();
