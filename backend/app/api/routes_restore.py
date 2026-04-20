@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -16,8 +17,18 @@ from app.services.restore_state import (
     inspect_missing_files,
     parse_replacements_manifest,
 )
+from app.services.annotation_store import reset_all_annotations
+from app.services.condition_palette_store import reset_condition_palettes
+from app.services.dataset_store import reset_all_datasets
+from app.services.metadata_upload_store import reset_all_uploaded_metadata
+from app.services.peptide_metadata_store import clear_peptide_metadata
 
 router = APIRouter(prefix="/api/restore", tags=["restore"])
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+
+def _reset_on_browser_load_enabled() -> bool:
+    return str(os.getenv("COPYLOT_RESET_ON_BROWSER_LOAD", "")).strip().lower() in TRUTHY_VALUES
 
 
 @router.post("/export")
@@ -89,4 +100,16 @@ async def import_restore_state(
         restoredDatasets=restored.restored_datasets,
         restoredAnnotations=restored.restored_annotations,
     )
+
+
+@router.post("/browser-session-reset")
+async def browser_session_reset() -> dict[str, bool]:
+    enabled = _reset_on_browser_load_enabled()
+    if enabled:
+        reset_all_annotations()
+        reset_all_uploaded_metadata()
+        reset_all_datasets()
+        reset_condition_palettes()
+        clear_peptide_metadata()
+    return {"ok": True, "enabled": enabled}
 

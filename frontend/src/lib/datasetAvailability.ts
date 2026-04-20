@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getCurrentDatasets,
+  resetBrowserSessionState,
   setActiveDatasetPackage,
   setActiveMetadataProfile,
 } from "./api";
@@ -62,7 +63,24 @@ export function useCurrentDatasetsSnapshot() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+
+    async function initialize() {
+      try {
+        await resetBrowserSessionState();
+      } catch {
+        // Keep app usable if reset endpoint is unavailable.
+      }
+      if (cancelled) return;
+      await refresh();
+    }
+
+    initialize().catch(() => {
+      // refresh() already handles state updates on failure
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [refresh]);
 
   useEffect(() => {

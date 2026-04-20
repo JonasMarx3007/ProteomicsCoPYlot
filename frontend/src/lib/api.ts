@@ -227,6 +227,19 @@ export async function importRestoreState(
   return data as RestoreImportResponse;
 }
 
+export async function resetBrowserSessionState(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/restore/browser-session-reset`, {
+    method: "POST",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to reset browser session state"
+    );
+  }
+}
+
 export async function savePeptidePath(path: string, packageName?: string): Promise<PeptidePathResponse> {
   const response = await fetch(`${API_BASE}/api/datasets/peptide-path`, {
     method: "POST",
