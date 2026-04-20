@@ -1,7 +1,7 @@
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getViewerAuthStatus, loginViewer } from "../lib/api";
+import { getViewerAuthStatus, loginViewer, logoutViewer } from "../lib/api";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "../lib/appMode";
 import type { ViewerAuthStatusResponse } from "../lib/types";
 
@@ -10,6 +10,7 @@ type Props = {
 };
 
 type GatePhase = "checking" | "ready" | "error";
+let viewerPortalResetOnLoadAttempted = false;
 
 function modeLabel() {
   return IS_AI_MODE ? "Viewer AI" : "Viewer";
@@ -38,6 +39,14 @@ export default function ViewerPortalGate({ children }: Props) {
     setPhase("checking");
     setStatusError(null);
     try {
+      if (!viewerPortalResetOnLoadAttempted) {
+        viewerPortalResetOnLoadAttempted = true;
+        try {
+          await logoutViewer();
+        } catch {
+          // Keep login page reachable even if logout endpoint is temporarily unavailable.
+        }
+      }
       const next = await getViewerAuthStatus();
       setStatus(next);
       setPhase("ready");
@@ -153,4 +162,3 @@ export default function ViewerPortalGate({ children }: Props) {
     </div>
   );
 }
-
