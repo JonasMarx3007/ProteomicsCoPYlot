@@ -10,12 +10,14 @@ It provides the full analysis workflow and a separate read-only viewer workflow.
 - QC, statistical analysis, comparison, phospho-specific analysis, peptide-level modules, and summary/report generation
 - Interactive and static plot outputs (Plotly + Matplotlib/Seaborn) with report integration
 - Dedicated viewer mode for preloaded data without upload/annotation editing
+- Password-gated viewer portal mode (`/viewer`, `/viewer-ai`) with project selection by password
 
 ## Modes
 
 - Analysis tool: full workflow with upload, annotation, analysis, and report generation
 - Viewer: read-only mode for provided datasets via `viewer_config.json`
 - Local viewer override: place a `viewer_config.local.json` in project root for local-only viewer settings (ignored by git and preferred automatically).
+- Viewer portal (optional): password login that maps each user session to a project folder in `viewer_data/<ProjectName>/`.
 
 ## Pipelines
 
@@ -45,22 +47,51 @@ Windows:
 
 - Analysis: `run_app.bat`
 - Viewer: `run_viewer.bat`
+- Viewer (specific project): `run_viewer.bat --project GRK_project` or `run_viewer.bat --GRK_project`
 - Analysis (AI): `run_app_ai.bat [--model-name]`
-- Viewer (AI): `run_viewer_ai.bat [--model-name]`
+- Viewer (AI): `run_viewer_ai.bat [--model-name] [--project GRK_project]`
 
 macOS:
 
 - Analysis: `./run_app_macos.sh`
 - Viewer: `./run_viewer_macos.sh`
+- Viewer (specific project): `./run_viewer_macos.sh --project GRK_project` or `./run_viewer_macos.sh --GRK_project`
 - Analysis (AI): `./run_app_ai_macos.sh [--model-name]`
-- Viewer (AI): `./run_viewer_ai_macos.sh [--model-name]`
+- Viewer (AI): `./run_viewer_ai_macos.sh [--model-name] [--project GRK_project]`
 
 Linux:
 
 - Analysis: `./run_app_linux.sh`
 - Viewer: `./run_viewer_linux.sh`
+- Viewer (specific project): `./run_viewer_linux.sh --project GRK_project` or `./run_viewer_linux.sh --GRK_project`
 - Analysis (AI): `./run_app_ai_linux.sh [--model-name]`
-- Viewer (AI): `./run_viewer_ai_linux.sh [--model-name]`
+- Viewer (AI): `./run_viewer_ai_linux.sh [--model-name] [--project GRK_project]`
+
+## Viewer Portal (Password -> Project)
+
+For hosted viewer portals (for example behind nginx on `/viewer` and `/viewer-ai`), enable:
+
+- `COPYLOT_VIEWER_MODE=1`
+- `COPYLOT_VIEWER_PORTAL_ENABLED=1`
+- `COPYLOT_VIEWER_ACCESS_FILE=/app/viewer_access.local.json`
+
+`viewer_access.local.json` format:
+
+```json
+{
+  "credentials": [
+    { "password": "strong-pass-1", "project": "GRK_project", "label": "GRK Project" },
+    { "password": "strong-pass-2", "project": "TKI_project", "label": "TKI Project" }
+  ]
+}
+```
+
+Project folders:
+
+- `viewer_data/GRK_project/viewer_config.json`
+- `viewer_data/TKI_project/viewer_config.json`
+
+Each browser session is isolated (`COPYLOT_SESSION_ISOLATION=1`), and viewer project data is loaded into that specific session after successful login.
 
 ## AI Prerequisite
 
@@ -85,6 +116,7 @@ PowerShell (inside project root):
 
 - Tool: `.\build_exe_windows.ps1 -Target Tool`
 - Viewer: `.\build_exe_windows.ps1 -Target Viewer`
+- Viewer (single project bundle): `.\build_exe_windows.ps1 -Target Viewer -ViewerProject GRK_project`
 
 CMD (inside project root):
 
@@ -158,10 +190,41 @@ set COPYLOT_AI_MODE=1
 - `frontend/`: React + TypeScript UI
 - `backend/`: FastAPI API + services
 - `viewer_data/`: data folder for viewer inputs
+- `viewer_data/<ProjectName>/`: project-specific viewer folders (each with its own `viewer_config.json`)
+- `viewer_data/projects/<ProjectName>/`: optional grouped location for project-specific viewer folders
 - `viewer_config.json`: viewer dataset/config mapping
+- `viewer_access.example.json`: template for password-to-project mapping in viewer portal mode
 - `launch.py`: shared runtime launcher
 - `launch_tool.py`: analysis launcher entrypoint
 - `launch_viewer.py`: viewer launcher entrypoint
+
+## Docker Compose (Viewer Portals)
+
+Use the dedicated compose file for hosted viewer portals:
+
+```bash
+docker compose -f docker-compose.viewer.yml up -d --build
+```
+
+Containers:
+
+- `proteomics-viewer` on port `18081` (non-AI viewer)
+- `proteomics-viewer-ai` on port `18082` (AI-enabled viewer)
+
+Both expect a local `viewer_access.local.json` file and shared `viewer_data/` folder.
+
+## Nginx Routing Example
+
+An example nginx config is included at:
+
+- `deploy/nginx/proteomics-data.de.conf.example`
+
+It routes:
+
+- `/` -> analysis app
+- `/ai` -> analysis AI app
+- `/viewer` -> viewer portal (password-based project selection)
+- `/viewer-ai` -> viewer AI portal
 
 ## Deploy on Render (Docker)
 

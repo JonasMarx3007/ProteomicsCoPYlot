@@ -22,6 +22,12 @@ from app.services.condition_palette_store import reset_condition_palettes
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.peptide_metadata_store import clear_peptide_metadata
+from app.services.viewer_portal import (
+    ensure_viewer_session_bootstrapped,
+    viewer_portal_enabled,
+    viewer_session_authenticated,
+)
+from app.services.viewer_bootstrap import bootstrap_current_viewer_session, viewer_mode_enabled
 
 router = APIRouter(prefix="/api/restore", tags=["restore"])
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -111,5 +117,17 @@ async def browser_session_reset() -> dict[str, bool]:
         reset_all_datasets()
         reset_condition_palettes()
         clear_peptide_metadata()
+        if viewer_portal_enabled() and viewer_session_authenticated():
+            try:
+                ensure_viewer_session_bootstrapped(force_reload=True)
+            except Exception:
+                # Keep endpoint resilient; frontend handles follow-up auth/status checks.
+                pass
+        elif viewer_mode_enabled():
+            try:
+                bootstrap_current_viewer_session(force_reload=True)
+            except Exception:
+                # Keep endpoint resilient; frontend handles follow-up retries.
+                pass
     return {"ok": True, "enabled": enabled}
 

@@ -75,6 +75,7 @@ import {
   supportsNativeOpenStatePicker,
   type SaveStateFileHandle,
 } from "./lib/saveStateFile";
+import { withBasePath } from "./lib/basePath";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -170,6 +171,8 @@ type SaveStateStatus = {
   tone: "success" | "error";
   message: string;
 };
+
+const manualPath = (filename: string) => withBasePath(`/manuals/${filename}`);
 
 export default function App() {
   const {
@@ -419,47 +422,47 @@ export default function App() {
   const topManual = useMemo(() => {
     if (activeSection === "data") {
       if (activeDataTab === "verification") {
-        return { title: "Data Information Manual", path: "/manuals/DataInfoManual.pdf" };
+        return { title: "Data Information Manual", path: manualPath("DataInfoManual.pdf") };
       }
       return null;
     }
     if (activeSection === "qc") {
-      if (activeQcTab === "coverage") return { title: "Coverage Plot Manual", path: "/manuals/CoveragePlotManual.pdf" };
-      if (activeQcTab === "histogram") return { title: "Histogram Intensity Manual", path: "/manuals/HistogramIntensityManual.pdf" };
-      if (activeQcTab === "boxplot") return { title: "Boxplot Intensity Manual", path: "/manuals/BoxplotIntensityManual.pdf" };
-      if (activeQcTab === "cv") return { title: "Coefficient of Variation Plot Manual", path: "/manuals/CoefficientofVariationPlotManual.pdf" };
-      if (activeQcTab === "pca") return { title: "Principal Component Analysis Plot Manual", path: "/manuals/PrincipalComponentAnalysisPlotManual.pdf" };
-      if (activeQcTab === "abundance") return { title: "Abundance Plot Manual", path: "/manuals/AbundancePlotManual.pdf" };
-      if (activeQcTab === "correlation") return { title: "Correlation Plot Manual", path: "/manuals/CorrelationPlotManual.pdf" };
+      if (activeQcTab === "coverage") return { title: "Coverage Plot Manual", path: manualPath("CoveragePlotManual.pdf") };
+      if (activeQcTab === "histogram") return { title: "Histogram Intensity Manual", path: manualPath("HistogramIntensityManual.pdf") };
+      if (activeQcTab === "boxplot") return { title: "Boxplot Intensity Manual", path: manualPath("BoxplotIntensityManual.pdf") };
+      if (activeQcTab === "cv") return { title: "Coefficient of Variation Plot Manual", path: manualPath("CoefficientofVariationPlotManual.pdf") };
+      if (activeQcTab === "pca") return { title: "Principal Component Analysis Plot Manual", path: manualPath("PrincipalComponentAnalysisPlotManual.pdf") };
+      if (activeQcTab === "abundance") return { title: "Abundance Plot Manual", path: manualPath("AbundancePlotManual.pdf") };
+      if (activeQcTab === "correlation") return { title: "Correlation Plot Manual", path: manualPath("CorrelationPlotManual.pdf") };
       return null;
     }
     if (activeSection === "completeness") {
-      if (activeCompletenessTab === "missingPlot") return { title: "Missing Value Plot Manual", path: "/manuals/MissingValuePlotManual.pdf" };
-      if (activeCompletenessTab === "heatmap") return { title: "Missing Value Heatmap Manual", path: "/manuals/MissingValueHeatmapManual.pdf" };
-      if (activeCompletenessTab === "tables") return { title: "Missing Value Tables Manual", path: "/manuals/MissingValueTablesManual.pdf" };
+      if (activeCompletenessTab === "missingPlot") return { title: "Missing Value Plot Manual", path: manualPath("MissingValuePlotManual.pdf") };
+      if (activeCompletenessTab === "heatmap") return { title: "Missing Value Heatmap Manual", path: manualPath("MissingValueHeatmapManual.pdf") };
+      if (activeCompletenessTab === "tables") return { title: "Missing Value Tables Manual", path: manualPath("MissingValueTablesManual.pdf") };
       return null;
     }
     if (activeSection === "stats") {
       if (activeStatsTab === "volcano") {
-        return { title: "Volcano Plot Manual", path: "/manuals/VolcanoPlotManual.pdf" };
+        return { title: "Volcano Plot Manual", path: manualPath("VolcanoPlotManual.pdf") };
       }
       return null;
     }
     if (activeSection === "singleProtein") {
-      if (activeSingleProteinTab === "boxplot") return { title: "Protein Boxplot Manual", path: "/manuals/ProteinBoxplotManual.pdf" };
-      if (activeSingleProteinTab === "lineplot") return { title: "Protein Lineplot Manual", path: "/manuals/ProteinLineplotManual.pdf" };
+      if (activeSingleProteinTab === "boxplot") return { title: "Protein Boxplot Manual", path: manualPath("ProteinBoxplotManual.pdf") };
+      if (activeSingleProteinTab === "lineplot") return { title: "Protein Lineplot Manual", path: manualPath("ProteinLineplotManual.pdf") };
       return null;
     }
     if (activeSection === "phospho") {
-      if (activePhosphoTab === "phosphositePlot") return { title: "Phosphosite Plot Manual", path: "/manuals/PhossitePlotManual.pdf" };
-      if (activePhosphoTab === "coverage") return { title: "Phosphosite Coverage Plot Manual", path: "/manuals/PhossiteCoveragePlotManual.pdf" };
-      if (activePhosphoTab === "distribution") return { title: "Phosphosite Distribution Manual", path: "/manuals/PhossiteDistributionPlotManual.pdf" };
-      if (activePhosphoTab === "phosprotRegulation") return { title: "Phosphoprotein Regulation Manual", path: "/manuals/PhosprotRegulationPlotManual.pdf" };
+      if (activePhosphoTab === "phosphositePlot") return { title: "Phosphosite Plot Manual", path: manualPath("PhossitePlotManual.pdf") };
+      if (activePhosphoTab === "coverage") return { title: "Phosphosite Coverage Plot Manual", path: manualPath("PhossiteCoveragePlotManual.pdf") };
+      if (activePhosphoTab === "distribution") return { title: "Phosphosite Distribution Manual", path: manualPath("PhossiteDistributionPlotManual.pdf") };
+      if (activePhosphoTab === "phosprotRegulation") return { title: "Phosphoprotein Regulation Manual", path: manualPath("PhosprotRegulationPlotManual.pdf") };
       return null;
     }
     if (activeSection === "comparison") {
-      if (activeComparisonTab === "pearson") return { title: "Pearson Correlation Plot Manual", path: "/manuals/PearsonCorrelationPlotManual.pdf" };
-      if (activeComparisonTab === "venn") return { title: "Venn Diagram Manual", path: "/manuals/VennDiagramManual.pdf" };
+      if (activeComparisonTab === "pearson") return { title: "Pearson Correlation Plot Manual", path: manualPath("PearsonCorrelationPlotManual.pdf") };
+      if (activeComparisonTab === "venn") return { title: "Venn Diagram Manual", path: manualPath("VennDiagramManual.pdf") };
       return null;
     }
     return null;

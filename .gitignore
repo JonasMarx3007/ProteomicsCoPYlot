@@ -8,6 +8,7 @@ __pycache__/
 .env.*
 dev_ai.local.env
 viewer_config.local.json
+viewer_access.local.json
 
 node_modules/
 dist/

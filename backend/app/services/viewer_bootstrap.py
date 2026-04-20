@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any, Literal
 
 import pandas as pd
@@ -24,12 +26,16 @@ from app.services.metadata_upload_store import (
     save_uploaded_metadata,
     set_active_profile as set_active_metadata_profile,
 )
+from app.services.session_context import get_session_id
 
 DatasetKind = Literal["protein", "phospho", "phosprot"]
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SESSION_BOOTSTRAP_LOCK = RLock()
+_SESSION_BOOTSTRAP_CONFIG: dict[str, str] = {}
 
 
 @dataclass
@@ -49,20 +55,25 @@ class ViewerImputationConfig:
 
 
 def bootstrap_viewer_mode_if_enabled() -> None:
-    if not _viewer_mode_enabled():
+    if not viewer_mode_enabled():
         return
 
-    config_path = _resolve_config_path()
-    if not config_path.exists():
-        LOGGER.warning("Viewer mode enabled but config file was not found: %s", config_path)
+    # Viewer portal mode performs project bootstrap per authenticated session.
+    if _viewer_portal_enabled():
+        LOGGER.info("Viewer mode started with portal auth enabled; waiting for per-session login bootstrap.")
         return
 
     try:
-        result = load_viewer_state(config_path)
+        result = bootstrap_current_viewer_session(force_reload=True)
     except Exception:
-        LOGGER.exception("Failed to initialize viewer mode from %s", config_path)
+        LOGGER.exception("Failed to initialize viewer mode during startup.")
         return
 
+    if result is None:
+        LOGGER.info("Viewer mode startup skipped (no session bootstrap required).")
+        return
+
+    config_path = _resolve_config_path()
     LOGGER.info(
         "Viewer mode initialized from %s (datasets: %s, annotations: %s)",
         config_path,
@@ -548,9 +559,24 @@ def _viewer_mode_enabled() -> bool:
     return raw in TRUTHY_VALUES
 
 
+def viewer_mode_enabled() -> bool:
+    return _viewer_mode_enabled()
+
+
+def _viewer_portal_enabled() -> bool:
+    if not viewer_mode_enabled():
+        return False
+    return str(os.getenv("COPYLOT_VIEWER_PORTAL_ENABLED", "")).strip().lower() in TRUTHY_VALUES
+
+
 def _resolve_config_path() -> Path:
     raw_path = os.getenv("COPYLOT_VIEWER_CONFIG", "").strip()
     if not raw_path:
+        project_name = _viewer_project_name_from_env()
+        if project_name:
+            candidate = _default_project_viewer_config_path(project_name)
+            if candidate is not None:
+                return candidate
         return _default_viewer_config_path()
     path = Path(raw_path)
     if path.is_absolute():
@@ -558,11 +584,84 @@ def _resolve_config_path() -> Path:
     return PROJECT_ROOT / path
 
 
+def bootstrap_current_viewer_session(*, force_reload: bool = False) -> ViewerBootstrapResult | None:
+    if not viewer_mode_enabled():
+        return None
+
+    config_path = _resolve_config_path()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Viewer config file was not found: {config_path}")
+
+    session_id = get_session_id()
+    config_key = str(config_path.resolve())
+    if not force_reload:
+        with _SESSION_BOOTSTRAP_LOCK:
+            if _SESSION_BOOTSTRAP_CONFIG.get(session_id) == config_key:
+                return None
+
+    result = load_viewer_state(config_path)
+    with _SESSION_BOOTSTRAP_LOCK:
+        _SESSION_BOOTSTRAP_CONFIG[session_id] = config_key
+    return result
+
+
 def _default_viewer_config_path() -> Path:
     local_override = PROJECT_ROOT / "viewer_config.local.json"
     if local_override.is_file():
         return local_override
     return PROJECT_ROOT / "viewer_config.json"
+
+
+def _viewer_project_name_from_env() -> str:
+    raw = str(os.getenv("COPYLOT_VIEWER_PROJECT", "")).strip()
+    if not raw:
+        return ""
+    if _PROJECT_NAME_RE.fullmatch(raw):
+        return raw
+    return ""
+
+
+def _project_viewer_config_candidates(project_name: str) -> list[Path]:
+    return [
+        PROJECT_ROOT / "viewer_data" / project_name / "viewer_config.local.json",
+        PROJECT_ROOT / "viewer_data" / project_name / "viewer_config.json",
+        PROJECT_ROOT / "viewer_data" / "projects" / project_name / "viewer_config.local.json",
+        PROJECT_ROOT / "viewer_data" / "projects" / project_name / "viewer_config.json",
+    ]
+
+
+def resolve_viewer_project_config(project_name: str) -> Path | None:
+    name = str(project_name or "").strip()
+    if not _PROJECT_NAME_RE.fullmatch(name):
+        return None
+    for candidate in _project_viewer_config_candidates(name):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def list_viewer_projects() -> list[str]:
+    roots = [
+        PROJECT_ROOT / "viewer_data",
+        PROJECT_ROOT / "viewer_data" / "projects",
+    ]
+    out: set[str] = set()
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            project = str(child.name).strip()
+            if not _PROJECT_NAME_RE.fullmatch(project):
+                continue
+            if resolve_viewer_project_config(project) is not None:
+                out.add(project)
+    return sorted(out)
+
+
+def _default_project_viewer_config_path(project_name: str) -> Path | None:
+    return resolve_viewer_project_config(project_name)
 
 
 def _resolve_data_path(raw_path: str, base_dir: Path) -> Path:

@@ -7,6 +7,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { withBasePath } from "../../lib/basePath";
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
 export default function DistributionPage() {
@@ -50,8 +51,8 @@ export default function DistributionPage() {
   const qqPlotUrl = buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`);
   const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
   const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
-  const qqReferenceImageUrl = "/assets/qqnorm.jpg";
-  const qqReferenceTextUrl = "/assets/qqnorm_txt.jpg";
+  const qqReferenceImageUrl = withBasePath("/assets/qqnorm.jpg");
+  const qqReferenceTextUrl = withBasePath("/assets/qqnorm_txt.jpg");
 
   return (
     <div className="space-y-6">

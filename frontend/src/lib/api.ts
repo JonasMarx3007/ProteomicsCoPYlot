@@ -49,6 +49,8 @@ import type {
   SummaryReportRequest,
   SummaryReportResponse,
   ModuleContextResponse,
+  ViewerAuthLoginResponse,
+  ViewerAuthStatusResponse,
   OllamaGpuStatusResponse,
   OllamaModelManageResponse,
   OllamaModelsResponse,
@@ -77,6 +79,60 @@ async function parseJson(response: Response) {
     return JSON.parse(text);
   } catch {
     throw new Error("Backend returned invalid JSON");
+  }
+}
+
+export async function getViewerAuthStatus(): Promise<ViewerAuthStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/viewer/auth/status`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load viewer auth status"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    enabled: Boolean(raw.enabled),
+    authenticated: Boolean(raw.authenticated),
+    project: raw.project == null ? null : String(raw.project),
+    projectLabel: raw.projectLabel == null ? null : String(raw.projectLabel),
+  };
+}
+
+export async function loginViewer(password: string): Promise<ViewerAuthLoginResponse> {
+  const response = await fetch(`${API_BASE}/api/viewer/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ password }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Viewer login failed"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    ok: Boolean(raw.ok),
+    project: String(raw.project ?? ""),
+    projectLabel: String(raw.projectLabel ?? raw.project ?? ""),
+  };
+}
+
+export async function logoutViewer(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/viewer/auth/logout`, {
+    method: "POST",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Viewer logout failed"
+    );
   }
 }
 
