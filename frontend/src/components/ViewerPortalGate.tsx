@@ -11,6 +11,10 @@ type Props = {
 
 type GatePhase = "checking" | "ready" | "error";
 let viewerPortalResetOnLoadAttempted = false;
+const VIEWER_PORTAL_AUTH_ENABLED = (() => {
+  const raw = String(import.meta.env.VITE_VIEWER_PORTAL_AUTH ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
 
 function modeLabel() {
   return IS_AI_MODE ? "Viewer AI" : "Viewer";
@@ -25,7 +29,7 @@ export default function ViewerPortalGate({ children }: Props) {
   const [statusError, setStatusError] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
-    if (!IS_VIEWER_MODE) {
+    if (!IS_VIEWER_MODE || !VIEWER_PORTAL_AUTH_ENABLED) {
       setPhase("ready");
       setStatus({
         enabled: false,

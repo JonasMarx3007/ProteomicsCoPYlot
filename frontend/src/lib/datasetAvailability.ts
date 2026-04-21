@@ -12,6 +12,18 @@ import { subscribeDatasetStateChanged } from "./datasetEvents";
 // Ensure browser-session reset happens once per page load, even if multiple
 // pipeline pages mount/unmount this hook.
 let browserSessionResetAttempted = false;
+const VIEWER_BOOTSTRAP_MAX_RETRIES = 240; // ~120s at 500ms intervals.
+const VIEWER_PORTAL_AUTH_ENABLED = (() => {
+  const raw = String(import.meta.env.VITE_VIEWER_PORTAL_AUTH ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
+const BROWSER_SESSION_RESET_ENABLED = (() => {
+  const explicit = String(import.meta.env.VITE_RESET_ON_BROWSER_LOAD ?? "").trim().toLowerCase();
+  if (explicit) {
+    return explicit === "1" || explicit === "true" || explicit === "yes" || explicit === "on";
+  }
+  return VIEWER_PORTAL_AUTH_ENABLED;
+})();
 
 export type AnnotationKindOption = {
   value: AnnotationKind;
@@ -70,7 +82,7 @@ export function useCurrentDatasetsSnapshot() {
     let cancelled = false;
 
     async function initialize() {
-      if (!browserSessionResetAttempted) {
+      if (BROWSER_SESSION_RESET_ENABLED && !browserSessionResetAttempted) {
         browserSessionResetAttempted = true;
         try {
           await resetBrowserSessionState();
@@ -116,7 +128,7 @@ export function useCurrentDatasetsSnapshot() {
     }
 
     if (hasAnyDataset) return;
-    if (viewerRetryCountRef.current >= 20) return;
+    if (viewerRetryCountRef.current >= VIEWER_BOOTSTRAP_MAX_RETRIES) return;
 
     const timer = window.setTimeout(() => {
       viewerRetryCountRef.current += 1;

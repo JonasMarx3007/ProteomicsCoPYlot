@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     container_name: proteomics-copylot
     restart: unless-stopped
     ports:
