@@ -20,6 +20,14 @@ DEV_MODE=0
 DEV_OLLAMA_ENDPOINT=""
 VIEWER_PROJECT=""
 
+viewer_project_exists() {
+  local project="$1"
+  [[ -f "$ROOT_DIR/viewer_data/$project/viewer_config.local.json" ]] || \
+  [[ -f "$ROOT_DIR/viewer_data/$project/viewer_config.json" ]] || \
+  [[ -f "$ROOT_DIR/viewer_data/projects/$project/viewer_config.local.json" ]] || \
+  [[ -f "$ROOT_DIR/viewer_data/projects/$project/viewer_config.json" ]]
+}
+
 while [[ $# -gt 0 ]]; do
   arg="$1"
   if [[ "$arg" == "--dev" ]]; then
@@ -41,6 +49,29 @@ while [[ $# -gt 0 ]]; do
     VIEWER_PROJECT="${arg#--project=}"
     shift
     continue
+  fi
+  if [[ "$arg" == "--model" ]]; then
+    shift
+    CHAT_MODEL="${1:-}"
+    if [[ -z "$CHAT_MODEL" ]]; then
+      echo "Error: --model requires a model name."
+      exit 1
+    fi
+    shift
+    continue
+  fi
+  if [[ "$arg" == --model=* ]]; then
+    CHAT_MODEL="${arg#--model=}"
+    shift
+    continue
+  fi
+  if [[ "$arg" == --* ]]; then
+    candidate="${arg#--}"
+    if [[ -z "$VIEWER_PROJECT" ]] && viewer_project_exists "$candidate"; then
+      VIEWER_PROJECT="$candidate"
+      shift
+      continue
+    fi
   fi
   if [[ -z "$CHAT_MODEL" ]]; then
     if [[ "$arg" == --* ]]; then

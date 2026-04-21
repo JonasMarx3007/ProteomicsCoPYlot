@@ -18,28 +18,72 @@ if exist "%ROOT%viewer_config.local.json" (
 
 :parse_args
 if "%~1"=="" goto :args_done
-set "ARG=%~1"
-if /I "!ARG!"=="--dev" (
+if /I "%~1"=="--dev" (
   set "DEV_MODE=1"
-) else if /I "!ARG!"=="--dev0" (
-  set "DEV_MODE=2"
-) else if /I "!ARG!"=="--dev2" (
-  set "DEV_MODE=3"
-) else if /I "!ARG!"=="--dev20" (
-  set "DEV_MODE=4"
-) else if /I "!ARG!"=="--project" (
   shift
-  if "%~1"=="" (
+  goto :parse_args
+)
+if /I "%~1"=="--dev0" (
+  set "DEV_MODE=2"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="--dev2" (
+  set "DEV_MODE=3"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="--dev20" (
+  set "DEV_MODE=4"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="--project" (
+  if "%~2"=="" (
     echo Error: --project requires a project name.
     exit /b 1
   )
-  set "VIEWER_PROJECT=%~1"
-) else if /I "!ARG:~0,10!"=="--project=" (
-  set "VIEWER_PROJECT=!ARG:~10!"
-) else (
-  if "!ARG:~0,2!"=="--" set "ARG=!ARG:~2!"
-  if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
+  set "VIEWER_PROJECT=%~2"
+  shift
+  shift
+  goto :parse_args
 )
+set "ARG=%~1"
+if /I "!ARG:~0,10!"=="--project=" (
+  set "VIEWER_PROJECT=!ARG:~10!"
+  shift
+  goto :parse_args
+)
+if /I "%~1"=="--model" (
+  if "%~2"=="" (
+    echo Error: --model requires a model name.
+    exit /b 1
+  )
+  set "CHAT_MODEL=%~2"
+  shift
+  shift
+  goto :parse_args
+)
+set "ARG=%~1"
+if /I "!ARG:~0,8!"=="--model=" (
+  set "CHAT_MODEL=!ARG:~8!"
+  shift
+  goto :parse_args
+)
+
+set "ARG=%~1"
+if "!ARG:~0,2!"=="--" (
+  set "CANDIDATE=!ARG:~2!"
+  call :viewer_project_exists "!CANDIDATE!"
+  if "!PROJECT_FOUND!"=="1" (
+    set "VIEWER_PROJECT=!CANDIDATE!"
+    shift
+    goto :parse_args
+  )
+  set "ARG=!CANDIDATE!"
+)
+
+if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
 shift
 goto :parse_args
 
@@ -149,3 +193,16 @@ if "%DEV_MODE%"=="1" (
 )
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"
+
+goto :eof
+
+:viewer_project_exists
+setlocal
+set "PROJECT=%~1"
+set "FOUND=0"
+if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.json" set "FOUND=1"
+endlocal & set "PROJECT_FOUND=%FOUND%"
+exit /b 0
