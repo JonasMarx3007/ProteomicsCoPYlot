@@ -23,10 +23,11 @@ from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import save_peptide_path, save_table_dataset, set_active_package
 from app.services.functions import impute_values_with_diagnostics
 from app.services.metadata_upload_store import (
+    create_profile as create_metadata_profile,
     save_uploaded_metadata,
     set_active_profile as set_active_metadata_profile,
 )
-from app.services.session_context import get_session_id
+from app.services.session_context import get_session_id, session_isolation_enabled
 
 DatasetKind = Literal["protein", "phospho", "phosprot"]
 
@@ -56,6 +57,12 @@ class ViewerImputationConfig:
 
 def bootstrap_viewer_mode_if_enabled() -> None:
     if not viewer_mode_enabled():
+        return
+
+    # With session isolation enabled, defer bootstrap to request-time middleware.
+    # This keeps local/dev startup immediate while preserving per-session semantics.
+    if session_isolation_enabled():
+        LOGGER.info("Viewer mode startup bootstrap skipped (session isolation enabled).")
         return
 
     # Viewer portal mode performs project bootstrap per authenticated session.
@@ -124,7 +131,13 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
             if absolute_path is None:
                 continue
 
-            frame = _read_table_from_path(absolute_path)
+            try:
+                frame = _read_table_from_path(absolute_path)
+            except Exception as exc:
+                result.warnings.append(
+                    f"{package_name}:{kind} file read failed ({absolute_path}): {exc}"
+                )
+                continue
             save_table_dataset(
                 filename=absolute_path.name,
                 kind=kind,
@@ -148,9 +161,14 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
             label=f"{package_name}:peptide path",
         )
         if peptide_path is not None:
-            resolved = peptide_path.resolve()
-            save_peptide_path(str(resolved))
-            result.loaded_datasets.append(f"{package_name}:peptide")
+            try:
+                resolved = peptide_path.resolve()
+                save_peptide_path(str(resolved))
+                result.loaded_datasets.append(f"{package_name}:peptide")
+            except Exception as exc:
+                result.warnings.append(
+                    f"{package_name}:peptide path load failed ({peptide_path}): {exc}"
+                )
 
         imputation_configs = {
             kind: _imputation_config(package_config, kind)
@@ -163,19 +181,36 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
             package_name=package_name,
         )
         first_loaded_profile: str | None = None
+        first_declared_profile: str | None = None
 
         for profile_name, profile_config in profile_configs.items():
+            if first_declared_profile is None:
+                first_declared_profile = profile_name
+            try:
+                create_metadata_profile(profile_name, package_name=package_name)
+            except ValueError:
+                # Profile already exists in this package; continue.
+                pass
+            except Exception as exc:
+                result.warnings.append(
+                    f"{package_name}:{profile_name} metadata profile create failed: {exc}"
+                )
+
             protein_metadata = _load_metadata(
                 profile_config,
                 "meta_file",
                 base_dir,
                 result.warnings,
+                package_name=package_name,
+                profile_name=profile_name,
             )
             phospho_metadata = _load_metadata(
                 profile_config,
                 "meta_phospho_file",
                 base_dir,
                 result.warnings,
+                package_name=package_name,
+                profile_name=profile_name,
             )
 
             if protein_metadata is None and phospho_metadata is None:
@@ -247,8 +282,9 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                     result=result,
                 )
 
-        if first_loaded_profile is not None:
-            set_active_metadata_profile(first_loaded_profile, package_name=package_name)
+        preferred_profile = first_loaded_profile or first_declared_profile
+        if preferred_profile is not None:
+            set_active_metadata_profile(preferred_profile, package_name=package_name)
 
     set_active_package(first_package_name)
 
@@ -676,6 +712,9 @@ def _load_metadata(
     key: str,
     base_dir: Path,
     warnings: list[str],
+    *,
+    package_name: str,
+    profile_name: str,
 ) -> pd.DataFrame | None:
     path = _resolve_config_file_path(
         config=config,
@@ -686,7 +725,13 @@ def _load_metadata(
     )
     if path is None:
         return None
-    return _read_table_from_path(path)
+    try:
+        return _read_table_from_path(path)
+    except Exception as exc:
+        warnings.append(
+            f"{package_name}:{profile_name}:{key} metadata read failed ({path}): {exc}"
+        )
+        return None
 
 
 def _read_table_from_path(path: Path) -> pd.DataFrame:

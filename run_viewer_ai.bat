@@ -4,6 +4,8 @@ set "ROOT=%~dp0"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
+set "BACKEND_WAIT_SECONDS=%COPYLOT_WAIT_FOR_BACKEND_SECONDS%"
+if "%BACKEND_WAIT_SECONDS%"=="" set "BACKEND_WAIT_SECONDS=20"
 set "CHAT_MODEL="
 set "DEV_MODE=0"
 set "DEV_OLLAMA_ENDPOINT="
@@ -106,6 +108,14 @@ if defined VIEWER_PROJECT (
   )
 )
 
+"%ROOT%backend\.venv\Scripts\python.exe" --version >nul 2>&1
+if errorlevel 1 (
+  echo Error: backend Python runtime is not executable:
+  echo   %ROOT%backend\.venv\Scripts\python.exe
+  echo Recreate backend\.venv or fix local Python permissions, then run again.
+  exit /b 1
+)
+
 if "%DEV_MODE%"=="1" (
   set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
   set "DEV_MODE_FLAG=--dev"
@@ -160,36 +170,43 @@ if defined FRONTEND_PID (
 )
 
 if defined CHAT_MODEL (
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  echo Starting viewer AI backend on port %BACKEND_PORT%...
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=1 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 ) else (
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  echo Starting viewer AI backend on port %BACKEND_PORT%...
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=1 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
-set "BACKEND_READY=0"
-for /l %%i in (1,1,20) do (
-  powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
-  if not errorlevel 1 (
-    set "BACKEND_READY=1"
-    goto :backend_ready
+set "BACKEND_READY=1"
+if %BACKEND_WAIT_SECONDS% GTR 0 (
+  set "BACKEND_READY=0"
+  for /l %%i in (1,1,%BACKEND_WAIT_SECONDS%) do (
+    powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
+    if not errorlevel 1 (
+      set "BACKEND_READY=1"
+      goto :backend_ready
+    )
+    timeout /t 1 /nobreak >nul
   )
-  timeout /t 1 /nobreak >nul
 )
 
 :backend_ready
 if "%BACKEND_READY%"=="0" (
-  echo Warning: viewer backend on port %BACKEND_PORT% is not ready yet.
+  echo Error: viewer backend on port %BACKEND_PORT% did not become ready within %BACKEND_WAIT_SECONDS%s.
+  echo Check the "Backend (Viewer AI)" terminal window for the real startup error.
+  exit /b 1
 )
 
 if "%DEV_MODE%"=="1" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 ) else if "%DEV_MODE%"=="3" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 ) else if "%DEV_MODE%"=="2" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 ) else if "%DEV_MODE%"=="4" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 ) else (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 )
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"

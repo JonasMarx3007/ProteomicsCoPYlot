@@ -4,6 +4,8 @@ set "ROOT=%~dp0"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
+set "BACKEND_WAIT_SECONDS=%COPYLOT_WAIT_FOR_BACKEND_SECONDS%"
+if "%BACKEND_WAIT_SECONDS%"=="" set "BACKEND_WAIT_SECONDS=20"
 set "VIEWER_PROJECT="
 if exist "%ROOT%viewer_config.local.json" (
   set "VIEWER_CONFIG=%ROOT%viewer_config.local.json"
@@ -11,20 +13,42 @@ if exist "%ROOT%viewer_config.local.json" (
   set "VIEWER_CONFIG=%ROOT%viewer_config.json"
 )
 
+for %%A in (%*) do (
+  if /I "%%~A"=="--dev" goto :delegate_ai
+  if /I "%%~A"=="--dev0" goto :delegate_ai
+  if /I "%%~A"=="--dev2" goto :delegate_ai
+  if /I "%%~A"=="--dev20" goto :delegate_ai
+  if /I "%%~A"=="--model" goto :delegate_ai
+  set "ARG_SCAN=%%~A"
+  if /I "!ARG_SCAN:~0,8!"=="--model=" goto :delegate_ai
+)
+
 :parse_args
 if "%~1"=="" goto :args_done
-set "ARG=%~1"
-if /I "!ARG!"=="--project" (
-  shift
-  if "%~1"=="" (
+if /I "%~1"=="--project" (
+  if "%~2"=="" (
     echo Error: --project requires a project name.
     exit /b 1
   )
-  set "VIEWER_PROJECT=%~1"
-) else if /I "!ARG:~0,10!"=="--project=" (
+  set "VIEWER_PROJECT=%~2"
+  shift
+  shift
+  goto :parse_args
+)
+
+set "ARG=%~1"
+if /I "!ARG:~0,10!"=="--project=" (
   set "VIEWER_PROJECT=!ARG:~10!"
-) else if "!ARG:~0,2!"=="--" (
-  if not defined VIEWER_PROJECT set "VIEWER_PROJECT=!ARG:~2!"
+  shift
+  goto :parse_args
+)
+
+if "!ARG:~0,2!"=="--" (
+  set "CANDIDATE=!ARG:~2!"
+  call :viewer_project_exists "!CANDIDATE!"
+  if "!PROJECT_FOUND!"=="1" (
+    if not defined VIEWER_PROJECT set "VIEWER_PROJECT=!CANDIDATE!"
+  )
 ) else (
   if not defined VIEWER_PROJECT set "VIEWER_PROJECT=!ARG!"
 )
@@ -50,6 +74,14 @@ if defined VIEWER_PROJECT (
   )
 )
 
+"%ROOT%backend\.venv\Scripts\python.exe" --version >nul 2>&1
+if errorlevel 1 (
+  echo Error: backend Python runtime is not executable:
+  echo   %ROOT%backend\.venv\Scripts\python.exe
+  echo Recreate backend\.venv or fix local Python permissions, then run again.
+  exit /b 1
+)
+
 for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
 if defined BACKEND_PID (
   powershell -NoProfile -Command "Stop-Process -Id %BACKEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
@@ -62,23 +94,46 @@ if defined FRONTEND_PID (
   timeout /t 1 /nobreak >nul
 )
 
-start "Backend (Viewer)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+echo Starting viewer backend on port %BACKEND_PORT%...
+start "Backend (Viewer)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=1 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
-set "BACKEND_READY=0"
-for /l %%i in (1,1,20) do (
-  powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
-  if not errorlevel 1 (
-    set "BACKEND_READY=1"
-    goto :backend_ready
+set "BACKEND_READY=1"
+if %BACKEND_WAIT_SECONDS% GTR 0 (
+  set "BACKEND_READY=0"
+  for /l %%i in (1,1,%BACKEND_WAIT_SECONDS%) do (
+    powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
+    if not errorlevel 1 (
+      set "BACKEND_READY=1"
+      goto :backend_ready
+    )
+    timeout /t 1 /nobreak >nul
   )
-  timeout /t 1 /nobreak >nul
 )
 
 :backend_ready
 if "%BACKEND_READY%"=="0" (
-  echo Warning: viewer backend on port %BACKEND_PORT% is not ready yet.
+  echo Error: viewer backend on port %BACKEND_PORT% did not become ready within %BACKEND_WAIT_SECONDS%s.
+  echo Check the "Backend (Viewer)" terminal window for the real startup error.
+  exit /b 1
 )
 
-start "Frontend (Viewer)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+start "Frontend (Viewer)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"
+
+goto :eof
+
+:viewer_project_exists
+setlocal
+set "PROJECT=%~1"
+set "FOUND=0"
+if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.json" set "FOUND=1"
+endlocal & set "PROJECT_FOUND=%FOUND%"
+exit /b 0
+
+:delegate_ai
+call "%ROOT%run_viewer_ai.bat" %*
+exit /b %errorlevel%

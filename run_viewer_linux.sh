@@ -15,6 +15,14 @@ if [ ! -x "$PYTHON_BIN" ]; then
   exit 1
 fi
 
+for arg in "$@"; do
+  case "$arg" in
+    --dev|--dev0|--dev2|--dev20|--model|--model=*)
+      exec "$ROOT_DIR/run_viewer_ai_linux.sh" "$@"
+      ;;
+  esac
+done
+
 VIEWER_PROJECT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,14 +90,14 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$BACKEND_DIR"
-  COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" \
+  COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PORTAL_ENABLED=0 COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=1 COPYLOT_SESSION_ISOLATION=0 COPYLOT_RESET_ON_BROWSER_LOAD=0 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" \
     "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ) &
 BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR"
-  VITE_APP_MODE=viewer VITE_PROXY_TARGET="http://127.0.0.1:8001" \
+  VITE_APP_MODE=viewer VITE_VIEWER_PORTAL_AUTH=0 VITE_RESET_ON_BROWSER_LOAD=0 VITE_PROXY_TARGET="http://127.0.0.1:8001" \
     npm run dev -- --port 5174
 ) &
 FRONTEND_PID=$!
