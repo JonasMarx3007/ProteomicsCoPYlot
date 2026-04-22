@@ -67,22 +67,12 @@ def _viewer_mode_enabled() -> bool:
     return str(os.getenv("COPYLOT_VIEWER_MODE", "")).strip().lower() in TRUTHY_VALUES
 
 
-def _viewer_include_empty_packages() -> bool:
-    return str(os.getenv("COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES", "")).strip().lower() in TRUTHY_VALUES
-
-
-def _viewer_portal_enabled() -> bool:
-    return str(os.getenv("COPYLOT_VIEWER_PORTAL_ENABLED", "")).strip().lower() in TRUTHY_VALUES
-
-
 def _include_empty_packages() -> bool:
     if not _viewer_mode_enabled():
         return True
-    if _viewer_include_empty_packages():
-        return True
-    # Local viewer mode (no portal) should expose all configured packages so
-    # the top dataset switcher remains visible even with partial bootstrap.
-    return not _viewer_portal_enabled()
+    # In viewer mode we always hide empty packages (for example the implicit
+    # session-default "Data" package) so only configured dataset packages are shown.
+    return False
 
 
 def _peptide_upload_dir() -> Path:

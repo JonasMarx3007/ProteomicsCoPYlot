@@ -498,6 +498,9 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
 
     if peptide_block is not None:
         html_parts.append(f"<h1>{peptide_block} Peptide Level</h1>")
+        peptide_rt = _module_settings(report_context, "peptide", "rtPlot")
+        peptide_modification = _module_settings(report_context, "peptide", "modification")
+        peptide_missed_cleavage = _module_settings(report_context, "peptide", "missedCleavage")
 
         _append_plot_section(
             html_parts=html_parts,
@@ -536,7 +539,15 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="RT",
             content_html=_safe_png(
-                renderer=lambda: peptide_rt_plot(),
+                renderer=lambda: peptide_rt_plot(
+                    method=_to_str(peptide_rt.get("method"), "Hexbin Plot"),
+                    add_line=_to_bool(peptide_rt.get("addLine"), False),
+                    bins=_to_int(peptide_rt.get("bins"), 1000, minimum=10, maximum=2000),
+                    header=_to_bool(peptide_rt.get("header"), True),
+                    width_cm=_to_float(peptide_rt.get("widthCm"), 20.0, minimum=5.0, maximum=60.0),
+                    height_cm=_to_float(peptide_rt.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
+                    dpi=_to_int(peptide_rt.get("dpi"), 100, minimum=72, maximum=1200),
+                ),
                 fallback_title="Peptide RT Plot",
                 warnings=warnings,
             ),
@@ -550,7 +561,14 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Modification",
             content_html=_safe_png(
-                renderer=lambda: peptide_modification_plot(),
+                renderer=lambda: peptide_modification_plot(
+                    include_id=_to_bool(peptide_modification.get("includeId"), False),
+                    header=_to_bool(peptide_modification.get("header"), True),
+                    legend=_to_bool(peptide_modification.get("legend"), True),
+                    width_cm=_to_float(peptide_modification.get("widthCm"), 25.0, minimum=5.0, maximum=60.0),
+                    height_cm=_to_float(peptide_modification.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
+                    dpi=_to_int(peptide_modification.get("dpi"), 100, minimum=72, maximum=1200),
+                ),
                 fallback_title="Peptide Modification Plot",
                 warnings=warnings,
             ),
@@ -564,7 +582,15 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissedCleavage",
             content_html=_safe_png(
-                renderer=lambda: peptide_missed_cleavage_plot(),
+                renderer=lambda: peptide_missed_cleavage_plot(
+                    include_id=_to_bool(peptide_missed_cleavage.get("includeId"), False),
+                    text=_to_bool(peptide_missed_cleavage.get("text"), True),
+                    text_size=_to_int(peptide_missed_cleavage.get("textSize"), 8, minimum=6, maximum=24),
+                    header=_to_bool(peptide_missed_cleavage.get("header"), True),
+                    width_cm=_to_float(peptide_missed_cleavage.get("widthCm"), 25.0, minimum=5.0, maximum=60.0),
+                    height_cm=_to_float(peptide_missed_cleavage.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
+                    dpi=_to_int(peptide_missed_cleavage.get("dpi"), 100, minimum=72, maximum=1200),
+                ),
                 fallback_title="Peptide Missed Cleavage Plot",
                 warnings=warnings,
             ),

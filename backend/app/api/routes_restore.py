@@ -34,7 +34,12 @@ TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
 def _reset_on_browser_load_enabled() -> bool:
-    return str(os.getenv("COPYLOT_RESET_ON_BROWSER_LOAD", "")).strip().lower() in TRUTHY_VALUES
+    if viewer_mode_enabled():
+        return False
+    raw = str(os.getenv("COPYLOT_RESET_ON_BROWSER_LOAD", "")).strip().lower()
+    if raw:
+        return raw in TRUTHY_VALUES
+    return True
 
 
 @router.post("/export")

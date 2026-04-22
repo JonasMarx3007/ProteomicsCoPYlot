@@ -94,7 +94,7 @@ export function syncSummaryReportStateWithDatasets(
 }
 
 export function saveQcReportSettings(
-  kind: AnnotationKind,
+  kind: AnnotationKind | "peptide",
   settings: Record<string, unknown>
 ) {
   const all = readJson<Record<string, Record<string, unknown>>>(

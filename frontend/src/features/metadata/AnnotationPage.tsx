@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   aggregatePhosprot,
   createMetadataProfile,
+  downloadCurrentAnnotationFilteredData,
+  downloadCurrentAnnotationMetadataData,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
@@ -56,6 +58,7 @@ export default function AnnotationPage() {
   const [phosprotSource, setPhosprotSource] =
     useState<PhosprotAggregationSource>("non_imputed");
   const [phosprotBusy, setPhosprotBusy] = useState(false);
+  const [downloadBusyKey, setDownloadBusyKey] = useState<string | null>(null);
   const [metadataProfileBusy, setMetadataProfileBusy] = useState(false);
   const [newMetadataProfileName, setNewMetadataProfileName] = useState("");
   const [renameMetadataProfileName, setRenameMetadataProfileName] = useState("");
@@ -292,6 +295,33 @@ export default function AnnotationPage() {
       );
     } finally {
       setPhosprotBusy(false);
+    }
+  }
+
+  async function handleDownloadFullData(
+    kindToDownload: AnnotationKind,
+    target: "filtered" | "metadata"
+  ) {
+    const busyKey = `${kindToDownload}:${target}`;
+    try {
+      setDownloadBusyKey(busyKey);
+      setError(null);
+      const { blob, filename } =
+        target === "metadata"
+          ? await downloadCurrentAnnotationMetadataData(kindToDownload)
+          : await downloadCurrentAnnotationFilteredData(kindToDownload);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download full annotation data");
+    } finally {
+      setDownloadBusyKey(null);
     }
   }
 
@@ -701,9 +731,16 @@ export default function AnnotationPage() {
             <h3 className="text-lg font-semibold text-slate-900">Metadata Preview</h3>
             <div className="mt-4">
               <PreviewTable
-                title="metadata_preview"
                 rows={result.metadataPreview}
                 emptyText="No metadata rows available."
+                downloadAction={{
+                  label:
+                    downloadBusyKey === `${kind}:metadata`
+                      ? "Downloading..."
+                      : "Download Full CSV",
+                  onClick: () => handleDownloadFullData(kind, "metadata"),
+                  disabled: downloadBusyKey !== null,
+                }}
               />
             </div>
           </section>
@@ -712,9 +749,16 @@ export default function AnnotationPage() {
             <h3 className="text-lg font-semibold text-slate-900">Filtered Data Preview</h3>
             <div className="mt-4">
               <PreviewTable
-                title="filtered_data_preview"
                 rows={result.filteredPreview}
                 emptyText="No filtered rows available."
+                downloadAction={{
+                  label:
+                    downloadBusyKey === `${kind}:filtered`
+                      ? "Downloading..."
+                      : "Download Full CSV",
+                  onClick: () => handleDownloadFullData(kind, "filtered"),
+                  disabled: downloadBusyKey !== null,
+                }}
               />
             </div>
           </section>
@@ -800,9 +844,16 @@ export default function AnnotationPage() {
                     {phosprotResult.conditionCount} conditions.
                   </div>
                   <PreviewTable
-                    title="phosprot_filtered_data_preview"
                     rows={phosprotResult.filteredPreview}
                     emptyText="No phosphoprotein filtered rows available."
+                    downloadAction={{
+                      label:
+                        downloadBusyKey === "phosprot:filtered"
+                          ? "Downloading..."
+                          : "Download Full CSV",
+                      onClick: () => handleDownloadFullData("phosprot", "filtered"),
+                      disabled: downloadBusyKey !== null,
+                    }}
                   />
                 </div>
               ) : null}
@@ -830,13 +881,17 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function PreviewTable({
-  title,
   rows,
   emptyText,
+  downloadAction,
 }: {
-  title: string;
   rows: Record<string, unknown>[];
   emptyText: string;
+  downloadAction?: {
+    label: string;
+    onClick: () => void | Promise<void>;
+    disabled?: boolean;
+  };
 }) {
   const columns = useMemo(() => {
     const seen = new Set<string>();
@@ -856,13 +911,16 @@ function PreviewTable({
 
   return (
     <div className="space-y-3">
-      <a
-        href={`data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(rows, columns))}`}
-        download={`${title}.csv`}
-        className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-      >
-        Download CSV
-      </a>
+      {downloadAction ? (
+        <button
+          type="button"
+          onClick={downloadAction.onClick}
+          disabled={Boolean(downloadAction.disabled)}
+          className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {downloadAction.label}
+        </button>
+      ) : null}
       <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
         <table className="min-w-full table-fixed border-collapse text-sm">
           <thead className="bg-slate-50">
@@ -902,13 +960,4 @@ function PreviewTable({
       </div>
     </div>
   );
-}
-
-function rowsToCsv(rows: Record<string, unknown>[], columns: string[]): string {
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const lines = [
-    columns.join(","),
-    ...rows.map((row) => columns.map((column) => escape(row[column])).join(",")),
-  ];
-  return lines.join("\n");
 }
