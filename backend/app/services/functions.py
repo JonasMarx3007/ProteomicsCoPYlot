@@ -966,6 +966,40 @@ def comparison_pearson_png(
     )
 
 
+def comparison_pearson_html(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    color: str = "#1f77b4",
+    dot_size: float = 8,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 12,
+) -> str:
+    from app.services.comparison_tools import pearson_correlation_html as _impl
+
+    return _impl(
+        kind=kind,
+        mode=mode,
+        sample1=sample1,
+        sample2=sample2,
+        condition1=condition1,
+        condition2=condition2,
+        alias1=alias1,
+        alias2=alias2,
+        color=color,
+        dot_size=dot_size,
+        header=header,
+        width_cm=width_cm,
+        height_cm=height_cm,
+    )
+
+
 def comparison_venn_png(
     kind: AnnotationKind,
     mode: str = "Single",
@@ -1036,6 +1070,7 @@ apply_cached_wrappers(
         "phospho_distribution_png",
         "phospho_sty_png",
         "comparison_pearson_png",
+        "comparison_pearson_html",
         "comparison_venn_png",
     ],
 )

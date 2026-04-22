@@ -36,6 +36,17 @@ def _get_venn():
         ) from exc
 
 
+def _get_plotly():
+    try:
+        import plotly.graph_objects as go
+
+        return go
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "plotly is required for interactive comparison plots. Install it with: pip install plotly"
+        ) from exc
+
+
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
@@ -49,6 +60,77 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 def _cm_to_inch(value_cm: float) -> float:
     return max(1.0, float(value_cm) / 2.54)
+
+
+def _cm_to_px(value_cm: float) -> int:
+    return max(320, int(round((_cm_to_inch(value_cm) * 96.0))))
+
+
+def _plotly_html(fig) -> str:
+    body = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displaylogo": False, "responsive": True},
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        "#plot-root{width:100%;height:100%;}"
+        ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
+        "</style>"
+        "</head><body>"
+        "<div id='plot-root'>"
+        f"{body}"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "function firstPlot(){return document.querySelector('.js-plotly-plot,.plotly-graph-div');}"
+        "function resolveLayoutHeight(el){"
+        "if(!el){return 0;}"
+        "var value=0;"
+        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
+        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
+        "return Math.max(0,value);"
+        "}"
+        "function resizePlot(){"
+        "var el=firstPlot();"
+        "if(!(el && window.Plotly)){return;}"
+        "var root=document.getElementById('plot-root');"
+        "var rootWidth=(root && Number(root.clientWidth))||0;"
+        "var rootHeight=(root && Number(root.clientHeight))||0;"
+        "var viewportWidth=Math.max(360,rootWidth,(window.innerWidth||0)-8);"
+        "var viewportHeight=Math.max(420,rootHeight,(window.innerHeight||0)-8);"
+        "var layoutHeight=resolveLayoutHeight(el);"
+        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
+        "window.Plotly.relayout(el,{width:viewportWidth,height:nextHeight,autosize:true}).catch(function(){});"
+        "window.Plotly.Plots.resize(el);"
+        "}"
+        "window.addEventListener('load', resizePlot);"
+        "window.addEventListener('resize', resizePlot);"
+        "if(window.ResizeObserver){"
+        "var rootEl=document.getElementById('plot-root');"
+        "if(rootEl){(new ResizeObserver(function(){resizePlot();})).observe(rootEl);}"
+        "}"
+        "setTimeout(resizePlot, 80);"
+        "setTimeout(resizePlot, 260);"
+        "setTimeout(resizePlot, 800);"
+        "setTimeout(resizePlot, 1500);"
+        "})();"
+        "</script>"
+        "</body></html>"
+    )
+
+
+def _truncate_hover_text(value: object, max_len: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "n/a"
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return text[:1]
+    return f"{text[: max_len - 1]}..."
 
 
 def _analysis_context(kind: AnnotationKind) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
@@ -163,6 +245,51 @@ def _pearson_vectors(
     raise ValueError("Mode must be 'Single' or 'Condition'.")
 
 
+def _pearson_vectors_with_features(
+    kind: AnnotationKind,
+    mode: str,
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+) -> tuple[pd.Series, pd.Series, pd.Series, str, str]:
+    frame, meta, _ = _analysis_context(kind)
+    mode_norm = str(mode).strip().lower()
+    id_col = _id_column(kind, frame)
+    features = frame[id_col].fillna("").astype(str)
+
+    if mode_norm in {"single", "sample"}:
+        if not sample1 or not sample2:
+            raise ValueError("Please select two samples.")
+        if sample1 == sample2:
+            raise ValueError("Please select two different samples.")
+        if sample1 not in frame.columns or sample2 not in frame.columns:
+            raise ValueError("Selected samples are not available in the current dataset.")
+
+        x = pd.to_numeric(frame[sample1], errors="coerce")
+        y = pd.to_numeric(frame[sample2], errors="coerce")
+        return x, y, features, sample1, sample2
+
+    if mode_norm == "condition":
+        if not condition1 or not condition2:
+            raise ValueError("Please select two conditions.")
+        if condition1 == condition2:
+            raise ValueError("Please select two different conditions.")
+
+        cols1 = meta.loc[meta["condition"] == condition1, "sample"].astype(str).tolist()
+        cols2 = meta.loc[meta["condition"] == condition2, "sample"].astype(str).tolist()
+        cols1 = [col for col in cols1 if col in frame.columns]
+        cols2 = [col for col in cols2 if col in frame.columns]
+        if not cols1 or not cols2:
+            raise ValueError("No matching sample columns for one or both selected conditions.")
+
+        x = frame[cols1].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        y = frame[cols2].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        return x, y, features, condition1, condition2
+
+    raise ValueError("Mode must be 'Single' or 'Condition'.")
+
+
 def pearson_correlation_table(
     kind: AnnotationKind,
     mode: str = "Single",
@@ -259,6 +386,127 @@ def pearson_correlation_png(
     ax.grid(True, alpha=0.2)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
+
+
+def pearson_correlation_html(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    color: str = "#1f77b4",
+    dot_size: float = 8,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 12,
+) -> str:
+    go = _get_plotly()
+    x, y, features, label1, label2 = _pearson_vectors_with_features(
+        kind=kind,
+        mode=mode,
+        sample1=sample1,
+        sample2=sample2,
+        condition1=condition1,
+        condition2=condition2,
+    )
+    points = pd.DataFrame(
+        {
+            "feature": features.astype(str),
+            "x": pd.to_numeric(x, errors="coerce"),
+            "y": pd.to_numeric(y, errors="coerce"),
+        }
+    ).dropna(subset=["x", "y"])
+    if points.empty:
+        raise ValueError("No overlapping non-missing values were found for the selected comparison.")
+
+    points["feature"] = points["feature"].replace("", "n/a")
+    points["feature_short"] = points["feature"].map(lambda value: _truncate_hover_text(value, max_len=48))
+    points["diff"] = points["y"] - points["x"]
+
+    left = alias1.strip() or label1
+    right = alias2.strip() or label2
+    left_short = _truncate_hover_text(left, max_len=16)
+    right_short = _truncate_hover_text(right, max_len=16)
+    corr = float(np.corrcoef(points["x"], points["y"])[0, 1]) if len(points) > 1 else float("nan")
+
+    custom_data = np.column_stack(
+        [
+            points["feature"].to_numpy(dtype=object),
+            points["diff"].to_numpy(dtype=float),
+            points["feature_short"].to_numpy(dtype=object),
+        ]
+    )
+    hover_template = (
+        "Feature: %{customdata[2]}<br>"
+        f"{left_short}: %{{x:.4f}}<br>"
+        f"{right_short}: %{{y:.4f}}<br>"
+        f"Diff ({right_short} - {left_short}): %{{customdata[1]:.4f}}"
+        "<extra></extra>"
+    )
+
+    marker_size = max(2.0, float(np.sqrt(max(1.0, float(dot_size)))))
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(
+            x=points["x"],
+            y=points["y"],
+            mode="markers",
+            marker=dict(
+                size=marker_size,
+                color=color,
+                opacity=0.65,
+                line=dict(width=0),
+            ),
+            customdata=custom_data,
+            hovertemplate=hover_template,
+            showlegend=False,
+            name="Points",
+        )
+    )
+
+    if len(points) > 1:
+        slope, intercept = np.polyfit(points["x"], points["y"], 1)
+        x_min = float(points["x"].min())
+        x_max = float(points["x"].max())
+        line_x = np.array([x_min, x_max], dtype=float)
+        line_y = slope * line_x + intercept
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_y,
+                mode="lines",
+                line=dict(color="#475569", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+                name="Fit",
+            )
+        )
+
+    fig.update_layout(
+        title=(f"Pearson Correlation: {left} vs {right}" if header else None),
+        xaxis_title=left,
+        yaxis_title=right,
+        template="plotly_white",
+        autosize=True,
+        height=_cm_to_px(height_cm),
+        margin=dict(l=50, r=24, t=(70 if header else 20), b=50),
+    )
+    note = f"r = {corr:.4f}<br>N = {len(points)}" if np.isfinite(corr) else f"r = n/a<br>N = {len(points)}"
+    fig.add_annotation(
+        x=0.01,
+        y=0.99,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        align="left",
+        text=note,
+        bgcolor="rgba(255,255,255,0.85)",
+    )
+    return _plotly_html(fig)
 
 
 def _feature_set_from_sample(frame: pd.DataFrame, id_col: str, sample: str) -> set[str]:
@@ -404,6 +652,7 @@ apply_cached_wrappers(
         "comparison_options",
         "pearson_correlation_table",
         "pearson_correlation_png",
+        "pearson_correlation_html",
         "venn_table",
         "venn_png",
     ],

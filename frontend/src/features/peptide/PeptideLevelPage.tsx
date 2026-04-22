@@ -4,6 +4,7 @@ import {
   getPeptideOverview,
   getPeptideSequenceCoverage,
 } from "../../lib/api";
+import { saveQcReportSettings } from "../../lib/reportState";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
   type PlotDownloadFormat,
@@ -32,6 +33,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
   const [error, setError] = useState<string | null>(null);
 
   const [rt, setRt] = useState({
+    type: "Normal",
     method: "Hexbin Plot",
     addLine: false,
     header: true,
@@ -71,6 +73,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
     if (activeTab === "rtPlot") {
       onContextModeChange(
         [
+          `type=${rt.type}`,
           `method=${rt.method}`,
           `addLine=${String(rt.addLine)}`,
           `header=${String(rt.header)}`,
@@ -120,6 +123,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
     onContextModeChange,
     activeTab,
     rt.method,
+    rt.type,
     rt.addLine,
     rt.header,
     rt.bins,
@@ -196,12 +200,35 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
     };
   }, [activeTab, coverage.chunkSize, coverage.protein, coverage.species, overview]);
 
+  useEffect(() => {
+    saveQcReportSettings("peptide", {
+      rtPlot: rt,
+      modification,
+      missedCleavage,
+    });
+  }, [rt, modification, missedCleavage]);
+
   const hasDataset = Boolean(overview);
   const hasMetadata = Boolean(overview?.metadataLoaded);
   const showMissingDatasetInfoOnly =
     !hasDataset && error?.trim() === MISSING_PEPTIDE_DATASET_MESSAGE;
+  const rtInteractiveSessionNonce = useMemo(() => Date.now(), []);
 
-  const rtPlotUrl = useMemo(() => buildPlotUrl("/api/plots/peptide/rt.png", rt), [rt]);
+  const rtInteractive = String(rt.type).trim().toLowerCase() === "interactive";
+  const rtPlotUrl = useMemo(
+    () => {
+      const rtParams = rtInteractive
+        ? { ...rt, _rtInteractiveV: rtInteractiveSessionNonce }
+        : rt;
+      return (
+      buildPlotUrl(
+        rtInteractive ? "/api/plots/peptide/rt-interactive.html" : "/api/plots/peptide/rt.png",
+          rtParams
+        )
+      );
+    },
+    [rt, rtInteractive, rtInteractiveSessionNonce]
+  );
   const modificationPlotUrl = useMemo(
     () => buildPlotUrl("/api/plots/peptide/modification.png", modification),
     [modification]
@@ -281,10 +308,17 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               controls={[
                 <SelectField
                   key="method"
-                  label="Type"
+                  label="Mode"
                   value={rt.method}
                   onChange={(value) => setRt({ ...rt, method: value })}
                   options={["Scatter Plot", "Hexbin Plot", "Density Plot"]}
+                />,
+                <SelectField
+                  key="type"
+                  label="Type"
+                  value={rt.type}
+                  onChange={(value) => setRt({ ...rt, type: value })}
+                  options={["Normal", "Interactive"]}
                 />,
                 <CommittedNumberField
                   key="bins"
@@ -317,7 +351,13 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               ]}
             />
           </SectionCard>
-          <ImagePlotCard title="Retention Time Plot" url={rtPlotUrl} downloadName="peptide_rt_plot.png" />
+          <ImagePlotCard
+            title="Retention Time Plot"
+            url={rtPlotUrl}
+            downloadName="peptide_rt_plot.png"
+            renderMode={rtInteractive ? "html" : "image"}
+            heightCm={rt.heightCm}
+          />
         </>
       ) : null}
 
@@ -637,10 +677,14 @@ function ImagePlotCard({
   title,
   url,
   downloadName,
+  renderMode = "image",
+  heightCm = 15,
 }: {
   title: string;
   url: string;
   downloadName: string;
+  renderMode?: "image" | "html";
+  heightCm?: number;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
@@ -672,39 +716,66 @@ function ImagePlotCard({
   return (
     <SectionCard title={title}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={downloadFormat}
-            onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-            className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-          >
-            {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+        {renderMode === "image" ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={downloadFormat}
+              onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
+              className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+            >
+              {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <a
+              href={downloadUrl}
+              download={downloadFilename}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+            >
+              Download Plot
+            </a>
+          </div>
+        ) : (
           <a
-            href={downloadUrl}
-            download={downloadFilename}
+            href={url}
+            target="_blank"
+            rel="noreferrer"
             className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
           >
-            Download Plot
+            Open Interactive Plot
           </a>
-        </div>
+        )}
       </div>
-      <img
-        key={url}
-        src={url}
-        alt={title}
-        className="mt-4 w-full rounded-xl border border-slate-200"
-        onLoad={() => setError(null)}
-        onError={() => {
-          handleError();
-        }}
-      />
+      {renderMode === "image" ? (
+        <img
+          key={url}
+          src={url}
+          alt={title}
+          className="mt-4 w-full rounded-xl border border-slate-200"
+          onLoad={() => setError(null)}
+          onError={() => {
+            handleError();
+          }}
+        />
+      ) : (
+        <iframe
+          key={url}
+          src={url}
+          title={`${title} interactive`}
+          className="mt-4 block w-full rounded-xl border border-slate-200"
+          style={{ height: `max(${cmToIframeHeight(heightCm)}px, 78vh)` }}
+          onLoad={() => setError(null)}
+        />
+      )}
       {error ? <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
     </SectionCard>
   );
+}
+
+function cmToIframeHeight(heightCm: number): number {
+  const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (15 * 96) / 2.54;
+  return Math.max(860, Math.round(basePx + 280));
 }
 

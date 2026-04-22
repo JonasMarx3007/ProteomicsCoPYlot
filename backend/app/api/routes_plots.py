@@ -12,6 +12,7 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
+    comparison_pearson_html,
     comparison_pearson_png,
     comparison_venn_png,
     completeness_missing_value_heatmap,
@@ -82,6 +83,7 @@ from app.services.stats_tools import (
 from app.services.peptide_tools import (
     peptide_missed_cleavage_plot,
     peptide_modification_plot,
+    peptide_rt_interactive_html,
     peptide_rt_plot,
 )
 
@@ -303,6 +305,30 @@ async def peptide_rt_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render peptide RT plot: {e}") from e
+
+
+@router.get("/peptide/rt-interactive.html", response_class=HTMLResponse)
+async def peptide_rt_interactive_route(
+    addLine: bool = False,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 15,
+) -> HTMLResponse:
+    try:
+        return HTMLResponse(
+            content=peptide_rt_interactive_html(
+                add_line=addLine,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render interactive peptide RT plot: {e}") from e
 
 
 @router.get("/peptide/modification.png")
@@ -1574,6 +1600,50 @@ async def comparison_pearson_route(
         raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render Pearson correlation: {e}") from e
+
+
+@router.get("/comparison/{kind}/pearson.html", response_class=HTMLResponse)
+async def comparison_pearson_interactive_route(
+    kind: AnnotationKind,
+    mode: str = "Single",
+    sample1: str = "",
+    sample2: str = "",
+    condition1: str = "",
+    condition2: str = "",
+    alias1: str = "",
+    alias2: str = "",
+    color: str = "#1f77b4",
+    dotSize: float = 8,
+    header: bool = True,
+    widthCm: float = 20,
+    heightCm: float = 12,
+) -> HTMLResponse:
+    try:
+        return HTMLResponse(
+            content=comparison_pearson_html(
+                kind=kind,
+                mode=mode,
+                sample1=sample1,
+                sample2=sample2,
+                condition1=condition1,
+                condition2=condition2,
+                alias1=alias1,
+                alias2=alias2,
+                color=color,
+                dot_size=dotSize,
+                header=header,
+                width_cm=widthCm,
+                height_cm=heightCm,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to render interactive Pearson correlation: {e}"
+        ) from e
 
 
 @router.get("/comparison/{kind}/pearson-table")

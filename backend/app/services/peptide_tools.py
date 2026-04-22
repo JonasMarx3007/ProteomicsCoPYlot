@@ -24,6 +24,17 @@ def _get_plt():
     return plt
 
 
+def _get_plotly():
+    try:
+        import plotly.graph_objects as go
+
+        return go
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "plotly is required for interactive peptide plots. Install it with: pip install plotly"
+        ) from exc
+
+
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
@@ -37,6 +48,68 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 def _cm_to_inch(value_cm: float) -> float:
     return max(1.0, float(value_cm) / 2.54)
+
+
+def _cm_to_px(value_cm: float) -> int:
+    return max(320, int(round((_cm_to_inch(value_cm) * 96.0))))
+
+
+def _plotly_html(fig) -> str:
+    body = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={"displaylogo": False, "responsive": True},
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        "#plot-root{width:100%;height:100%;}"
+        ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
+        "</style>"
+        "</head><body>"
+        "<div id='plot-root'>"
+        f"{body}"
+        "</div>"
+        "<script>"
+        "(function(){"
+        "function firstPlot(){"
+        "return document.querySelector('.js-plotly-plot,.plotly-graph-div');"
+        "}"
+        "function resolveLayoutHeight(el){"
+        "if(!el){return 0;}"
+        "var value=0;"
+        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
+        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
+        "return Math.max(0,value);"
+        "}"
+        "function resizePlot(){"
+        "var el=firstPlot();"
+        "if(!(el && window.Plotly)){return;}"
+        "var root=document.getElementById('plot-root');"
+        "var rootWidth=(root && Number(root.clientWidth))||0;"
+        "var rootHeight=(root && Number(root.clientHeight))||0;"
+        "var viewportWidth=Math.max(360,rootWidth,(window.innerWidth||0)-8);"
+        "var viewportHeight=Math.max(420,rootHeight,(window.innerHeight||0)-8);"
+        "var layoutHeight=resolveLayoutHeight(el);"
+        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
+        "window.Plotly.relayout(el,{width:viewportWidth,height:nextHeight,autosize:true}).catch(function(){});"
+        "window.Plotly.Plots.resize(el);"
+        "}"
+        "window.addEventListener('load', resizePlot);"
+        "window.addEventListener('resize', resizePlot);"
+        "if(window.ResizeObserver){"
+        "var rootEl=document.getElementById('plot-root');"
+        "if(rootEl){(new ResizeObserver(function(){resizePlot();})).observe(rootEl);}"
+        "}"
+        "setTimeout(resizePlot, 80);"
+        "setTimeout(resizePlot, 260);"
+        "setTimeout(resizePlot, 800);"
+        "setTimeout(resizePlot, 1500);"
+        "})();"
+        "</script>"
+        "</body></html>"
+    )
 
 
 def _project_root() -> Path:
@@ -102,6 +175,43 @@ def _stripped_sequence_column(frame: pd.DataFrame) -> str:
     if not matches:
         raise ValueError("Could not find a stripped-sequence column in the peptide dataset.")
     return matches[0]
+
+
+def _peptide_feature_column(frame: pd.DataFrame) -> str | None:
+    preferred = [
+        "Stripped.Sequence",
+        "Modified.Sequence",
+        "Precursor.Id",
+        "PrecursorID",
+        "Precursor",
+        "ProteinNames",
+    ]
+    for column in preferred:
+        if column in frame.columns:
+            return column
+    for column in frame.columns:
+        normalized = str(column).strip().lower()
+        if "sequence" in normalized:
+            return str(column)
+    return None
+
+
+def _truncate_hover_text(value: object, max_len: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "n/a"
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return text[:1]
+    return f"{text[: max_len - 1]}..."
+
+
+def _short_sample_label(value: object, max_len: int = 14) -> str:
+    text = str(value or "").strip()
+    basename = re.split(r"[\\/]", text)[-1]
+    candidate = basename.strip() or text
+    return _truncate_hover_text(candidate, max_len=max_len)
 
 
 def _protein_names_column(frame: pd.DataFrame) -> str:
@@ -250,6 +360,108 @@ def peptide_rt_plot(
     ax.set_title("Retention Time Plot" if header else "")
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
+
+
+def peptide_rt_interactive_html(
+    *,
+    add_line: bool = False,
+    header: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 15,
+) -> str:
+    go = _get_plotly()
+    frame = get_peptide_frame()
+    _require_column(frame, "Predicted.RT")
+    _require_column(frame, "RT")
+
+    feature_col = _peptide_feature_column(frame)
+    feature_series = (
+        frame[feature_col].fillna("").astype(str)
+        if feature_col is not None
+        else pd.Series([f"feature_{idx + 1}" for idx in range(len(frame))], index=frame.index, dtype=str)
+    )
+
+    try:
+        sample_col = _file_name_column(frame)
+        sample_series = frame[sample_col].fillna("").astype(str)
+    except ValueError:
+        sample_series = pd.Series([""] * len(frame), index=frame.index, dtype=str)
+
+    data = pd.DataFrame(
+        {
+            "feature": feature_series,
+            "sample": sample_series,
+            "predicted": pd.to_numeric(frame["Predicted.RT"], errors="coerce"),
+            "actual": pd.to_numeric(frame["RT"], errors="coerce"),
+        }
+    ).dropna(subset=["predicted", "actual"])
+    if data.empty:
+        raise ValueError("No numeric Predicted.RT / RT values are available for the retention-time plot.")
+
+    data["feature"] = data["feature"].replace("", "n/a")
+    data["feature_short"] = data["feature"].map(lambda value: _truncate_hover_text(value, max_len=48))
+    data["sample_short"] = data["sample"].map(_short_sample_label)
+    data["delta"] = data["actual"] - data["predicted"]
+
+    if len(data) > 250_000:
+        data = data.sample(n=250_000, random_state=69)
+
+    custom_data = np.column_stack(
+        [
+            data["feature"].to_numpy(dtype=object),
+            data["sample_short"].to_numpy(dtype=object),
+            data["delta"].to_numpy(dtype=float),
+            data["feature_short"].to_numpy(dtype=object),
+        ]
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(
+            x=data["predicted"],
+            y=data["actual"],
+            mode="markers",
+            marker=dict(size=4, color="#1f77b4", opacity=0.35),
+            customdata=custom_data,
+            hovertemplate=(
+                "Feature: %{customdata[3]}<br>"
+                "Predicted RT: %{x:.4f}<br>"
+                "Actual RT: %{y:.4f}<br>"
+                "Delta (Actual - Predicted): %{customdata[2]:.4f}<br>"
+                "Sample: %{customdata[1]}"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+
+    if add_line:
+        x_min = float(min(data["predicted"].min(), data["actual"].min()))
+        x_max = float(max(data["predicted"].max(), data["actual"].max()))
+        line_x = np.array([x_min, x_max], dtype=float)
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_x,
+                mode="lines",
+                line=dict(color="#ef4444", dash="dash", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        title=("Retention Time Plot" if header else None),
+        xaxis_title="Predicted RT",
+        yaxis_title="Actual RT",
+        template="plotly_white",
+        autosize=True,
+        height=_cm_to_px(height_cm),
+        margin=dict(l=56, r=22, t=(64 if header else 18), b=54),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
+    return _plotly_html(fig)
 
 
 def peptide_modification_plot(

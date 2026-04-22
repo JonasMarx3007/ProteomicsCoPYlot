@@ -660,6 +660,38 @@ export async function getCurrentAnnotation(
   return data as AnnotationResultResponse;
 }
 
+export async function downloadCurrentAnnotationFilteredData(
+  kind: AnnotationKind
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/filtered/download`);
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to download filtered annotation data"
+    );
+  }
+  const blob = await response.blob();
+  const filename = resolveDownloadFilename(response, `${kind}_filtered_data_full.csv`);
+  return { blob, filename };
+}
+
+export async function downloadCurrentAnnotationMetadataData(
+  kind: AnnotationKind
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/metadata/download`);
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to download metadata annotation data"
+    );
+  }
+  const blob = await response.blob();
+  const filename = resolveDownloadFilename(response, `${kind}_metadata_full.csv`);
+  return { blob, filename };
+}
+
 export async function uploadAnnotationMetadata(
   file: File,
   kind: MetadataAnnotationKind

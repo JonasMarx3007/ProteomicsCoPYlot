@@ -200,11 +200,16 @@ async def plot_download_format_middleware(request: Request, call_next):
     if not request.url.path.startswith("/api/plots/"):
         return response
 
+    media_type = response.headers.get("content-type", "").lower()
+    if "text/html" in media_type:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+
     requested_format = request.query_params.get("downloadFormat", "").strip().lower()
     if not requested_format or requested_format == "png":
         return response
 
-    media_type = response.headers.get("content-type", "").lower()
     if "image/png" not in media_type:
         return response
 

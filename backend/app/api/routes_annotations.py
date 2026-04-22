@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
+
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.schemas.annotation import (
     AnnotationFilterConfig,
@@ -70,6 +73,24 @@ def _metadata_upload_response(stored) -> MetadataUploadResponse:
         createdAt=stored.created_at,
         preview=preview.to_dict(orient="records"),
     )
+
+
+def _stream_dataframe_download(
+    frame: pd.DataFrame,
+    *,
+    filename: str,
+    error_detail: str,
+) -> StreamingResponse:
+    try:
+        csv_bytes = frame.to_csv(index=False).encode("utf-8")
+        buffer = io.BytesIO(csv_bytes)
+        return StreamingResponse(
+            buffer,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{error_detail}: {e}") from e
 
 
 def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> None:
@@ -223,6 +244,32 @@ async def get_current_annotation(kind: AnnotationKind) -> AnnotationResultRespon
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
 
     return _response_from_stored(stored)
+
+
+@router.get("/current/{kind}/filtered/download")
+async def download_current_filtered_annotation(kind: AnnotationKind) -> StreamingResponse:
+    stored = get_annotation(kind)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
+
+    return _stream_dataframe_download(
+        stored.filtered_data,
+        filename=f"{kind}_filtered_data_full.csv",
+        error_detail="Failed to download filtered annotation data",
+    )
+
+
+@router.get("/current/{kind}/metadata/download")
+async def download_current_metadata_annotation(kind: AnnotationKind) -> StreamingResponse:
+    stored = get_annotation(kind)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
+
+    return _stream_dataframe_download(
+        stored.metadata,
+        filename=f"{kind}_metadata_full.csv",
+        error_detail="Failed to download metadata annotation data",
+    )
 
 
 @router.post("/phosprot/aggregate", response_model=AnnotationResultResponse)

@@ -18,7 +18,8 @@ type Props = {
 type PlotView = {
   title: string;
   url: string;
-  filename: string;
+  filename?: string;
+  renderMode: "image" | "html";
 } | null;
 
 type TableRequest = {
@@ -53,6 +54,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
   });
 
   const [pearson, setPearson] = useState({
+    type: String(persistedPearson.type ?? "Normal"),
     mode: String(persistedPearson.mode ?? "Single"),
     sample1: String(persistedPearson.sample1 ?? ""),
     sample2: String(persistedPearson.sample2 ?? ""),
@@ -84,6 +86,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
     heightCm: Number(persistedVenn.heightCm ?? 12),
     dpi: Number(persistedVenn.dpi ?? 300),
   });
+  const pearsonInteractiveSessionNonce = useMemo(() => Date.now(), []);
 
   useEffect(() => {
     writePersistedUiState("comparison.pipeline.v1", {
@@ -196,6 +199,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
       const params: Record<string, string | number | boolean> = {
+        type: pearson.type,
         mode: pearson.mode,
         sample1: pearson.sample1,
         sample2: pearson.sample2,
@@ -210,10 +214,20 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
         heightCm: pearson.heightCm,
         dpi: pearson.dpi,
       };
+      const pearsonInteractive = String(pearson.type || "").trim().toLowerCase() === "interactive";
+      const pearsonPlotParams = pearsonInteractive
+        ? { ...params, _interactiveV: pearsonInteractiveSessionNonce }
+        : params;
       return {
         title: "Pearson Correlation",
-        filename: `comparison_pearson_${kind}.png`,
-        url: buildPlotUrl(`/api/plots/comparison/${kind}/pearson.png`, params),
+        filename: pearsonInteractive ? undefined : `comparison_pearson_${kind}.png`,
+        renderMode: pearsonInteractive ? "html" : "image",
+        url: buildPlotUrl(
+          pearsonInteractive
+            ? `/api/plots/comparison/${kind}/pearson.html`
+            : `/api/plots/comparison/${kind}/pearson.png`,
+          pearsonPlotParams
+        ),
       };
     }
 
@@ -237,15 +251,16 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
     return {
       title: "Venn Diagram",
       filename: `comparison_venn_${kind}.png`,
+      renderMode: "image",
       url: buildPlotUrl(`/api/plots/comparison/${kind}/venn.png`, params),
     };
-  }, [activeTab, hasKind, kind, pearson, pearsonReady, venn, vennReady]);
+  }, [activeTab, hasKind, kind, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce]);
   const plotDownloadUrl = useMemo(() => {
-    if (!plotView) return "";
+    if (!plotView || plotView.renderMode !== "image") return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
   }, [plotView, downloadFormat]);
   const plotDownloadFilename = useMemo(() => {
-    if (!plotView) return "";
+    if (!plotView || plotView.renderMode !== "image" || !plotView.filename) return "";
     return withPlotDownloadFilename(plotView.filename, downloadFormat);
   }, [plotView, downloadFormat]);
 
@@ -281,7 +296,26 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
       tab: "venn",
       params,
     };
-  }, [activeTab, hasKind, pearson, pearsonReady, venn, vennReady]);
+  }, [
+    activeTab,
+    hasKind,
+    pearsonReady,
+    pearson.mode,
+    pearson.sample1,
+    pearson.sample2,
+    pearson.condition1,
+    pearson.condition2,
+    pearson.alias1,
+    pearson.alias2,
+    vennReady,
+    venn.mode,
+    venn.first,
+    venn.second,
+    venn.third,
+    venn.alias1,
+    venn.alias2,
+    venn.alias3,
+  ]);
 
   useEffect(() => {
     if (!onContextModeChange) return;
@@ -295,6 +329,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
         ? [
             `kind=${kind}`,
             "tab=pearson",
+            `type=${pearson.type}`,
             `mode=${pearson.mode}`,
             `sample1=${sanitize(pearson.sample1)}`,
             `sample2=${sanitize(pearson.sample2)}`,
@@ -323,6 +358,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
     activeTab,
     hasKind,
     kind,
+    pearson.type,
     pearson.mode,
     pearson.sample1,
     pearson.sample2,
@@ -453,7 +489,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">{activeTab === "pearson" ? "Pearson Correlation" : "Venn Diagram"}</h3>
-            {plotView ? (
+            {plotView?.renderMode === "image" ? (
               <div className="flex flex-wrap items-center gap-2">
                 <select
                   value={downloadFormat}
@@ -474,21 +510,41 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
                   Download Plot
                 </a>
               </div>
+            ) : plotView?.renderMode === "html" ? (
+              <a
+                href={plotView.url}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Open Interactive Plot
+              </a>
             ) : null}
           </div>
 
           {plotView ? (
             <div className="mt-4">
-              <img
-                key={plotView.url}
-                src={plotView.url}
-                alt={plotView.title}
-                className="w-full rounded-xl border border-slate-200"
-                onLoad={() => setImageError(null)}
-                onError={() => {
-                  handleImageError(plotView.url);
-                }}
-              />
+              {plotView.renderMode === "image" ? (
+                <img
+                  key={plotView.url}
+                  src={plotView.url}
+                  alt={plotView.title}
+                  className="w-full rounded-xl border border-slate-200"
+                  onLoad={() => setImageError(null)}
+                  onError={() => {
+                    handleImageError(plotView.url);
+                  }}
+                />
+              ) : (
+                <iframe
+                  key={plotView.url}
+                  src={plotView.url}
+                  title={plotView.title}
+                  className="block w-full rounded-xl border border-slate-200"
+                  style={{ height: `max(${cmToIframeHeight(pearson.heightCm)}px, 78vh)` }}
+                  onLoad={() => setImageError(null)}
+                />
+              )}
             </div>
           ) : (
             <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -546,12 +602,18 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
       const pool = pearson.mode === "Single" ? samples : conditions;
       return (
         <div className="space-y-4">
-          <div className="max-w-xs">
+          <div className="grid gap-4 lg:grid-cols-2 max-w-2xl">
             <SelectField
               label="Mode"
               value={pearson.mode}
               options={["Single", "Condition"]}
               onChange={(value) => setPearson({ ...pearson, mode: value })}
+            />
+            <SelectField
+              label="Type"
+              value={pearson.type}
+              options={["Normal", "Interactive"]}
+              onChange={(value) => setPearson({ ...pearson, type: value })}
             />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
@@ -967,4 +1029,9 @@ function formatValue(value: unknown) {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function cmToIframeHeight(heightCm: number): number {
+  const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (12 * 96) / 2.54;
+  return Math.max(860, Math.round(basePx + 280));
 }

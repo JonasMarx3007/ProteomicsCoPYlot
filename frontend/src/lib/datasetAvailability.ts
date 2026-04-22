@@ -13,16 +13,15 @@ import { subscribeDatasetStateChanged } from "./datasetEvents";
 // pipeline pages mount/unmount this hook.
 let browserSessionResetAttempted = false;
 const VIEWER_BOOTSTRAP_MAX_RETRIES = 240; // ~120s at 500ms intervals.
-const VIEWER_PORTAL_AUTH_ENABLED = (() => {
-  const raw = String(import.meta.env.VITE_VIEWER_PORTAL_AUTH ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-})();
 const BROWSER_SESSION_RESET_ENABLED = (() => {
   const explicit = String(import.meta.env.VITE_RESET_ON_BROWSER_LOAD ?? "").trim().toLowerCase();
   if (explicit) {
     return explicit === "1" || explicit === "true" || explicit === "yes" || explicit === "on";
   }
-  return VIEWER_PORTAL_AUTH_ENABLED;
+  // Default behavior:
+  // - app mode: reset state on full browser refresh
+  // - viewer mode: keep loaded viewer project state intact
+  return !IS_VIEWER_MODE;
 })();
 
 export type AnnotationKindOption = {
