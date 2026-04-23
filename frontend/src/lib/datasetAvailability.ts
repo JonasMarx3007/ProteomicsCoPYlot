@@ -12,6 +12,7 @@ import { subscribeDatasetStateChanged } from "./datasetEvents";
 // Ensure browser-session reset happens once per page load, even if multiple
 // pipeline pages mount/unmount this hook.
 let browserSessionResetAttempted = false;
+const SKIP_BROWSER_SESSION_RESET_ONCE_KEY = "pcopylot.skipBrowserSessionResetOnce.v1";
 const VIEWER_BOOTSTRAP_MAX_RETRIES = 240; // ~120s at 500ms intervals.
 const BROWSER_SESSION_RESET_ENABLED = (() => {
   const explicit = String(import.meta.env.VITE_RESET_ON_BROWSER_LOAD ?? "").trim().toLowerCase();
@@ -23,6 +24,29 @@ const BROWSER_SESSION_RESET_ENABLED = (() => {
   // - viewer mode: keep loaded viewer project state intact
   return !IS_VIEWER_MODE;
 })();
+
+function consumeSkipBrowserSessionResetOnceFlag(): boolean {
+  try {
+    const raw = String(globalThis.sessionStorage?.getItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY) ?? "")
+      .trim()
+      .toLowerCase();
+    if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+      globalThis.sessionStorage?.removeItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY);
+      return true;
+    }
+  } catch {
+    // Ignore sessionStorage access failures.
+  }
+  return false;
+}
+
+export function markSkipBrowserSessionResetOnce(): void {
+  try {
+    globalThis.sessionStorage?.setItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY, "1");
+  } catch {
+    // Ignore sessionStorage access failures.
+  }
+}
 
 export type AnnotationKindOption = {
   value: AnnotationKind;
@@ -81,7 +105,13 @@ export function useCurrentDatasetsSnapshot() {
     let cancelled = false;
 
     async function initialize() {
-      if (BROWSER_SESSION_RESET_ENABLED && !browserSessionResetAttempted) {
+      const skipResetOnce = consumeSkipBrowserSessionResetOnceFlag();
+      if (skipResetOnce) {
+        // Treat as completed for this page load so later hook mounts
+        // (e.g., when switching sections) do not unexpectedly reset state.
+        browserSessionResetAttempted = true;
+      }
+      if (BROWSER_SESSION_RESET_ENABLED && !browserSessionResetAttempted && !skipResetOnce) {
         browserSessionResetAttempted = true;
         try {
           await resetBrowserSessionState();

@@ -605,6 +605,7 @@ export type ConditionPaletteResponse = {
 export type SummaryVolcanoEntry = {
   kind: AnnotationKind;
   control: boolean;
+  dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
   condition1Control?: string | null;

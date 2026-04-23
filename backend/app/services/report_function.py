@@ -340,6 +340,59 @@ def _volcano_entries(
     ]
 
 
+def _is_imputed_volcano_entry(entry: SummaryVolcanoEntry) -> bool:
+    return str(getattr(entry, "dataSource", "data")).strip().lower() == "imputed"
+
+
+def _format_imputation_value(value: Any, *, digits: int = 4) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _volcano_imputation_tail_html(
+    *,
+    kind: str,
+    entries: list[SummaryVolcanoEntry],
+) -> str:
+    if not any(_is_imputed_volcano_entry(entry) for entry in entries):
+        return ""
+
+    if kind not in {"protein", "phospho", "phosprot"}:
+        return ""
+
+    q_value = "n/a"
+    adjust_std = "n/a"
+    annotation = get_annotation(kind)
+    imputation = getattr(annotation, "imputation", None) if annotation is not None else None
+    if imputation is not None:
+        imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
+        if imputation_mode != "none":
+            q_value = _format_imputation_value(getattr(imputation, "qValue", None))
+            adjust_std = _format_imputation_value(getattr(imputation, "adjustStd", None))
+
+    template_paragraphs = GENERAL_COMMENTS.get("Imputation", [])
+    if template_paragraphs:
+        rendered = [
+            paragraph.replace("{qValue}", q_value).replace("{adjustStd}", adjust_std)
+            for paragraph in template_paragraphs
+            if paragraph.strip()
+        ]
+    else:
+        rendered = [
+            (
+                "For imputed volcano comparisons, missing values were sampled from a shifted normal "
+                f"distribution with q = {q_value} and adjusted standard deviation = {adjust_std}."
+            )
+        ]
+
+    return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in rendered)
+
+
 def _volcano_block_html(
     *,
     kind: str,
@@ -348,14 +401,17 @@ def _volcano_block_html(
 ) -> str:
     parts: list[str] = []
     for index, entry in enumerate(entries, start=1):
+        source_label = "Imputed Data" if _is_imputed_volcano_entry(entry) else "Data"
         parts.append(
             f"<h3>Comparison {index}: {html.escape(entry.condition1)} vs {html.escape(entry.condition2)}</h3>"
         )
+        parts.append(f"<p><strong>Data source:</strong> {html.escape(source_label)}</p>")
         parts.append(
             _safe_plotly(
                 renderer=lambda entry=entry, kind=kind: volcano_html(
                     VolcanoRequest(
                         kind=kind,
+                        dataSource=entry.dataSource,
                         condition1=entry.condition1,
                         condition2=entry.condition2,
                         identifier=entry.identifier,
@@ -879,10 +935,16 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 general_comment_key="VolcanoProt",
                 text_entries=text_entries,
                 text_key="VolcanoProt",
-                content_html=_volcano_block_html(
-                    kind="protein",
-                    entries=protein_volcano_entries,
-                    warnings=warnings,
+                content_html=(
+                    _volcano_imputation_tail_html(
+                        kind="protein",
+                        entries=protein_volcano_entries,
+                    )
+                    + _volcano_block_html(
+                        kind="protein",
+                        entries=protein_volcano_entries,
+                        warnings=warnings,
+                    )
                 ),
             )
 
@@ -1186,10 +1248,16 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 general_comment_key="VolcanoPhos",
                 text_entries=text_entries,
                 text_key="VolcanoPhos",
-                content_html=_volcano_block_html(
-                    kind="phospho",
-                    entries=phospho_volcano_entries,
-                    warnings=warnings,
+                content_html=(
+                    _volcano_imputation_tail_html(
+                        kind="phospho",
+                        entries=phospho_volcano_entries,
+                    )
+                    + _volcano_block_html(
+                        kind="phospho",
+                        entries=phospho_volcano_entries,
+                        warnings=warnings,
+                    )
                 ),
             )
 

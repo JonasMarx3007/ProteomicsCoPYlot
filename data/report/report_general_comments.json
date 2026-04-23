@@ -116,5 +116,8 @@
     "The occurrence of differentially abundant phosphosites was tested by comparisons between two conditions (t-test). Multiple hypothesis testing was done by Benjamini-Hochberg adjustment of p-values and the false discovery rate was set to 0.05 (q-value < 0.05).",
     "Significant differentially abundant phosphosites are defined as sites demonstrating a fold change of > 2 and an adjusted p-value < 0.05.",
     "The results are illustrated as volcano plots (the y-axis indicates the negative logarithm (-log10) of the adjusted p-value and the x-axis indicates the log2 fold change; dotted lines indicate the thresholds for significance: q-value < 0.05 and FC > 2)."
+  ],
+  "Imputation": [
+    "For volcano analyses based on imputed data, missing values were sampled from a shifted normal distribution, with q = {qValue} and an adjusted standard deviation = {adjustStd}."
   ]
 }

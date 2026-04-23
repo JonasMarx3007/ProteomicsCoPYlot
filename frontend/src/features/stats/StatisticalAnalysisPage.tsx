@@ -512,6 +512,7 @@ function VolcanoPanel({
     () => ({
       kind,
       control: sourceMode === "volcano_control",
+      dataSource,
       condition1,
       condition2,
       condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
@@ -526,6 +527,7 @@ function VolcanoPanel({
     [
       kind,
       sourceMode,
+      dataSource,
       condition1,
       condition2,
       condition1Control,
