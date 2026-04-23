@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import StatsIdentifier, StatsTestType
+from app.schemas.stats import StatsIdentifier, StatsTestType, VolcanoDataSource
 
 
 class SummaryMetadataTable(BaseModel):
@@ -25,6 +25,7 @@ class SummaryTablesResponse(BaseModel):
 class SummaryVolcanoEntry(BaseModel):
     kind: AnnotationKind
     control: bool = False
+    dataSource: VolcanoDataSource = "imputed"
     condition1: str
     condition2: str
     condition1Control: str | None = None

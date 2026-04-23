@@ -109,9 +109,15 @@ export function listVolcanoReportEntries(): SummaryVolcanoEntry[] {
   return readJson<SummaryVolcanoEntry[]>(VOLCANO_LOG_KEY, []);
 }
 
+function normalizeDataSource(value: unknown): "data" | "imputed" {
+  if (String(value ?? "").trim().toLowerCase() === "data") return "data";
+  return "imputed";
+}
+
 function normalizeEntry(entry: SummaryVolcanoEntry): SummaryVolcanoEntry {
   return {
     ...entry,
+    dataSource: normalizeDataSource(entry.dataSource),
     highlightTerms: [...entry.highlightTerms].map((item) => item.trim()).filter(Boolean),
     condition1Control: entry.condition1Control ?? null,
     condition2Control: entry.condition2Control ?? null,
@@ -123,6 +129,7 @@ function isSameVolcanoEntry(a: SummaryVolcanoEntry, b: SummaryVolcanoEntry): boo
   const right = normalizeEntry(b);
   if (left.kind !== right.kind) return false;
   if (left.control !== right.control) return false;
+  if (left.dataSource !== right.dataSource) return false;
   if (left.condition1 !== right.condition1) return false;
   if (left.condition2 !== right.condition2) return false;
   if ((left.condition1Control ?? "") !== (right.condition1Control ?? "")) return false;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildPlotUrl, downloadImputationCsv, runImputation } from "../../lib/api";
+import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -12,6 +12,7 @@ import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
 export default function ImputationPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
+  const availableKindsKey = useMemo(() => availableKinds.join("|"), [availableKinds]);
   const [qValue, setQValue] = useState(0.01);
   const [adjustStd, setAdjustStd] = useState(1);
   const [seed, setSeed] = useState(1337);
@@ -21,6 +22,7 @@ export default function ImputationPage() {
   const [result, setResult] = useState<ImputationResultResponse | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [settingsReady, setSettingsReady] = useState(false);
 
   async function fetchPreview() {
     if (!availableKinds.includes(kind)) {
@@ -51,6 +53,61 @@ export default function ImputationPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function initializeKindSettings() {
+      if (availableKinds.length === 0) {
+        setResult(null);
+        setSettingsReady(false);
+        return;
+      }
+      if (!availableKinds.includes(kind)) {
+        setKind(availableKinds[0]);
+        return;
+      }
+
+      setSettingsReady(false);
+      try {
+        const annotation = await getCurrentAnnotation(kind);
+        if (cancelled) return;
+        const info = annotation.imputation;
+        const mode = String(info?.mode ?? "").trim().toLowerCase();
+        if (info && mode && mode !== "none") {
+          setQValue(typeof info.qValue === "number" && Number.isFinite(info.qValue) ? info.qValue : 0.01);
+          setAdjustStd(
+            typeof info.adjustStd === "number" && Number.isFinite(info.adjustStd) ? info.adjustStd : 1
+          );
+          setSeed(typeof info.seed === "number" && Number.isFinite(info.seed) ? Math.round(info.seed) : 1337);
+          setSampleWise(Boolean(info.sampleWise));
+        } else {
+          setQValue(0.01);
+          setAdjustStd(1);
+          setSeed(1337);
+          setSampleWise(false);
+        }
+      } catch {
+        if (cancelled) return;
+        setQValue(0.01);
+        setAdjustStd(1);
+        setSeed(1337);
+        setSampleWise(false);
+      } finally {
+        if (!cancelled) {
+          setSettingsReady(true);
+        }
+      }
+    }
+
+    void initializeKindSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, availableKindsKey]);
+
+  useEffect(() => {
+    if (!settingsReady) {
+      return;
+    }
     if (availableKinds.length === 0) {
       setResult(null);
       return;
@@ -59,8 +116,8 @@ export default function ImputationPage() {
       setKind(availableKinds[0]);
       return;
     }
-    fetchPreview();
-  }, [kind, qValue, adjustStd, seed, sampleWise, availableKinds]);
+    void fetchPreview();
+  }, [settingsReady, kind, qValue, adjustStd, seed, sampleWise, availableKindsKey]);
 
   const plotParams = useMemo(
     () => ({

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { importRestoreState } from "../../lib/api";
+import { markSkipBrowserSessionResetOnce } from "../../lib/datasetAvailability";
 import type { RestoreImportResponse, RestoreMissingFile } from "../../lib/types";
 
 type LocalFile = File & {
@@ -148,6 +149,7 @@ export default function RestorePage({
         `Restore complete. Datasets: ${response.restoredDatasets.length}, annotations: ${response.restoredAnnotations.length}. Reloading UI to rehydrate all module states...`
       );
       window.setTimeout(() => {
+        markSkipBrowserSessionResetOnce();
         window.location.reload();
       }, 200);
     } catch (err) {
