@@ -37,6 +37,13 @@ class ViewerAccessEntry:
 
 
 @dataclass(frozen=True)
+class ViewerQrAccessEntry:
+    project: str
+    project_label: str
+    token_sha256: str
+
+
+@dataclass(frozen=True)
 class ViewerSessionAuth:
     project: str
     project_label: str
@@ -47,6 +54,8 @@ _SESSION_AUTH: dict[str, ViewerSessionAuth] = {}
 _BOOTSTRAPPED_SESSION_PROJECT: dict[str, str] = {}
 _ACCESS_FILE_CACHE_KEY: tuple[str, float, int] | None = None
 _ACCESS_FILE_CACHE: list[ViewerAccessEntry] = []
+_QR_ACCESS_FILE_CACHE_KEY: tuple[str, float, int] | None = None
+_QR_ACCESS_FILE_CACHE: list[ViewerQrAccessEntry] = []
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -82,6 +91,27 @@ def _resolve_access_file(project_root: Path) -> Path | None:
     return None
 
 
+def _default_qr_access_file_candidates(project_root: Path) -> list[Path]:
+    return [
+        project_root / "viewer_qr_access.local.json",
+        project_root / "viewer_qr_access.json",
+    ]
+
+
+def _resolve_qr_access_file(project_root: Path) -> Path | None:
+    raw = str(os.getenv("COPYLOT_VIEWER_QR_ACCESS_FILE", "")).strip()
+    if raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+        return candidate.resolve()
+
+    for candidate in _default_qr_access_file_candidates(project_root):
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def _normalize_project_name(value: str) -> str:
     project = str(value or "").strip()
     if not _PROJECT_NAME_RE.fullmatch(project):
@@ -101,6 +131,10 @@ def _normalize_sha256(value: str) -> str:
     return digest
 
 
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
     project = _normalize_project_name(str(raw.get("project", "")))
     project_label = str(raw.get("label", project)).strip() or project
@@ -115,6 +149,24 @@ def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
         project_label=project_label,
         password=password,
         password_sha256=password_sha256,
+    )
+
+
+def _qr_entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerQrAccessEntry:
+    project = _normalize_project_name(str(raw.get("project", "")))
+    project_label = str(raw.get("label", project)).strip() or project
+    token_sha256 = _normalize_sha256(str(raw.get("token_sha256", "")))
+    token = str(raw.get("token", ""))
+    if not token_sha256 and token:
+        token_sha256 = _hash_token(token)
+    if not token_sha256:
+        raise ValueError(
+            f"Viewer QR access token #{index} must define token_sha256."
+        )
+    return ViewerQrAccessEntry(
+        project=project,
+        project_label=project_label,
+        token_sha256=token_sha256,
     )
 
 
@@ -157,6 +209,17 @@ def _parse_access_entries(raw: Any) -> list[ViewerAccessEntry]:
     )
 
 
+def _parse_qr_access_entries(raw: Any) -> list[ViewerQrAccessEntry]:
+    entries: list[ViewerQrAccessEntry] = []
+    if isinstance(raw, dict) and isinstance(raw.get("tokens"), list):
+        for idx, item in enumerate(raw["tokens"], start=1):
+            if not isinstance(item, dict):
+                raise ValueError("viewer QR access token items must be objects.")
+            entries.append(_qr_entry_from_object(item, index=idx))
+        return entries
+    raise ValueError("viewer QR access file must contain a 'tokens' list.")
+
+
 def _load_access_entries(project_root: Path) -> list[ViewerAccessEntry]:
     global _ACCESS_FILE_CACHE_KEY
     global _ACCESS_FILE_CACHE
@@ -179,6 +242,31 @@ def _load_access_entries(project_root: Path) -> list[ViewerAccessEntry]:
     with _LOCK:
         _ACCESS_FILE_CACHE_KEY = cache_key
         _ACCESS_FILE_CACHE = list(parsed)
+    return parsed
+
+
+def _load_qr_access_entries(project_root: Path) -> list[ViewerQrAccessEntry]:
+    global _QR_ACCESS_FILE_CACHE_KEY
+    global _QR_ACCESS_FILE_CACHE
+
+    path = _resolve_qr_access_file(project_root)
+    if path is None:
+        return []
+
+    stat = path.stat()
+    cache_key = (str(path), stat.st_mtime, stat.st_size)
+
+    with _LOCK:
+        if _QR_ACCESS_FILE_CACHE_KEY == cache_key:
+            return list(_QR_ACCESS_FILE_CACHE)
+
+    with path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    parsed = _parse_qr_access_entries(raw)
+
+    with _LOCK:
+        _QR_ACCESS_FILE_CACHE_KEY = cache_key
+        _QR_ACCESS_FILE_CACHE = list(parsed)
     return parsed
 
 
@@ -265,6 +353,44 @@ def authenticate_viewer_session(password: str, *, project_root: Path | None = No
 
     if selected is None:
         raise ValueError("Invalid viewer password.")
+
+    session_id = get_session_id()
+    session_auth = ViewerSessionAuth(
+        project=selected.project,
+        project_label=selected.project_label,
+    )
+    with _LOCK:
+        _SESSION_AUTH[session_id] = session_auth
+        _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
+
+    _load_project_into_current_session(selected.project, force_reload=True)
+    return session_auth
+
+
+def authenticate_viewer_qr_session(token: str, *, project_root: Path | None = None) -> ViewerSessionAuth:
+    if not viewer_portal_enabled():
+        raise RuntimeError("Viewer portal auth is not enabled.")
+
+    candidate_token = str(token or "").strip()
+    if not candidate_token:
+        raise ValueError("QR token must not be empty.")
+
+    root = project_root or Path(__file__).resolve().parents[3]
+    entries = _load_qr_access_entries(root)
+    if not entries:
+        raise RuntimeError(
+            "Viewer QR access is not configured. Create viewer_qr_access.local.json."
+        )
+
+    digest = _hash_token(candidate_token)
+    selected: ViewerQrAccessEntry | None = None
+    for entry in entries:
+        if secrets.compare_digest(digest, entry.token_sha256):
+            selected = entry
+            break
+
+    if selected is None:
+        raise ValueError("Invalid viewer QR token.")
 
     session_id = get_session_id()
     session_auth = ViewerSessionAuth(

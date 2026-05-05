@@ -4,19 +4,26 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        FRONTEND_BASE_PATH: "/tool/"
+        FRONTEND_API_BASE: "/tool"
+        FRONTEND_TOOL_ACCESS_AUTH: "1"
         FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     container_name: proteomics-copylot
     restart: unless-stopped
     ports:
-      - "8081:10000"
+      - "127.0.0.1:8081:10000"
     environment:
       PORT: "10000"
       COPYLOT_AI_MODE: "0"
+      COPYLOT_TOOL_ACCESS_ENABLED: "1"
+      COPYLOT_TOOL_ACCESS_FILE: "/app/tool_access.local.json"
       COPYLOT_SESSION_ISOLATION: "1"
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
-      COPYLOT_SESSION_COOKIE_SECURE: "0"
+      COPYLOT_SESSION_COOKIE_SECURE: "1"
+      COPYLOT_SESSION_COOKIE_NAME: "copylot_tool_session_id"
     volumes:
       - copylot_viewer_data:/app/viewer_data
+      - ./tool_access.local.json:/app/tool_access.local.json:ro
 
 volumes:
   copylot_viewer_data:

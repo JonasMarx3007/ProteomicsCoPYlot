@@ -742,6 +742,15 @@ export type ViewerAuthLoginResponse = {
   projectLabel: string;
 };
 
+export type ToolAuthStatusResponse = {
+  enabled: boolean;
+  authenticated: boolean;
+};
+
+export type ToolAuthLoginResponse = {
+  ok: boolean;
+};
+
 export type RestoreDatasetKind = "protein" | "phospho" | "phosprot" | "peptide";
 
 export type RestoreMissingFile = {

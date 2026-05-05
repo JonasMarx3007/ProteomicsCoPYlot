@@ -14,6 +14,10 @@ class ViewerAuthLoginRequest(BaseModel):
     password: str
 
 
+class ViewerAuthQrLoginRequest(BaseModel):
+    token: str
+
+
 class ViewerAuthLoginResponse(BaseModel):
     ok: bool
     project: str
@@ -22,4 +26,3 @@ class ViewerAuthLoginResponse(BaseModel):
 
 class ViewerAuthLogoutResponse(BaseModel):
     ok: bool
-

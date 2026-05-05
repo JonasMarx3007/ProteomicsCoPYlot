@@ -51,6 +51,8 @@ import type {
   ModuleContextResponse,
   ViewerAuthLoginResponse,
   ViewerAuthStatusResponse,
+  ToolAuthLoginResponse,
+  ToolAuthStatusResponse,
   OllamaGpuStatusResponse,
   OllamaModelManageResponse,
   OllamaModelsResponse,
@@ -123,6 +125,29 @@ export async function loginViewer(password: string): Promise<ViewerAuthLoginResp
   };
 }
 
+export async function loginViewerQr(token: string): Promise<ViewerAuthLoginResponse> {
+  const response = await fetch(`${API_BASE}/api/viewer/auth/qr-login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Viewer QR login failed"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    ok: Boolean(raw.ok),
+    project: String(raw.project ?? ""),
+    projectLabel: String(raw.projectLabel ?? raw.project ?? ""),
+  };
+}
+
 export async function logoutViewer(): Promise<void> {
   const response = await fetch(`${API_BASE}/api/viewer/auth/logout`, {
     method: "POST",
@@ -132,6 +157,71 @@ export async function logoutViewer(): Promise<void> {
     throw new Error(
       (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
         "Viewer logout failed"
+    );
+  }
+}
+
+export async function getToolAuthStatus(): Promise<ToolAuthStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/tool/auth/status`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load tool auth status"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    enabled: Boolean(raw.enabled),
+    authenticated: Boolean(raw.authenticated),
+  };
+}
+
+export async function loginTool(password: string): Promise<ToolAuthLoginResponse> {
+  const response = await fetch(`${API_BASE}/api/tool/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ password }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Tool login failed"
+    );
+  }
+  return { ok: Boolean((data as Record<string, unknown> | null)?.ok) };
+}
+
+export async function loginToolLink(token: string): Promise<ToolAuthLoginResponse> {
+  const response = await fetch(`${API_BASE}/api/tool/auth/link-login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Tool access link failed"
+    );
+  }
+  return { ok: Boolean((data as Record<string, unknown> | null)?.ok) };
+}
+
+export async function logoutTool(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/tool/auth/logout`, {
+    method: "POST",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Tool logout failed"
     );
   }
 }
