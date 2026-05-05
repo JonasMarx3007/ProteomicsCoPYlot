@@ -20,6 +20,7 @@ from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
 from app.api.routes_summary import router as summary_router
 from app.api.routes_restore import router as restore_router
+from app.api.routes_tool_auth import router as tool_auth_router
 from app.api.routes_viewer_auth import router as viewer_auth_router
 from app.services.session_context import (
     new_session_id,
@@ -31,6 +32,7 @@ from app.services.session_context import (
     session_isolation_enabled,
     set_session_id,
 )
+from app.services.tool_access import tool_access_enabled, tool_session_authenticated
 from app.services.viewer_bootstrap import (
     bootstrap_current_viewer_session,
     bootstrap_viewer_mode_if_enabled,
@@ -42,7 +44,18 @@ from app.services.viewer_portal import (
     viewer_session_authenticated,
 )
 
-app = FastAPI(title="Proteomics CoPYlot API")
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_AUTH_PROTECTED_RUNTIME = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED") or _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED")
+app = FastAPI(
+    title="Proteomics CoPYlot API",
+    docs_url=None if _AUTH_PROTECTED_RUNTIME else "/docs",
+    redoc_url=None if _AUTH_PROTECTED_RUNTIME else "/redoc",
+    openapi_url=None if _AUTH_PROTECTED_RUNTIME else "/openapi.json",
+)
 
 _SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf"}
 
@@ -141,9 +154,16 @@ async def session_scope_middleware(request: Request, call_next):
         if (
             path.startswith("/api/")
             and path != "/api/health"
+            and not path.startswith("/api/tool/auth")
             and not path.startswith("/api/viewer/auth")
         ):
-            if viewer_portal_enabled():
+            if tool_access_enabled():
+                if not tool_session_authenticated():
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Tool password required."},
+                    )
+            elif viewer_portal_enabled():
                 if not viewer_session_authenticated():
                     return JSONResponse(
                         status_code=401,
@@ -256,6 +276,7 @@ app.include_router(plots_router)
 app.include_router(external_router)
 app.include_router(summary_router)
 app.include_router(restore_router)
+app.include_router(tool_auth_router)
 app.include_router(viewer_auth_router)
 
 _FRONTEND_DIST = _resolve_frontend_dist()

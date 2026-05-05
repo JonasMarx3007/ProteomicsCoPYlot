@@ -9,6 +9,7 @@ __pycache__/
 dev_ai.local.env
 viewer_config.local.json
 viewer_access.local.json
+viewer_qr_access.local.json
 
 node_modules/
 dist/

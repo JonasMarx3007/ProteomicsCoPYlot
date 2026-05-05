@@ -260,8 +260,20 @@ def _combine_profiles(
     if left is None or right is None:
         return pd.DataFrame(columns=["sample", "condition"])
 
+    left_condition_order = {
+        condition: index
+        for index, condition in enumerate(left["condition"].drop_duplicates().astype(str).tolist())
+    }
+    right_condition_order = {
+        condition: index
+        for index, condition in enumerate(right["condition"].drop_duplicates().astype(str).tolist())
+    }
+
     left_ordered = left.copy()
     left_ordered["_left_order"] = range(len(left_ordered))
+    left_ordered["_left_condition_order"] = (
+        left_ordered["condition"].astype(str).map(left_condition_order)
+    )
 
     merged = left_ordered.merge(right, on="sample", how="inner", suffixes=("_left", "_right"))
     if merged.empty:
@@ -273,7 +285,13 @@ def _combine_profiles(
         + merged["condition_right"].astype(str).str.strip()
     )
     merged = merged[(merged["condition"] != "-") & (merged["condition"] != "")]
-    merged = merged.sort_values("_left_order", kind="stable")
+    merged["_right_condition_order"] = (
+        merged["condition_right"].astype(str).map(right_condition_order)
+    )
+    merged = merged.sort_values(
+        ["_left_condition_order", "_right_condition_order", "_left_order"],
+        kind="stable",
+    )
     out = merged[["sample", "condition"]].drop_duplicates(subset=["sample"], keep="first")
     return out.reset_index(drop=True)
 
