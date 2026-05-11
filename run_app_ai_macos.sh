@@ -34,7 +34,10 @@ for arg in "$@"; do
 done
 
 if [[ "$DEV_MODE" -eq 1 ]]; then
-  DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
+  DEV_CONFIG="$ROOT_DIR/local/dev_ai.local.env"
+  if [[ ! -f "$DEV_CONFIG" ]]; then
+    DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
+  fi
   if [[ -f "$DEV_CONFIG" ]]; then
     while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
       key="$(echo "${key:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"

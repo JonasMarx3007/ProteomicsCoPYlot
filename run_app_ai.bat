@@ -43,7 +43,8 @@ if "%DEV_MODE%"=="1" (
 )
 
 if not "%DEV_MODE%"=="0" (
-  set "DEV_CONFIG=%ROOT%dev_ai.local.env"
+  set "DEV_CONFIG=%ROOT%local\dev_ai.local.env"
+  if not exist "!DEV_CONFIG!" set "DEV_CONFIG=%ROOT%dev_ai.local.env"
   if exist "!DEV_CONFIG!" (
     for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
       if /I "%%~A"=="!DEV_ENDPOINT_KEY!" set "DEV_OLLAMA_ENDPOINT=%%~B"

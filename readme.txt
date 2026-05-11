@@ -111,7 +111,7 @@ Tool (AI):
 
 Tool (AI dev20 default endpoint):
   cd frontend
-  powershell -NoProfile -Command "$env:DEV20_ENDPOINT=(Get-Content ..\dev_ai.local.env | Where-Object { $_ -like 'COPYLOT_DEV2_OLLAMA_ENDPOINT=*' } | Select-Object -First 1).Split('=',2)[1]; cmd /c \"set VITE_APP_MODE=analysis&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=%DEV20_ENDPOINT%&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build\""
+  powershell -NoProfile -Command "$env:DEV20_ENDPOINT=(Get-Content ..\local\dev_ai.local.env | Where-Object { $_ -like 'COPYLOT_DEV2_OLLAMA_ENDPOINT=*' } | Select-Object -First 1).Split('=',2)[1]; cmd /c \"set VITE_APP_MODE=analysis&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=%DEV20_ENDPOINT%&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build\""
   powershell -NoProfile -Command "Set-Content -Path .\dist\.copylot_mode.txt -Value analysis -NoNewline"
   cd ..
   powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Tool -SkipFrontendBuild
@@ -125,7 +125,7 @@ Viewer (AI):
 
 Viewer (AI dev20 default endpoint):
   cd frontend
-  powershell -NoProfile -Command "$env:DEV20_ENDPOINT=(Get-Content ..\dev_ai.local.env | Where-Object { $_ -like 'COPYLOT_DEV2_OLLAMA_ENDPOINT=*' } | Select-Object -First 1).Split('=',2)[1]; cmd /c \"set VITE_APP_MODE=viewer&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=%DEV20_ENDPOINT%&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build\""
+  powershell -NoProfile -Command "$env:DEV20_ENDPOINT=(Get-Content ..\local\dev_ai.local.env | Where-Object { $_ -like 'COPYLOT_DEV2_OLLAMA_ENDPOINT=*' } | Select-Object -First 1).Split('=',2)[1]; cmd /c \"set VITE_APP_MODE=viewer&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=%DEV20_ENDPOINT%&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build\""
   powershell -NoProfile -Command "Set-Content -Path .\dist\.copylot_mode.txt -Value viewer -NoNewline"
   cd ..
   powershell -ExecutionPolicy Bypass -File ".\build_exe_windows.ps1" -Target Viewer -SkipFrontendBuild

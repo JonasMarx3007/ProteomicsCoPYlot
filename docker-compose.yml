@@ -16,14 +16,14 @@ services:
       PORT: "10000"
       COPYLOT_AI_MODE: "0"
       COPYLOT_TOOL_ACCESS_ENABLED: "1"
-      COPYLOT_TOOL_ACCESS_FILE: "/app/tool_access.local.json"
+      COPYLOT_TOOL_ACCESS_FILE: "/app/local/tool_access.local.json"
       COPYLOT_SESSION_ISOLATION: "1"
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
       COPYLOT_SESSION_COOKIE_NAME: "copylot_tool_session_id"
     volumes:
       - copylot_viewer_data:/app/viewer_data
-      - ./tool_access.local.json:/app/tool_access.local.json:ro
+      - ./local/tool_access.local.json:/app/local/tool_access.local.json:ro
 
 volumes:
   copylot_viewer_data:

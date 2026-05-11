@@ -72,6 +72,7 @@ def viewer_portal_enabled() -> bool:
 
 def _default_access_file_candidates(project_root: Path) -> list[Path]:
     return [
+        project_root / "local" / "viewer_access.local.json",
         project_root / "viewer_access.local.json",
         project_root / "viewer_access.json",
     ]
@@ -93,6 +94,7 @@ def _resolve_access_file(project_root: Path) -> Path | None:
 
 def _default_qr_access_file_candidates(project_root: Path) -> list[Path]:
     return [
+        project_root / "local" / "viewer_qr_access.local.json",
         project_root / "viewer_qr_access.local.json",
         project_root / "viewer_qr_access.json",
     ]
@@ -300,7 +302,7 @@ def _load_project_into_current_session(project_name: str, *, force_reload: bool)
     if config_path is None:
         raise FileNotFoundError(
             f"Viewer project '{project}' has no viewer_config.json in "
-            "viewer_data/<project>/ or viewer_data/projects/<project>/."
+            "viewer_data/local/<project>/, viewer_data/<project>/, or viewer_data/projects/<project>/."
         )
 
     _reset_current_session_data()
@@ -342,7 +344,7 @@ def authenticate_viewer_session(password: str, *, project_root: Path | None = No
     if not entries:
         raise RuntimeError(
             "Viewer portal is enabled but no credentials are configured. "
-            "Create viewer_access.local.json."
+            "Create local/viewer_access.local.json."
         )
 
     selected: ViewerAccessEntry | None = None
@@ -379,7 +381,7 @@ def authenticate_viewer_qr_session(token: str, *, project_root: Path | None = No
     entries = _load_qr_access_entries(root)
     if not entries:
         raise RuntimeError(
-            "Viewer QR access is not configured. Create viewer_qr_access.local.json."
+            "Viewer QR access is not configured. Create local/viewer_qr_access.local.json."
         )
 
     digest = _hash_token(candidate_token)

@@ -76,7 +76,9 @@ def _set_viewer_env(project_root: Path, bundle_root: Path, args: argparse.Namesp
         return
 
     candidates = [
+        project_root / "local" / "viewer_config.local.json",
         project_root / "viewer_config.local.json",
+        bundle_root / "local" / "viewer_config.local.json",
         bundle_root / "viewer_config.local.json",
         project_root / "viewer_config.json",
         bundle_root / "viewer_config.json",
@@ -123,8 +125,10 @@ def _normalize_project_name(raw: str) -> str:
 
 def _viewer_project_dirs(project_root: Path, bundle_root: Path, project_name: str) -> list[Path]:
     return [
+        project_root / "viewer_data" / "local" / project_name,
         project_root / "viewer_data" / project_name,
         project_root / "viewer_data" / "projects" / project_name,
+        bundle_root / "viewer_data" / "local" / project_name,
         bundle_root / "viewer_data" / project_name,
         bundle_root / "viewer_data" / "projects" / project_name,
     ]
@@ -151,8 +155,10 @@ def _resolve_viewer_project_config(project_root: Path, bundle_root: Path, projec
 
 def _discover_viewer_projects(project_root: Path, bundle_root: Path) -> list[str]:
     roots = [
+        project_root / "viewer_data" / "local",
         project_root / "viewer_data",
         project_root / "viewer_data" / "projects",
+        bundle_root / "viewer_data" / "local",
         bundle_root / "viewer_data",
         bundle_root / "viewer_data" / "projects",
     ]

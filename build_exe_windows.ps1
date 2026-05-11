@@ -14,6 +14,7 @@ $FrontendDir = Join-Path $RootDir "frontend"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $IconPath = Join-Path $RootDir "favicon.ico"
 $FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
+$SpecDir = Join-Path $RootDir "build\specs"
 $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
 $ViewerProjectRegex = '^[A-Za-z0-9_.-]{1,128}$'
 
@@ -35,6 +36,8 @@ if (-not (Test-Path $PythonExe)) {
 if (-not (Test-Path $IconPath)) {
   throw "Application icon missing. Expected: $IconPath"
 }
+
+New-Item -ItemType Directory -Force -Path $SpecDir | Out-Null
 
 if (-not $SkipFrontendBuild) {
   Push-Location $FrontendDir
@@ -94,6 +97,7 @@ function Invoke-PyInstallerBuild {
     "--noconfirm",
     "--clean",
     "--onefile",
+    "--specpath", $SpecDir,
     "--icon", $IconPath,
     "--name", $Name,
     "--paths", "backend",
@@ -140,6 +144,7 @@ function Resolve-ViewerProjectBundle {
   }
 
   $candidates = @(
+    (Join-Path $RootDir "viewer_data\local\$ProjectName"),
     (Join-Path $RootDir "viewer_data\$ProjectName"),
     (Join-Path $RootDir "viewer_data\projects\$ProjectName")
   )

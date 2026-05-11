@@ -20,15 +20,15 @@ services:
       COPYLOT_VIEWER_MODE: "1"
       COPYLOT_AI_MODE: "0"
       COPYLOT_VIEWER_PORTAL_ENABLED: "1"
-      COPYLOT_VIEWER_ACCESS_FILE: "/app/viewer_access.local.json"
-      COPYLOT_VIEWER_QR_ACCESS_FILE: "/app/viewer_qr_access.local.json"
+      COPYLOT_VIEWER_ACCESS_FILE: "/app/local/viewer_access.local.json"
+      COPYLOT_VIEWER_QR_ACCESS_FILE: "/app/local/viewer_qr_access.local.json"
       COPYLOT_SESSION_ISOLATION: "1"
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
     volumes:
       - ./viewer_data:/app/viewer_data
-      - ./viewer_access.local.json:/app/viewer_access.local.json:ro
-      - ./viewer_qr_access.local.json:/app/viewer_qr_access.local.json:ro
+      - ./local/viewer_access.local.json:/app/local/viewer_access.local.json:ro
+      - ./local/viewer_qr_access.local.json:/app/local/viewer_qr_access.local.json:ro
 
   proteomics-viewer-ai:
     build:
@@ -51,12 +51,12 @@ services:
       COPYLOT_VIEWER_MODE: "1"
       COPYLOT_AI_MODE: "1"
       COPYLOT_VIEWER_PORTAL_ENABLED: "1"
-      COPYLOT_VIEWER_ACCESS_FILE: "/app/viewer_access.local.json"
-      COPYLOT_VIEWER_QR_ACCESS_FILE: "/app/viewer_qr_access.local.json"
+      COPYLOT_VIEWER_ACCESS_FILE: "/app/local/viewer_access.local.json"
+      COPYLOT_VIEWER_QR_ACCESS_FILE: "/app/local/viewer_qr_access.local.json"
       COPYLOT_SESSION_ISOLATION: "1"
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
     volumes:
       - ./viewer_data:/app/viewer_data
-      - ./viewer_access.local.json:/app/viewer_access.local.json:ro
-      - ./viewer_qr_access.local.json:/app/viewer_qr_access.local.json:ro
+      - ./local/viewer_access.local.json:/app/local/viewer_access.local.json:ro
+      - ./local/viewer_qr_access.local.json:/app/local/viewer_qr_access.local.json:ro

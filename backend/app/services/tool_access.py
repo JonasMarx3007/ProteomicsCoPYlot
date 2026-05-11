@@ -30,7 +30,13 @@ def _access_file_candidates(project_root: Path | None = None) -> list[Path]:
     candidates: list[Path] = []
     if env_path:
         candidates.append(Path(env_path))
-    candidates.extend([root / "tool_access.local.json", root / "tool_access.json"])
+    candidates.extend(
+        [
+            root / "local" / "tool_access.local.json",
+            root / "tool_access.local.json",
+            root / "tool_access.json",
+        ]
+    )
     return candidates
 
 
@@ -55,7 +61,7 @@ def _normalize_sha256(value: str) -> str:
 def _load_access(project_root: Path | None = None) -> dict[str, object]:
     path = _access_file_path(project_root)
     if path is None:
-        raise FileNotFoundError("Tool access is enabled but no tool_access.local.json file was found.")
+        raise FileNotFoundError("Tool access is enabled but no local/tool_access.local.json file was found.")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:

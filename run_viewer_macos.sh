@@ -51,13 +51,19 @@ while [[ $# -gt 0 ]]; do
   shift || true
 done
 
-if [[ -f "$ROOT_DIR/viewer_config.local.json" ]]; then
+if [[ -f "$ROOT_DIR/local/viewer_config.local.json" ]]; then
+  VIEWER_CONFIG="$ROOT_DIR/local/viewer_config.local.json"
+elif [[ -f "$ROOT_DIR/viewer_config.local.json" ]]; then
   VIEWER_CONFIG="$ROOT_DIR/viewer_config.local.json"
 else
   VIEWER_CONFIG="$ROOT_DIR/viewer_config.json"
 fi
 if [[ -n "$VIEWER_PROJECT" ]]; then
-  if [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+  if [[ -f "$ROOT_DIR/viewer_data/local/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/local/$VIEWER_PROJECT/viewer_config.local.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/local/$VIEWER_PROJECT/viewer_config.json" ]]; then
+    VIEWER_CONFIG="$ROOT_DIR/viewer_data/local/$VIEWER_PROJECT/viewer_config.json"
+  elif [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json" ]]; then
     VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.local.json"
   elif [[ -f "$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json" ]]; then
     VIEWER_CONFIG="$ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
@@ -68,6 +74,7 @@ if [[ -n "$VIEWER_PROJECT" ]]; then
   else
     echo "Viewer project '$VIEWER_PROJECT' not found or missing viewer_config.json."
     echo "Expected one of:"
+    echo "  $ROOT_DIR/viewer_data/local/$VIEWER_PROJECT/viewer_config.json"
     echo "  $ROOT_DIR/viewer_data/$VIEWER_PROJECT/viewer_config.json"
     echo "  $ROOT_DIR/viewer_data/projects/$VIEWER_PROJECT/viewer_config.json"
     exit 1
