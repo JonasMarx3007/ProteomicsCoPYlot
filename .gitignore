@@ -15,6 +15,9 @@ build/
 # Local machine state, secrets, scratch notes, and raw private inputs
 local/
 *.local.*
+STRUCTURE_MAP*.md
+functions_maintanance.md
+functions_maintenance.md
 
 # Notebook and editor state
 .ipynb_checkpoints/
