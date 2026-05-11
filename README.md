@@ -41,6 +41,32 @@ Use the ordered install/run/build guide in [readme.txt](./readme.txt), organized
 - Linux: install, run, production run, onefile app build
 - Remote Ollama hosting over Tailscale
 
+## Notebook Package
+
+The notebook-facing Python API is packaged as `proteomicscopylot`.
+
+Local editable install:
+
+```bash
+python -m pip install -e .
+```
+
+Build distributions:
+
+```bash
+python -m pip install build twine
+python build_pip_package.py
+```
+
+Upload a new version to PyPI:
+
+```bash
+python -m twine upload dist/*
+```
+
+Every PyPI upload needs a new version in `pyproject.toml` and
+`proteomicscopylot/_version.py`; existing versions cannot be overwritten.
+
 ## Usage
 
 Windows:

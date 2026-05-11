@@ -623,7 +623,7 @@ export default function AnalysisPage({
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Analysis Pipeline</h2>
         <p className="mt-2 text-sm text-slate-600">
-          Single-window analysis canvas with linked volcano selection and reusable protein lists.
+          Single-window analysis canvas with reusable protein lists.
         </p>
         {analysisError ? (
           <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -998,7 +998,7 @@ export default function AnalysisPage({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-28">
           <div className="space-y-4">
             <div className="grid gap-3">
               <TextField label="New list name" value={newListName} onChange={setNewListName} placeholder="list1" />
@@ -1093,7 +1093,7 @@ export default function AnalysisPage({
         className={[
           "fixed z-50 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition-all duration-300 hover:bg-slate-50",
           aiEnabled ? "bottom-16" : "bottom-4",
-          listSidebarOpen ? "right-[21rem]" : "right-4",
+          "right-4",
         ].join(" ")}
         aria-label="Toggle list sidebar"
       >

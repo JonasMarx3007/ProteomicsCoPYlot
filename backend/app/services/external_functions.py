@@ -75,8 +75,13 @@ def peptideCollapse_old(data, cutoff=0.75, collapse_level='PG'):
             x = x
         return (x)
 
+    def safe_text(value):
+        if pd.isna(value):
+            return ''
+        return str(value).strip()
+
     def fun3(entry0, entry1, entry2, entry3, entry4, entry5):
-        res = entry0 + '~' + entry1 + '_' + entry2 + str((entry3 + entry4 - 1)) + '_M' + str(entry5)
+        res = safe_text(entry0) + '~' + safe_text(entry1) + '_' + safe_text(entry2) + str((entry3 + entry4 - 1)) + '_M' + str(entry5)
         return (res)
 
     def fun4(entry1, entry2):
@@ -125,11 +130,18 @@ def peptideCollapse_old(data, cutoff=0.75, collapse_level='PG'):
     data = pd.concat([df2, df4, df3, df5], axis=1).reset_index()
     print('Long-to-wide formatting done')
     ####################
-    data['PTM_Genprot'] = data['PG.Genes'].astype(str)
+    data['PG.Genes'] = data['PG.Genes'].apply(safe_text)
+    data['PG.ProteinGroups'] = data['PG.ProteinGroups'].apply(safe_text)
+    data['PTM_Genprot'] = data['PG.Genes']
     data['PTM_pep_pos'] = data['PEP.PeptidePosition'].astype(str).apply(
         lambda row: list(filter(None, row.split(';')))[0])
     data['PTM_pep_pos'] = data['PTM_pep_pos'].astype(str).apply(lambda row: list(filter(None, row.split(',')))[0])
-    data = data[data['PTM_pep_pos'] != 'None']
+    data = data[
+        (data['PTM_pep_pos'] != 'None') &
+        (data['PG.Genes'] != '') &
+        (data['PG.ProteinGroups'] != '') &
+        (data['PTM_0_aa'].apply(safe_text) != '')
+    ]
     data['PTM_pep_pos'] = data['PTM_pep_pos'].astype(np.int64)
     data['PTM_mult123'] = data['PTM_0_num'].astype(np.int64)
     data['PTM_mult123'] = data['PTM_mult123'].apply(lambda row: fun2(row))
@@ -271,8 +283,13 @@ def peptideCollapse(data, cutoff=0.75, collapse_level='PG'):
             x = x
         return (x)
 
+    def safe_text(value):
+        if pd.isna(value):
+            return ''
+        return str(value).strip()
+
     def fun3(entry0, entry1, entry2, entry3, entry4, entry5):
-        res = entry0 + '~' + entry1 + '_' + entry2 + str((entry3 + entry4 - 1)) + '_M' + str(entry5)
+        res = safe_text(entry0) + '~' + safe_text(entry1) + '_' + safe_text(entry2) + str((entry3 + entry4 - 1)) + '_M' + str(entry5)
         return (res)
 
     def fun4(entry1, entry2):
@@ -324,18 +341,25 @@ def peptideCollapse(data, cutoff=0.75, collapse_level='PG'):
     ####################
     class CustomWarning(Warning): # update @Yue Yang
      pass
-    underscore_count = data['PG.Genes'].str.contains('_').sum()
+    data['PG.Genes'] = data['PG.Genes'].apply(safe_text)
+    data['PG.ProteinGroups'] = data['PG.ProteinGroups'].apply(safe_text)
+    underscore_count = data['PG.Genes'].str.contains('_', na=False).sum()
     if underscore_count > 0:  # update @Yue Yang
      data['PG.Genes'] = data['PG.Genes'].str.replace('_', '#', regex=False)
      warnings.warn(f"{underscore_count} gene names contained underscores and have been replaced with '#'.", CustomWarning)
     else:
      print("No gene names contained underscores.")
-    data['PTM_Genprot'] = data['PG.Genes'].astype(str)
+    data['PTM_Genprot'] = data['PG.Genes']
     num3 = data.shape[0] # update @Yue Yang
     data['PTM_pep_pos'] = data['PEP.PeptidePosition'].astype(str).apply(
         lambda row: list(filter(None, row.split(';')))[0])
     data['PTM_pep_pos'] = data['PTM_pep_pos'].astype(str).apply(lambda row: list(filter(None, row.split(',')))[0])
-    data = data[data['PTM_pep_pos'] != 'None']
+    data = data[
+        (data['PTM_pep_pos'] != 'None') &
+        (data['PG.Genes'] != '') &
+        (data['PG.ProteinGroups'] != '') &
+        (data['PTM_0_aa'].apply(safe_text) != '')
+    ]
     data['PTM_pep_pos'] = data['PTM_pep_pos'].astype(np.int64)
     data['PTM_mult123'] = data['PTM_0_num'].astype(np.int64)
     data['PTM_mult123'] = data['PTM_mult123'].apply(lambda row: fun2(row))

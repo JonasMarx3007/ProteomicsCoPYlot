@@ -40,8 +40,6 @@ from app.services.functions import (
     single_protein_boxplot_plot,
     single_protein_heatmap_plot,
     single_protein_lineplot_plot,
-    verification_duplicate_pattern_plot,
-    verification_first_digit_plot,
 )
 from app.services.single_protein_tools import (
     single_protein_boxplot_table,
@@ -445,26 +443,6 @@ async def distribution_qq_route(kind: AnnotationKind) -> Response:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render QQ plot: {e}") from e
-
-
-@router.get("/verification/{kind}/first-digit.png")
-async def verification_first_digit_route(kind: AnnotationKind) -> Response:
-    try:
-        return _png_response(verification_first_digit_plot(kind))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render verification plot: {e}") from e
-
-
-@router.get("/verification/{kind}/duplicate-pattern.png")
-async def verification_duplicate_route(kind: AnnotationKind) -> Response:
-    try:
-        return _png_response(verification_duplicate_pattern_plot(kind))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render verification plot: {e}") from e
 
 
 @router.get("/completeness/{kind}/missing-value.png")

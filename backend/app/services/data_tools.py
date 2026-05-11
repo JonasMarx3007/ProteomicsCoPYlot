@@ -13,14 +13,11 @@ from app.schemas.data_tools import (
     DistributionSummaryResponse,
     IdTranslationRequest,
     IdTranslationResponse,
-    DuplicateFrequencyPoint,
-    FirstDigitPoint,
     HistogramBin,
     ImputationResultResponse,
     ImputationRunRequest,
     QQPoint,
     ValueDistributionStats,
-    VerificationSummaryResponse,
 )
 from app.services.annotation_store import get_annotation, save_annotation
 from app.services.condition_palette_store import get_condition_palette
@@ -31,8 +28,6 @@ from app.services.id_translation import run_id_translation as run_id_translation
 from app.services.functions import (
     choose_best_source,
     comparative_histogram,
-    data_pattern_structure_data,
-    first_digit_distribution_data,
     histogram,
     impute_values_with_diagnostics,
     inverse_log2_transform_data,
@@ -60,24 +55,6 @@ def _get_sample_columns(kind: AnnotationKind, frame: pd.DataFrame) -> list[str]:
         if cols:
             return cols
     return frame.select_dtypes(include=[np.number]).columns.astype(str).tolist()
-
-
-def _verification_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str]]:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is None:
-        return raw, _get_sample_columns(kind, raw)
-
-    sample_columns = [c for c in annotation.metadata["sample"].tolist() if c in annotation.log2_data.columns]
-    if not sample_columns:
-        return raw, _get_sample_columns(kind, raw)
-
-    if annotation.is_log2_transformed:
-        org = inverse_log2_transform_data(annotation.log2_data, sample_columns)
-    else:
-        org = annotation.source_data.copy()
-
-    return org, [c for c in sample_columns if c in org.columns]
 
 
 def _best_imputation_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
@@ -288,32 +265,6 @@ def distribution_summary(kind: AnnotationKind) -> DistributionSummaryResponse:
     )
 
 
-def verification_summary(kind: AnnotationKind) -> VerificationSummaryResponse:
-    verification_frame, sample_columns = _verification_frame(kind)
-    if not sample_columns:
-        raise ValueError(f"No sample columns found for {kind} dataset.")
-
-    numeric = verification_frame[sample_columns].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
-    values = numeric.values.flatten()
-    observed = values[~np.isnan(values)]
-
-    first_digit = first_digit_distribution_data(observed)
-    pattern = data_pattern_structure_data(observed)
-
-    return VerificationSummaryResponse(
-        kind=kind,
-        sampleColumns=sample_columns,
-        firstDigit=[
-            FirstDigitPoint(digit=digit, observed=obs, benford=benford)
-            for digit, obs, benford in first_digit
-        ],
-        duplicateFrequency=[
-            DuplicateFrequencyPoint(occurrences=occ, percentage=pct) for occ, pct in pattern
-        ],
-        numericValueCount=int(observed.size),
-    )
-
-
 def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
     return run_id_translation_service(payload)
 
@@ -346,6 +297,5 @@ apply_cached_wrappers(
         "run_imputation",
         "imputed_dataframe",
         "distribution_summary",
-        "verification_summary",
     ],
 )

@@ -1,4 +1,5 @@
 import type { SidebarSection } from "../lib/types";
+import AppBrand from "./AppBrand";
 
 type SidebarItem = {
   key: SidebarSection;
@@ -54,12 +55,8 @@ export default function Sidebar({
           isOpen ? "translate-x-0" : "-translate-x-full",
         ].join(" ")}
       >
-        <div className="flex items-start justify-between p-5">
-          <div className="pr-4">
-            <div className="text-2xl font-bold tracking-tight text-slate-900">
-              Proteomics CoPYlot
-            </div>
-          </div>
+        <div className="flex items-start justify-between gap-3 p-5">
+          <AppBrand />
 
           <button
             type="button"
@@ -71,7 +68,7 @@ export default function Sidebar({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24">
           <nav className="space-y-2">
             {visibleItems.map((item) => {
               const active = item.key === activeSection;

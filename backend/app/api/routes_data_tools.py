@@ -14,7 +14,6 @@ from app.schemas.data_tools import (
     IdTranslationResponse,
     ImputationResultResponse,
     ImputationRunRequest,
-    VerificationSummaryResponse,
 )
 from app.schemas.completeness import CompletenessTablesResponse
 from app.services.data_tools import (
@@ -25,7 +24,6 @@ from app.services.data_tools import (
     update_condition_palette_config,
     run_id_translation,
     run_imputation,
-    verification_summary,
 )
 from app.services.functions import completeness_tables
 
@@ -76,16 +74,6 @@ async def distribution_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Distribution analysis failed: {e}") from e
-
-
-@router.get("/verification/{kind}", response_model=VerificationSummaryResponse)
-async def verification_route(kind: AnnotationKind) -> VerificationSummaryResponse:
-    try:
-        return verification_summary(kind)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Verification analysis failed: {e}") from e
 
 
 @router.get("/completeness/{kind}/tables", response_model=CompletenessTablesResponse)
