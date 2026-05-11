@@ -8,7 +8,6 @@ import AnnotationPage from "./features/metadata/AnnotationPage";
 import AnnotationViewerPage from "./features/metadata/AnnotationViewerPage";
 import ImputationPage from "./features/data/ImputationPage";
 import DistributionPage from "./features/data/DistributionPage";
-import VerificationPage from "./features/data/VerificationPage";
 import IdTranslatorPage from "./features/data/IdTranslatorPage";
 import ColorsPage from "./features/data/ColorsPage";
 import RestorePage from "./features/data/RestorePage";
@@ -82,7 +81,6 @@ const dataTabs: { key: DataTab; label: string }[] = [
   { key: "annotation", label: "Annotation" },
   { key: "imputation", label: "Imputation" },
   { key: "distribution", label: "Distribution" },
-  { key: "verification", label: "Verification" },
   { key: "translator", label: "ID Translator" },
   { key: "conditionPalette", label: "Colors" },
   { key: "restore", label: "Restore" },
@@ -421,9 +419,6 @@ export default function App() {
 
   const topManual = useMemo(() => {
     if (activeSection === "data") {
-      if (activeDataTab === "verification") {
-        return { title: "Data Information Manual", path: manualPath("DataInfoManual.pdf") };
-      }
       return null;
     }
     if (activeSection === "qc") {
@@ -1150,10 +1145,6 @@ export default function App() {
 
       if (activeDataTab === "distribution") {
         return <DistributionPage />;
-      }
-
-      if (activeDataTab === "verification") {
-        return <VerificationPage />;
       }
 
       if (activeDataTab === "translator") {

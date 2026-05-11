@@ -220,25 +220,6 @@ export type DistributionSummaryResponse = {
   warnings: string[];
 };
 
-export type FirstDigitPoint = {
-  digit: number;
-  observed: number;
-  benford: number;
-};
-
-export type DuplicateFrequencyPoint = {
-  occurrences: number;
-  percentage: number;
-};
-
-export type VerificationSummaryResponse = {
-  kind: AnnotationKind;
-  sampleColumns: string[];
-  firstDigit: FirstDigitPoint[];
-  duplicateFrequency: DuplicateFrequencyPoint[];
-  numericValueCount: number;
-};
-
 export type IdTranslationRequest = {
   kind: AnnotationKind;
   column: string;
@@ -643,7 +624,6 @@ export type DataTab =
   | "annotation"
   | "imputation"
   | "distribution"
-  | "verification"
   | "translator"
   | "conditionPalette"
   | "restore";

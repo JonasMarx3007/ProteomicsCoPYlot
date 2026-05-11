@@ -2,8 +2,6 @@ import type {
   BoxplotPoint,
   ComparativeHistogramBin,
   CurvePoint,
-  DuplicateFrequencyPoint,
-  FirstDigitPoint,
   HistogramBin,
   QQPoint,
   SampleMetricPoint,
@@ -263,93 +261,6 @@ export function QQScatterPlot({
         const x = mapX(point.theoretical);
         const y = mapY(point.sample);
         return <circle key={idx} cx={x} cy={y} r={1.8} fill="#0f172a" opacity={0.6} />;
-      })}
-    </svg>
-  );
-}
-
-export function FirstDigitPlot({
-  points,
-  xLabel,
-  yLabel,
-}: {
-  points: FirstDigitPoint[];
-  xLabel?: string;
-  yLabel?: string;
-}) {
-  const { innerWidth, innerHeight } = chartBounds();
-  const maxValue = Math.max(
-    0.01,
-    ...points.flatMap((point) => [point.observed, point.benford])
-  );
-  const groupWidth = points.length > 0 ? innerWidth / points.length : innerWidth;
-
-  const linePath = points
-    .map((point, index) => {
-      const x = PAD_LEFT + index * groupWidth + groupWidth * 0.5;
-      const y = HEIGHT - PAD_BOTTOM - (point.benford / maxValue) * innerHeight;
-      return `${index === 0 ? "M" : "L"} ${x} ${y}`;
-    })
-    .join(" ");
-
-  return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-72 w-full">
-      {axisLine()}
-      {axisLabels(xLabel, yLabel)}
-      {points.map((point, index) => {
-        const barHeight = (point.observed / maxValue) * innerHeight;
-        const x = PAD_LEFT + index * groupWidth + groupWidth * 0.2;
-        return (
-          <rect
-            key={point.digit}
-            x={x}
-            y={HEIGHT - PAD_BOTTOM - barHeight}
-            width={Math.max(4, groupWidth * 0.6)}
-            height={barHeight}
-            fill="#0f172a"
-            opacity={0.75}
-          />
-        );
-      })}
-      {points.length > 1 ? (
-        <path d={linePath} fill="none" stroke="#ef4444" strokeWidth={2} />
-      ) : null}
-    </svg>
-  );
-}
-
-export function DuplicateFrequencyPlot({
-  points,
-  xLabel,
-  yLabel,
-}: {
-  points: DuplicateFrequencyPoint[];
-  xLabel?: string;
-  yLabel?: string;
-}) {
-  const { innerWidth, innerHeight } = chartBounds();
-  const maxValue = Math.max(1, ...points.map((point) => point.percentage));
-  const barWidth = points.length > 0 ? innerWidth / points.length : innerWidth;
-
-  return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-72 w-full">
-      {axisLine()}
-      {axisLabels(xLabel, yLabel)}
-      {points.map((point, index) => {
-        const height = (point.percentage / maxValue) * innerHeight;
-        const x = PAD_LEFT + index * barWidth;
-        const y = HEIGHT - PAD_BOTTOM - height;
-        return (
-          <rect
-            key={`${point.occurrences}-${index}`}
-            x={x}
-            y={y}
-            width={Math.max(1, barWidth - 1)}
-            height={height}
-            fill="#0ea5e9"
-            opacity={0.85}
-          />
-        );
       })}
     </svg>
   );

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getViewerAuthStatus, loginViewer, loginViewerQr, logoutViewer } from "../lib/api";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "../lib/appMode";
 import type { ViewerAuthStatusResponse } from "../lib/types";
+import AppBrand from "./AppBrand";
 
 type Props = {
   children: ReactNode;
@@ -149,7 +150,7 @@ export default function ViewerPortalGate({ children }: Props) {
     return (
       <div className="min-h-screen bg-slate-100 p-6">
         <div className="mx-auto mt-28 max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-          <h1 className="text-xl font-semibold text-slate-900">{modeLabel()}</h1>
+          <AppBrand title={modeLabel()} />
           <p className="mt-3 text-sm text-slate-600">Preparing secure project access...</p>
         </div>
       </div>
@@ -160,7 +161,7 @@ export default function ViewerPortalGate({ children }: Props) {
     return (
       <div className="min-h-screen bg-slate-100 p-6">
         <div className="mx-auto mt-28 max-w-xl rounded-3xl border border-red-200 bg-white p-8 shadow-sm">
-          <h1 className="text-xl font-semibold text-slate-900">{modeLabel()}</h1>
+          <AppBrand title={modeLabel()} />
           <p className="mt-3 text-sm text-red-700">
             {statusError || "Viewer auth endpoint is currently unavailable."}
           </p>
@@ -187,7 +188,7 @@ export default function ViewerPortalGate({ children }: Props) {
   return (
     <div className="min-h-screen bg-slate-100 p-6">
       <div className="mx-auto mt-20 max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="text-2xl font-semibold text-slate-900">{modeLabel()} Login</h1>
+        <AppBrand title={`${modeLabel()} Login`} />
         <p className="mt-3 text-sm text-slate-600">
           Enter your project password to open the assigned viewer.
         </p>

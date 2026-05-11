@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-import math
+"""FastAPI-facing CoPYlot service helpers.
+
+Notebook-style analysis APIs live in the repository root as
+``notebook_functions.py``. Keep shared behavior aligned with that module as
+described in ``STRUCTURE_MAP.md``.
+"""
+
 import re
 from dataclasses import dataclass
 from statistics import NormalDist
@@ -277,31 +283,6 @@ def qqnorm_plot_data(values: np.ndarray, max_points: int = 100_000) -> dict[str,
     }
 
 
-def first_digit_distribution_data(values: np.ndarray) -> list[tuple[int, float, float]]:
-    clean = values[~np.isnan(values)]
-    clean = clean[clean > 0]
-    first_digits: list[int] = []
-    for value in clean:
-        digit = int(str(int(value))[0])
-        if 1 <= digit <= 9:
-            first_digits.append(digit)
-    digit_freq = pd.Series(first_digits).value_counts(normalize=True).sort_index() if first_digits else pd.Series(dtype=float)
-    return [
-        (digit, float(digit_freq.get(digit, 0.0)), float(math.log10(1 + 1 / digit)))
-        for digit in range(1, 10)
-    ]
-
-
-def data_pattern_structure_data(values: np.ndarray) -> list[tuple[int, float]]:
-    clean = values[~np.isnan(values)]
-    if clean.size == 0:
-        return []
-    value_freq = pd.Series(clean).value_counts()
-    freq_of_freq = value_freq.value_counts().sort_index()
-    total = float(freq_of_freq.sum()) if float(freq_of_freq.sum()) > 0 else 1.0
-    return [(int(occ), float((count / total) * 100.0)) for occ, count in freq_of_freq.items()]
-
-
 # Imputation Pipeline
 def imputation_before_plot(
     kind: AnnotationKind,
@@ -342,19 +323,6 @@ def imputation_after_plot(
 # Distribution Pipeline
 def distribution_qqnorm_plot(kind: AnnotationKind) -> bytes:
     from app.services.plot_images import distribution_qqnorm_plot as _impl
-
-    return _impl(kind)
-
-
-# Verification Pipeline
-def verification_first_digit_plot(kind: AnnotationKind) -> bytes:
-    from app.services.plot_images import verification_first_digit_plot as _impl
-
-    return _impl(kind)
-
-
-def verification_duplicate_pattern_plot(kind: AnnotationKind) -> bytes:
-    from app.services.plot_images import verification_duplicate_pattern_plot as _impl
 
     return _impl(kind)
 
@@ -1045,8 +1013,6 @@ apply_cached_wrappers(
         "imputation_overall_fit_plot",
         "imputation_after_plot",
         "distribution_qqnorm_plot",
-        "verification_first_digit_plot",
-        "verification_duplicate_pattern_plot",
         "completeness_missing_value_plot",
         "completeness_missing_value_plot_peptide",
         "completeness_missing_value_plot_precursor",

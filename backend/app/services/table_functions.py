@@ -67,7 +67,7 @@ def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
     return raw
 
 
-def _verification_frame(kind: AnnotationKind) -> pd.DataFrame:
+def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
     if annotation is None:
@@ -320,7 +320,7 @@ def qc_boxplot_table(kind: AnnotationKind, mode: str = "Mean") -> pd.DataFrame:
 
 
 def qc_cv_table(kind: AnnotationKind) -> pd.DataFrame:
-    frame = _verification_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind).replace(0, np.nan)
     sample_columns = _get_sample_columns(kind, frame)
     meta = _metadata_for_kind(kind, frame, sample_columns)
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")

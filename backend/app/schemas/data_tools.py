@@ -54,25 +54,6 @@ class DistributionSummaryResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class FirstDigitPoint(BaseModel):
-    digit: int
-    observed: float
-    benford: float
-
-
-class DuplicateFrequencyPoint(BaseModel):
-    occurrences: int
-    percentage: float
-
-
-class VerificationSummaryResponse(BaseModel):
-    kind: AnnotationKind
-    sampleColumns: list[str]
-    firstDigit: list[FirstDigitPoint]
-    duplicateFrequency: list[DuplicateFrequencyPoint]
-    numericValueCount: int
-
-
 class IdTranslationRequest(BaseModel):
     kind: AnnotationKind
     column: str

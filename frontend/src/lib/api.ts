@@ -61,7 +61,6 @@ import type {
   VolcanoControlRequest,
   VolcanoResultResponse,
   VolcanoRequest,
-  VerificationSummaryResponse,
 } from "./types";
 import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
@@ -899,20 +898,6 @@ export async function getDistributionSummary(
     );
   }
   return data as DistributionSummaryResponse;
-}
-
-export async function getVerificationSummary(
-  kind: AnnotationKind
-): Promise<VerificationSummaryResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/verification/${kind}`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load verification summary"
-    );
-  }
-  return data as VerificationSummaryResponse;
 }
 
 export async function runIdTranslation(

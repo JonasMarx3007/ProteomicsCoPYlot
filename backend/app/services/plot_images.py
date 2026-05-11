@@ -127,7 +127,7 @@ def _imputation_source(kind: AnnotationKind):
     return source_name, frame
 
 
-def _verification_frame(kind: AnnotationKind):
+def _original_scale_frame(kind: AnnotationKind):
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
     if annotation is None:
@@ -453,78 +453,6 @@ def distribution_qqnorm_plot(kind: AnnotationKind) -> bytes:
     ax.set_title("QQ Plot")
     ax.set_xlabel("Theoretical Quantiles")
     ax.set_ylabel("Sample Quantiles")
-    return _to_png_bytes(fig, plt)
-
-
-def verification_first_digit_plot(kind: AnnotationKind) -> bytes:
-    plt = _get_plt()
-    frame = _verification_frame(kind)
-    sample_columns = _get_sample_columns(kind, frame)
-    if not sample_columns:
-        raise ValueError(f"No sample columns found for {kind} dataset.")
-
-    data_values = frame[sample_columns].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
-    values_vector = data_values.values.flatten()
-    values_vector = values_vector[~np.isnan(values_vector)]
-    values_vector = values_vector[values_vector > 0]
-
-    first_digits = [int(str(int(v))[0]) for v in values_vector if v > 0]
-    first_digits = [d for d in first_digits if d in range(1, 10)]
-    digit_freq = pd.Series(first_digits).value_counts(normalize=True).sort_index() if first_digits else pd.Series(dtype=float)
-    benford = {d: math.log10(1 + 1 / d) for d in range(1, 10)}
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    x_obs = digit_freq.index.tolist() if not digit_freq.empty else list(range(1, 10))
-    y_obs = digit_freq.values.tolist() if not digit_freq.empty else [0.0] * 9
-    ax.bar(x_obs, y_obs, color="darkgreen", label="Observed")
-    for idx, val in zip(x_obs, y_obs):
-        ax.text(idx, val + 0.01, f"{val:.1%}", ha="center", va="bottom", fontsize=9)
-    benford_x = list(benford.keys())
-    benford_y = list(benford.values())
-    ax.plot(benford_x, benford_y, color="red", linewidth=2, marker="o", label="Benford")
-    ax.set_xlabel("First Digit")
-    ax.set_ylabel("Relative Frequency")
-    ax.set_xticks(range(1, 10))
-    ax.legend()
-    ax.set_title("First Digit Distribution vs Benford's Law")
-    plt.tight_layout()
-    return _to_png_bytes(fig, plt)
-
-
-def verification_duplicate_pattern_plot(kind: AnnotationKind) -> bytes:
-    plt = _get_plt()
-    frame = _verification_frame(kind)
-    sample_columns = _get_sample_columns(kind, frame)
-    if not sample_columns:
-        raise ValueError(f"No sample columns found for {kind} dataset.")
-
-    data_values = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
-    all_values = data_values.values.flatten()
-    all_values = all_values[~pd.isna(all_values)]
-    if all_values.size == 0:
-        raise ValueError("No numeric values available for duplicate-pattern plot.")
-
-    value_freq = pd.Series(all_values).value_counts()
-    freq_of_freq = value_freq.value_counts().sort_index()
-    freq_of_freq_percent = 100 * freq_of_freq / freq_of_freq.sum()
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar(freq_of_freq_percent.index.astype(str), freq_of_freq_percent.values, color="skyblue")
-    for bar, val in zip(bars, freq_of_freq_percent.values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            val,
-            f"{val:.3f}%",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color="blue",
-        )
-    ax.set_xlabel("Duplicate Number Occurrences")
-    ax.set_ylabel("Percentage (%)")
-    if len(freq_of_freq_percent.values) > 0:
-        ax.set_ylim(0, max(freq_of_freq_percent.values) * 1.2)
-    plt.tight_layout()
     return _to_png_bytes(fig, plt)
 
 
@@ -980,7 +908,7 @@ def qc_cv_plot(
     from matplotlib.patches import Patch
 
     plt = _get_plt()
-    frame = _verification_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind).replace(0, np.nan)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -1511,7 +1439,7 @@ def _abundance_key_column(frame: pd.DataFrame, workflow: str, kind: AnnotationKi
 def _abundance_mean_intensities(
     kind: AnnotationKind,
 ) -> tuple[pd.DataFrame, list[str], str, str]:
-    frame = _verification_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind).replace(0, np.nan)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError("No sample columns available for abundance plot.")
@@ -1686,7 +1614,7 @@ def qc_correlation_plot(
         has_scipy = False
 
     plt = _get_plt()
-    frame = _verification_frame(kind)
+    frame = _original_scale_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
         fallback_cols = (
