@@ -18,6 +18,7 @@ node_modules/
 dist/
 build/
 .vite/
+*.spec
 
 .idea/workspace.xml
 .idea/csv-editor.xml
@@ -35,3 +36,4 @@ viewer_data/projects/*/viewer_config.json
 example_data/20260511_144129_20240822_JM_HEK293_PP_Report.tsv
 
 .DS_Store
+TO-DO.txt

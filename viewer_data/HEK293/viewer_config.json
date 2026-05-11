@@ -1,0 +1,33 @@
+{
+  "datasets": {
+    "HEK293": {
+      "protein_file": "../../example_data/20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv",
+      "phospho_file": "../../example_data/20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv",
+      "phosprot_file": "../../example_data/phosprot_filtered_data_full.csv",
+      "peptide_file": "none",
+      "metadata_profiles": {
+        "WT_vs_GRK": {
+          "meta_file": "../../example_data/protein_metadata_full.csv",
+          "meta_phospho_file": "../../example_data/phospho_metadata_full.csv"
+        }
+      },
+      "imputation": {
+        "mode": "none",
+        "q_value": "none",
+        "adjust_std": "none",
+        "seed": "none",
+        "sample_wise": "none"
+      },
+      "collapse_mode": "sum_mean_impute",
+      "filter_min_protein": 3,
+      "filter_min_phospho": 3,
+      "filter_min_phosphoprotein": 3,
+      "filter_mode_protein": "in at least one group",
+      "filter_mode_phospho": "in at least one group",
+      "filter_mode_phosphoprotein": "in at least one group",
+      "log2_transform_protein": true,
+      "log2_transform_phospho": true,
+      "log2_transform_phosphoprotein": true
+    }
+  }
+}

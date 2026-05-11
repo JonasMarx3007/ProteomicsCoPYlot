@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proteomicscopylot"
+version = "0.1.0"
+description = "Notebook-facing plotting and analysis helpers for ProteomicsCoPYlot."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "ProteomicsCoPYlot contributors" }
+]
+keywords = ["proteomics", "phosphoproteomics", "plotting", "notebooks"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "scipy",
+  "seaborn",
+  "pyarrow",
+  "openpyxl",
+  "scikit-learn",
+  "matplotlib-venn",
+  "plotly",
+  "statsmodels",
+]
+
+[project.optional-dependencies]
+bio = [
+  "biopython",
+  "gprofiler-official",
+]
+dev = [
+  "build",
+  "twine",
+]
+
+[tool.setuptools]
+packages = ["proteomicscopylot", "proteomicscopylot.example_data"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+proteomicscopylot = [
+  "example_data/*.csv",
+  "example_data/*.tsv",
+  "example_data/*.md",
+]
