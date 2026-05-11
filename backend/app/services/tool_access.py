@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+from pathlib import Path
+from threading import RLock
+
+from app.services.session_context import get_session_id
+
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+_SESSION_AUTH: set[str] = set()
+_SESSION_LOCK = RLock()
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in TRUTHY_VALUES
+
+
+def tool_access_enabled() -> bool:
+    return _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED", "0")
+
+
+def _access_file_candidates(project_root: Path | None = None) -> list[Path]:
+    root = project_root or PROJECT_ROOT
+    env_path = str(os.getenv("COPYLOT_TOOL_ACCESS_FILE", "")).strip()
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.extend([root / "tool_access.local.json", root / "tool_access.json"])
+    return candidates
+
+
+def _access_file_path(project_root: Path | None = None) -> Path | None:
+    for candidate in _access_file_candidates(project_root):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _normalize_sha256(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
+        raise ValueError("sha256 values must be 64-character lowercase hex digests.")
+    return text
+
+
+def _load_access(project_root: Path | None = None) -> dict[str, object]:
+    path = _access_file_path(project_root)
+    if path is None:
+        raise FileNotFoundError("Tool access is enabled but no tool_access.local.json file was found.")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Tool access file must contain a JSON object.")
+    return data
+
+
+def _password_hash(data: dict[str, object]) -> str:
+    raw = data.get("password_sha256")
+    if raw is None:
+        raise ValueError("Tool access file must define password_sha256.")
+    return _normalize_sha256(str(raw))
+
+
+def _token_hashes(data: dict[str, object]) -> list[str]:
+    values = data.get("tokens", [])
+    if not isinstance(values, list):
+        raise ValueError("Tool access tokens must be a list.")
+    hashes: list[str] = []
+    for item in values:
+        if isinstance(item, str):
+            hashes.append(_normalize_sha256(item))
+        elif isinstance(item, dict):
+            hashes.append(_normalize_sha256(str(item.get("token_sha256", ""))))
+        else:
+            raise ValueError("Tool access token entries must be strings or objects.")
+    return hashes
+
+
+def tool_session_authenticated() -> bool:
+    if not tool_access_enabled():
+        return True
+    with _SESSION_LOCK:
+        return get_session_id() in _SESSION_AUTH
+
+
+def authenticate_tool_password(password: str, *, project_root: Path | None = None) -> None:
+    data = _load_access(project_root)
+    expected = _password_hash(data)
+    if not secrets.compare_digest(_sha256(str(password or "")), expected):
+        raise ValueError("Invalid tool password.")
+    with _SESSION_LOCK:
+        _SESSION_AUTH.add(get_session_id())
+
+
+def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> None:
+    data = _load_access(project_root)
+    digest = _sha256(str(token or ""))
+    if not any(secrets.compare_digest(digest, expected) for expected in _token_hashes(data)):
+        raise ValueError("Invalid tool access token.")
+    with _SESSION_LOCK:
+        _SESSION_AUTH.add(get_session_id())
+
+
+def clear_tool_session_auth() -> None:
+    with _SESSION_LOCK:
+        _SESSION_AUTH.discard(get_session_id())
