@@ -16,7 +16,7 @@ It provides the full analysis workflow and a separate read-only viewer workflow.
 
 - Analysis tool: full workflow with upload, annotation, analysis, and report generation
 - Viewer: read-only mode for provided datasets via `viewer_config.json`
-- Local viewer override: place a `viewer_config.local.json` in project root for local-only viewer settings (ignored by git and preferred automatically).
+- Local viewer override: place local-only settings under `local/`, for example `local/viewer_config.local.json`.
 - Viewer portal (optional): password login that maps each user session to a project folder in `viewer_data/<ProjectName>/`.
 
 ## Pipelines
@@ -99,9 +99,9 @@ For hosted viewer portals (for example behind nginx on `/viewer` and `/viewer-ai
 
 - `COPYLOT_VIEWER_MODE=1`
 - `COPYLOT_VIEWER_PORTAL_ENABLED=1`
-- `COPYLOT_VIEWER_ACCESS_FILE=/app/viewer_access.local.json`
+- `COPYLOT_VIEWER_ACCESS_FILE=/app/local/viewer_access.local.json`
 
-`viewer_access.local.json` format:
+`local/viewer_access.local.json` format:
 
 ```json
 {
@@ -175,7 +175,7 @@ Tool (AI dev20 default endpoint):
 
 ```powershell
 cd C:\PythonProject\ProteomicsCoPYlot\frontend
-$DEV20_ENDPOINT = (Get-Content ..\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
+$DEV20_ENDPOINT = (Get-Content ..\local\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
 cmd /c "set VITE_APP_MODE=analysis&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=$DEV20_ENDPOINT&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build"
 Set-Content -Path .\dist\.copylot_mode.txt -Value analysis -NoNewline
 cd ..
@@ -196,7 +196,7 @@ Viewer (AI dev20 default endpoint):
 
 ```powershell
 cd C:\PythonProject\ProteomicsCoPYlot\frontend
-$DEV20_ENDPOINT = (Get-Content ..\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
+$DEV20_ENDPOINT = (Get-Content ..\local\dev_ai.local.env | Where-Object { $_ -like "COPYLOT_DEV2_OLLAMA_ENDPOINT=*" } | Select-Object -First 1).Split("=", 2)[1]
 cmd /c "set VITE_APP_MODE=viewer&& set VITE_AI_ENABLED=1&& set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=$DEV20_ENDPOINT&& set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b&& npm run build"
 Set-Content -Path .\dist\.copylot_mode.txt -Value viewer -NoNewline
 cd ..
@@ -217,7 +217,7 @@ set COPYLOT_AI_MODE=1
 - `backend/`: FastAPI API + services
 - `viewer_data/`: data folder for viewer inputs
 - `viewer_data/<ProjectName>/`: project-specific viewer folders (each with its own `viewer_config.json`)
-- `viewer_data/projects/<ProjectName>/`: optional grouped location for project-specific viewer folders
+- `viewer_data/local/<ProjectName>/`: ignored local/private viewer projects
 - `viewer_config.json`: viewer dataset/config mapping
 - `viewer_access.example.json`: template for password-to-project mapping in viewer portal mode
 - `launch.py`: shared runtime launcher
@@ -237,7 +237,7 @@ Containers:
 - `proteomics-viewer` on port `18081` (non-AI viewer)
 - `proteomics-viewer-ai` on port `18082` (AI-enabled viewer)
 
-Both expect a local `viewer_access.local.json` file and shared `viewer_data/` folder.
+Both expect a local `local/viewer_access.local.json` file and shared `viewer_data/` folder.
 
 ## Nginx Routing Example
 

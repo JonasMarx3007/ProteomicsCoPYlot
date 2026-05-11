@@ -5,7 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 DIST_DIR="$ROOT_DIR/dist"
-DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
+DEV_CONFIG="$ROOT_DIR/local/dev_ai.local.env"
+if [[ ! -f "$DEV_CONFIG" ]]; then
+  DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
+fi
 DEV20_ENDPOINT=""
 VALIDATE_ONLY=0
 

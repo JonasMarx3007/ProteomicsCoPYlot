@@ -12,7 +12,9 @@ set "DEV_OLLAMA_ENDPOINT="
 set "DEV_ENDPOINT_KEY="
 set "DEV_MODE_FLAG="
 set "VIEWER_PROJECT="
-if exist "%ROOT%viewer_config.local.json" (
+if exist "%ROOT%local\viewer_config.local.json" (
+  set "VIEWER_CONFIG=%ROOT%local\viewer_config.local.json"
+) else if exist "%ROOT%viewer_config.local.json" (
   set "VIEWER_CONFIG=%ROOT%viewer_config.local.json"
 ) else (
   set "VIEWER_CONFIG=%ROOT%viewer_config.json"
@@ -91,7 +93,11 @@ goto :parse_args
 
 :args_done
 if defined VIEWER_PROJECT (
-  if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json" (
+  if exist "%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.local.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.local.json"
+  ) else if exist "%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json"
+  ) else if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json" (
     set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json"
   ) else if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json" (
     set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json"
@@ -102,6 +108,7 @@ if defined VIEWER_PROJECT (
   ) else (
     echo Viewer project "%VIEWER_PROJECT%" not found or missing viewer_config.json.
     echo Expected one of:
+    echo   %ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json
     echo   %ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json
     echo   %ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.json
     exit /b 1
@@ -135,7 +142,8 @@ if "%DEV_MODE%"=="1" (
 )
 
 if not "%DEV_MODE%"=="0" (
-  set "DEV_CONFIG=%ROOT%dev_ai.local.env"
+  set "DEV_CONFIG=%ROOT%local\dev_ai.local.env"
+  if not exist "!DEV_CONFIG!" set "DEV_CONFIG=%ROOT%dev_ai.local.env"
   if exist "!DEV_CONFIG!" (
     for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
       if /I "%%~A"=="!DEV_ENDPOINT_KEY!" set "DEV_OLLAMA_ENDPOINT=%%~B"
@@ -223,6 +231,8 @@ set "PROJECT=%~1"
 set "FOUND=0"
 if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.local.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\local\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\local\%PROJECT%\viewer_config.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.local.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.json" set "FOUND=1"
 endlocal & set "PROJECT_FOUND=%FOUND%"

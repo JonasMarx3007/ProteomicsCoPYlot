@@ -1,39 +1,28 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
-.ipynb_checkpoints/
 
-.env
-.env.*
-dev_ai.local.env
-tool_access.local.json
-viewer_config.local.json
-viewer_access.local.json
-viewer_qr_access.local.json
-
+# Frontend and build output
 node_modules/
 dist/
 build/
 .vite/
-*.spec
 
+# Local machine state, secrets, scratch notes, and raw private inputs
+local/
+*.local.*
+
+# Notebook and editor state
+.ipynb_checkpoints/
 .idea/workspace.xml
 .idea/csv-editor.xml
 
-# Local viewer payloads can be very large. Keep project viewer configs visible.
-viewer_data/*/data/
-viewer_data/*/metadata/
-viewer_data/*/viewer_config.json
-viewer_data/projects/*/data/
-viewer_data/projects/*/metadata/
-viewer_data/projects/*/viewer_config.json
-!viewer_data/HEK293/viewer_config.json
-
-# Raw example-data source export; notebooks/package use the collapsed phospho file.
-example_data/20260511_144129_20240822_JM_HEK293_PP_Report.tsv
+# Private viewer projects live here; tracked examples stay directly under viewer_data/.
+viewer_data/local/
+viewer_data/projects/
 
 .DS_Store
-TO-DO.txt

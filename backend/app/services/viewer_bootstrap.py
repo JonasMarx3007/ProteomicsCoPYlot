@@ -642,9 +642,12 @@ def bootstrap_current_viewer_session(*, force_reload: bool = False) -> ViewerBoo
 
 
 def _default_viewer_config_path() -> Path:
-    local_override = PROJECT_ROOT / "viewer_config.local.json"
-    if local_override.is_file():
-        return local_override
+    for local_override in (
+        PROJECT_ROOT / "local" / "viewer_config.local.json",
+        PROJECT_ROOT / "viewer_config.local.json",
+    ):
+        if local_override.is_file():
+            return local_override
     return PROJECT_ROOT / "viewer_config.json"
 
 
@@ -659,6 +662,8 @@ def _viewer_project_name_from_env() -> str:
 
 def _project_viewer_config_candidates(project_name: str) -> list[Path]:
     return [
+        PROJECT_ROOT / "viewer_data" / "local" / project_name / "viewer_config.local.json",
+        PROJECT_ROOT / "viewer_data" / "local" / project_name / "viewer_config.json",
         PROJECT_ROOT / "viewer_data" / project_name / "viewer_config.local.json",
         PROJECT_ROOT / "viewer_data" / project_name / "viewer_config.json",
         PROJECT_ROOT / "viewer_data" / "projects" / project_name / "viewer_config.local.json",
@@ -678,6 +683,7 @@ def resolve_viewer_project_config(project_name: str) -> Path | None:
 
 def list_viewer_projects() -> list[str]:
     roots = [
+        PROJECT_ROOT / "viewer_data" / "local",
         PROJECT_ROOT / "viewer_data",
         PROJECT_ROOT / "viewer_data" / "projects",
     ]

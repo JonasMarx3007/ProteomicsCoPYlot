@@ -7,7 +7,9 @@ set "FRONTEND_PORT=5174"
 set "BACKEND_WAIT_SECONDS=%COPYLOT_WAIT_FOR_BACKEND_SECONDS%"
 if "%BACKEND_WAIT_SECONDS%"=="" set "BACKEND_WAIT_SECONDS=20"
 set "VIEWER_PROJECT="
-if exist "%ROOT%viewer_config.local.json" (
+if exist "%ROOT%local\viewer_config.local.json" (
+  set "VIEWER_CONFIG=%ROOT%local\viewer_config.local.json"
+) else if exist "%ROOT%viewer_config.local.json" (
   set "VIEWER_CONFIG=%ROOT%viewer_config.local.json"
 ) else (
   set "VIEWER_CONFIG=%ROOT%viewer_config.json"
@@ -57,7 +59,11 @@ goto :parse_args
 
 :args_done
 if defined VIEWER_PROJECT (
-  if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json" (
+  if exist "%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.local.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.local.json"
+  ) else if exist "%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json" (
+    set "VIEWER_CONFIG=%ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json"
+  ) else if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json" (
     set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.local.json"
   ) else if exist "%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json" (
     set "VIEWER_CONFIG=%ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json"
@@ -68,6 +74,7 @@ if defined VIEWER_PROJECT (
   ) else (
     echo Viewer project "%VIEWER_PROJECT%" not found or missing viewer_config.json.
     echo Expected one of:
+    echo   %ROOT%viewer_data\local\%VIEWER_PROJECT%\viewer_config.json
     echo   %ROOT%viewer_data\%VIEWER_PROJECT%\viewer_config.json
     echo   %ROOT%viewer_data\projects\%VIEWER_PROJECT%\viewer_config.json
     exit /b 1
@@ -133,6 +140,8 @@ set "PROJECT=%~1"
 set "FOUND=0"
 if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.local.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\%PROJECT%\viewer_config.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\local\%PROJECT%\viewer_config.local.json" set "FOUND=1"
+if exist "%ROOT%viewer_data\local\%PROJECT%\viewer_config.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.local.json" set "FOUND=1"
 if exist "%ROOT%viewer_data\projects\%PROJECT%\viewer_config.json" set "FOUND=1"
 endlocal & set "PROJECT_FOUND=%FOUND%"
