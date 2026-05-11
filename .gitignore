@@ -11,6 +11,7 @@ node_modules/
 dist/
 build/
 .vite/
+/package-lock.json
 
 # Local machine state, secrets, scratch notes, and raw private inputs
 local/
@@ -21,8 +22,7 @@ functions_maintenance.md
 
 # Notebook and editor state
 .ipynb_checkpoints/
-.idea/workspace.xml
-.idea/csv-editor.xml
+.idea/
 
 # Private viewer projects live here; tracked examples stay directly under viewer_data/.
 viewer_data/local/
