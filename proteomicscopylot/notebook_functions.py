@@ -59,12 +59,6 @@ try:
 except ModuleNotFoundError:
     SeqIO = None
 
-def cache_data(func=None, **_kwargs):
-    """No-op cache decorator kept for notebook API compatibility."""
-    if func is None:
-        return lambda wrapped: wrapped
-    return func
-
 
 #BASIC AND DATA
 def resource_path_manual(relative_path):
@@ -116,7 +110,6 @@ def make_columns_unique(df):
     return df
 
 
-@cache_data
 def sanitize_dataframe(df):
     df = df.copy()
     df = make_columns_unique(df)
@@ -179,7 +172,6 @@ def info():
     print("Proteomics CoPYlot is a package/app to streamline the analysis of proteomics data. Have fun!")
 
 
-@cache_data
 def read_data(file):
     if hasattr(file, 'name'):
         filename = file.name
@@ -213,7 +205,6 @@ def extract_id_or_number(x):
     return matches[-1] if matches else x
 
 
-@cache_data
 def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     annotated_columns = meta['sample'].tolist()
     data_filtered = data[annotated_columns].copy()
@@ -226,7 +217,6 @@ def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     return combined_data
 
 
-@cache_data
 def inverse_log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     annotated_columns = meta['sample'].tolist()
     log2_data = data[annotated_columns].copy()
@@ -238,7 +228,6 @@ def inverse_log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     return combined_data
 
 
-@cache_data
 def filter_data(data, meta, num, filterops="per group"):
     meta = meta.copy()
     meta['id'] = meta['sample'].apply(extract_id_or_number)
@@ -261,7 +250,6 @@ def filter_data(data, meta, num, filterops="per group"):
     return data.loc[rows_to_keep]
 
 
-@cache_data
 def transform_phosprot(data: pd.DataFrame, meta: pd.DataFrame, mode: str = "sum_mean_impute"):
     required_cols = [
         "UPD_seq",
@@ -362,7 +350,6 @@ def transform_phosprot(data: pd.DataFrame, meta: pd.DataFrame, mode: str = "sum_
     return data_phosprot
 
 
-@cache_data
 def qqnorm_plot(data, meta):
     sample_columns = meta['sample'].tolist()
     data_values = data[sample_columns].replace(0, np.nan)
@@ -382,7 +369,6 @@ def qqnorm_plot(data, meta):
     ax.set_ylabel("Sample Quantiles")
     return fig
 
-@cache_data
 def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=1, ret=0, sample_wise=False, seed=69):
     np.random.seed(seed)
     data = data.replace(0, np.nan).copy()
@@ -460,7 +446,6 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=1, ret
 
 
 #QC FUNCTIONS
-@cache_data
 def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=None,
                   width=20, height=10, dpi=300, text=False, text_size=9):
     data = data.replace(0, np.nan)
@@ -570,7 +555,6 @@ def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=Non
     return fig
 
 
-@cache_data
 def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, height=10, dpi=300, text=False,
                           text_size=9):
     data = data.replace(0, np.nan)
@@ -690,7 +674,6 @@ def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, h
     return fig
 
 
-@cache_data
 def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
                       plot_colors=None, width=10, height=6, dpi=100):
 
@@ -776,7 +759,6 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
     return fig
 
 
-@cache_data
 def histo_int(data, meta, plot_colors=None, header=True, legend=True,
               width=20, height=10, dpi=300):
     figsize_inches = (width / 2.54, height / 2.54)
@@ -830,7 +812,6 @@ def histo_int(data, meta, plot_colors=None, header=True, legend=True,
     return fig
 
 
-@cache_data
 def boxplot_int(data, meta, outliers=False, header=True, plot_colors=None,
                 width_cm=20, height_cm=10, dpi=100, text=False, text_size=9):
     n_conditions = meta['condition'].nunique()
@@ -910,7 +891,6 @@ def boxplot_int(data, meta, outliers=False, header=True, plot_colors=None,
     return fig
 
 
-@cache_data
 def boxplot_int_single(
     data, meta, outliers=False, id=True, header=True, legend=True, plot_colors=None,
     width_cm=20, height_cm=10, dpi=100, text=False, text_size=9
@@ -999,7 +979,6 @@ def boxplot_int_single(
     return fig
 
 
-@cache_data
 def cov_plot(data, meta, outliers=False, header=True, legend=True, plot_colors=None,
              width_cm=20, height_cm=10, dpi=100, text=False, text_size=9):
     conditions = meta['condition'].unique()
@@ -1103,7 +1082,6 @@ def minimum_enclosing_ellipse(points, tol=1e-3):
     return center, axes, angle
 
 
-@cache_data
 def pca_plot(data, meta, header=True, legend=True, dot_size=3,
              width_cm=20, height_cm=10, dpi=100, plot_colors=None,
              plot_3d=False, add_ellipses=False):
@@ -1165,7 +1143,6 @@ def pca_plot(data, meta, header=True, legend=True, dot_size=3,
     return fig
 
 
-@cache_data
 def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
                          dot_size=8, plot_3d=False, add_ellipses=False):
     import matplotlib.colors as mcolors
@@ -1244,7 +1221,6 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
     return fig
 
 
-@cache_data
 def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20, height_cm=10, dpi=300,
                    legend=True, header=True):
     data = data.replace(0, np.nan)
@@ -1323,7 +1299,6 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
     return fig
 
 
-@cache_data
 def interactive_abundance_plot(data, meta, condition, workflow="Protein", search=None, max_ptms=5):
     data = data.replace(0, np.nan)
     annotated_columns = meta.loc[meta["condition"] == condition, "sample"].tolist()
@@ -1406,7 +1381,6 @@ def interactive_abundance_plot(data, meta, condition, workflow="Protein", search
     return fig
 
 
-@cache_data
 def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, height=8, dpi=100):
     meta = meta.copy()
     meta['sample'] = meta['sample'].astype(str)
@@ -1478,7 +1452,6 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
 
 
 #STATISTIC FUNCTIONS
-@cache_data
 def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                    workflow="Protein", paired="Unpaired", uncorrected=False):
     if workflow == "Protein":
@@ -1560,7 +1533,6 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     return pd.DataFrame(result)
 
 
-@cache_data
 def volcano_data_f_control(data, meta, condition1, condition2, condition1_control, condition2_control,
     in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=False):
     if workflow == "Protein":
@@ -1672,7 +1644,6 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     return pd.DataFrame(result)
 
 
-@cache_data
 def volcano_plot(volcano_df, condition1, condition2, in_pval=0.05, in_log2fc=1, uncorrected=False, max_chars=100):
     color_mapping = {'Downregulated': 'blue', 'Not significant': 'gray', 'Upregulated': 'red'}
     y_hline = -np.log10(in_pval)
@@ -1732,7 +1703,6 @@ def volcano_plot(volcano_df, condition1, condition2, in_pval=0.05, in_log2fc=1, 
     return fig
 
 
-@cache_data
 def volcano_plot_h(volcano_df, condition1, condition2,
                    in_pval=0.05, in_log2fc=1, uncorrected=False,
                    highlight_terms=None, max_chars=100):
@@ -1831,7 +1801,6 @@ def volcano_plot_h(volcano_df, condition1, condition2,
 
 gp = GProfiler(return_dataframe=True) if GProfiler is not None else None
 
-@cache_data
 def different_genes(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                     workflow="Gene", paired="Unpaired", uncorrected=False):
     annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
@@ -1899,7 +1868,6 @@ def different_genes(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=
     return {'Upregulated': up_genes, 'Downregulated': down_genes}
 
 
-@cache_data
 def enrichment_analysis(gene_list, top_n=10, min_num=20, max_num=300):
     gene_list = [g for g in gene_list if g]
     if not gene_list:
@@ -1939,7 +1907,6 @@ def enrichment_analysis(gene_list, top_n=10, min_num=20, max_num=300):
     return fig
 
 
-@cache_data
 def load_go_db():
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS
@@ -1950,7 +1917,6 @@ def load_go_db():
     return pd.read_csv(db_file)
 
 
-@cache_data
 def proteins_in_pathway(
         data, meta, db, pathway, conditions=None,
         figsize=(12, 8), cmap_name='plasma',
@@ -2070,7 +2036,6 @@ def proteins_in_pathway(
     return fig
 
 
-@cache_data
 def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                      workflow="Protein", mod_var=1, mod_n=0):
     annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
@@ -2235,7 +2200,6 @@ def ksea_data_f(data, meta, condition1, condition2,
     })
 
 
-@cache_data
 def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
                         condition1: str, condition2: str,
                         in_pval: float = 0.05, in_log2fc: float = 1,
@@ -2360,7 +2324,6 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
 
 
 #PEPTIDE
-@cache_data
 def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=1000, header=True, width=8, height=6, dpi=100):
     data = read_data(data_path)
 
@@ -2392,7 +2355,6 @@ def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=100
     return fig
 
 
-@cache_data
 def modification_plot(data2_path, meta, id=True, header=True, legend=True, width=10, height=6, dpi=100):
     if isinstance(data2_path, pd.DataFrame):
         data2 = data2_path.copy()
@@ -2487,7 +2449,6 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
     return fig
 
 
-@cache_data
 def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, header=True,
                          width=10, height=6, dpi=100):
 
@@ -2581,7 +2542,6 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     return fig
 
 
-@cache_data
 def calculate_coverage(data_path, db, protein):
     data = read_data(data_path).copy()
 
@@ -2606,7 +2566,6 @@ def calculate_coverage(data_path, db, protein):
     return round((sum(coverage_mask) / len(sequence)) * 100, 2)
 
 
-@cache_data
 def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size: int = 30) -> str:
     data = data[data['ProteinNames'].str.contains(rf"\b{re.escape(protein)}\b", regex=True)]
     found_seq = data['Stripped.Sequence'].unique()
@@ -2678,7 +2637,6 @@ def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size:
     return "\n".join(output_lines)
 
 
-@cache_data
 def fasta_to_dataframe(fasta_path):
     records = list(SeqIO.parse(fasta_path, "fasta"))
     data = {"full_header": [rec.id for rec in records], "V1": [str(rec.seq) for rec in records]}
@@ -2689,7 +2647,6 @@ def fasta_to_dataframe(fasta_path):
 
 
 #SINGLE PROTEIN
-@cache_data
 def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, legend=True,
                       workflow="Protein", plot_colors=None, width=10, height=6, dpi=100):
     meta = meta.copy()
@@ -2769,7 +2726,6 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
     return fig
 
 
-@cache_data
 def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, header=True, legend=True,
                        plot_colors=None, width=8, height=6, dpi=100):
     meta = meta.copy()
@@ -2944,7 +2900,6 @@ def phossite_on_prot_regulation(
 
 
 #PHOSPHO-SPECIFIC
-@cache_data
 def phossite_coverage_plot(
     data, meta, id=False, header=True, legend=True,
     width=20, height=10, dpi=300,
@@ -3043,7 +2998,6 @@ def sty_plot(data):
     plt.show()
 
 
-@cache_data
 def phossite_coverage_plot_summary(
     data, meta, header=True, legend=True,
     width=20, height=10, dpi=300,
@@ -3113,7 +3067,6 @@ def phossite_coverage_plot_summary(
     return fig
 
 
-@cache_data
 def simple_phos_site_plot(data, filter_value=0, width_cm=15, height_cm=10, dpi=100, color="skyblue"):
     data = data[data["PTM_localization"] >= filter_value].copy()
     phosprot = data["Protein_group"].nunique()
@@ -3146,7 +3099,6 @@ def simple_phos_site_plot(data, filter_value=0, width_cm=15, height_cm=10, dpi=1
     return fig
 
 
-@cache_data
 def ksea_volcano(
         data_st,
         data_tnc,
@@ -3289,7 +3241,6 @@ def phossite_dist(data, cutoff=0, width=20, height=15, dpi=300, header=True):
 
 
 #COMPARISON
-@cache_data
 def correlation_xy_intensity_single(data, sample1, sample2, alias1=None, alias2=None, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=True):
     valid_data = data[[sample1, sample2]].dropna()
     if valid_data.empty: raise ValueError("No overlapping proteins with intensity in both samples.")
@@ -3307,7 +3258,6 @@ def correlation_xy_intensity_single(data, sample1, sample2, alias1=None, alias2=
     return fig
 
 
-@cache_data
 def correlation_xy_intensity(data, meta, condition1, condition2, alias1=None, alias2=None, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=True):
     s1 = meta.loc[meta['condition']==condition1,'sample'].astype(str).tolist()
     s2 = meta.loc[meta['condition']==condition2,'sample'].astype(str).tolist()
@@ -3329,7 +3279,6 @@ def correlation_xy_intensity(data, meta, condition1, condition2, alias1=None, al
     return fig
 
 
-@cache_data
 def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True):
     p1 = set(data.index[(data[sample1].notna()) & (data[sample1] != 0)])
     p2 = set(data.index[(data[sample2].notna()) & (data[sample2] != 0)])
@@ -3346,7 +3295,6 @@ def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7,
     return fig
 
 
-@cache_data
 def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True):
     s1 = meta.loc[meta['condition']==condition1,'sample'].tolist()
     s2 = meta.loc[meta['condition']==condition2,'sample'].tolist()
@@ -3367,7 +3315,6 @@ def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, 
 
 
 #DATA COMPLETENESS
-@cache_data
 def missing_value_plot(data, meta, bin=0, header=True, text=True, text_size=3.88,
                        width=7.87, height=3.94, dpi=300, color='blue'):
     annotated_columns = meta['sample']
@@ -3418,7 +3365,6 @@ def missing_value_plot(data, meta, bin=0, header=True, text=True, text_size=3.88
     return fig
 
 
-@cache_data
 def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
                             text_size=8, width=10, height=6, dpi=100, color='blue'):
     data = sanitize_dataframe(read_data(data_path)).copy()
@@ -3471,7 +3417,6 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
     return fig
 
 
-@cache_data
 def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
                            text_size=8, width=10, height=6, dpi=100, color='blue'):
     data = sanitize_dataframe(read_data(data_path)).copy()

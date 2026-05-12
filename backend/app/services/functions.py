@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """FastAPI-facing CoPYlot service helpers.
 
-Notebook-style analysis APIs live in the repository root as
-``notebook_functions.py``. Keep shared behavior aligned with that module when
-changing app-facing plotting helpers.
+Notebook-style analysis APIs live in ``proteomicscopylot.notebook_functions``.
+Keep shared behavior aligned with that module when changing app-facing plotting
+helpers.
 """
 
 import re
