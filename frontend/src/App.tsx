@@ -41,6 +41,7 @@ import PhosprotRegulationPage from "./features/phospho/PhosprotRegulationPage";
 import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
+import GONetViewPage from "./features/external/GONetViewPage";
 import TablesPage from "./features/summary/TablesPage";
 import TextPage from "./features/summary/TextPage";
 import ReportPage from "./features/summary/ReportPage";
@@ -138,6 +139,7 @@ const comparisonTabs: { key: ComparisonTab; label: string }[] = [
 
 const externalTabs: { key: ExternalTab; label: string }[] = [
   { key: "peptideCollapse", label: "Peptide Collapse" },
+  { key: "gonetView", label: "GONetView" },
 ];
 
 const summaryTabs: { key: SummaryTab; label: string }[] = [
@@ -352,6 +354,30 @@ export default function App() {
         : statsTabs,
     []
   );
+  const visiblePeptideTabs = useMemo(
+    () =>
+      IS_VIEWER_MODE
+        ? peptideTabs.filter((tab) => tab.key !== "sequenceCoverage")
+        : peptideTabs,
+    []
+  );
+  const visibleSingleProteinTabs = useMemo(
+    () => {
+      if (!IS_VIEWER_MODE) return singleProteinTabs;
+      if (datasetsLoading || datasets === null) return singleProteinTabs;
+      return datasets.phospho
+        ? singleProteinTabs
+        : singleProteinTabs.filter((tab) => tab.key !== "heatmap");
+    },
+    [datasets, datasetsLoading]
+  );
+  const visibleExternalTabs = useMemo(
+    () =>
+      IS_VIEWER_MODE
+        ? externalTabs.filter((tab) => tab.key === "gonetView")
+        : externalTabs,
+    []
+  );
   const visibleSummaryTabs = useMemo(
     () =>
       IS_VIEWER_MODE
@@ -383,7 +409,7 @@ export default function App() {
     // Keep phospho-specific visible while initial dataset loading is still unresolved,
     // then apply strict data-based visibility once snapshot is available.
     if (hasPhosphoWorkflow || datasetsLoading || datasets === null) sections.push("phospho");
-    sections.push("comparison", "summary");
+    sections.push("comparison", "summary", "external");
     return sections;
   }, [datasets, datasetsLoading]);
 
@@ -404,6 +430,24 @@ export default function App() {
       setActiveStatsTab(visibleStatsTabs[0]?.key ?? "volcano");
     }
   }, [activeStatsTab, visibleStatsTabs]);
+
+  useEffect(() => {
+    if (!visiblePeptideTabs.some((tab) => tab.key === activePeptideTab)) {
+      setActivePeptideTab(visiblePeptideTabs[0]?.key ?? "rtPlot");
+    }
+  }, [activePeptideTab, visiblePeptideTabs]);
+
+  useEffect(() => {
+    if (!visibleSingleProteinTabs.some((tab) => tab.key === activeSingleProteinTab)) {
+      setActiveSingleProteinTab(visibleSingleProteinTabs[0]?.key ?? "boxplot");
+    }
+  }, [activeSingleProteinTab, visibleSingleProteinTabs]);
+
+  useEffect(() => {
+    if (!visibleExternalTabs.some((tab) => tab.key === activeExternalTab)) {
+      setActiveExternalTab(visibleExternalTabs[0]?.key ?? "gonetView");
+    }
+  }, [activeExternalTab, visibleExternalTabs]);
 
   useEffect(() => {
     if (!visibleSummaryTabs.some((tab) => tab.key === activeSummaryTab)) {
@@ -727,7 +771,7 @@ export default function App() {
     if (activeSection === "peptide") {
       return (
         <TopTabs
-          tabs={peptideTabs}
+          tabs={visiblePeptideTabs}
           activeTab={activePeptideTab}
           onChange={setActivePeptideTab}
           rightContent={topManualButton}
@@ -738,7 +782,7 @@ export default function App() {
     if (activeSection === "singleProtein") {
       return (
         <TopTabs
-          tabs={singleProteinTabs}
+          tabs={visibleSingleProteinTabs}
           activeTab={activeSingleProteinTab}
           onChange={setActiveSingleProteinTab}
           rightContent={topManualButton}
@@ -782,7 +826,7 @@ export default function App() {
     if (activeSection === "external") {
       return (
         <TopTabs
-          tabs={externalTabs}
+          tabs={visibleExternalTabs}
           activeTab={activeExternalTab}
           onChange={setActiveExternalTab}
           rightContent={topManualButton}
@@ -806,6 +850,9 @@ export default function App() {
     topManualButton,
     visibleDataTabs,
     visibleStatsTabs,
+    visiblePeptideTabs,
+    visibleSingleProteinTabs,
+    visibleExternalTabs,
     visibleSummaryTabs,
     visiblePhosphoTabs,
   ]);
@@ -1059,6 +1106,10 @@ export default function App() {
         return <MissedCleavagePlotPage onContextModeChange={setPeptideContextMode} />;
       }
 
+      if (IS_VIEWER_MODE) {
+        return <RtPlotPage onContextModeChange={setPeptideContextMode} />;
+      }
+
       return <SequenceCoveragePage onContextModeChange={setPeptideContextMode} />;
     }
 
@@ -1069,6 +1120,10 @@ export default function App() {
 
       if (activeSingleProteinTab === "lineplot") {
         return <ProteinLineplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
+      }
+
+      if (IS_VIEWER_MODE && !datasets?.phospho && !datasetsLoading) {
+        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
       }
 
       return <PhosphositesOnProteinHeatmapPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
@@ -1126,8 +1181,12 @@ export default function App() {
 
     if (activeSection === "external") {
       if (activeExternalTab === "peptideCollapse") {
+        if (IS_VIEWER_MODE) {
+          return <GONetViewPage />;
+        }
         return <PeptideCollapsePage />;
       }
+      return <GONetViewPage />;
     }
 
     if (activeSection === "data") {

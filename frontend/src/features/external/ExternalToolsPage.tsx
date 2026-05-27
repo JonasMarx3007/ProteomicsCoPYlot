@@ -7,6 +7,10 @@ type Props = {
 };
 
 export default function ExternalToolsPage({ activeTab }: Props) {
+  if (activeTab === "gonetView") {
+    return <GONetViewTool />;
+  }
+
   if (activeTab !== "peptideCollapse") {
     return (
       <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
@@ -17,6 +21,83 @@ export default function ExternalToolsPage({ activeTab }: Props) {
   }
 
   return <PeptideCollapseTool />;
+}
+
+function GONetViewTool() {
+  const appUrl = "https://jonasmarx3007.github.io/GONetView/";
+  const githubUrl = "https://github.com/JonasMarx3007/GONetView";
+  const doiUrl = "https://doi.org/10.5281/zenodo.20271711";
+  const imageUrl =
+    "https://raw.githubusercontent.com/JonasMarx3007/GONetView/main/docs/assets/gonetview-overview.png";
+  const imagePageUrl =
+    "https://github.com/JonasMarx3007/GONetView/blob/main/docs/assets/gonetview-overview.png";
+
+  return (
+    <div className="space-y-6">
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="grid gap-6 lg:grid-cols-[minmax(20rem,0.75fr)_minmax(34rem,1.25fr)] lg:items-start">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              External Web Tool
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-slate-950">GONetView</h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
+              Visualize Gene Ontology term networks and explore how genes connect to biological
+              processes, molecular functions, and cellular components.
+            </p>
+
+            <ul className="mt-5 space-y-2 text-sm leading-6 text-slate-700">
+              <li>Map GO terms into interpretable networks.</li>
+              <li>Inspect genes associated with selected GO terms.</li>
+              <li>Export GO network figures for reports and publications.</li>
+            </ul>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <ExternalLinkButton href={appUrl}>Open GONetView</ExternalLinkButton>
+              <ExternalLinkButton href={doiUrl}>DOI</ExternalLinkButton>
+              <ExternalLinkButton href={githubUrl}>GitHub</ExternalLinkButton>
+            </div>
+
+            <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Citation
+              </div>
+              <p className="mt-2 text-sm leading-6 text-slate-700">
+                Marx, J. (2026). GONetView (v0.1.0) [Computer software]. Zenodo.
+                https://doi.org/10.5281/zenodo.20271711
+              </p>
+            </div>
+          </div>
+
+          <a
+            href={imagePageUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"
+          >
+            <img
+              src={imageUrl}
+              alt="GONetView overview"
+              className="h-auto min-h-[24rem] w-full object-cover"
+            />
+          </a>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ExternalLinkButton({ href, children }: { href: string; children: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+    >
+      {children}
+    </a>
+  );
 }
 
 function PeptideCollapseTool() {

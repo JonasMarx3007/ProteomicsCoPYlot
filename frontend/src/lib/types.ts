@@ -492,7 +492,7 @@ export type ComparisonTableResponse = {
   rows: Record<string, unknown>[];
 };
 
-export type ExternalTab = "peptideCollapse";
+export type ExternalTab = "peptideCollapse" | "gonetView";
 
 export type SummaryTableBlock = {
   key: string;

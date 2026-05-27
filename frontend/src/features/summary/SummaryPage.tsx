@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { generateSummaryReport, getSummaryTables } from "../../lib/api";
+import {
+  downloadCurrentAnnotationMetadataData,
+  generateSummaryReport,
+  getSummaryTables,
+} from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { getSummaryReportContext } from "../../lib/reportState";
@@ -71,6 +75,7 @@ export default function SummaryPage({ activeTab }: Props) {
   const [tables, setTables] = useState<SummaryTablesResponse | null>(null);
   const [tablesLoading, setTablesLoading] = useState(false);
   const [tablesError, setTablesError] = useState<string | null>(null);
+  const [tableDownloadBusyKey, setTableDownloadBusyKey] = useState<string | null>(null);
 
   const [textEntries, setTextEntries] = useState<Record<string, string>>(() =>
     asStringRecord(persisted.textEntries)
@@ -191,6 +196,27 @@ export default function SummaryPage({ activeTab }: Props) {
     if (!reportResult) return null;
     return `data:text/html;charset=utf-8,${encodeURIComponent(reportResult.html)}`;
   }, [reportResult]);
+  const hasAvailableTables = Boolean(tables?.protein.available || tables?.phospho.available);
+
+  async function handleDownloadMetadata(kind: SummaryMetadataTable["kind"]) {
+    try {
+      setTableDownloadBusyKey(kind);
+      setTablesError(null);
+      const { blob, filename } = await downloadCurrentAnnotationMetadataData(kind);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setTablesError(err instanceof Error ? err.message : "Failed to download metadata table");
+    } finally {
+      setTableDownloadBusyKey(null);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -200,31 +226,52 @@ export default function SummaryPage({ activeTab }: Props) {
 
       {activeTab === "tables" ? (
         <div className="space-y-6">
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-lg font-semibold text-slate-900">Metadata Tables</h3>
-              <button
-                type="button"
-                onClick={refreshTables}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Refresh
-              </button>
+          {tablesLoading ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+              Loading tables...
             </div>
-            {tablesLoading ? (
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                Loading tables...
-              </div>
-            ) : null}
-            {tablesError ? (
-              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {tablesError}
-              </div>
-            ) : null}
-          </section>
+          ) : null}
+          {tablesError ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {tablesError}
+            </div>
+          ) : null}
 
           <MetadataTableCard title="Normal Data Metadata" table={tables?.protein ?? null} />
           <MetadataTableCard title="Phospho Data Metadata" table={tables?.phospho ?? null} />
+
+          {hasAvailableTables ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={refreshTables}
+                disabled={tablesLoading || tableDownloadBusyKey !== null}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              >
+                {tablesLoading ? "Refreshing..." : "Refresh"}
+              </button>
+              {tables?.protein.available ? (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadMetadata("protein")}
+                  disabled={tableDownloadBusyKey !== null}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                >
+                  {tableDownloadBusyKey === "protein" ? "Downloading..." : "Download Normal Metadata"}
+                </button>
+              ) : null}
+              {tables?.phospho.available ? (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadMetadata("phospho")}
+                  disabled={tableDownloadBusyKey !== null}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                >
+                  {tableDownloadBusyKey === "phospho" ? "Downloading..." : "Download Phospho Metadata"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
