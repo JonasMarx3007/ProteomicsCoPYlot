@@ -1,11 +1,3 @@
-"""Notebook-facing CoPYlot functions.
-
-This module mirrors the original notebook API used by notebooks such as
-``8cell.ipynb``. Keep it in sync with the app/backend implementation when
-analysis behavior changes, and keep notebook-friendly signatures stable so this
-file can later become the basis for a pip package import.
-"""
-
 import os
 import re
 import sys
@@ -19,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pyarrow.parquet as pq
 import scipy.stats as stats
-import seaborn as sns
+import seaborn as    sns
 from matplotlib.patches import Ellipse
 from matplotlib.patches import Rectangle
 from matplotlib_venn import venn2, venn3

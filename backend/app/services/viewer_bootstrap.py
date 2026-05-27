@@ -306,13 +306,15 @@ def _bootstrap_annotation(
 ) -> None:
     try:
         source_frame = frame
-        imputation_info = AnnotationImputationInfo(mode="none", applied=False)
-        if metadata is not None:
-            source_frame, imputation_info = _apply_viewer_imputation(
+        imputation_info = (
+            _viewer_imputation_info(
                 frame=frame,
                 metadata=metadata,
                 config=imputation_config,
             )
+            if metadata is not None
+            else AnnotationImputationInfo(mode="none", applied=False)
+        )
 
         if metadata is not None:
             computed = compute_annotation_from_metadata(
@@ -334,20 +336,14 @@ def _bootstrap_annotation(
             metadata_source = "auto" if computed.auto_detected else "manual"
 
         warnings = list(computed.warnings)
-        if imputation_info.applied:
+        if imputation_info.mode != "none":
             warnings.append(
-                "Viewer imputation applied "
+                "Viewer imputation configured for selectable statistics only; "
+                "original data is retained for completeness, QC, and missing-value plots "
                 f"(mode={imputation_info.mode}, qValue={imputation_info.qValue}, "
                 f"adjustStd={imputation_info.adjustStd}, seed={imputation_info.seed}, "
-                f"sampleWise={imputation_info.sampleWise}, "
+                f"sampleWise={imputation_info.sampleWise}, samples={imputation_info.sampleCount}, "
                 f"missing={imputation_info.missingBefore}->{imputation_info.missingAfter})."
-            )
-        elif imputation_info.mode != "none":
-            warnings.append(
-                "Viewer imputation configured but not applied "
-                f"(mode={imputation_info.mode}, qValue={imputation_info.qValue}, "
-                f"adjustStd={imputation_info.adjustStd}, seed={imputation_info.seed}, "
-                f"sampleWise={imputation_info.sampleWise}, samples={imputation_info.sampleCount})."
             )
         else:
             warnings.append("Viewer imputation: none.")
@@ -456,14 +452,14 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
     )
 
 
-def _apply_viewer_imputation(
+def _viewer_imputation_info(
     *,
     frame: pd.DataFrame,
     metadata: pd.DataFrame,
     config: ViewerImputationConfig,
-) -> tuple[pd.DataFrame, AnnotationImputationInfo]:
+) -> AnnotationImputationInfo:
     if config.mode == "none":
-        return frame, AnnotationImputationInfo(mode="none", applied=False)
+        return AnnotationImputationInfo(mode="none", applied=False)
 
     metadata_samples = (
         metadata.get("sample", pd.Series([], dtype="object"))
@@ -475,17 +471,14 @@ def _apply_viewer_imputation(
     # Preserve metadata sample order while removing duplicates.
     sample_columns = list(dict.fromkeys(sample_columns))
     if not sample_columns:
-        return (
-            frame,
-            AnnotationImputationInfo(
-                mode=config.mode,
-                applied=False,
-                qValue=config.q_value,
-                adjustStd=config.adjust_std,
-                seed=config.seed,
-                sampleWise=config.sample_wise,
-                sampleCount=0,
-            ),
+        return AnnotationImputationInfo(
+            mode=config.mode,
+            applied=False,
+            qValue=config.q_value,
+            adjustStd=config.adjust_std,
+            seed=config.seed,
+            sampleWise=config.sample_wise,
+            sampleCount=0,
         )
 
     diagnostics = impute_values_with_diagnostics(
@@ -496,19 +489,16 @@ def _apply_viewer_imputation(
         seed=config.seed,
         sample_wise=config.sample_wise,
     )
-    return (
-        diagnostics.imputed_data,
-        AnnotationImputationInfo(
-            mode=config.mode,
-            applied=True,
-            qValue=config.q_value,
-            adjustStd=config.adjust_std,
-            seed=config.seed,
-            sampleWise=config.sample_wise,
-            sampleCount=len(sample_columns),
-            missingBefore=diagnostics.missing_before,
-            missingAfter=diagnostics.missing_after,
-        ),
+    return AnnotationImputationInfo(
+        mode=config.mode,
+        applied=False,
+        qValue=config.q_value,
+        adjustStd=config.adjust_std,
+        seed=config.seed,
+        sampleWise=config.sample_wise,
+        sampleCount=len(sample_columns),
+        missingBefore=diagnostics.missing_before,
+        missingAfter=diagnostics.missing_after,
     )
 
 

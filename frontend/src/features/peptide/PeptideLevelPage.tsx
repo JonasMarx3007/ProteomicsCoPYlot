@@ -29,7 +29,6 @@ const MISSING_PEPTIDE_DATASET_MESSAGE =
 export default function PeptideLevelPage({ activeTab, onContextModeChange }: Props) {
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [rt, setRt] = useState({
@@ -244,13 +243,11 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
   }, [coverageResult]);
 
   async function refresh() {
-    setRefreshing(true);
     try {
       const nextOverview = await getPeptideOverview();
       setOverview(nextOverview);
       setError(null);
     } finally {
-      setRefreshing(false);
       setLoading(false);
     }
   }
@@ -276,30 +273,12 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Peptide Dataset">
-        <div className="grid gap-4 lg:grid-cols-3">
-          <SummaryCard label="File" value={overview.filename} title={overview.filename} />
-          <SummaryCard label="Rows" value={String(overview.rows)} />
-          <SummaryCard label="Proteins" value={String(overview.availableProteins.length)} />
-        </div>
-        <div className="mt-4">
-          <button
-            type="button"
-            onClick={() => refresh().catch(() => {})}
-            disabled={refreshing}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-          >
-            {refreshing ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-        {overview.warnings.length > 0 ? (
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            {overview.warnings.join(" ")}
-          </div>
-        ) : null}
-      </SectionCard>
-
       {error ? <ErrorBanner message={error} /> : null}
+      {overview.warnings.length > 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {overview.warnings.join(" ")}
+        </div>
+      ) : null}
 
       {activeTab === "rtPlot" ? (
         <>

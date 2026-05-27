@@ -155,16 +155,6 @@ export default function AnnotationViewerPage() {
                 value={formatImputationSummary(annotation.imputation)}
               />
             </div>
-            {shouldShowImputationDetails(annotation.imputation) ? (
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                {formatImputationDetails(annotation.imputation)}
-              </div>
-            ) : null}
-            {annotation.warnings.length > 0 ? (
-              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {annotation.warnings.join(" ")}
-              </div>
-            ) : null}
           </section>
         );
       })}
@@ -183,46 +173,13 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 
 function formatImputationSummary(imputation: AnnotationImputationInfo | null): string {
   if (!imputation) return "none";
-  if (imputation.applied) return imputation.mode || "applied";
-  if (imputation.mode && imputation.mode !== "none") return "configured (not applied)";
+  if (imputation.mode && imputation.mode !== "none") {
+    return `q=${formatValue(imputation.qValue)}, adj_std=${formatValue(imputation.adjustStd)}`;
+  }
   return "none";
 }
 
-function shouldShowImputationDetails(imputation: AnnotationImputationInfo | null): boolean {
-  if (!imputation) return false;
-  if (imputation.applied) return true;
-  return Boolean(imputation.mode && imputation.mode !== "none");
-}
-
-function formatValue(value: number | boolean | null): string {
+function formatValue(value: number | null): string {
   if (value == null) return "n/a";
   return String(value);
-}
-
-function formatConfiguredDetails(imputation: AnnotationImputationInfo): string {
-  return (
-    `Imputation configured but not applied: ` +
-    `mode=${imputation.mode}, qValue=${formatValue(imputation.qValue)}, ` +
-    `adjustStd=${formatValue(imputation.adjustStd)}, ` +
-    `seed=${formatValue(imputation.seed)}, sampleWise=${formatValue(imputation.sampleWise)}, ` +
-    `sampleCount=${formatValue(imputation.sampleCount)}`
-  );
-}
-
-function formatAppliedDetails(imputation: AnnotationImputationInfo): string {
-  return (
-    `Imputation applied: ` +
-    `mode=${imputation.mode}, qValue=${formatValue(imputation.qValue)}, ` +
-    `adjustStd=${formatValue(imputation.adjustStd)}, ` +
-    `seed=${formatValue(imputation.seed)}, sampleWise=${formatValue(imputation.sampleWise)}, ` +
-    `sampleCount=${formatValue(imputation.sampleCount)}, ` +
-    `missing=${formatValue(imputation.missingBefore)}->${formatValue(imputation.missingAfter)}`
-  );
-}
-
-function formatImputationDetails(imputation: AnnotationImputationInfo | null): string {
-  if (!imputation) return "";
-  if (imputation.applied) return formatAppliedDetails(imputation);
-  if (imputation.mode && imputation.mode !== "none") return formatConfiguredDetails(imputation);
-  return "";
 }
