@@ -27,6 +27,9 @@ class AnalysisVolcanoRequest(BaseModel):
 class AnalysisVolcanoPoint(BaseModel):
     label: str
     selectionLabel: str
+    selectionKey: str | None = None
+    boxplotLabel: str | None = None
+    boxplotIdentifier: StatsIdentifier | None = None
     uniprotAccession: str | None = None
     workflowLabel: str | None = None
     geneLabel: str | None = None

@@ -22,6 +22,7 @@ import PrincipalComponentAnalysisPage from "./features/qc/PrincipalComponentAnal
 import AbundancePlotPage from "./features/qc/AbundancePlotPage";
 import CorrelationPlotPage from "./features/qc/CorrelationPlotPage";
 import VolcanoPlotPage from "./features/stats/VolcanoPlotPage";
+import AnovaPage from "./features/stats/AnovaPage";
 import GseaPage from "./features/stats/GseaPage";
 import PathwayHeatmapPage from "./features/stats/PathwayHeatmapPage";
 import SimulationPage from "./features/stats/SimulationPage";
@@ -105,6 +106,7 @@ const completenessTabs: { key: CompletenessTab; label: string }[] = [
 
 const statsTabs: { key: StatsTab; label: string }[] = [
   { key: "volcano", label: "Volcano Plot" },
+  { key: "anova", label: "ANOVA" },
   { key: "gsea", label: "GSEA" },
   { key: "pathwayHeatmap", label: "Pathway Heatmap" },
   { key: "simulation", label: "Simulation" },
@@ -202,6 +204,7 @@ export default function App() {
   const [qcPcaContextMode, setQcPcaContextMode] = useState<string>("");
   const [completenessContextMode, setCompletenessContextMode] = useState<string>("");
   const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
+  const [statsAnovaContextMode, setStatsAnovaContextMode] = useState<string>("");
   const [statsGseaContextMode, setStatsGseaContextMode] = useState<string>("");
   const [statsPathwayHeatmapContextMode, setStatsPathwayHeatmapContextMode] = useState<string>("");
   const [peptideContextMode, setPeptideContextMode] = useState<string>("");
@@ -299,6 +302,11 @@ export default function App() {
   useEffect(() => {
     if (activeSection === "stats" && activeStatsTab === "volcano") return;
     setStatsVolcanoContextMode("");
+  }, [activeSection, activeStatsTab]);
+
+  useEffect(() => {
+    if (activeSection === "stats" && activeStatsTab === "anova") return;
+    setStatsAnovaContextMode("");
   }, [activeSection, activeStatsTab]);
 
   useEffect(() => {
@@ -591,6 +599,9 @@ export default function App() {
     if (activeSection === "stats" && activeStatsTab === "volcano") {
       return statsVolcanoContextMode.trim();
     }
+    if (activeSection === "stats" && activeStatsTab === "anova") {
+      return statsAnovaContextMode.trim();
+    }
     if (activeSection === "stats" && activeStatsTab === "gsea") {
       return statsGseaContextMode.trim();
     }
@@ -652,6 +663,7 @@ export default function App() {
     activeComparisonTab,
     activePhosphoTab,
     statsVolcanoContextMode,
+    statsAnovaContextMode,
     statsGseaContextMode,
     statsPathwayHeatmapContextMode,
     completenessContextMode,
@@ -1076,6 +1088,10 @@ export default function App() {
     if (activeSection === "stats") {
       if (activeStatsTab === "volcano") {
         return <VolcanoPlotPage onContextModeChange={setStatsVolcanoContextMode} />;
+      }
+
+      if (activeStatsTab === "anova") {
+        return <AnovaPage onContextModeChange={setStatsAnovaContextMode} />;
       }
 
       if (activeStatsTab === "gsea") {

@@ -8,6 +8,7 @@ from app.schemas.annotation import AnnotationKind
 
 StatsSource = Literal["filtered", "log2", "raw"]
 VolcanoDataSource = Literal["data", "imputed"]
+AnovaSource = Literal["anova", "anova_cluster"]
 StatsTestType = Literal["unpaired", "paired"]
 StatsIdentifier = Literal["workflow", "genes"]
 GseaDirection = Literal["up", "down"]
@@ -106,6 +107,32 @@ class EnrichmentResultResponse(BaseModel):
     downGenes: list[str]
     upTerms: list[EnrichmentTerm]
     downTerms: list[EnrichmentTerm]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AnovaRequest(BaseModel):
+    kind: AnnotationKind
+    source: AnovaSource = "anova"
+    dataSource: VolcanoDataSource = "imputed"
+    identifier: StatsIdentifier = "workflow"
+    pValueThreshold: float = Field(default=0.05, gt=0.0, le=1.0)
+    useUncorrected: bool = False
+    showDendrograms: bool = True
+    showLegend: bool = True
+    nClusters: int = Field(default=4, ge=1, le=100)
+    minClusterFraction: float = Field(default=0.05, ge=0.0, le=1.0)
+
+
+class AnovaResultResponse(BaseModel):
+    kind: AnnotationKind
+    source: AnovaSource
+    sourceUsed: StatsSource
+    labelColumn: str
+    totalRows: int
+    significantCount: int
+    clusterCount: int | None = None
+    rows: list[dict[str, Any]]
+    clusterRows: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

@@ -2,6 +2,8 @@ import type {
   ChatProvider,
   ChatMessage,
   AnnotationGenerateRequest,
+  AnovaRequest,
+  AnovaResultResponse,
   AnalysisVolcanoRequest,
   AnalysisVolcanoResponse,
   AnnotationKind,
@@ -1147,6 +1149,26 @@ export async function runVolcanoControlAnalysis(
     );
   }
   return data as VolcanoResultResponse;
+}
+
+export async function runAnovaAnalysis(
+  payload: AnovaRequest
+): Promise<AnovaResultResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/anova/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run ANOVA analysis"
+    );
+  }
+  return data as AnovaResultResponse;
 }
 
 export async function runEnrichmentAnalysis(

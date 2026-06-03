@@ -8,12 +8,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
 from scipy.spatial.distance import pdist
 from scipy.stats import hypergeom, t
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
+    AnovaRequest,
+    AnovaResultResponse,
     EnrichmentRequest,
     EnrichmentResultResponse,
     EnrichmentTerm,
@@ -661,6 +663,439 @@ def volcano_control_html(payload: VolcanoControlRequest) -> str:
     return _plotly_html(fig)
 
 
+def _anova_dataframe(
+    payload: AnovaRequest,
+) -> tuple[StatsSource, str, pd.DataFrame, list[str]]:
+    source_used, frame, metadata, warnings = _stats_source(payload.kind, data_source=payload.dataSource)
+    label_column = _resolve_label_column(payload.kind, payload.identifier, frame)
+
+    metadata = metadata.copy()
+    metadata["sample"] = metadata["sample"].astype(str)
+    metadata["condition"] = metadata["condition"].astype(str)
+    conditions = metadata["condition"].dropna().drop_duplicates().tolist()
+    if len(conditions) < 2:
+        raise ValueError("ANOVA needs at least two conditions.")
+
+    condition_cols = {
+        condition: [
+            sample
+            for sample in metadata.loc[metadata["condition"] == condition, "sample"].tolist()
+            if sample in frame.columns
+        ]
+        for condition in conditions
+    }
+    too_few = [condition for condition, cols in condition_cols.items() if len(cols) < 2]
+    if too_few:
+        raise ValueError(
+            "Each ANOVA condition needs at least two sample columns. Missing: "
+            + ", ".join(map(str, too_few))
+        )
+
+    sample_cols = [col for cols in condition_cols.values() for col in cols]
+    selected_columns = [label_column, *sample_cols]
+    for extra in (
+        "GeneNames",
+        "Gene_group",
+        "ProteinNames",
+        "PTM_Collapse_key",
+        "Phosphoprotein",
+        "site_num",
+        "PTM_Collapse_keys",
+    ):
+        if extra in frame.columns and extra not in selected_columns:
+            selected_columns.append(extra)
+
+    df = frame[[col for col in selected_columns if col in frame.columns]].replace(0, np.nan).copy()
+    df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
+
+    valid = np.ones(len(df), dtype=bool)
+    groups: list[np.ndarray] = []
+    for cols in condition_cols.values():
+        group = df[cols].to_numpy(dtype=float)
+        valid &= np.sum(~np.isnan(group), axis=1) >= 2
+        groups.append(group)
+    if not np.any(valid):
+        raise ValueError("No rows have enough replicate values for ANOVA.")
+
+    df = df.loc[valid].reset_index(drop=True)
+    groups = [group[valid] for group in groups]
+
+    try:
+        from scipy import stats
+
+        f_stat, pvals = stats.f_oneway(*groups, axis=1, nan_policy="omit")
+    except TypeError:
+        from scipy import stats
+
+        f_stat = np.empty(len(df), dtype=float)
+        pvals = np.empty(len(df), dtype=float)
+        for i in range(len(df)):
+            row_groups = [group[i][~np.isnan(group[i])] for group in groups]
+            f_stat[i], pvals[i] = stats.f_oneway(*row_groups)
+
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
+    finite = np.isfinite(pvals)
+    df = df.loc[finite].reset_index(drop=True)
+    groups = [group[finite] for group in groups]
+    f_stat = np.asarray(f_stat, dtype=float)[finite]
+    pvals = pvals[finite]
+
+    means = pd.DataFrame(
+        {
+            condition: np.nanmean(group, axis=1)
+            for condition, group in zip(condition_cols.keys(), groups)
+        },
+        index=df.index,
+    )
+
+    selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
+    result = df.copy()
+    result["f_statistic"] = f_stat
+    result["pval"] = pvals
+    result["adj_pval"] = selected_pvals
+    result["significance"] = np.where(
+        selected_pvals < payload.pValueThreshold,
+        "Significant",
+        "Not significant",
+    )
+    result["neg_log10_adj_pval"] = _safe_neg_log10(selected_pvals)
+    for condition in means.columns:
+        result[f"mean_{condition}"] = means[condition].to_numpy()
+
+    return source_used, label_column, result.sort_values("adj_pval").reset_index(drop=True), warnings
+
+
+def _anova_cluster_dataframe(anova_df: pd.DataFrame, metadata: pd.DataFrame, payload: AnovaRequest) -> pd.DataFrame:
+    sample_cols = [
+        sample
+        for sample in metadata["sample"].astype(str).tolist()
+        if sample in anova_df.columns
+    ]
+    if not sample_cols:
+        raise ValueError("No sample columns from metadata were found in the ANOVA table.")
+
+    cluster_df = anova_df[anova_df["adj_pval"] < payload.pValueThreshold].copy()
+    if cluster_df.empty:
+        cluster_df = anova_df.copy()
+    if cluster_df.empty:
+        return cluster_df.reset_index(drop=True)
+
+    matrix = cluster_df[sample_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    row_mean = np.nanmean(matrix, axis=1, keepdims=True)
+    row_sd = np.nanstd(matrix, axis=1, keepdims=True)
+    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
+    matrix = (matrix - row_mean) / row_sd
+    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if matrix.shape[0] <= 1:
+        cluster_df.insert(1, "cluster", 1)
+        return cluster_df.reset_index(drop=True)
+
+    row_linkage = linkage(matrix, method="average", metric="euclidean")
+    row_order = leaves_list(row_linkage)
+    raw_clusters = fcluster(row_linkage, t=payload.nClusters, criterion="maxclust")
+    ordered_clusters = raw_clusters[row_order]
+
+    cluster_map: dict[int, int] = {}
+    relabeled: list[int] = []
+    for cluster_id in ordered_clusters:
+        cluster_key = int(cluster_id)
+        if cluster_key not in cluster_map:
+            cluster_map[cluster_key] = len(cluster_map) + 1
+        relabeled.append(cluster_map[cluster_key])
+
+    relabeled_arr = np.asarray(relabeled, dtype=int)
+    if payload.minClusterFraction > 0:
+        min_cluster_size = int(np.ceil(len(relabeled_arr) * payload.minClusterFraction))
+        cluster_ids, cluster_counts = np.unique(relabeled_arr, return_counts=True)
+        count_map = dict(zip(cluster_ids, cluster_counts))
+        large_clusters = [
+            int(cluster_id)
+            for cluster_id in cluster_ids
+            if count_map[cluster_id] >= min_cluster_size
+        ]
+        if not large_clusters:
+            large_clusters = [int(max(cluster_ids, key=lambda cluster_id: count_map[cluster_id]))]
+        merged = relabeled_arr.copy()
+        for cluster_id in cluster_ids:
+            if count_map[cluster_id] >= min_cluster_size:
+                continue
+            target = min(large_clusters, key=lambda candidate: (abs(candidate - cluster_id), candidate < cluster_id))
+            merged[relabeled_arr == cluster_id] = target
+        cluster_map = {}
+        relabeled = []
+        for cluster_id in merged:
+            cluster_key = int(cluster_id)
+            if cluster_key not in cluster_map:
+                cluster_map[cluster_key] = len(cluster_map) + 1
+            relabeled.append(cluster_map[cluster_key])
+
+    out = cluster_df.iloc[row_order].copy()
+    if "cluster" in out.columns:
+        out = out.drop(columns=["cluster"])
+    out.insert(1, "cluster", relabeled)
+    return out.reset_index(drop=True)
+
+
+def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
+    source_used, label_column, anova_df, warnings = _anova_dataframe(payload)
+    cluster_df = pd.DataFrame()
+    cluster_count: int | None = None
+    if payload.source == "anova_cluster":
+        _, _, metadata, _ = _stats_source(payload.kind, data_source=payload.dataSource)
+        cluster_df = _anova_cluster_dataframe(anova_df, metadata, payload)
+        cluster_count = int(cluster_df["cluster"].nunique()) if "cluster" in cluster_df.columns else 0
+
+    return AnovaResultResponse(
+        kind=payload.kind,
+        source=payload.source,
+        sourceUsed=source_used,
+        labelColumn=label_column,
+        totalRows=int(len(anova_df)),
+        significantCount=int((anova_df["adj_pval"] < payload.pValueThreshold).sum()),
+        clusterCount=cluster_count,
+        rows=anova_df.where(pd.notna(anova_df), None).to_dict(orient="records"),
+        clusterRows=cluster_df.where(pd.notna(cluster_df), None).to_dict(orient="records") if not cluster_df.empty else [],
+        warnings=warnings,
+    )
+
+
+def _prepare_anova_plot_frame(
+    payload: AnovaRequest,
+    selected_cluster: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    _, label_column, anova_df, _ = _anova_dataframe(payload)
+    _, _, metadata, _ = _stats_source(payload.kind, data_source=payload.dataSource)
+    if payload.source == "anova_cluster":
+        anova_df = _anova_cluster_dataframe(anova_df, metadata, payload)
+        if selected_cluster is not None:
+            anova_df = anova_df[anova_df["cluster"] == selected_cluster].copy()
+            if anova_df.empty:
+                raise ValueError(f"Cluster {selected_cluster} was not found in the ANOVA cluster result.")
+    return anova_df, metadata, label_column
+
+
+def _anova_heatmap_figure(
+    plot_df: pd.DataFrame,
+    metadata: pd.DataFrame,
+    *,
+    label_column: str,
+    p_value_threshold: float,
+    clustered: bool,
+    show_dendrograms: bool,
+    show_legend: bool,
+    selected_cluster: int | None = None,
+):
+    plt = _get_plt()
+    from matplotlib.patches import Patch
+
+    if plot_df.empty:
+        fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
+        ax.set_axis_off()
+        ax.set_title("ANOVA heatmap")
+        return fig, plt
+
+    metadata = metadata.copy()
+    metadata["sample"] = metadata["sample"].astype(str)
+    metadata["condition"] = metadata["condition"].astype(str)
+    metadata["plot_sample"] = (
+        metadata["new_sample"].astype(str)
+        if "new_sample" in metadata.columns
+        else metadata["condition"] + "_" + (metadata.groupby("condition").cumcount() + 1).astype(str)
+    )
+
+    sample_cols = [sample for sample in metadata["sample"].tolist() if sample in plot_df.columns]
+    if not sample_cols:
+        raise ValueError("No sample columns from metadata were found in the ANOVA table.")
+
+    if not clustered:
+        filtered = plot_df[plot_df["adj_pval"] < p_value_threshold].copy()
+        if not filtered.empty:
+            plot_df = filtered
+
+    raw_matrix = plot_df[sample_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    missing_mask = ~np.isfinite(raw_matrix)
+    matrix = raw_matrix.copy()
+    row_mean = np.nanmean(matrix, axis=1, keepdims=True)
+    row_sd = np.nanstd(matrix, axis=1, keepdims=True)
+    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
+    matrix = (matrix - row_mean) / row_sd
+    display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
+    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    row_linkage = None
+    col_linkage = None
+
+    if not clustered and matrix.shape[0] > 1:
+        row_linkage = linkage(cluster_matrix, method="average", metric="euclidean")
+        row_order = leaves_list(row_linkage)
+        display_matrix = display_matrix[row_order]
+        cluster_matrix = cluster_matrix[row_order]
+        plot_df = plot_df.iloc[row_order]
+
+    if matrix.shape[1] > 1:
+        col_linkage = linkage(cluster_matrix.T, method="average", metric="euclidean")
+        col_order = leaves_list(col_linkage)
+        display_matrix = display_matrix[:, col_order]
+        sample_cols = [sample_cols[i] for i in col_order]
+
+    sample_to_condition = dict(zip(metadata["sample"], metadata["condition"]))
+    sample_to_label = dict(zip(metadata["sample"], metadata["plot_sample"]))
+    conditions = [sample_to_condition.get(sample, "") for sample in sample_cols]
+    x_labels = [sample_to_label.get(sample, sample) for sample in sample_cols]
+
+    meta_condition_order = metadata["condition"].dropna().drop_duplicates().tolist()
+    unique_conditions = [
+        condition
+        for condition in meta_condition_order
+        if condition in set(conditions)
+    ]
+    unique_conditions.extend(
+        condition
+        for condition in conditions
+        if condition not in unique_conditions
+    )
+    condition_palette = plt.cm.tab20(np.linspace(0, 1, max(len(unique_conditions), 1)))
+    condition_colors = {
+        condition: condition_palette[i % len(condition_palette)]
+        for i, condition in enumerate(unique_conditions)
+    }
+    condition_strip = np.array([[condition_colors[condition] for condition in conditions]])
+
+    cluster_values = plot_df["cluster"].tolist() if clustered and "cluster" in plot_df.columns else []
+    unique_clusters = list(dict.fromkeys(cluster_values))
+    cluster_colors = {}
+    cluster_strip = None
+    if clustered:
+        cluster_palette = plt.cm.tab20b(np.linspace(0, 1, max(len(unique_clusters), 1)))
+        cluster_colors = {
+            cluster: cluster_palette[i % len(cluster_palette)]
+            for i, cluster in enumerate(unique_clusters)
+        }
+        cluster_strip = np.array([[cluster_colors[cluster]] for cluster in cluster_values])
+
+    fig = plt.figure(figsize=(13.6, 9.2), dpi=150)
+    left_width = 0.03 if clustered else (0.12 if show_dendrograms and row_linkage is not None else 0.01)
+    top_height = 0.16 if show_dendrograms and col_linkage is not None else 0.08
+    grid_columns = 5 if show_legend else 3
+    width_ratios = [left_width, 1.0, 0.035, 0.105, 0.105] if show_legend else [left_width, 1.0, 0.035]
+    grid = fig.add_gridspec(
+        3,
+        grid_columns,
+        height_ratios=[top_height, 0.025, 1.0],
+        width_ratios=width_ratios,
+        hspace=0.02,
+        wspace=0.08,
+    )
+    ax_top = fig.add_subplot(grid[0, 1])
+    ax_strip = fig.add_subplot(grid[1, 1])
+    ax_cluster = fig.add_subplot(grid[2, 0])
+    ax = fig.add_subplot(grid[2, 1])
+    cax = fig.add_subplot(grid[2, 2])
+    ax_cluster_legend = fig.add_subplot(grid[:, 3]) if show_legend else None
+    ax_condition_legend = fig.add_subplot(grid[:, 4]) if show_legend else None
+    if ax_cluster_legend is not None:
+        ax_cluster_legend.set_axis_off()
+    if ax_condition_legend is not None:
+        ax_condition_legend.set_axis_off()
+    if show_dendrograms and col_linkage is not None:
+        from scipy.cluster.hierarchy import dendrogram
+
+        dendrogram(
+            col_linkage,
+            ax=ax_top,
+            no_labels=True,
+            color_threshold=0,
+            above_threshold_color="black",
+            link_color_func=lambda _: "black",
+        )
+    ax_top.set_axis_off()
+
+    ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
+    ax_strip.set_axis_off()
+
+    if clustered and cluster_strip is not None:
+        ax_cluster.imshow(cluster_strip, aspect="auto", interpolation="nearest")
+    elif show_dendrograms and row_linkage is not None:
+        from scipy.cluster.hierarchy import dendrogram
+
+        dendrogram(
+            row_linkage,
+            ax=ax_cluster,
+            orientation="left",
+            no_labels=True,
+            color_threshold=0,
+            above_threshold_color="black",
+            link_color_func=lambda _: "black",
+        )
+    ax_cluster.set_axis_off()
+
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad("#d8d8d8")
+    image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=cmap, vmin=-2.5, vmax=2.5)
+    ax.set_xlabel("samples")
+    ax.set_ylabel("")
+    ax.set_xticks(np.arange(len(sample_cols)))
+    ax.set_xticklabels(x_labels, rotation=90, fontsize=5)
+    ax.set_yticks([])
+    colorbar = fig.colorbar(image, cax=cax)
+    colorbar.set_label("row z-score", labelpad=12)
+
+    condition_handles = [Patch(facecolor=condition_colors[condition], label=condition) for condition in unique_conditions]
+    cluster_handles = []
+    if clustered:
+        cluster_handles = [
+            Patch(facecolor=cluster_colors[cluster], label=f"cluster {cluster}")
+            for cluster in unique_clusters[:12]
+        ]
+    if show_legend and cluster_handles and ax_cluster_legend is not None:
+        ax_cluster_legend.legend(
+            handles=cluster_handles,
+            title="Clusters",
+            loc="upper left",
+            frameon=False,
+            fontsize=7,
+            title_fontsize=8,
+            borderaxespad=0,
+            labelspacing=0.55,
+            handlelength=1.1,
+        )
+    if show_legend and condition_handles and ax_condition_legend is not None:
+        ax_condition_legend.legend(
+            handles=condition_handles,
+            title="Conditions",
+            loc="upper left",
+            frameon=False,
+            fontsize=7,
+            title_fontsize=8,
+            borderaxespad=0,
+            labelspacing=0.55,
+            handlelength=1.1,
+        )
+
+    if clustered and selected_cluster is not None:
+        title = f"ANOVA cluster {selected_cluster} heatmap"
+    else:
+        title = "ANOVA cluster heatmap" if clustered else "ANOVA heatmap"
+    fig.suptitle(f"{title} ({len(plot_df)} rows)", y=0.985, fontsize=14)
+    fig.subplots_adjust(left=0.04, right=0.97, top=0.93, bottom=0.18)
+    return fig, plt
+
+
+def anova_png(payload: AnovaRequest, selected_cluster: int | None = None) -> bytes:
+    plot_df, metadata, label_column = _prepare_anova_plot_frame(payload, selected_cluster=selected_cluster)
+    fig, plt = _anova_heatmap_figure(
+        plot_df,
+        metadata,
+        label_column=label_column,
+        p_value_threshold=payload.pValueThreshold,
+        clustered=payload.source == "anova_cluster",
+        show_dendrograms=payload.showDendrograms,
+        show_legend=payload.showLegend,
+        selected_cluster=selected_cluster,
+    )
+    return _to_png_bytes(fig, plt, dpi=150)
+
+
 def _db_candidates(filename: str) -> list[Path]:
     here = Path(__file__).resolve()
     project_root = here.parents[3]
@@ -1187,6 +1622,8 @@ apply_cached_wrappers(
         "statistical_options",
         "run_volcano",
         "run_volcano_control",
+        "run_anova",
+        "anova_png",
         "volcano_html",
         "volcano_control_html",
         "pathway_options",

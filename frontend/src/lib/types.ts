@@ -287,8 +287,10 @@ export type QcTableResponse = {
 
 export type StatsIdentifier = "workflow" | "genes";
 export type StatsTestType = "unpaired" | "paired";
+export type AnovaSource = "anova" | "anova_cluster";
 export type StatsTab =
   | "volcano"
+  | "anova"
   | "gsea"
   | "pathwayHeatmap"
   | "simulation";
@@ -434,6 +436,9 @@ export type AnalysisVolcanoRequest = {
 export type AnalysisVolcanoPoint = {
   label: string;
   selectionLabel: string;
+  selectionKey?: string | null;
+  boxplotLabel?: string | null;
+  boxplotIdentifier?: StatsIdentifier | null;
   uniprotAccession?: string | null;
   workflowLabel?: string | null;
   geneLabel?: string | null;
@@ -685,6 +690,32 @@ export type OllamaGpuStatusResponse = {
 export type OllamaModelsResponse = {
   models: string[];
   selectedModel: string | null;
+  warnings: string[];
+};
+
+export type AnovaRequest = {
+  kind: AnnotationKind;
+  source: AnovaSource;
+  dataSource: "data" | "imputed";
+  identifier: StatsIdentifier;
+  pValueThreshold: number;
+  useUncorrected: boolean;
+  showDendrograms: boolean;
+  showLegend: boolean;
+  nClusters: number;
+  minClusterFraction: number;
+};
+
+export type AnovaResultResponse = {
+  kind: AnnotationKind;
+  source: AnovaSource;
+  sourceUsed: DataSource;
+  labelColumn: string;
+  totalRows: number;
+  significantCount: number;
+  clusterCount: number | null;
+  rows: Record<string, unknown>[];
+  clusterRows: Record<string, unknown>[];
   warnings: string[];
 };
 

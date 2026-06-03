@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
+    AnovaRequest,
+    AnovaResultResponse,
     EnrichmentRequest,
     EnrichmentResultResponse,
     ListEnrichmentRequest,
@@ -17,6 +19,7 @@ from app.schemas.stats import (
     VolcanoRequest,
 )
 from app.services.stats_tools import (
+    run_anova,
     pathway_options,
     run_enrichment_from_list,
     run_enrichment,
@@ -57,6 +60,16 @@ async def volcano_control_route(payload: VolcanoControlRequest) -> VolcanoResult
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run control volcano analysis: {e}") from e
+
+
+@router.post("/anova/run", response_model=AnovaResultResponse)
+async def anova_route(payload: AnovaRequest) -> AnovaResultResponse:
+    try:
+        return run_anova(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run ANOVA analysis: {e}") from e
 
 
 @router.post("/gsea/run", response_model=EnrichmentResultResponse)

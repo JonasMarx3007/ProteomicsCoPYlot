@@ -11,6 +11,9 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RootDir "backend"
 $FrontendDir = Join-Path $RootDir "frontend"
+$FrontendDistDir = Join-Path $FrontendDir "dist"
+$DataDbDir = Join-Path $RootDir "data\db"
+$DataReportDir = Join-Path $RootDir "data\report"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $IconPath = Join-Path $RootDir "favicon.ico"
 $FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
@@ -100,7 +103,7 @@ function Invoke-PyInstallerBuild {
     "--specpath", $SpecDir,
     "--icon", $IconPath,
     "--name", $Name,
-    "--paths", "backend",
+    "--paths", $BackendDir,
     "--hidden-import", "uvicorn.logging",
     "--hidden-import", "uvicorn.loops.auto",
     "--hidden-import", "uvicorn.protocols.http.auto",
@@ -119,9 +122,9 @@ function Invoke-PyInstallerBuild {
     "--collect-all", "plotly",
     "--collect-all", "pyarrow",
     "--collect-all", "openpyxl",
-    "--add-data", "frontend\dist;frontend_dist",
-    "--add-data", "data\db;data\db",
-    "--add-data", "data\report;data\report"
+    "--add-data", "$FrontendDistDir;frontend_dist",
+    "--add-data", "$DataDbDir;data\db",
+    "--add-data", "$DataReportDir;data\report"
   )
 
   foreach ($viewerDataSpec in $ViewerDataAddData) {
@@ -171,8 +174,8 @@ if ($ViewerProject -and $Target -ne "Viewer") {
 }
 
 $viewerDataAddData = @(
-  "viewer_config.json;.",
-  "viewer_data;viewer_data"
+  "$(Join-Path $RootDir "viewer_config.json");.",
+  "$(Join-Path $RootDir "viewer_data");viewer_data"
 )
 if ($Target -eq "Viewer" -and $ViewerProject) {
   $viewerProjectBundle = Resolve-ViewerProjectBundle -ProjectName $ViewerProject

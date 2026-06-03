@@ -210,6 +210,42 @@ def impute_values_with_diagnostics(
     )
 
 
+def anova_data_f(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import anova_data_f as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def anova_cluster_data(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import anova_cluster_data as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def anova_plot(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import anova_plot as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def anova_plot_cluster(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import anova_plot_cluster as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def extract_cluster(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import extract_cluster as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def plot_cluster(*args, **kwargs):
+    from proteomicscopylot.notebook_functions import plot_cluster as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def histogram(values: np.ndarray, bins: int = 30) -> list[tuple[float, float, int]]:
     clean = values[~np.isnan(values)]
     if clean.size == 0:
