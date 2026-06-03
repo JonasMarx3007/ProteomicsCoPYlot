@@ -123,6 +123,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
         result = run_volcano_control(
             VolcanoControlRequest(
                 kind=payload.kind,
+                dataSource="data",
                 condition1=payload.condition1,
                 condition2=payload.condition2,
                 condition1Control=payload.condition1Control,
@@ -139,6 +140,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
         result = run_volcano(
             VolcanoRequest(
                 kind=payload.kind,
+                dataSource="data",
                 condition1=payload.condition1,
                 condition2=payload.condition2,
                 identifier=payload.identifier,
@@ -161,17 +163,31 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
             neg_log = float(row.get("neg_log10_adj_pval", 0.0))
         except Exception:
             continue
+        workflow_label = _workflow_label(row)
+        gene_label = _gene_label(row)
+        selection_label = _selection_label(
+            kind=payload.kind,
+            identifier=payload.identifier,
+            label_value=label,
+        )
+        if payload.kind == "phospho" and payload.identifier == "genes" and workflow_label:
+            selection_key = workflow_label
+            boxplot_label = workflow_label
+            boxplot_identifier = "workflow"
+        else:
+            selection_key = selection_label
+            boxplot_label = selection_label
+            boxplot_identifier = payload.identifier
         points.append(
             AnalysisVolcanoPoint(
                 label=label,
-                selectionLabel=_selection_label(
-                    kind=payload.kind,
-                    identifier=payload.identifier,
-                    label_value=label,
-                ),
+                selectionLabel=selection_label,
+                selectionKey=selection_key,
+                boxplotLabel=boxplot_label,
+                boxplotIdentifier=boxplot_identifier,
                 uniprotAccession=_uniprot_accession(row, label),
-                workflowLabel=_workflow_label(row),
-                geneLabel=_gene_label(row),
+                workflowLabel=workflow_label,
+                geneLabel=gene_label,
                 significance=str(row.get("significance") or "Not significant"),
                 log2FC=log2fc,
                 negLog10P=neg_log,

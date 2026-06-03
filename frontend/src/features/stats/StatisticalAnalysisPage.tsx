@@ -4,6 +4,7 @@ import {
   buildPlotUrl,
   getPathwayOptions,
   getStatisticalOptions,
+  runAnovaAnalysis,
   runEnrichmentAnalysis,
   runSimulationAnalysis,
   runVolcanoAnalysis,
@@ -20,6 +21,9 @@ import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   AnnotationKind,
+  AnovaRequest,
+  AnovaResultResponse,
+  AnovaSource,
   EnrichmentRequest,
   EnrichmentResultResponse,
   PathwayOptionsResponse,
@@ -52,6 +56,7 @@ export default function StatisticalAnalysisPage({ activeTab, onContextModeChange
   }
 
   if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
+  if (activeTab === "anova") return <AnovaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
   if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
   if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
   return <SimulationPanel kindOptions={kindOptions} />;
@@ -798,6 +803,294 @@ function VolcanoPanel({
           <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={removeSourceUsageWarnings(result.warnings)} />
           <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
           <TableSection title="Result Table" rows={result.rows} filename={`volcano_${kind}.csv`} />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function AnovaPanel({
+  kindOptions,
+  onContextModeChange,
+}: {
+  kindOptions: { value: string; label: string }[];
+  onContextModeChange?: (mode: string) => void;
+}) {
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("stats.anova.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein").trim();
+    return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
+  });
+  const [sourceMode, setSourceMode] = useState<AnovaSource>(() => {
+    const value = String(persisted.sourceMode ?? "anova").trim();
+    return value === "anova_cluster" ? "anova_cluster" : "anova";
+  });
+  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
+    const value = String(persisted.dataSource ?? "data").trim();
+    return value === "imputed" ? "imputed" : "data";
+  });
+  const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
+    const value = String(persisted.identifier ?? "workflow").trim();
+    return value === "genes" ? "genes" : "workflow";
+  });
+  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const [showDendrograms, setShowDendrograms] = useState(() => Boolean(persisted.showDendrograms ?? true));
+  const [showLegend, setShowLegend] = useState(() => Boolean(persisted.showLegend ?? true));
+  const [nClusters, setNClusters] = useState(() => Number(persisted.nClusters ?? 4));
+  const [minClusterFraction, setMinClusterFraction] = useState(() => Number(persisted.minClusterFraction ?? 0.05));
+  const [selectedCluster, setSelectedCluster] = useState(() => String(persisted.selectedCluster ?? "none"));
+  const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
+  const [result, setResult] = useState<AnovaResultResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const kindAvailable = kindOptions.some((option) => option.value === kind);
+  const anovaDataSourceOptions = useMemo(
+    () =>
+      options?.imputedAvailable
+        ? [
+            { value: "data", label: "Data" },
+            { value: "imputed", label: "Imputed Data" },
+          ]
+        : [{ value: "data", label: "Data" }],
+    [options?.imputedAvailable]
+  );
+  const availableClusters = useMemo(() => {
+    if (sourceMode !== "anova_cluster" || !result?.clusterRows.length) return [];
+    const clusterValues = new Set<string>();
+    result.clusterRows.forEach((row) => {
+      const value = row.cluster;
+      if (value !== null && value !== undefined && String(value).trim() !== "") {
+        clusterValues.add(String(value));
+      }
+    });
+    return Array.from(clusterValues).sort((a, b) => {
+      const aNumber = Number(a);
+      const bNumber = Number(b);
+      if (Number.isFinite(aNumber) && Number.isFinite(bNumber)) return aNumber - bNumber;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+  }, [result?.clusterRows, sourceMode]);
+  const clusterOptions = useMemo(
+    () => [
+      { value: "none", label: "None" },
+      ...availableClusters.map((cluster) => ({ value: cluster, label: `cluster ${cluster}` })),
+    ],
+    [availableClusters]
+  );
+  const selectedClusterRows = useMemo(() => {
+    if (selectedCluster === "none" || !result?.clusterRows.length) return [];
+    return result.clusterRows.filter((row) => String(row.cluster ?? "") === selectedCluster);
+  }, [result?.clusterRows, selectedCluster]);
+
+  useEffect(() => {
+    if (kindOptions.length === 0) return;
+    if (!kindOptions.some((option) => option.value === kind)) {
+      setKind(kindOptions[0].value as AnnotationKind);
+    }
+  }, [kindOptions, kind]);
+
+  useEffect(() => {
+    if (!kindAvailable) {
+      setOptions(null);
+      setResult(null);
+      return;
+    }
+    getStatisticalOptions(kind)
+      .then((data) => {
+        setOptions(data);
+        setDataSource((current) =>
+          data.imputedAvailable
+            ? (current === "imputed" ? "imputed" : "data")
+            : "data"
+        );
+        setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load statistical options"));
+  }, [kind, kindAvailable]);
+
+  useEffect(() => {
+    if (sourceMode !== "anova_cluster") {
+      setSelectedCluster("none");
+      return;
+    }
+    if (selectedCluster !== "none" && !availableClusters.includes(selectedCluster)) {
+      setSelectedCluster("none");
+    }
+  }, [availableClusters, selectedCluster, sourceMode]);
+
+  const canRun = Boolean(kindAvailable && options && options.availableConditions.length >= 2);
+  const requestPayload = useMemo<AnovaRequest | null>(() => {
+    if (!canRun) return null;
+    return {
+      kind,
+      source: sourceMode,
+      dataSource,
+      identifier,
+      pValueThreshold,
+      useUncorrected,
+      showDendrograms,
+      showLegend,
+      nClusters: Math.max(1, Math.round(nClusters)),
+      minClusterFraction: Math.max(0, Math.min(1, minClusterFraction)),
+    };
+  }, [canRun, kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, nClusters, minClusterFraction]);
+
+  useEffect(() => {
+    if (!onContextModeChange) return;
+    const parts = [
+      `source=${sourceMode}`,
+      `kind=${kind}`,
+      `dataSource=${dataSource}`,
+      `identifier=${identifier}`,
+      `pValueThreshold=${pValueThreshold}`,
+      `useUncorrected=${useUncorrected ? "true" : "false"}`,
+      `showDendrograms=${showDendrograms ? "true" : "false"}`,
+      `showLegend=${showLegend ? "true" : "false"}`,
+      `selectedCluster=${selectedCluster}`,
+      `nClusters=${Math.max(1, Math.round(nClusters))}`,
+      `minClusterFraction=${Math.max(0, Math.min(1, minClusterFraction))}`,
+    ];
+    onContextModeChange(parts.join("|"));
+  }, [onContextModeChange, sourceMode, kind, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, selectedCluster, nClusters, minClusterFraction]);
+
+  const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
+
+  useEffect(() => {
+    if (!debouncedRequestPayload) {
+      setResult(null);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    runAnovaAnalysis(debouncedRequestPayload)
+      .then((response) => {
+        if (cancelled) return;
+        setResult(response);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setResult(null);
+        setError(err instanceof Error ? err.message : "Failed to run ANOVA analysis");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedRequestPayload]);
+
+  const plotUrl = buildPlotUrl(`/api/plots/stats/${kind}/anova.png`, {
+    source: sourceMode,
+    dataSource,
+    identifier,
+    pValueThreshold,
+    useUncorrected,
+    showDendrograms,
+    showLegend,
+    nClusters: Math.max(1, Math.round(nClusters)),
+    minClusterFraction: Math.max(0, Math.min(1, minClusterFraction)),
+  });
+  const selectedClusterPlotUrl =
+    sourceMode === "anova_cluster" && selectedCluster !== "none"
+      ? buildPlotUrl(`/api/plots/stats/${kind}/anova.png`, {
+          source: sourceMode,
+          dataSource,
+          identifier,
+          pValueThreshold,
+          useUncorrected,
+          showDendrograms,
+          showLegend,
+          nClusters: Math.max(1, Math.round(nClusters)),
+          minClusterFraction: Math.max(0, Math.min(1, minClusterFraction)),
+          selectedCluster,
+        })
+      : null;
+
+  useEffect(() => {
+    writePersistedUiState("stats.anova.v1", {
+      kind,
+      sourceMode,
+      dataSource,
+      identifier,
+      pValueThreshold,
+      useUncorrected,
+      showDendrograms,
+      showLegend,
+      selectedCluster,
+      nClusters,
+      minClusterFraction,
+    });
+  }, [kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, selectedCluster, nClusters, minClusterFraction]);
+
+  return (
+    <div className="space-y-6">
+      <SectionCard title="ANOVA">
+        <div className="max-w-xs">
+          <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Options">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+          <SelectField
+            label="Source"
+            value={sourceMode}
+            onChange={(value) => setSourceMode(value as AnovaSource)}
+            options={[
+              { value: "anova", label: "ANOVA" },
+              { value: "anova_cluster", label: "ANOVA Cluster" },
+            ]}
+          />
+          <SelectField
+            label="Data Source"
+            value={dataSource}
+            onChange={(value) => setDataSource(value as "data" | "imputed")}
+            options={anovaDataSourceOptions}
+          />
+          <SelectField
+            label="Label column"
+            value={identifier}
+            onChange={(value) => setIdentifier(value as StatsIdentifier)}
+            options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))}
+          />
+          <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
+          <CheckboxField label="Show dendrograms" checked={showDendrograms} onChange={setShowDendrograms} />
+          <CheckboxField label="Legend" checked={showLegend} onChange={setShowLegend} />
+        </div>
+        {sourceMode === "anova_cluster" ? (
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <NumberField label="Clusters" value={nClusters} onChange={(value) => setNClusters(Math.max(1, Math.round(value)))} />
+            <NumberField label="Min cluster fraction" value={minClusterFraction} onChange={(value) => setMinClusterFraction(Math.max(0, Math.min(1, value)))} step={0.01} />
+            <SelectField label="Cluster" value={selectedCluster} onChange={setSelectedCluster} options={clusterOptions} />
+          </div>
+        ) : null}
+        <Notice error={error} warnings={removeSourceUsageWarnings(options?.warnings)} />
+      </SectionCard>
+
+      {!canRun && options ? <InfoSection message="At least two conditions with replicate samples are required to run ANOVA." /> : null}
+      {result ? (
+        <>
+          <SummarySection
+            items={[
+              { label: "Rows", value: String(result.totalRows) },
+              { label: "Significant", value: String(result.significantCount) },
+              { label: "Source", value: result.source === "anova_cluster" ? "ANOVA Cluster" : "ANOVA" },
+              { label: "Clusters", value: result.clusterCount == null ? "-" : String(result.clusterCount) },
+            ]}
+            warnings={removeSourceUsageWarnings(result.warnings)}
+          />
+          <ImageSection title={sourceMode === "anova_cluster" ? "ANOVA Cluster Heatmap" : "ANOVA Heatmap"} url={plotUrl} />
+          {selectedClusterPlotUrl ? <ImageSection title={`Cluster ${selectedCluster} Heatmap`} url={selectedClusterPlotUrl} /> : null}
+          <TableSection title="Result Table" rows={result.rows} filename={`anova_${sourceMode}_${kind}.csv`} />
+          {selectedClusterRows.length > 0 ? (
+            <TableSection title={`Cluster ${selectedCluster} Result Table`} rows={selectedClusterRows} filename={`anova_${sourceMode}_${kind}_cluster_${selectedCluster}.csv`} />
+          ) : null}
         </>
       ) : null}
     </div>

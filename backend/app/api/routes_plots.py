@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
+    AnovaRequest,
     EnrichmentRequest,
     SimulationRequest,
     VolcanoControlRequest,
@@ -72,6 +73,7 @@ from app.services.table_functions import (
     qc_cv_table,
 )
 from app.services.stats_tools import (
+    anova_png,
     gsea_plot_png,
     pathway_heatmap_png,
     simulation_html,
@@ -165,6 +167,40 @@ async def stats_volcano_control_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to render control volcano plot: {e}") from e
+
+
+@router.get("/stats/{kind}/anova.png")
+async def stats_anova_route(
+    kind: AnnotationKind,
+    source: str = "anova",
+    dataSource: str = "imputed",
+    identifier: str = "workflow",
+    pValueThreshold: float = 0.05,
+    useUncorrected: bool = False,
+    showDendrograms: bool = True,
+    showLegend: bool = True,
+    nClusters: int = 4,
+    minClusterFraction: float = 0.05,
+    selectedCluster: int | None = None,
+) -> Response:
+    try:
+        payload = AnovaRequest(
+            kind=kind,
+            source=source,
+            dataSource=dataSource,
+            identifier=identifier,
+            pValueThreshold=pValueThreshold,
+            useUncorrected=useUncorrected,
+            showDendrograms=showDendrograms,
+            showLegend=showLegend,
+            nClusters=nClusters,
+            minClusterFraction=minClusterFraction,
+        )
+        return _png_response(anova_png(payload, selected_cluster=selectedCluster))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render ANOVA plot: {e}") from e
 
 
 @router.get("/stats/{kind}/gsea/{direction}.png")

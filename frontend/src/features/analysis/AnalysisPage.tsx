@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPlotUrl, getStatisticalOptions, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import type {
+  AnalysisVolcanoPoint,
   AnalysisVolcanoResponse,
   AnnotationKind,
   ListEnrichmentResultResponse,
@@ -184,6 +185,25 @@ function resolveLineplotProteins(
   if (tile.sourceMode === "selected") return toUnique(selectedProteins);
   if (tile.sourceMode === "list") return toUnique(lists[tile.listName] ?? []);
   return parseProteins(tile.proteinsText);
+}
+
+function volcanoPointSelectionKey(point: AnalysisVolcanoPoint): string {
+  return point.selectionKey || point.selectionLabel || point.label;
+}
+
+function volcanoPointListLabel(point: AnalysisVolcanoPoint): string {
+  return point.selectionLabel || point.label;
+}
+
+function volcanoPointBoxplotTarget(
+  point: AnalysisVolcanoPoint | null,
+  fallbackIdentifier: StatsIdentifier,
+): { protein: string; identifier: StatsIdentifier } {
+  if (!point) return { protein: "", identifier: fallbackIdentifier };
+  return {
+    protein: point.boxplotLabel || volcanoPointSelectionKey(point),
+    identifier: point.boxplotIdentifier || fallbackIdentifier,
+  };
 }
 
 export default function AnalysisPage({
@@ -591,6 +611,21 @@ export default function AnalysisPage({
   }
 
   const conditionsCsv = `${volcanoSettings.condition1},${volcanoSettings.condition2}`;
+  const allVolcanoPoints = useMemo(
+    () => [...(volcanoData?.points ?? []), ...(volcanoControlData?.points ?? [])],
+    [volcanoData, volcanoControlData]
+  );
+  const activeVolcanoPoint = useMemo(
+    () =>
+      activeProtein
+        ? allVolcanoPoints.find((point) => volcanoPointSelectionKey(point) === activeProtein) ?? null
+        : null,
+    [activeProtein, allVolcanoPoints]
+  );
+  const activeBoxplotTarget = useMemo(
+    () => volcanoPointBoxplotTarget(activeVolcanoPoint, identifier),
+    [activeVolcanoPoint, identifier]
+  );
 
   useEffect(() => {
     clearSelection();
@@ -716,7 +751,7 @@ export default function AnalysisPage({
                               buildDirectionListName(volcanoSettings.condition1, volcanoSettings.condition2, "Upregulated"),
                               (volcanoData?.points ?? [])
                                 .filter((point) => point.significance === "Upregulated")
-                                .map((point) => point.selectionLabel || point.label)
+                                .map(volcanoPointListLabel)
                             )
                           }
                           onAddDownregulatedToList={() =>
@@ -724,7 +759,7 @@ export default function AnalysisPage({
                               buildDirectionListName(volcanoSettings.condition1, volcanoSettings.condition2, "Downregulated"),
                               (volcanoData?.points ?? [])
                                 .filter((point) => point.significance === "Downregulated")
-                                .map((point) => point.selectionLabel || point.label)
+                                .map(volcanoPointListLabel)
                             )
                           }
                           upregulatedCount={volcanoData?.upregulatedCount ?? 0}
@@ -776,7 +811,7 @@ export default function AnalysisPage({
                               buildDirectionListName(volcanoControlSettings.condition1, volcanoControlSettings.condition2, "Upregulated"),
                               (volcanoControlData?.points ?? [])
                                 .filter((point) => point.significance === "Upregulated")
-                                .map((point) => point.selectionLabel || point.label)
+                                .map(volcanoPointListLabel)
                             )
                           }
                           onAddDownregulatedToList={() =>
@@ -784,7 +819,7 @@ export default function AnalysisPage({
                               buildDirectionListName(volcanoControlSettings.condition1, volcanoControlSettings.condition2, "Downregulated"),
                               (volcanoControlData?.points ?? [])
                                 .filter((point) => point.significance === "Downregulated")
-                                .map((point) => point.selectionLabel || point.label)
+                                .map(volcanoPointListLabel)
                             )
                           }
                           upregulatedCount={volcanoControlData?.upregulatedCount ?? 0}
@@ -800,13 +835,20 @@ export default function AnalysisPage({
                 }
 
                 if (tile.type === "proteinBoxplot") {
-                  const protein = tile.sourceMode === "active" ? activeProtein : tile.protein.trim();
+                  const protein =
+                    tile.sourceMode === "active"
+                      ? activeBoxplotTarget.protein || activeProtein
+                      : tile.protein.trim();
+                  const plotIdentifier =
+                    tile.sourceMode === "active"
+                      ? activeBoxplotTarget.identifier
+                      : identifier;
                   const url = protein
                     ? buildPlotUrl("/api/analysis/boxplot.png", {
                         kind,
                         protein,
                         conditions: conditionsCsv,
-                        identifier,
+                        identifier: plotIdentifier,
                       })
                     : "";
 
@@ -846,7 +888,7 @@ export default function AnalysisPage({
                           />
                         ) : (
                           <div className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-                            Active: {activeProtein || "None"}
+                            Active: {protein || "None"}
                           </div>
                         )}
                       </div>
@@ -867,14 +909,23 @@ export default function AnalysisPage({
                 }
 
                 if (tile.type === "proteinLineplot") {
-                  const proteins = resolveLineplotProteins(tile, activeProtein, selectedProteins, lists);
+                  const proteins = resolveLineplotProteins(
+                    tile,
+                    activeBoxplotTarget.protein || activeProtein,
+                    selectedProteins,
+                    lists
+                  );
+                  const plotIdentifier =
+                    tile.sourceMode === "active"
+                      ? activeBoxplotTarget.identifier
+                      : identifier;
                   const url =
                     proteins.length > 0
                       ? buildPlotUrl("/api/analysis/lineplot.png", {
                           kind,
                           proteins: proteins.join(","),
                           conditions: conditionsCsv,
-                          identifier,
+                          identifier: plotIdentifier,
                         })
                       : "";
 
@@ -928,7 +979,7 @@ export default function AnalysisPage({
 
                         {tile.sourceMode === "active" ? (
                           <div className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-                            Active: {activeProtein || "None"}
+                            Active: {activeBoxplotTarget.protein || activeProtein || "None"}
                           </div>
                         ) : null}
 
@@ -1495,7 +1546,7 @@ function VolcanoPointsPanel({
   const isDragging = multiSelectMode && dragStart !== null && dragCurrent !== null;
   const activePoint =
     !multiSelectMode && activeProtein
-      ? points.find((point) => (point.selectionLabel || point.label) === activeProtein) ?? null
+      ? points.find((point) => volcanoPointSelectionKey(point) === activeProtein) ?? null
       : null;
   const uniProtEntryId = activePoint
     ? activePoint.uniprotAccession ??
@@ -1574,7 +1625,7 @@ function VolcanoPointsPanel({
             const py = mapY(point.negLog10P);
             return px >= minX && px <= maxX && py >= minY && py <= maxY;
           })
-          .map((point) => point.selectionLabel || point.label)
+          .map((point) => volcanoPointSelectionKey(point))
       );
       onToggleProteins(hitLabels);
       setSuppressClick(true);
@@ -1674,6 +1725,9 @@ function VolcanoPointsPanel({
           <div>log2FC: {activePoint.log2FC.toFixed(4)}</div>
           <div>-log10(p-value): {activePoint.negLog10P.toFixed(4)}</div>
           <div>Significance: {activePoint.significance}</div>
+          {activePoint.workflowLabel ? (
+            <div>{data.kind === "phospho" ? "Site" : "Feature"}: {activePoint.workflowLabel}</div>
+          ) : null}
           {activePoint.geneLabel ? <div>Gene: {activePoint.geneLabel}</div> : null}
           {uniProtUrl ? (
             <div>
@@ -1763,7 +1817,7 @@ function VolcanoPointsPanel({
           <line x1={margin.left} y1={mapY(thresholdY)} x2={margin.left + innerWidth} y2={mapY(thresholdY)} stroke="#94a3b8" strokeWidth={1} strokeDasharray="4 4" />
 
           {points.map((point, index) => {
-            const selectionId = point.selectionLabel || point.label;
+            const selectionId = volcanoPointSelectionKey(point);
             const isSelected = selectedProteins.includes(selectionId);
             const isActive = !multiSelectMode && activeProtein === selectionId;
             const radius = multiSelectMode ? (isSelected ? 3.8 : 2.8) : isActive ? 4.5 : isSelected ? 3.6 : 2.8;
