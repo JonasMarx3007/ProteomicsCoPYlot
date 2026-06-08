@@ -767,6 +767,22 @@ export async function downloadCurrentAnnotationFilteredData(
   return { blob, filename };
 }
 
+export async function downloadCurrentAnnotationSourceData(
+  kind: AnnotationKind
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/source/download`);
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to download non-filtered annotation data"
+    );
+  }
+  const blob = await response.blob();
+  const filename = resolveDownloadFilename(response, `${kind}_data_full.csv`);
+  return { blob, filename };
+}
+
 export async function downloadCurrentAnnotationMetadataData(
   kind: AnnotationKind
 ): Promise<{ blob: Blob; filename: string }> {

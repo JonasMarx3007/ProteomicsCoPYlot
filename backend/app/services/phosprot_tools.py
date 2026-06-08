@@ -52,6 +52,16 @@ def _mean(series: pd.Series) -> float:
     return float(values.mean())
 
 
+def _replace_zero_sums_with_nan(frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
+    out = frame.copy()
+    for column in sample_columns:
+        if column not in out.columns:
+            continue
+        values = pd.to_numeric(out[column], errors="coerce")
+        out[column] = values.mask(np.isclose(values.fillna(np.nan), 0.0), np.nan)
+    return out
+
+
 def transform_phosprot(
     data: pd.DataFrame,
     metadata: pd.DataFrame,
@@ -116,6 +126,8 @@ def transform_phosprot(
         **{column: summarizer for column in sample_columns},
     }
     phosprot = source.groupby("Protein_group", as_index=False).agg(aggregation)
+    if mode in {"sum_mean_impute", "sum_propagate_na", "sum_ignore_na"}:
+        phosprot = _replace_zero_sums_with_nan(phosprot, sample_columns)
 
     site_counts = source.groupby("Protein_group").size().reset_index(name="site_num")
     phosprot = phosprot.merge(site_counts, on="Protein_group", how="left")
@@ -197,36 +209,40 @@ def _impute_phospho_source(
     phospho_annotation,
 ) -> tuple[pd.DataFrame, str]:
     imputation = getattr(phospho_annotation, "imputation", None)
+    if imputation is None or str(getattr(imputation, "mode", "none")) == "none":
+        raise ValueError(
+            "Imputed phospho source is available only after phospho imputation has been run or configured."
+        )
+
     q_value = 0.01
     adjust_std = 1.0
     seed = 1337
     sample_wise = False
     config_label = "default settings"
-    if imputation is not None and str(getattr(imputation, "mode", "none")) != "none":
-        q_value = (
-            float(imputation.qValue)
-            if getattr(imputation, "qValue", None) is not None
-            else q_value
-        )
-        adjust_std = (
-            float(imputation.adjustStd)
-            if getattr(imputation, "adjustStd", None) is not None
-            else adjust_std
-        )
-        seed = (
-            int(imputation.seed)
-            if getattr(imputation, "seed", None) is not None
-            else seed
-        )
-        sample_wise = (
-            bool(imputation.sampleWise)
-            if getattr(imputation, "sampleWise", None) is not None
-            else sample_wise
-        )
-        config_label = (
-            f"stored imputation settings (q={q_value}, adjustStd={adjust_std}, "
-            f"seed={seed}, sampleWise={sample_wise})"
-        )
+    q_value = (
+        float(imputation.qValue)
+        if getattr(imputation, "qValue", None) is not None
+        else q_value
+    )
+    adjust_std = (
+        float(imputation.adjustStd)
+        if getattr(imputation, "adjustStd", None) is not None
+        else adjust_std
+    )
+    seed = (
+        int(imputation.seed)
+        if getattr(imputation, "seed", None) is not None
+        else seed
+    )
+    sample_wise = (
+        bool(imputation.sampleWise)
+        if getattr(imputation, "sampleWise", None) is not None
+        else sample_wise
+    )
+    config_label = (
+        f"stored imputation settings (q={q_value}, adjustStd={adjust_std}, "
+        f"seed={seed}, sampleWise={sample_wise})"
+    )
 
     diagnostics = impute_values_with_diagnostics(
         data=source,

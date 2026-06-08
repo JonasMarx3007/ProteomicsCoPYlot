@@ -259,6 +259,19 @@ async def download_current_filtered_annotation(kind: AnnotationKind) -> Streamin
     )
 
 
+@router.get("/current/{kind}/source/download")
+async def download_current_source_annotation(kind: AnnotationKind) -> StreamingResponse:
+    stored = get_annotation(kind)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
+
+    return _stream_dataframe_download(
+        stored.source_data,
+        filename=f"{kind}_data_full.csv",
+        error_detail="Failed to download non-filtered annotation data",
+    )
+
+
 @router.get("/current/{kind}/metadata/download")
 async def download_current_metadata_annotation(kind: AnnotationKind) -> StreamingResponse:
     stored = get_annotation(kind)

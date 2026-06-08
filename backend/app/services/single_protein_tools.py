@@ -234,17 +234,37 @@ def _feature_match_mask(
 
 def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
-    workflow_label = "Protein Names" if kind == "protein" else "Workflow Names"
+    if kind == "protein":
+        workflow_label = "Protein Names"
+    elif kind == "phospho":
+        workflow_label = "Phosphosite Names"
+    else:
+        workflow_label = "Phosphoprotein Names"
     options.append({"key": "workflow", "label": workflow_label})
+
+    if kind == "phospho":
+        return options
 
     for candidate in ["GeneNames", "Gene_group"]:
         if candidate in frame.columns:
+            gene_label = "Gene Names"
+            if kind == "protein" and candidate == "Gene_group":
+                gene_label = "Gene Group"
             options.append(
                 {
                     "key": "genes",
-                    "label": "Gene Group" if candidate == "Gene_group" else "Gene Names",
+                    "label": gene_label,
                 }
             )
+            break
+    return options
+
+
+def _heatmap_identifier_options(frame: pd.DataFrame) -> list[dict[str, str]]:
+    options = [{"key": "workflow", "label": "Protein Names"}]
+    for candidate in ["GeneNames", "Gene_group"]:
+        if candidate in frame.columns:
+            options.append({"key": "genes", "label": "Gene Names"})
             break
     return options
 
@@ -512,7 +532,11 @@ def single_protein_options(
 ) -> dict[str, object]:
     frame, _, meta = _analysis_frame(kind)
     tab_normalized = str(tab).lower()
-    available_identifiers = _identifier_options(kind, frame)
+    available_identifiers = (
+        _heatmap_identifier_options(frame)
+        if tab_normalized == "heatmap" and kind == "phospho"
+        else _identifier_options(kind, frame)
+    )
     available_identifier_keys = [str(item["key"]) for item in available_identifiers]
     resolved_identifier = _normalize_identifier(identifier)
     if resolved_identifier not in available_identifier_keys:

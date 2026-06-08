@@ -88,6 +88,15 @@ def _set_viewer_env(project_root: Path, bundle_root: Path, args: argparse.Namesp
             os.environ["COPYLOT_VIEWER_CONFIG"] = str(candidate)
             return
 
+    projects = _discover_viewer_projects(project_root, bundle_root)
+    if len(projects) == 1:
+        project_name = projects[0]
+        resolved = _resolve_viewer_project_config(project_root, bundle_root, project_name)
+        if resolved is not None:
+            os.environ["COPYLOT_VIEWER_PROJECT"] = project_name
+            os.environ["COPYLOT_VIEWER_CONFIG"] = str(resolved)
+            return
+
 
 def _open_browser_later(url: str) -> None:
     def _open() -> None:
