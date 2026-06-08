@@ -4,6 +4,7 @@ import {
   createMetadataProfile,
   downloadCurrentAnnotationFilteredData,
   downloadCurrentAnnotationMetadataData,
+  downloadCurrentAnnotationSourceData,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
@@ -300,7 +301,7 @@ export default function AnnotationPage() {
 
   async function handleDownloadFullData(
     kindToDownload: AnnotationKind,
-    target: "filtered" | "metadata"
+    target: "filtered" | "metadata" | "source"
   ) {
     const busyKey = `${kindToDownload}:${target}`;
     try {
@@ -309,6 +310,8 @@ export default function AnnotationPage() {
       const { blob, filename } =
         target === "metadata"
           ? await downloadCurrentAnnotationMetadataData(kindToDownload)
+          : target === "source"
+            ? await downloadCurrentAnnotationSourceData(kindToDownload)
           : await downloadCurrentAnnotationFilteredData(kindToDownload);
       const url = window.URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -386,6 +389,17 @@ export default function AnnotationPage() {
     kind === "phospho" &&
     result !== null &&
     result.metadataRows > 0;
+  const phosphoImputationAvailable =
+    kind === "phospho" &&
+    result?.imputation != null &&
+    result.imputation.mode !== "none" &&
+    (result.imputation.sampleCount ?? result.sampleCount) > 0;
+
+  useEffect(() => {
+    if (!phosphoImputationAvailable && phosprotSource === "imputed") {
+      setPhosprotSource("non_imputed");
+    }
+  }, [phosphoImputationAvailable, phosprotSource]);
 
   return (
     <div className="space-y-6">
@@ -806,7 +820,9 @@ export default function AnnotationPage() {
                           className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
                         >
                           <option value="non_imputed">Non-imputed phospho</option>
-                          <option value="imputed">Imputed phospho</option>
+                          {phosphoImputationAvailable ? (
+                            <option value="imputed">Imputed phospho</option>
+                          ) : null}
                         </select>
                       </div>
                     </div>
@@ -848,10 +864,10 @@ export default function AnnotationPage() {
                     emptyText="No phosphoprotein filtered rows available."
                     downloadAction={{
                       label:
-                        downloadBusyKey === "phosprot:filtered"
+                        downloadBusyKey === "phosprot:source"
                           ? "Downloading..."
-                          : "Download Full CSV",
-                      onClick: () => handleDownloadFullData("phosprot", "filtered"),
+                          : "Download CSV",
+                      onClick: () => handleDownloadFullData("phosprot", "source"),
                       disabled: downloadBusyKey !== null,
                     }}
                   />

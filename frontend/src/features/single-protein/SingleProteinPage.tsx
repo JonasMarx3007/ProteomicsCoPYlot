@@ -717,7 +717,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange }: Pr
           />,
           <SelectField
             key="protein"
-            label={heatmap.identifier === "genes" ? "Gene" : "Protein Group"}
+            label={heatmap.identifier === "genes" ? "Gene" : "Protein / Site"}
             value={heatmap.protein}
             options={proteinOptions}
             onChange={(value) => setHeatmap({ ...heatmap, protein: value })}
