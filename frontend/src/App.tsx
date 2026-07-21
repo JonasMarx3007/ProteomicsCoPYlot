@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
+import AdvancedPlotOptions, { type AdvancedPlotControlDefaults } from "./components/plots/AdvancedPlotOptions";
 import UploadPage from "./features/upload/UploadPage";
 import AnalysisPage from "./features/analysis/AnalysisPage";
 import AnnotationPage from "./features/metadata/AnnotationPage";
@@ -43,6 +44,7 @@ import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage
 import VennDiagramPage from "./features/comparison/VennDiagramPage";
 import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
 import GONetViewPage from "./features/external/GONetViewPage";
+import SettingsPage from "./features/settings/SettingsPage";
 import TablesPage from "./features/summary/TablesPage";
 import TextPage from "./features/summary/TextPage";
 import ReportPage from "./features/summary/ReportPage";
@@ -58,6 +60,7 @@ import type {
   SingleProteinTab,
   SummaryTab,
   StatsTab,
+  AdvancedPlotSettings,
 } from "./lib/types";
 import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
@@ -77,6 +80,14 @@ import {
   type SaveStateFileHandle,
 } from "./lib/saveStateFile";
 import { withBasePath } from "./lib/basePath";
+import {
+  getAdvancedPlotMode,
+  getAdvancedPlotSettingsByKey,
+  initializeSessionTheme,
+  setActiveAdvancedPlotSettings,
+  setAdvancedPlotMode,
+  setAdvancedPlotSettingsByKey,
+} from "./lib/appSettings";
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -144,6 +155,65 @@ const externalTabs: { key: ExternalTab; label: string }[] = [
   { key: "gonetView", label: "GONetView" },
 ];
 
+const MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  axisLineLeft: true,
+  axisLineRight: true,
+  axisLineBottom: true,
+  axisLineTop: true,
+  gridLineVisible: false,
+  gridLineAxis: "y",
+  gridLineStyle: "dashed",
+  gridLineWidth: 0.8,
+};
+
+const PLOTLY_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  axisLineLeft: false,
+  axisLineRight: false,
+  axisLineBottom: false,
+  axisLineTop: false,
+  gridLineVisible: true,
+  gridLineAxis: "both",
+  gridLineColor: "#EBF0F8",
+  gridLineStyle: "solid",
+  gridLineWidth: 1,
+};
+
+const NO_AXIS_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  axisLineLeft: false,
+  axisLineRight: false,
+  axisLineBottom: false,
+  axisLineTop: false,
+  gridLineVisible: false,
+  gridLineAxis: "y",
+  gridLineStyle: "dashed",
+  gridLineWidth: 0.8,
+};
+
+const LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  axisLineLeft: true,
+  axisLineRight: false,
+  axisLineBottom: true,
+  axisLineTop: false,
+  gridLineVisible: false,
+  gridLineAxis: "y",
+  gridLineStyle: "dashed",
+  gridLineWidth: 0.8,
+};
+
+const BOTH_GRID_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  ...MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS,
+  gridLineVisible: true,
+  gridLineAxis: "both",
+  gridLineStyle: "solid",
+};
+
+const LEFT_BOTTOM_Y_GRID_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
+  ...LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS,
+  gridLineVisible: true,
+  gridLineAxis: "y",
+  gridLineStyle: "solid",
+};
+
 const summaryTabs: { key: SummaryTab; label: string }[] = [
   { key: "tables", label: "Tables" },
   { key: "text", label: "Text" },
@@ -166,6 +236,7 @@ const allSidebarSections: SidebarSection[] = [
   "comparison",
   "summary",
   "external",
+  "settings",
 ];
 
 type RightPanel = "none" | "list" | "chat";
@@ -173,6 +244,101 @@ type SaveStateStatus = {
   tone: "success" | "error";
   message: string;
 };
+
+const EMPTY_ADVANCED_PLOT_SETTINGS: AdvancedPlotSettings = {};
+
+function compactAdvancedMap(value: Record<string, string> | undefined): Record<string, string> | undefined {
+  const entries = Object.entries(value ?? {})
+    .map(([key, val]) => [key.trim(), val.trim()] as const)
+    .filter(([key, val]) => key && val);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
+  if (!value) return undefined;
+  const text = value.text?.trim();
+  const next = {
+    ...(text ? { text } : {}),
+    ...(value.size && value.size > 0 ? { size: value.size } : {}),
+    ...(value.xOffset ? { xOffset: value.xOffset } : {}),
+    ...(value.yOffset ? { yOffset: value.yOffset } : {}),
+    ...(value.bold ? { bold: true } : {}),
+    ...(value.italic ? { italic: true } : {}),
+  };
+  return Object.keys(next).length ? next : undefined;
+}
+
+function compactAdvancedPlotSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
+  const titleElement = compactTextElement(settings.titleElement);
+  const xLabelElement = compactTextElement(settings.xLabelElement);
+  const yLabelElement = compactTextElement(settings.yLabelElement);
+  const conditionLabels = compactAdvancedMap(settings.conditionLabels);
+  const sampleLabels = compactAdvancedMap(settings.sampleLabels);
+  const conditionColors = compactAdvancedMap(settings.conditionColors);
+  const referenceLineColor = settings.referenceLineColor?.trim();
+  const boxBorderColor = settings.boxBorderColor?.trim();
+  const boxMedianColor = settings.boxMedianColor?.trim();
+  const boxOutlierColor = settings.boxOutlierColor?.trim();
+  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
+  const correlationColorMap = settings.correlationColorMap?.trim();
+  const backgroundColor = settings.backgroundColor?.trim();
+  const plotTheme = settings.plotTheme?.trim();
+  const axisLineColor = settings.axisLineColor?.trim();
+  const axisLineStyle = settings.axisLineStyle?.trim();
+  const gridLineAxis = settings.gridLineAxis?.trim();
+  const gridLineColor = settings.gridLineColor?.trim();
+  const gridLineStyle = settings.gridLineStyle?.trim();
+  const next: AdvancedPlotSettings = {};
+
+  if (titleElement) {
+    next.titleElement = titleElement;
+    if (titleElement.text) next.title = titleElement.text;
+    if (titleElement.size) next.titleSize = titleElement.size;
+  }
+  if (xLabelElement) {
+    next.xLabelElement = xLabelElement;
+    if (xLabelElement.text) next.xLabel = xLabelElement.text;
+  }
+  if (yLabelElement) {
+    next.yLabelElement = yLabelElement;
+    if (yLabelElement.text) next.yLabel = yLabelElement.text;
+  }
+  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
+  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
+  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
+  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
+  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
+  if (settings.legendFontSize && settings.legendFontSize > 0) next.legendFontSize = settings.legendFontSize;
+  if (settings.legendXOffset) next.legendXOffset = settings.legendXOffset;
+  if (settings.legendYOffset) next.legendYOffset = settings.legendYOffset;
+  if (referenceLineColor) next.referenceLineColor = referenceLineColor;
+  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
+  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
+  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
+  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
+  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) next.boxOutlierSize = settings.boxOutlierSize;
+  if (correlationColorMap) next.correlationColorMap = correlationColorMap;
+  if (backgroundColor) next.backgroundColor = backgroundColor;
+  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
+  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
+  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
+  if (axisLineColor) next.axisLineColor = axisLineColor;
+  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
+  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
+  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
+  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
+  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
+  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
+  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
+  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
+  if (gridLineColor) next.gridLineColor = gridLineColor;
+  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
+  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
+  if (conditionLabels) next.conditionLabels = conditionLabels;
+  if (sampleLabels) next.sampleLabels = sampleLabels;
+  if (conditionColors) next.conditionColors = conditionColors;
+  return next;
+}
 
 const manualPath = (filename: string) => withBasePath(`/manuals/${filename}`);
 
@@ -199,6 +365,10 @@ export default function App() {
   const [activeComparisonTab, setActiveComparisonTab] = useState<ComparisonTab>("pearson");
   const [activeSummaryTab, setActiveSummaryTab] = useState<SummaryTab>("tables");
   const [activeExternalTab, setActiveExternalTab] = useState<ExternalTab>("peptideCollapse");
+  const [advancedModeEnabled, setAdvancedModeEnabled] = useState(() => getAdvancedPlotMode());
+  const [advancedByKey, setAdvancedByKey] = useState<Record<string, AdvancedPlotSettings>>(
+    () => getAdvancedPlotSettingsByKey()
+  );
   const [qcWorkflowScope, setQcWorkflowScope] = useState<string>("");
   const [qcBoxplotMode, setQcBoxplotMode] = useState<string>("");
   const [qcPcaContextMode, setQcPcaContextMode] = useState<string>("");
@@ -227,6 +397,91 @@ export default function App() {
   }, [annotationMode, availableMetadataProfiles, autoGeneratedMetadataProfiles]);
   const showMetadataSwitcher = metadataOptions.length >= 2;
   const showTopSelector = showDatasetSwitcher || showMetadataSwitcher;
+  const activeAdvancedPlotKey = useMemo(() => {
+    if (activeSection === "data" && activeDataTab === "distribution") {
+      return "data:distribution";
+    }
+    if (activeSection === "stats") {
+      return activeStatsTab === "simulation" ? null : `stats:${activeStatsTab}`;
+    }
+    if (activeSection === "peptide") return `peptide:${activePeptideTab}`;
+    if (activeSection === "singleProtein") return `singleProtein:${activeSingleProteinTab}`;
+    if (activeSection === "phospho") return `phospho:${activePhosphoTab}`;
+    if (activeSection === "comparison") return `comparison:${activeComparisonTab}`;
+    return null;
+  }, [
+    activeSection,
+    activeDataTab,
+    activeCompletenessTab,
+    activeStatsTab,
+    activePeptideTab,
+    activeSingleProteinTab,
+    activePhosphoTab,
+    activeComparisonTab,
+  ]);
+  const activeAdvancedSettings = activeAdvancedPlotKey
+    ? advancedByKey[activeAdvancedPlotKey] ?? EMPTY_ADVANCED_PLOT_SETTINGS
+    : EMPTY_ADVANCED_PLOT_SETTINGS;
+  const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
+    if (!activeAdvancedPlotKey) return MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
+    if (
+      activeAdvancedPlotKey === "stats:volcano"
+    ) {
+      return PLOTLY_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "peptide:rtPlot") {
+      const isInteractive = peptideContextMode.toLowerCase().includes("type=interactive");
+      return isInteractive ? PLOTLY_DEFAULT_ADVANCED_CONTROLS : MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "singleProtein:lineplot") {
+      return BOTH_GRID_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "singleProtein:heatmap") {
+      return NO_AXIS_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "phospho:phosphositePlot") {
+      return LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "phospho:sty") {
+      return LEFT_BOTTOM_Y_GRID_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "phospho:phosprotRegulation") {
+      return PLOTLY_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "comparison:pearson") {
+      const isInteractive = comparisonPearsonContextMode.toLowerCase().includes("type=interactive");
+      return isInteractive ? PLOTLY_DEFAULT_ADVANCED_CONTROLS : BOTH_GRID_DEFAULT_ADVANCED_CONTROLS;
+    }
+    if (activeAdvancedPlotKey === "comparison:venn") {
+      return NO_AXIS_DEFAULT_ADVANCED_CONTROLS;
+    }
+    return MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
+  }, [activeAdvancedPlotKey, comparisonPearsonContextMode, peptideContextMode]);
+
+  useEffect(() => {
+    setAdvancedPlotSettingsByKey(advancedByKey);
+  }, [advancedByKey]);
+
+  useEffect(() => {
+    const refreshAdvancedMode = () => setAdvancedModeEnabled(getAdvancedPlotMode());
+    window.addEventListener("copylot:advancedPlotModeChanged", refreshAdvancedMode);
+    window.addEventListener("storage", refreshAdvancedMode);
+    return () => {
+      window.removeEventListener("copylot:advancedPlotModeChanged", refreshAdvancedMode);
+      window.removeEventListener("storage", refreshAdvancedMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!advancedModeEnabled || !activeAdvancedPlotKey) {
+      setActiveAdvancedPlotSettings(null);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(activeAdvancedSettings));
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [advancedModeEnabled, activeAdvancedPlotKey, activeAdvancedSettings]);
 
   useEffect(() => {
     if (!annotationMode) return;
@@ -241,6 +496,7 @@ export default function App() {
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
+    initializeSessionTheme();
   }, []);
 
   useEffect(() => {
@@ -417,7 +673,7 @@ export default function App() {
     // Keep phospho-specific visible while initial dataset loading is still unresolved,
     // then apply strict data-based visibility once snapshot is available.
     if (hasPhosphoWorkflow || datasetsLoading || datasets === null) sections.push("phospho");
-    sections.push("comparison", "summary", "external");
+    sections.push("comparison", "summary", "external", "settings");
     return sections;
   }, [datasets, datasetsLoading]);
 
@@ -904,15 +1160,42 @@ export default function App() {
         activeExternalTab,
         rightPanel,
       },
+      advancedPlot: {
+        enabled: advancedModeEnabled,
+        settingsByKey: advancedByKey,
+      },
       localStorageState: captureCopylotLocalStorageState(),
     };
   }
 
   function applyUiStateSnapshot(payload: Record<string, unknown>) {
     const appState = payload?.app;
+    const advancedPlotState = payload?.advancedPlot;
     const localStorageState = payload?.localStorageState ?? payload?.reportLocalStorage;
     if (localStorageState && typeof localStorageState === "object") {
       applyCopylotLocalStorageState(localStorageState as Record<string, unknown>);
+      const restoredAdvancedMode = getAdvancedPlotMode();
+      const restoredAdvancedSettings = getAdvancedPlotSettingsByKey();
+      setAdvancedModeEnabled(restoredAdvancedMode);
+      setAdvancedByKey(restoredAdvancedSettings);
+      if (!restoredAdvancedMode) {
+        setActiveAdvancedPlotSettings(null);
+      }
+    }
+    if (advancedPlotState && typeof advancedPlotState === "object") {
+      const advanced = advancedPlotState as Record<string, unknown>;
+      const enabled = Boolean(advanced.enabled);
+      const settingsByKey =
+        advanced.settingsByKey && typeof advanced.settingsByKey === "object" && !Array.isArray(advanced.settingsByKey)
+          ? (advanced.settingsByKey as Record<string, AdvancedPlotSettings>)
+          : {};
+      setAdvancedPlotSettingsByKey(settingsByKey);
+      setAdvancedPlotMode(enabled);
+      setAdvancedModeEnabled(enabled);
+      setAdvancedByKey(settingsByKey);
+      if (!enabled) {
+        setActiveAdvancedPlotSettings(null);
+      }
     }
     if (!appState || typeof appState !== "object") return;
     const next = appState as Record<string, unknown>;
@@ -1032,7 +1315,24 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveStateHandle, saveStateFileName, activeSection, activeDataTab, activeQcTab, activeCompletenessTab, activeStatsTab, activePeptideTab, activeSingleProteinTab, activePhosphoTab, activeComparisonTab, activeSummaryTab, activeExternalTab, rightPanel]);
+  }, [
+    saveStateHandle,
+    saveStateFileName,
+    activeSection,
+    activeDataTab,
+    activeQcTab,
+    activeCompletenessTab,
+    activeStatsTab,
+    activePeptideTab,
+    activeSingleProteinTab,
+    activePhosphoTab,
+    activeComparisonTab,
+    activeSummaryTab,
+    activeExternalTab,
+    rightPanel,
+    advancedModeEnabled,
+    advancedByKey,
+  ]);
 
   function renderContent() {
     if (activeSection === "completeness") {
@@ -1087,23 +1387,23 @@ export default function App() {
 
     if (activeSection === "stats") {
       if (activeStatsTab === "volcano") {
-        return <VolcanoPlotPage onContextModeChange={setStatsVolcanoContextMode} />;
+        return <VolcanoPlotPage onContextModeChange={setStatsVolcanoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeStatsTab === "anova") {
-        return <AnovaPage onContextModeChange={setStatsAnovaContextMode} />;
+        return <AnovaPage onContextModeChange={setStatsAnovaContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeStatsTab === "gsea") {
-        return <GseaPage onContextModeChange={setStatsGseaContextMode} />;
+        return <GseaPage onContextModeChange={setStatsGseaContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeStatsTab === "pathwayHeatmap") {
-        return <PathwayHeatmapPage onContextModeChange={setStatsPathwayHeatmapContextMode} />;
+        return <PathwayHeatmapPage onContextModeChange={setStatsPathwayHeatmapContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (IS_VIEWER_MODE) {
-        return <VolcanoPlotPage />;
+        return <VolcanoPlotPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       return <SimulationPage />;
@@ -1111,72 +1411,72 @@ export default function App() {
 
     if (activeSection === "peptide") {
       if (activePeptideTab === "rtPlot") {
-        return <RtPlotPage onContextModeChange={setPeptideContextMode} />;
+        return <RtPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePeptideTab === "modification") {
-        return <ModificationPlotPage onContextModeChange={setPeptideContextMode} />;
+        return <ModificationPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePeptideTab === "missedCleavage") {
-        return <MissedCleavagePlotPage onContextModeChange={setPeptideContextMode} />;
+        return <MissedCleavagePlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (IS_VIEWER_MODE) {
-        return <RtPlotPage onContextModeChange={setPeptideContextMode} />;
+        return <RtPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
-      return <SequenceCoveragePage onContextModeChange={setPeptideContextMode} />;
+      return <SequenceCoveragePage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
     }
 
     if (activeSection === "singleProtein") {
       if (activeSingleProteinTab === "boxplot") {
-        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
+        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeSingleProteinTab === "lineplot") {
-        return <ProteinLineplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
+        return <ProteinLineplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (IS_VIEWER_MODE && !datasets?.phospho && !datasetsLoading) {
-        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
+        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
-      return <PhosphositesOnProteinHeatmapPage onContextModeChange={setSingleProteinBoxplotContextMode} />;
+      return <PhosphositesOnProteinHeatmapPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
     }
 
     if (activeSection === "phospho") {
       if (activePhosphoTab === "phosphositePlot") {
-        return <PhosphositePlotPage onContextModeChange={setPhosphoContextMode} />;
+        return <PhosphositePlotPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePhosphoTab === "coverage") {
-        return <PhosphositeCoveragePage onContextModeChange={setPhosphoContextMode} />;
+        return <PhosphositeCoveragePage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePhosphoTab === "ksea") {
         if (IS_VIEWER_MODE) {
-          return <PhosphositePlotPage />;
+          return <PhosphositePlotPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
         }
-        return <KseaPage />;
+        return <KseaPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePhosphoTab === "distribution") {
-        return <PhosphositeDistributionPage onContextModeChange={setPhosphoContextMode} />;
+        return <PhosphositeDistributionPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activePhosphoTab === "phosprotRegulation") {
-        return <PhosprotRegulationPage onContextModeChange={setPhosphoContextMode} />;
+        return <PhosprotRegulationPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
-      return <StyPlotPage onContextModeChange={setPhosphoContextMode} />;
+      return <StyPlotPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
     }
 
     if (activeSection === "comparison") {
       if (activeComparisonTab === "pearson") {
-        return <PearsonCorrelationPage onContextModeChange={setComparisonPearsonContextMode} />;
+        return <PearsonCorrelationPage onContextModeChange={setComparisonPearsonContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
-      return <VennDiagramPage onContextModeChange={setComparisonPearsonContextMode} />;
+      return <VennDiagramPage onContextModeChange={setComparisonPearsonContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
     }
 
     if (activeSection === "summary") {
@@ -1205,6 +1505,10 @@ export default function App() {
       return <GONetViewPage />;
     }
 
+    if (activeSection === "settings") {
+      return <SettingsPage />;
+    }
+
     if (activeSection === "data") {
       if (activeDataTab === "upload") {
         return <UploadPage readOnly={IS_VIEWER_MODE} />;
@@ -1219,7 +1523,7 @@ export default function App() {
       }
 
       if (activeDataTab === "distribution") {
-        return <DistributionPage />;
+        return <DistributionPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeDataTab === "translator") {
@@ -1265,6 +1569,20 @@ export default function App() {
     );
   }
 
+  const activeAdvancedPlotOptionsPanel = advancedModeEnabled && activeAdvancedPlotKey ? (
+    <AdvancedPlotOptions
+      key={activeAdvancedPlotKey}
+      value={activeAdvancedSettings}
+      controlDefaults={activeAdvancedControlDefaults}
+      onChange={(next) => {
+        if (advancedModeEnabled) {
+          setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(next));
+        }
+        setAdvancedByKey((prev) => ({ ...prev, [activeAdvancedPlotKey]: next }));
+      }}
+    />
+  ) : null;
+
   return (
     <AppShell
       activeSection={activeSection}
@@ -1290,7 +1608,12 @@ export default function App() {
           {saveStateStatus.message}
         </div>
       ) : null}
-      <div key={`${activePackage}:${activeMetadataProfile}:${activeSection}`}>{renderContent()}</div>
+      <div
+        className="space-y-6"
+        key={`${activePackage}:${activeMetadataProfile}:${activeSection}`}
+      >
+        {renderContent()}
+      </div>
     </AppShell>
   );
 }
@@ -1319,5 +1642,7 @@ function sectionTitle(section: SidebarSection): string {
       return "Summary";
     case "external":
       return "External Tools";
+    case "settings":
+      return "Settings";
   }
 }

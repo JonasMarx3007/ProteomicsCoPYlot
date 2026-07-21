@@ -8,6 +8,7 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type {
   AnnotationKind,
   SingleProteinIdentifier,
@@ -18,6 +19,7 @@ import type {
 type Props = {
   activeTab: SingleProteinTab;
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 };
 
 type PlotView = {
@@ -32,7 +34,8 @@ type TableRequest = {
   params: Record<string, string | number | boolean>;
 };
 
-export default function SingleProteinPage({ activeTab, onContextModeChange }: Props) {
+export default function SingleProteinPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("single.protein.v1", {}),
     []
@@ -266,7 +269,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange }: Pr
         dpi: heatmap.dpi,
       }),
     };
-  }, [activeTab, box, line, heatmap, effectiveKind]);
+  }, [activeTab, box, line, heatmap, effectiveKind, advancedPlotSignal]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView) return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -510,6 +513,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange }: Pr
         )}
       </section>
       ) : null}
+
+      {hasRequiredDataset ? advancedPlotOptions : null}
 
       {hasRequiredDataset ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">

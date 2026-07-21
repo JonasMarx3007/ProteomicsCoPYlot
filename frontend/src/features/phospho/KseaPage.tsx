@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   getPhosphoOptions,
   getPhosphoTable,
@@ -12,7 +12,11 @@ import type { PhosphoOptionsResponse } from "../../lib/types";
 type KseaSourceMode = "volcano" | "volcano_control";
 type KseaDataSource = "data" | "imputed";
 
-export default function KseaPage() {
+type Props = {
+  advancedPlotOptions?: ReactNode;
+};
+
+export default function KseaPage({ advancedPlotOptions }: Props) {
   const { datasets } = useCurrentDatasetsSnapshot();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
@@ -423,7 +427,13 @@ export default function KseaPage() {
             <ErrorNotice message={volcanoError} />
           </div>
         ) : null}
-        {volcanoHtml ? (
+      </section>
+
+      {advancedPlotOptions}
+
+      {volcanoHtml ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-semibold text-slate-900">KSEA Volcano</h3>
           <div className="mt-4">
             <iframe
               srcDoc={volcanoHtml}
@@ -431,8 +441,8 @@ export default function KseaPage() {
               className="h-[40rem] w-full rounded-xl border border-slate-200"
             />
           </div>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
     </div>
   );
 }

@@ -18,6 +18,7 @@ const items: SidebarItem[] = [
   { key: "comparison", label: "Comparison" },
   { key: "summary", label: "Summary" },
   { key: "external", label: "External Tools" },
+  { key: "settings", label: "Settings" },
 ];
 
 type SidebarProps = {

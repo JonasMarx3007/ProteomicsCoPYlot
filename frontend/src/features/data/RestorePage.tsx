@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { importRestoreState } from "../../lib/api";
-import { markSkipBrowserSessionResetOnce } from "../../lib/datasetAvailability";
 import type { RestoreImportResponse, RestoreMissingFile } from "../../lib/types";
 
 type LocalFile = File & {
@@ -146,12 +145,8 @@ export default function RestorePage({
       onApplyUiState(response.uiState ?? {});
       setWarnings(response.warnings ?? []);
       setInfo(
-        `Restore complete. Datasets: ${response.restoredDatasets.length}, annotations: ${response.restoredAnnotations.length}. Reloading UI to rehydrate all module states...`
+        `Restore complete. Datasets: ${response.restoredDatasets.length}, annotations: ${response.restoredAnnotations.length}. UI state has been rehydrated.`
       );
-      window.setTimeout(() => {
-        markSkipBrowserSessionResetOnce();
-        window.location.reload();
-      }, 200);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to restore save state.");
     } finally {

@@ -3,7 +3,7 @@ export const REPORT_LOCAL_STORAGE_KEYS = [
   "pcopylot.report.volcanoLog.v1",
   "pcopylot.report.datasetScope.v1",
 ] as const;
-const COPYLOT_LOCAL_STORAGE_PREFIXES = ["pcopylot.report.", "pcopylot.ui."] as const;
+const COPYLOT_LOCAL_STORAGE_PREFIXES = ["pcopylot.report.", "pcopylot.ui.", "copylot:advanced"] as const;
 
 export type AppUiStateSnapshot = {
   version: 1;

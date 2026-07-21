@@ -9,7 +9,13 @@ import {
 } from "../../lib/plotDownload";
 import { saveQcReportSettings } from "../../lib/reportState";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { AnnotationKind, QcTab } from "../../lib/types";
+import { getAdvancedPlotMode } from "../../lib/appSettings";
+import { IS_VIEWER_MODE } from "../../lib/appMode";
+import AdvancedPlotOptions, {
+  type AdvancedPlotControlDefaults,
+  type AdvancedPlotVisibleControls,
+} from "../../components/plots/AdvancedPlotOptions";
+import type { AdvancedPlotSettings, AnnotationKind, QcTab } from "../../lib/types";
 
 type Props = {
   activeTab: QcTab;
@@ -24,6 +30,7 @@ type QcTableRequest = {
 };
 
 type QcKind = AnnotationKind | "peptide";
+type AdvancedPlotState = Partial<Record<QcTab, AdvancedPlotSettings>>;
 
 function isAnnotationKind(kind: QcKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
@@ -34,6 +41,153 @@ function workflowScopeFromKind(kind: QcKind): string {
   if (kind === "phosprot") return "phosphoprotein";
   if (kind === "peptide") return "peptide";
   return "protein";
+}
+
+function compactMap(value: Record<string, string> | undefined): Record<string, string> | undefined {
+  const entries = Object.entries(value ?? {})
+    .map(([key, val]) => [key.trim(), val.trim()] as const)
+    .filter(([key, val]) => key && val);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
+  if (!value) return undefined;
+  const text = value.text?.trim();
+  const next = {
+    ...(text ? { text } : {}),
+    ...(value.size && value.size > 0 ? { size: value.size } : {}),
+    ...(value.xOffset ? { xOffset: value.xOffset } : {}),
+    ...(value.yOffset ? { yOffset: value.yOffset } : {}),
+    ...(value.bold ? { bold: true } : {}),
+    ...(value.italic ? { italic: true } : {}),
+  };
+  return Object.keys(next).length ? next : undefined;
+}
+
+function compactAdvancedSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
+  const next: AdvancedPlotSettings = {};
+  const title = settings.title?.trim();
+  const xLabel = settings.xLabel?.trim();
+  const yLabel = settings.yLabel?.trim();
+  const referenceLineColor = settings.referenceLineColor?.trim();
+  const boxBorderColor = settings.boxBorderColor?.trim();
+  const boxMedianColor = settings.boxMedianColor?.trim();
+  const boxOutlierColor = settings.boxOutlierColor?.trim();
+  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
+  const correlationColorMap = settings.correlationColorMap?.trim();
+  const backgroundColor = settings.backgroundColor?.trim();
+  const plotTheme = settings.plotTheme?.trim();
+  const axisLineColor = settings.axisLineColor?.trim();
+  const axisLineStyle = settings.axisLineStyle?.trim();
+  const gridLineAxis = settings.gridLineAxis?.trim();
+  const gridLineColor = settings.gridLineColor?.trim();
+  const gridLineStyle = settings.gridLineStyle?.trim();
+  const titleElement = compactTextElement(settings.titleElement);
+  const xLabelElement = compactTextElement(settings.xLabelElement);
+  const yLabelElement = compactTextElement(settings.yLabelElement);
+
+  if (title) next.title = title;
+  if (xLabel) next.xLabel = xLabel;
+  if (yLabel) next.yLabel = yLabel;
+  if (titleElement) {
+    next.titleElement = titleElement;
+    if (titleElement.text) next.title = titleElement.text;
+    if (titleElement.size) next.titleSize = titleElement.size;
+  }
+  if (xLabelElement) {
+    next.xLabelElement = xLabelElement;
+    if (xLabelElement.text) next.xLabel = xLabelElement.text;
+  }
+  if (yLabelElement) {
+    next.yLabelElement = yLabelElement;
+    if (yLabelElement.text) next.yLabel = yLabelElement.text;
+  }
+  if (settings.titleSize && settings.titleSize > 0) next.titleSize = settings.titleSize;
+  if (settings.axisLabelSize && settings.axisLabelSize > 0) next.axisLabelSize = settings.axisLabelSize;
+  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
+  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
+  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
+  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
+  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
+  if (settings.legendFontSize && settings.legendFontSize > 0) next.legendFontSize = settings.legendFontSize;
+  if (settings.legendXOffset) next.legendXOffset = settings.legendXOffset;
+  if (settings.legendYOffset) next.legendYOffset = settings.legendYOffset;
+  if (referenceLineColor) next.referenceLineColor = referenceLineColor;
+  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
+  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
+  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
+  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
+  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) next.boxOutlierSize = settings.boxOutlierSize;
+  if (correlationColorMap) next.correlationColorMap = correlationColorMap;
+  if (backgroundColor) next.backgroundColor = backgroundColor;
+  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
+  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
+  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
+  if (axisLineColor) next.axisLineColor = axisLineColor;
+  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
+  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
+  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
+  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
+  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
+  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
+  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
+  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
+  if (gridLineColor) next.gridLineColor = gridLineColor;
+  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
+  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
+
+  const conditionLabels = compactMap(settings.conditionLabels);
+  const sampleLabels = compactMap(settings.sampleLabels);
+  const conditionColors = compactMap(settings.conditionColors);
+  if (conditionLabels) next.conditionLabels = conditionLabels;
+  if (sampleLabels) next.sampleLabels = sampleLabels;
+  if (conditionColors) next.conditionColors = conditionColors;
+
+  return next;
+}
+
+function advancedParam(settings: AdvancedPlotSettings, enabled: boolean): string | undefined {
+  if (!enabled) return undefined;
+  const compacted = compactAdvancedSettings(settings);
+  return Object.keys(compacted).length ? JSON.stringify(compacted) : undefined;
+}
+
+function withAdvancedParams(
+  params: Record<string, string | number | boolean>,
+  advanced: string | undefined
+): Record<string, string | number | boolean> {
+  return { ...params, advanced: advanced ?? "" };
+}
+
+function withBoxplotStyleParams(
+  params: Record<string, string | number | boolean>,
+  settings: AdvancedPlotSettings
+): Record<string, string | number | boolean> {
+  const next = { ...params };
+  const boxBorderColor = settings.boxBorderColor?.trim();
+  const boxMedianColor = settings.boxMedianColor?.trim();
+  const boxOutlierColor = settings.boxOutlierColor?.trim();
+  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
+  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
+  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
+  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
+  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
+  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) {
+    next.boxOutlierSize = settings.boxOutlierSize;
+  }
+  return next;
+}
+
+function withCorrelationStyleParams(
+  params: Record<string, string | number | boolean>,
+  settings: AdvancedPlotSettings
+): Record<string, string | number | boolean> {
+  const next = { ...params };
+  const correlationColorMap = settings.correlationColorMap?.trim();
+  if (correlationColorMap) {
+    next.correlationColorMap = correlationColorMap;
+  }
+  return next;
 }
 
 export default function QCPipelinePage({
@@ -53,6 +207,7 @@ export default function QCPipelinePage({
   const persistedPca = (persisted.pca as Record<string, unknown>) ?? {};
   const persistedAbundance = (persisted.abundance as Record<string, unknown>) ?? {};
   const persistedCorrelation = (persisted.correlation as Record<string, unknown>) ?? {};
+  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advanced as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide") return value;
@@ -61,6 +216,9 @@ export default function QCPipelinePage({
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
+  const [sampleOptions, setSampleOptions] = useState<string[]>([]);
+  const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
+  const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -68,6 +226,9 @@ export default function QCPipelinePage({
     const value = String(persisted.downloadFormat ?? "png").trim();
     return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
   });
+  const [advancedModeEnabled, setAdvancedModeEnabled] = useState(() => getAdvancedPlotMode());
+  const [advancedByTab, setAdvancedByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
+  const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
 
   const [coverage, setCoverage] = useState({
     includeId: Boolean(persistedCoverage.includeId ?? false),
@@ -150,7 +311,7 @@ export default function QCPipelinePage({
   });
 
   useEffect(() => {
-    writePersistedUiState("qc.pipeline.v1", {
+    const nextState: Record<string, unknown> = {
       kind,
       downloadFormat,
       coverage,
@@ -160,8 +321,31 @@ export default function QCPipelinePage({
       pca,
       abundance,
       correlation,
-    });
-  }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation]);
+    };
+    if (!IS_VIEWER_MODE) {
+      nextState.advanced = advancedByTab;
+    }
+    writePersistedUiState("qc.pipeline.v1", nextState);
+  }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation, advancedByTab]);
+
+  useEffect(() => {
+    const refresh = () => setAdvancedModeEnabled(getAdvancedPlotMode());
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", refresh);
+    window.addEventListener("copylot:advancedPlotModeChanged", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("copylot:advancedPlotModeChanged", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setAdvancedRenderByTab(advancedByTab);
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [advancedByTab]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) return;
@@ -233,6 +417,9 @@ export default function QCPipelinePage({
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setConditionOptions([]);
+      setSampleOptions([]);
+      setSampleDisplayLabels({});
+      setSampleDisplayLabelsWithId({});
       return;
     }
     let cancelled = false;
@@ -241,10 +428,17 @@ export default function QCPipelinePage({
         if (cancelled) return;
         const unique = Array.from(new Set(payload.conditions.map((value) => value.trim()).filter(Boolean)));
         setConditionOptions(unique);
+        const samples = Array.from(new Set((payload.samples ?? []).map((value) => value.trim()).filter(Boolean)));
+        setSampleOptions(samples);
+        setSampleDisplayLabels(payload.sampleLabels ?? {});
+        setSampleDisplayLabelsWithId(payload.sampleLabelsWithId ?? {});
       })
       .catch(() => {
         if (cancelled) return;
         setConditionOptions([]);
+        setSampleOptions([]);
+        setSampleDisplayLabels({});
+        setSampleDisplayLabelsWithId({});
       });
     return () => {
       cancelled = true;
@@ -326,42 +520,228 @@ export default function QCPipelinePage({
     };
   }, [kind, tableRequest, availableKinds]);
 
+  const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
+  const activeAdvancedRenderSettings = advancedRenderByTab[activeTab] ?? {};
+  const activeConditionDisplayLabels = useMemo(
+    () => Object.fromEntries(conditionOptions.map((condition) => [condition, condition])),
+    [conditionOptions]
+  );
+  const activeSampleDisplayLabels = useMemo(() => {
+    const rawLabels = Object.fromEntries(sampleOptions.map((sample) => [sample, sample]));
+    if (activeTab === "coverage" && !coverage.summary) {
+      return coverage.includeId ? sampleDisplayLabelsWithId : sampleDisplayLabels;
+    }
+    if (activeTab === "boxplot" && box.mode === "Single") {
+      return box.includeId ? sampleDisplayLabelsWithId : sampleDisplayLabels;
+    }
+    if (activeTab === "correlation") {
+      return correlation.includeId ? sampleDisplayLabelsWithId : sampleDisplayLabels;
+    }
+    return rawLabels;
+  }, [
+    activeTab,
+    box.includeId,
+    box.mode,
+    correlation.includeId,
+    coverage.includeId,
+    coverage.summary,
+    sampleDisplayLabels,
+    sampleDisplayLabelsWithId,
+    sampleOptions,
+  ]);
+  const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
+    const base: AdvancedPlotVisibleControls = {
+      textElements: true,
+      tickControls: true,
+      legendControls: false,
+      referenceLineColor: false,
+      conditionLabels: false,
+      sampleLabels: false,
+      conditionColors: false,
+      boxplotStyle: false,
+      boxplotOutliers: false,
+      correlationGradient: false,
+    };
+    if (activeTab === "coverage") {
+      return {
+        ...base,
+        legendControls: Boolean(coverage.legend && !coverage.summary),
+        referenceLineColor: true,
+        conditionLabels: true,
+        sampleLabels: !coverage.summary,
+        conditionColors: true,
+      };
+    }
+    if (activeTab === "histogram") {
+      return {
+        ...base,
+        legendControls: Boolean(hist.legend),
+        conditionLabels: true,
+        conditionColors: true,
+      };
+    }
+    if (activeTab === "boxplot") {
+      return {
+        ...base,
+        legendControls: Boolean(box.legend),
+        conditionLabels: true,
+        sampleLabels: String(box.mode).toLowerCase() === "single",
+        conditionColors: true,
+        boxplotStyle: true,
+        boxplotOutliers: Boolean(box.outliers),
+      };
+    }
+    if (activeTab === "cv") {
+      return {
+        ...base,
+        legendControls: Boolean(cv.legend),
+        conditionLabels: true,
+        conditionColors: true,
+        boxplotStyle: true,
+        boxplotOutliers: Boolean(cv.outliers),
+      };
+    }
+    if (activeTab === "pca") {
+      const colorBy = String(pca.colorBy || "Condition").trim().toLowerCase();
+      const clusterMethod = String(pca.clusterMethod || "None").trim().toLowerCase();
+      const usesConditionGroups = colorBy !== "cluster" || clusterMethod === "none";
+      return {
+        ...base,
+        legendControls: Boolean(pca.legend),
+        conditionLabels: usesConditionGroups,
+        conditionColors: usesConditionGroups,
+      };
+    }
+    if (activeTab === "abundance") {
+      return {
+        ...base,
+        legendControls: Boolean(abundance.legend),
+        conditionLabels: true,
+        conditionColors: true,
+      };
+    }
+      return {
+        ...base,
+        sampleLabels: true,
+        correlationGradient: true,
+      };
+  }, [
+    activeTab,
+    abundance.legend,
+    box.legend,
+    box.mode,
+    box.outliers,
+    coverage.legend,
+    coverage.summary,
+    cv.legend,
+    hist.legend,
+    pca.clusterMethod,
+    pca.colorBy,
+    pca.legend,
+  ]);
+  const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
+    const matplotlibDefaults: AdvancedPlotControlDefaults = {
+      axisLineLeft: true,
+      axisLineRight: true,
+      axisLineBottom: true,
+      axisLineTop: true,
+      gridLineVisible: false,
+      gridLineAxis: "y",
+      gridLineStyle: "dashed",
+      gridLineWidth: 0.8,
+    };
+    const plotlyDefaults: AdvancedPlotControlDefaults = {
+      axisLineLeft: false,
+      axisLineRight: false,
+      axisLineBottom: false,
+      axisLineTop: false,
+      gridLineVisible: true,
+      gridLineAxis: "both",
+      gridLineColor: "#EBF0F8",
+      gridLineStyle: "solid",
+      gridLineWidth: 1,
+    };
+    if (activeTab === "pca" && pca.type === "Interactive") {
+      return plotlyDefaults;
+    }
+    if (activeTab === "abundance" && abundance.type === "Interactive") {
+      return plotlyDefaults;
+    }
+    return matplotlibDefaults;
+  }, [activeTab, abundance.type, pca.type]);
+  const activeAdvancedParam = useMemo(
+    () => advancedParam(activeAdvancedRenderSettings, advancedModeEnabled),
+    [activeAdvancedRenderSettings, advancedModeEnabled]
+  );
+
   const plotView = useMemo(() => {
     if (!activeKindOptions.some((option) => option.value === kind)) return null;
     if (activeTab === "coverage") {
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, coverage) };
+      return {
+        mode: "image" as const,
+        url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, withAdvancedParams(coverage, activeAdvancedParam)),
+      };
     }
     if (activeTab === "histogram") {
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/intensity-histogram.png`, hist) };
+      return {
+        mode: "image" as const,
+        url: buildPlotUrl(`/api/plots/qc/${kind}/intensity-histogram.png`, withAdvancedParams(hist, activeAdvancedParam)),
+      };
     }
     if (activeTab === "boxplot") {
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/boxplot.png`, box) };
+      const boxParams = withBoxplotStyleParams(box, activeAdvancedRenderSettings);
+      return {
+        mode: "image" as const,
+        url: buildPlotUrl(`/api/plots/qc/${kind}/boxplot.png`, withAdvancedParams(boxParams, activeAdvancedParam)),
+      };
     }
     if (activeTab === "cv") {
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/cv.png`, cv) };
+      return {
+        mode: "image" as const,
+        url: buildPlotUrl(`/api/plots/qc/${kind}/cv.png`, withAdvancedParams(cv, activeAdvancedParam)),
+      };
     }
     if (activeTab === "pca") {
       const { type, ...params } = pca;
+      const plotParams = withAdvancedParams(params, activeAdvancedParam);
       if (type === "Interactive") {
         return {
           mode: "html" as const,
-          url: buildPlotUrl(`/api/plots/qc/${kind}/pca-interactive.html`, params),
+          url: buildPlotUrl(`/api/plots/qc/${kind}/pca-interactive.html`, plotParams),
         };
       }
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/pca.png`, params) };
+      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/pca.png`, plotParams) };
     }
     if (activeTab === "abundance") {
       const { type, ...params } = abundance;
+      const plotParams = withAdvancedParams(params, activeAdvancedParam);
       if (type === "Interactive") {
         return {
           mode: "html" as const,
-          url: buildPlotUrl(`/api/plots/qc/${kind}/abundance-interactive.html`, params),
+          url: buildPlotUrl(`/api/plots/qc/${kind}/abundance-interactive.html`, plotParams),
         };
       }
-      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, params) };
+      return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, plotParams) };
     }
-    return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, correlation) };
-  }, [activeTab, kind, coverage, hist, box, cv, pca, abundance, correlation, activeKindOptions]);
+    const correlationParams = withCorrelationStyleParams(correlation, activeAdvancedRenderSettings);
+    return {
+      mode: "image" as const,
+      url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, withAdvancedParams(correlationParams, activeAdvancedParam)),
+    };
+  }, [
+    activeTab,
+    kind,
+    coverage,
+    hist,
+    box,
+    cv,
+    pca,
+    abundance,
+    correlation,
+    activeKindOptions,
+    activeAdvancedParam,
+    activeAdvancedRenderSettings,
+  ]);
 
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.mode !== "image") return "";
@@ -449,6 +829,20 @@ export default function QCPipelinePage({
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
+      ) : null}
+
+      {activeKindOptions.length > 0 && advancedModeEnabled ? (
+        <AdvancedPlotOptions
+          key={activeTab}
+          value={activeAdvancedSettings}
+          onChange={(next) => setAdvancedByTab((prev) => ({ ...prev, [activeTab]: next }))}
+          conditionOptions={conditionOptions}
+          conditionDisplayLabels={activeConditionDisplayLabels}
+          sampleOptions={sampleOptions}
+          sampleDisplayLabels={activeSampleDisplayLabels}
+          visibleControls={activeAdvancedVisibleControls}
+          controlDefaults={activeAdvancedControlDefaults}
+        />
       ) : null}
 
       {activeKindOptions.length > 0 ? (

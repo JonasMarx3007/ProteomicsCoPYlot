@@ -5,6 +5,7 @@ import { getViewerAuthStatus, loginViewer, loginViewerQr, logoutViewer } from ".
 import { IS_AI_MODE, IS_VIEWER_MODE } from "../lib/appMode";
 import type { ViewerAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
+import PasswordField from "./PasswordField";
 
 type Props = {
   children: ReactNode;
@@ -197,12 +198,12 @@ export default function ViewerPortalGate({ children }: Props) {
             <label htmlFor="viewer-password" className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
               Password
             </label>
-            <input
+            <PasswordField
               id="viewer-password"
-              type="password"
               autoFocus
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              disabled={loginBusy}
               className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
               placeholder="Enter project password"
             />

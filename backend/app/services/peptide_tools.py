@@ -13,6 +13,7 @@ from app.schemas.peptide import PeptideSpecies
 from app.services.annotation_store import get_annotation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import get_current_dataset
+from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 
 
 def _get_plt():
@@ -40,6 +41,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
     if tight:
         save_kwargs["bbox_inches"] = "tight"
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
     fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
@@ -55,6 +58,7 @@ def _cm_to_px(value_cm: float) -> int:
 
 
 def _plotly_html(fig) -> str:
+    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
     body = fig.to_html(
         full_html=False,
         include_plotlyjs=True,
@@ -63,7 +67,7 @@ def _plotly_html(fig) -> str:
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
         ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
         "</style>"
@@ -316,6 +320,7 @@ def peptide_rt_plot(
     width_cm: float = 20,
     height_cm: float = 15,
     dpi: int = 100,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     frame = get_peptide_frame()
@@ -358,6 +363,7 @@ def peptide_rt_plot(
     ax.set_xlabel("Predicted RT")
     ax.set_ylabel("Actual RT")
     ax.set_title("Retention Time Plot" if header else "")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -368,6 +374,7 @@ def peptide_rt_interactive_html(
     header: bool = True,
     width_cm: float = 20,
     height_cm: float = 15,
+    advanced: dict | None = None,
 ) -> str:
     go = _get_plotly()
     frame = get_peptide_frame()
@@ -461,6 +468,7 @@ def peptide_rt_interactive_html(
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
+    fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=_cm_to_px(height_cm)))
     return _plotly_html(fig)
 
 
@@ -472,6 +480,7 @@ def peptide_modification_plot(
     width_cm: float = 25,
     height_cm: float = 15,
     dpi: int = 100,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     frame = get_peptide_frame()
@@ -565,6 +574,7 @@ def peptide_modification_plot(
     if legend and found_mods:
         ax.legend(title="Modification", bbox_to_anchor=(1.05, 1), loc="upper left")
 
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -578,6 +588,7 @@ def peptide_missed_cleavage_plot(
     width_cm: float = 25,
     height_cm: float = 15,
     dpi: int = 100,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     frame = get_peptide_frame()
@@ -662,6 +673,7 @@ def peptide_missed_cleavage_plot(
             ax.text(index, base_y, f"{value:.1f}%", ha="center", va="bottom", fontsize=text_size)
 
     ax.legend(title="Number", bbox_to_anchor=(1.05, 1), loc="upper left")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 

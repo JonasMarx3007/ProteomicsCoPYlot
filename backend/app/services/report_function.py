@@ -269,6 +269,35 @@ def _module_settings(
     return dict(values)
 
 
+def _advanced_enabled(context: SummaryReportContext) -> bool:
+    return bool(getattr(context, "advancedPlotMode", False))
+
+
+def _advanced_settings_from_map(values: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    item = values.get(key)
+    if not isinstance(item, Mapping):
+        return None
+    return dict(item)
+
+
+def _global_advanced_settings(context: SummaryReportContext, key: str) -> dict[str, Any] | None:
+    if not _advanced_enabled(context):
+        return None
+    return _advanced_settings_from_map(context.advancedPlotSettingsByKey, key)
+
+
+def _qc_advanced_settings(context: SummaryReportContext, tab: str) -> dict[str, Any] | None:
+    if not _advanced_enabled(context):
+        return None
+    return _advanced_settings_from_map(context.qcAdvancedSettingsByTab, tab)
+
+
+def _completeness_advanced_settings(context: SummaryReportContext, tab: str) -> dict[str, Any] | None:
+    if not _advanced_enabled(context):
+        return None
+    return _advanced_settings_from_map(context.completenessAdvancedSettingsByTab, tab)
+
+
 def _to_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -398,6 +427,7 @@ def _volcano_block_html(
     kind: str,
     entries: list[SummaryVolcanoEntry],
     warnings: list[str],
+    advanced: dict[str, Any] | None = None,
 ) -> str:
     parts: list[str] = []
     for index, entry in enumerate(entries, start=1):
@@ -420,7 +450,8 @@ def _volcano_block_html(
                         testType=entry.testType,
                         useUncorrected=entry.useUncorrected,
                         highlightTerms=entry.highlightTerms,
-                    )
+                    ),
+                    advanced=advanced,
                 ),
                 fallback_title=f"{kind.capitalize()} Volcano Plot ({entry.condition1} vs {entry.condition2})",
                 warnings=warnings,
@@ -466,6 +497,20 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
     report_context = payload.reportContext or SummaryReportContext()
     protein_volcano_entries = _volcano_entries(report_context, "protein")
     phospho_volcano_entries = _volcano_entries(report_context, "phospho")
+    qc_coverage_advanced = _qc_advanced_settings(report_context, "coverage")
+    qc_hist_advanced = _qc_advanced_settings(report_context, "histogram")
+    qc_box_advanced = _qc_advanced_settings(report_context, "boxplot")
+    qc_cv_advanced = _qc_advanced_settings(report_context, "cv")
+    qc_pca_advanced = _qc_advanced_settings(report_context, "pca")
+    qc_abundance_advanced = _qc_advanced_settings(report_context, "abundance")
+    qc_correlation_advanced = _qc_advanced_settings(report_context, "correlation")
+    completeness_missing_advanced = _completeness_advanced_settings(report_context, "missingPlot")
+    peptide_rt_advanced = _global_advanced_settings(report_context, "peptide:rtPlot")
+    peptide_modification_advanced = _global_advanced_settings(report_context, "peptide:modification")
+    peptide_missed_cleavage_advanced = _global_advanced_settings(report_context, "peptide:missedCleavage")
+    phosphosite_plot_advanced = _global_advanced_settings(report_context, "phospho:phosphositePlot")
+    phospho_coverage_advanced = _global_advanced_settings(report_context, "phospho:coverage")
+    stats_volcano_advanced = _global_advanced_settings(report_context, "stats:volcano")
 
     next_block = 1
     peptide_block = next_block if has_peptide else None
@@ -567,7 +612,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="CoveragePep",
             content_html=_safe_png(
-                renderer=lambda: qc_peptide_coverage_plot(),
+                renderer=lambda: qc_peptide_coverage_plot(advanced=qc_coverage_advanced),
                 fallback_title="Peptide Coverage Plot",
                 warnings=warnings,
             ),
@@ -581,7 +626,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePep",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot_peptide(),
+                renderer=lambda: completeness_missing_value_plot_peptide(advanced=completeness_missing_advanced),
                 fallback_title="Peptide Missing Value Plot",
                 warnings=warnings,
             ),
@@ -603,6 +648,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(peptide_rt.get("widthCm"), 20.0, minimum=5.0, maximum=60.0),
                     height_cm=_to_float(peptide_rt.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
                     dpi=_to_int(peptide_rt.get("dpi"), 100, minimum=72, maximum=1200),
+                    advanced=peptide_rt_advanced,
                 ),
                 fallback_title="Peptide RT Plot",
                 warnings=warnings,
@@ -624,6 +670,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(peptide_modification.get("widthCm"), 25.0, minimum=5.0, maximum=60.0),
                     height_cm=_to_float(peptide_modification.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
                     dpi=_to_int(peptide_modification.get("dpi"), 100, minimum=72, maximum=1200),
+                    advanced=peptide_modification_advanced,
                 ),
                 fallback_title="Peptide Modification Plot",
                 warnings=warnings,
@@ -646,6 +693,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(peptide_missed_cleavage.get("widthCm"), 25.0, minimum=5.0, maximum=60.0),
                     height_cm=_to_float(peptide_missed_cleavage.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
                     dpi=_to_int(peptide_missed_cleavage.get("dpi"), 100, minimum=72, maximum=1200),
+                    advanced=peptide_missed_cleavage_advanced,
                 ),
                 fallback_title="Peptide Missed Cleavage Plot",
                 warnings=warnings,
@@ -683,6 +731,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(protein_coverage.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_coverage.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(protein_coverage.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_coverage_advanced,
                     ),
                     fallback_title="Protein Coverage Plot",
                     warnings=warnings,
@@ -707,7 +756,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValueProt",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="protein"),
+                renderer=lambda: completeness_missing_value_plot(kind="protein", advanced=completeness_missing_advanced),
                 fallback_title="Protein Missing Value Plot",
                 warnings=warnings,
             ),
@@ -728,6 +777,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(protein_hist.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=_to_float(protein_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                     dpi=_to_int(protein_hist.get("dpi"), 300, minimum=72, maximum=1200),
+                    advanced=qc_hist_advanced,
                 ),
                 fallback_title="Protein Histogram Plot",
                 warnings=warnings,
@@ -755,6 +805,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(protein_box.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_box.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(protein_box.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_box_advanced,
                     ),
                     fallback_title="Protein Boxplot",
                     warnings=warnings,
@@ -790,6 +841,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(protein_cv.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_cv.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(protein_cv.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_cv_advanced,
                     ),
                     fallback_title="Protein CV Plot",
                     warnings=warnings,
@@ -840,6 +892,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         random_state=_to_int(protein_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=protein_pca_height_cm,
+                        advanced=qc_pca_advanced,
                     ),
                     fallback_title="Protein PCA Interactive Plot",
                     warnings=warnings,
@@ -874,6 +927,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=protein_pca_height_cm,
                         dpi=_to_int(protein_pca.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_pca_advanced,
                     ),
                     fallback_title="Protein PCA Plot",
                     warnings=warnings,
@@ -898,6 +952,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(protein_abundance.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=protein_abundance_height_cm,
                     dpi=_to_int(protein_abundance.get("dpi"), 300, minimum=72, maximum=1200),
+                    advanced=qc_abundance_advanced,
                 ),
                 fallback_title="Protein Abundance Plot",
                 warnings=warnings,
@@ -920,6 +975,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(protein_correlation.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=_to_float(protein_correlation.get("heightCm"), 16.0, minimum=4.0, maximum=60.0),
                     dpi=_to_int(protein_correlation.get("dpi"), 400, minimum=72, maximum=1200),
+                    advanced=qc_correlation_advanced,
                 ),
                 fallback_title="Protein Correlation Plot",
                 warnings=warnings,
@@ -944,6 +1000,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         kind="protein",
                         entries=protein_volcano_entries,
                         warnings=warnings,
+                        advanced=stats_volcano_advanced,
                     )
                 ),
             )
@@ -967,7 +1024,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Phossite",
             content_html=_safe_png(
-                renderer=lambda: phosphosite_plot_png(),
+                renderer=lambda: phosphosite_plot_png(advanced=phosphosite_plot_advanced),
                 fallback_title="Phosphosite Overview Plot",
                 warnings=warnings,
             ),
@@ -982,7 +1039,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_key="Coverage(Number)Phos",
             content_html=(
                 _safe_png(
-                    renderer=lambda: phospho_coverage_png(mode="Normal"),
+                    renderer=lambda: phospho_coverage_png(mode="Normal", advanced=phospho_coverage_advanced),
                     fallback_title="Phospho Coverage Number Plot",
                     warnings=warnings,
                 )
@@ -1006,7 +1063,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Coverage(Quality)Phos",
             content_html=_safe_png(
-                renderer=lambda: phospho_coverage_png(mode="Summary"),
+                renderer=lambda: phospho_coverage_png(mode="Summary", advanced=phospho_coverage_advanced),
                 fallback_title="Phospho Coverage Quality Plot",
                 warnings=warnings,
             ),
@@ -1020,7 +1077,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePhos",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="phospho"),
+                renderer=lambda: completeness_missing_value_plot(kind="phospho", advanced=completeness_missing_advanced),
                 fallback_title="Phospho Missing Value Plot",
                 warnings=warnings,
             ),
@@ -1041,6 +1098,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(phospho_hist.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=_to_float(phospho_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                     dpi=_to_int(phospho_hist.get("dpi"), 300, minimum=72, maximum=1200),
+                    advanced=qc_hist_advanced,
                 ),
                 fallback_title="Phospho Histogram Plot",
                 warnings=warnings,
@@ -1068,6 +1126,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(phospho_box.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(phospho_box.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(phospho_box.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_box_advanced,
                     ),
                     fallback_title="Phospho Boxplot",
                     warnings=warnings,
@@ -1103,6 +1162,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(phospho_cv.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(phospho_cv.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(phospho_cv.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_cv_advanced,
                     ),
                     fallback_title="Phospho CV Plot",
                     warnings=warnings,
@@ -1153,6 +1213,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         random_state=_to_int(phospho_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
                         width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=phospho_pca_height_cm,
+                        advanced=qc_pca_advanced,
                     ),
                     fallback_title="Phospho PCA Interactive Plot",
                     warnings=warnings,
@@ -1187,6 +1248,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=phospho_pca_height_cm,
                         dpi=_to_int(phospho_pca.get("dpi"), 300, minimum=72, maximum=1200),
+                        advanced=qc_pca_advanced,
                     ),
                     fallback_title="Phospho PCA Plot",
                     warnings=warnings,
@@ -1211,6 +1273,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(phospho_abundance.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=phospho_abundance_height_cm,
                     dpi=_to_int(phospho_abundance.get("dpi"), 300, minimum=72, maximum=1200),
+                    advanced=qc_abundance_advanced,
                 ),
                 fallback_title="Phospho Abundance Plot",
                 warnings=warnings,
@@ -1233,6 +1296,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     width_cm=_to_float(phospho_correlation.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=_to_float(phospho_correlation.get("heightCm"), 16.0, minimum=4.0, maximum=60.0),
                     dpi=_to_int(phospho_correlation.get("dpi"), 400, minimum=72, maximum=1200),
+                    advanced=qc_correlation_advanced,
                 ),
                 fallback_title="Phospho Correlation Plot",
                 warnings=warnings,
@@ -1257,6 +1321,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         kind="phospho",
                         entries=phospho_volcano_entries,
                         warnings=warnings,
+                        advanced=stats_volcano_advanced,
                     )
                 ),
             )

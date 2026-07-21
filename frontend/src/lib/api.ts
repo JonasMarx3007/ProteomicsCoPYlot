@@ -40,6 +40,7 @@ import type {
   QcSummaryResponse,
   PhosprotAggregationMode,
   PhosprotAggregationSource,
+  RRuntimeStatusResponse,
   SingleProteinOptionsResponse,
   SingleProteinTableResponse,
   QcPlotOptionsResponse,
@@ -64,6 +65,7 @@ import type {
   VolcanoResultResponse,
   VolcanoRequest,
 } from "./types";
+import { getActiveAdvancedPlotSettingsJson } from "./appSettings";
 import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
 
@@ -124,6 +126,21 @@ export async function loginViewer(password: string): Promise<ViewerAuthLoginResp
     project: String(raw.project ?? ""),
     projectLabel: String(raw.projectLabel ?? raw.project ?? ""),
   };
+}
+
+export async function getRRuntimeStatus(refresh = false): Promise<RRuntimeStatusResponse> {
+  const suffix = refresh ? "?refresh=1" : "";
+  const response = await fetch(`${API_BASE}/api/runtime/r${suffix}`, {
+    cache: refresh ? "no-store" : "default",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to detect R runtime"
+    );
+  }
+  return data as RRuntimeStatusResponse;
 }
 
 export async function loginViewerQr(token: string): Promise<ViewerAuthLoginResponse> {
@@ -295,7 +312,7 @@ export async function saveTableDatasetPath(
 
 function resolveDownloadFilename(response: Response, fallback: string): string {
   const disposition = response.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const match = disposition.match(/filename="?([^";]+)"?/i);
   if (!match || !match[1]) return fallback;
   return match[1].trim() || fallback;
 }
@@ -1763,6 +1780,32 @@ export async function runPeptideCollapse(
   return data as PeptideCollapseResponse;
 }
 
+export async function runPeptideCollapseFile(
+  file: File,
+  options: Pick<PeptideCollapseRequest, "cutoff" | "collapseVersion">
+): Promise<{ blob: Blob; filename: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("cutoff", String(options.cutoff));
+  form.append("collapseVersion", options.collapseVersion);
+
+  const response = await fetch(`${API_BASE}/api/external/peptide-collapse/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const data = await parseJson(response);
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to run peptide collapse"
+    );
+  }
+
+  const blob = await response.blob();
+  const filename = resolveDownloadFilename(response, "peptide_collapsed.tsv");
+  return { blob, filename };
+}
+
 export async function getSummaryTables(): Promise<SummaryTablesResponse> {
   const response = await fetch(`${API_BASE}/api/summary/tables`);
   const data = await parseJson(response);
@@ -1802,6 +1845,12 @@ export function buildPlotUrl(path: string, params?: Record<string, string | numb
     Object.entries(params).forEach(([key, value]) => {
       query.set(key, String(value));
     });
+  }
+  if (!query.has("advanced") && (path.startsWith("/api/plots/") || path.startsWith("/api/analysis/"))) {
+    const advanced = getActiveAdvancedPlotSettingsJson();
+    if (advanced) {
+      query.set("advanced", advanced);
+    }
   }
   query.set("_dsn", String(DATASET_SCOPE_NONCE));
 

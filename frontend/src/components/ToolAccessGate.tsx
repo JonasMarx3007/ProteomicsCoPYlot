@@ -5,6 +5,7 @@ import { getToolAuthStatus, loginTool, loginToolLink, logoutTool } from "../lib/
 import { IS_VIEWER_MODE } from "../lib/appMode";
 import type { ToolAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
+import PasswordField from "./PasswordField";
 
 type Props = {
   children: ReactNode;
@@ -181,12 +182,12 @@ export default function ToolAccessGate({ children }: Props) {
             <label htmlFor="tool-password" className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
               Password
             </label>
-            <input
+            <PasswordField
               id="tool-password"
-              type="password"
               autoFocus
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              disabled={loginBusy}
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
               placeholder="Enter tool password"
             />

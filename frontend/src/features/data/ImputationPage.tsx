@@ -7,9 +7,11 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
 
 export default function ImputationPage() {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const availableKindsKey = useMemo(() => availableKinds.join("|"), [availableKinds]);
@@ -129,9 +131,18 @@ export default function ImputationPage() {
     [qValue, adjustStd, seed, sampleWise]
   );
 
-  const beforePlotUrl = buildPlotUrl(`/api/plots/imputation/${kind}/before-missing.png`, plotParams);
-  const overallPlotUrl = buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, plotParams);
-  const afterPlotUrl = buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, plotParams);
+  const beforePlotUrl = useMemo(
+    () => buildPlotUrl(`/api/plots/imputation/${kind}/before-missing.png`, plotParams),
+    [kind, plotParams, advancedPlotSignal]
+  );
+  const overallPlotUrl = useMemo(
+    () => buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, plotParams),
+    [kind, plotParams, advancedPlotSignal]
+  );
+  const afterPlotUrl = useMemo(
+    () => buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, plotParams),
+    [kind, plotParams, advancedPlotSignal]
+  );
 
   async function handleDownloadImputedCsv() {
     try {

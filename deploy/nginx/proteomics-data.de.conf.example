@@ -32,10 +32,21 @@ server {
         proxy_pass http://127.0.0.1:8081;
     }
 
-    # Analysis AI app (optional existing setup).
+    # Home Server AI routes are canceled to save NAS resources.
+    location = /tool-ai {
+        return 404;
+    }
+
+    location /tool-ai/ {
+        return 404;
+    }
+
+    location = /ai {
+        return 404;
+    }
+
     location /ai/ {
-        rewrite ^/ai/?(.*)$ /$1 break;
-        proxy_pass http://127.0.0.1:8082;
+        return 404;
     }
 
     # Project viewer portal (password -> project).
@@ -44,9 +55,12 @@ server {
         proxy_pass http://127.0.0.1:18081;
     }
 
-    # Project viewer portal with AI.
+    # Project viewer portal with AI is canceled on the Home Server.
+    location = /viewer-ai {
+        return 404;
+    }
+
     location /viewer-ai/ {
-        rewrite ^/viewer-ai/?(.*)$ /$1 break;
-        proxy_pass http://127.0.0.1:18082;
+        return 404;
     }
 }

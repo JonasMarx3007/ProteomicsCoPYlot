@@ -11,6 +11,7 @@ import {
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type {
   PeptideCoverageResponse,
   PeptideOverviewResponse,
@@ -21,12 +22,14 @@ import type {
 type Props = {
   activeTab: PeptideTab;
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 };
 
 const MISSING_PEPTIDE_DATASET_MESSAGE =
   "No peptide dataset path is currently loaded. Upload a peptide dataset path first.";
 
-export default function PeptideLevelPage({ activeTab, onContextModeChange }: Props) {
+export default function PeptideLevelPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -226,15 +229,15 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
         )
       );
     },
-    [rt, rtInteractive, rtInteractiveSessionNonce]
+    [rt, rtInteractive, rtInteractiveSessionNonce, advancedPlotSignal]
   );
   const modificationPlotUrl = useMemo(
     () => buildPlotUrl("/api/plots/peptide/modification.png", modification),
-    [modification]
+    [modification, advancedPlotSignal]
   );
   const missedCleavagePlotUrl = useMemo(
     () => buildPlotUrl("/api/plots/peptide/missed-cleavage.png", missedCleavage),
-    [missedCleavage]
+    [missedCleavage, advancedPlotSignal]
   );
 
   const coverageDownloadUrl = useMemo(() => {
@@ -330,6 +333,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               ]}
             />
           </SectionCard>
+          {advancedPlotOptions}
           <ImagePlotCard
             title="Retention Time Plot"
             url={rtPlotUrl}
@@ -371,6 +375,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               ]}
             />
           </SectionCard>
+          {advancedPlotOptions}
           {!hasMetadata ? (
             <InfoBanner message="Generate protein annotation in Data > Annotation to generate the modification plot." />
           ) : (
@@ -416,6 +421,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               ]}
             />
           </SectionCard>
+          {advancedPlotOptions}
           {!hasMetadata ? (
             <InfoBanner message="Generate protein annotation in Data > Annotation to generate the missed cleavage plot." />
           ) : (
@@ -453,6 +459,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange }: Pro
               ]}
             />
           </SectionCard>
+          {advancedPlotOptions}
 
           {coverageLoading ? (
             <SectionCard title="Sequence Coverage">

@@ -5,7 +5,6 @@
 import time
 import numpy as np
 import itertools
-import sys
 import re
 import warnings
 import os
@@ -40,7 +39,7 @@ def peptideCollapse_old(data, cutoff=0.75, collapse_level='PG'):
             print(exp + ' ' + 'is in columns')
         else:
             print(exp + ' ' + 'is not in columns:' + ' ' + 'please, provide' + ' ' + exp + ' ' + 'column')
-            sys.exit('Collapse stopped due to the absence of needed columns')
+            raise ValueError('Collapse stopped due to the absence of needed columns')
     ###################
     # Getting some preliminary functions
     regex_list = np.array(["^(.*)\\..$", "\\[[^[]*\\]", '_'])
@@ -248,7 +247,7 @@ def peptideCollapse(data, cutoff=0.75, collapse_level='PG'):
             print(exp + ' ' + 'is in columns')
         else:
             print(exp + ' ' + 'is not in columns:' + ' ' + 'please, provide' + ' ' + exp + ' ' + 'column')
-            sys.exit('Collapse stopped due to the absence of needed columns')
+            raise ValueError('Collapse stopped due to the absence of needed columns')
     ###################
     # Getting some preliminary functions
     regex_list = np.array(["^(.*)\\..$", "\\[[^[]*\\]", '_'])

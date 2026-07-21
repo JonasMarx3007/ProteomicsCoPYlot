@@ -11,6 +11,7 @@ from scipy.stats import t
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import impute_values_with_diagnostics
+from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -46,6 +47,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
     if tight:
         save_kwargs["bbox_inches"] = "tight"
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
     fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
@@ -53,6 +56,7 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 
 def _plotly_html(fig) -> str:
+    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
     body = fig.to_html(
         full_html=False,
         include_plotlyjs=True,
@@ -61,7 +65,7 @@ def _plotly_html(fig) -> str:
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
         ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:420px;}"
         "</style>"
@@ -292,6 +296,7 @@ def phosphosite_plot_png(
     width_cm: float = 15,
     height_cm: float = 10,
     dpi: int = 100,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
     summary = phosphosite_plot_table(cutoff=cutoff)
@@ -313,6 +318,7 @@ def phosphosite_plot_png(
     ax.grid(False)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    _apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -390,6 +396,7 @@ def phospho_coverage_png(
     height_cm: float = 10,
     dpi: int = 300,
     conditions: list[str] | None = None,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
     counts, summary = _coverage_counts(include_id=include_id, conditions=conditions)
@@ -434,8 +441,10 @@ def phospho_coverage_png(
 
     if legend:
         ax.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.86, 1])
     else:
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -471,6 +480,7 @@ def phospho_distribution_png(
     width_cm: float = 20,
     height_cm: float = 15,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
     table = phospho_distribution_table(cutoff=cutoff)
@@ -489,6 +499,7 @@ def phospho_distribution_png(
     ax.set_ylabel("Frequency")
     if header:
         ax.set_title("Distribution of phosphosite counts per protein")
+    _apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -520,6 +531,7 @@ def phospho_sty_png(
     width_cm: float = 17.78,
     height_cm: float = 11.43,
     dpi: int = 140,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, mtick = _get_plt()
     table = phospho_sty_table()
@@ -536,12 +548,14 @@ def phospho_sty_png(
     ax.spines["right"].set_visible(False)
     ax.grid(axis="y", alpha=0.25, linewidth=0.8)
     ax.set_axisbelow(True)
+    _apply_advanced_axes(ax, advanced)
 
     ax2 = ax.twinx()
     ax2.set_ylabel("Percentage (%)")
     ax2.set_ylim(0, 100)
     ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
     ax2.spines["top"].set_visible(False)
+    _apply_advanced_axes(ax2, advanced)
 
     y_max = float(table["Count"].max()) if not table.empty else 0.0
     offset = 0.02 * y_max if y_max > 0 else 0.1
@@ -730,6 +744,7 @@ def ksea_plot_png(
     width_cm: float = 20,
     height_cm: float = 12,
     dpi: int = 220,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
     table = ksea_table(
@@ -788,6 +803,7 @@ def ksea_plot_png(
         else:
             ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
     ax.legend(loc="best")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -815,6 +831,7 @@ def ksea_uploaded_volcano_html(
     condition2: str = "",
     highlight_grk: bool = False,
     annotate_hits: bool = False,
+    advanced: dict | None = None,
 ) -> str:
     go = _get_plotly_go()
     df = pd.concat([st_results.copy(), tnc_results.copy()], ignore_index=True)
@@ -977,6 +994,7 @@ def ksea_uploaded_volcano_html(
         hovermode="closest",
         margin=dict(l=40, r=20, t=60 if header else 30, b=40),
     )
+    fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
@@ -1152,6 +1170,7 @@ def phosprot_regulation_png(
     width_cm: float = 20,
     height_cm: float = 12,
     dpi: int = 220,
+    advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
     table = phosprot_regulation_table(
@@ -1185,6 +1204,7 @@ def phosprot_regulation_png(
     ax.set_ylabel("Absolute Downregulated Sum (log2)")
     if header:
         ax.set_title("Protein-level Phosphosite Regulation")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -1200,6 +1220,7 @@ def phosprot_regulation_html(
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
     header: bool = True,
+    advanced: dict | None = None,
 ) -> str:
     table = phosprot_regulation_table(
         condition1=condition1,
@@ -1214,6 +1235,7 @@ def phosprot_regulation_html(
     if table.empty:
         raise ValueError("No phosphoprotein regulation rows available for the selected parameters.")
     fig = _phosprot_regulation_figure(table, header=header)
+    fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
