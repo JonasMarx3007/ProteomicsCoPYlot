@@ -1,6 +1,6 @@
 # ProteomicsCoPYlot Example Data
 
-Bundled notebook example data used by `example.ipynb`.
+Bundled notebook example data used by `examples/example.ipynb` and `examples/example.R`.
 
 Included files:
 
@@ -9,5 +9,4 @@ Included files:
 - `phosprot_filtered_data_full.csv`
 - `protein_metadata_full.csv`
 - `phospho_metadata_full.csv`
-
 

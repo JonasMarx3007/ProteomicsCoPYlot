@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
-set "ROOT=%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=5173"
 set "CHAT_MODEL="

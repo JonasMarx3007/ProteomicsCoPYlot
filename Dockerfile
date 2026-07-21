@@ -41,6 +41,7 @@ COPY launch.py /app/launch.py
 COPY launch_tool.py /app/launch_tool.py
 COPY launch_viewer.py /app/launch_viewer.py
 COPY viewer_config.json /app/viewer_config.json
+COPY proteomicscopylot/example_data /app/proteomicscopylot/example_data
 RUN mkdir -p /app/data /app/viewer_data
 COPY data/db /app/data/db
 COPY data/report /app/data/report

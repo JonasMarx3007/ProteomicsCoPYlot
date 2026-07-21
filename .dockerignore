@@ -1,5 +1,12 @@
 .git
 .idea
+.agents
+local
+scripts
+tests
+examples
+docs
+packaging
 
 **/__pycache__/
 *.pyc

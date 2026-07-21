@@ -4,7 +4,7 @@
   if (length(file_arg)) return(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = FALSE))
   source_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
   if (!is.null(source_file)) return(normalizePath(source_file, mustWork = FALSE))
-  normalizePath("example.R", mustWork = FALSE)
+  normalizePath("examples/example.R", mustWork = FALSE)
 }
 
 .parent_paths <- function(path) {
@@ -50,7 +50,7 @@ project_root <- dirname(dirname(functions_path))
 source(functions_path)
 cat("Functions source:", functions_path, "\n")
 
-data_root <- file.path(project_root, "example_data")
+data_root <- file.path(project_root, "proteomicscopylot", "example_data")
 data_paths <- c(
   data = file.path(data_root, "20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv"),
   data3 = file.path(data_root, "20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv"),

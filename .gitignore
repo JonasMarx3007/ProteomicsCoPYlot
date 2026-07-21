@@ -16,6 +16,7 @@ build/
 # Local machine state, secrets, scratch notes, and raw private inputs
 local/
 *.local.*
+*.log
 STRUCTURE_MAP*.md
 functions_maintanance.md
 functions_maintenance.md
@@ -23,6 +24,7 @@ functions_maintenance.md
 # Local agent state and ad-hoc automation
 .agents/
 scripts/
+tests/
 
 # Notebook and editor state
 .ipynb_checkpoints/

@@ -1,8 +1,9 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "ROOT=%~dp0"
-if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI"
+set "BUILD_SCRIPT=%SCRIPT_DIR%build_exe_windows.ps1"
 set "FRONTEND_DIR=%ROOT%\frontend"
 set "DIST_DIR=%ROOT%\dist"
 set "DEV_CONFIG=%ROOT%\local\dev_ai.local.env"
@@ -11,8 +12,8 @@ set "DEV20_ENDPOINT="
 set "VALIDATE_ONLY=0"
 if /I "%~1"=="--validate-only" set "VALIDATE_ONLY=1"
 
-if not exist "%ROOT%\build_exe_windows.ps1" (
-  echo Error: build_exe_windows.ps1 not found in "%ROOT%".
+if not exist "%BUILD_SCRIPT%" (
+  echo Error: build_exe_windows.ps1 not found at "%BUILD_SCRIPT%".
   exit /b 1
 )
 
@@ -105,9 +106,9 @@ exit /b 0
 set "TARGET=%~1"
 set "MODE=%~2"
 if /I "%MODE%"=="Skip" (
-  powershell -ExecutionPolicy Bypass -File "%ROOT%\build_exe_windows.ps1" -Target %TARGET% -SkipFrontendBuild
+  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET% -SkipFrontendBuild
 ) else (
-  powershell -ExecutionPolicy Bypass -File "%ROOT%\build_exe_windows.ps1" -Target %TARGET%
+  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET%
 )
 if errorlevel 1 (
   echo Error: build_exe_windows.ps1 failed for target %TARGET%.

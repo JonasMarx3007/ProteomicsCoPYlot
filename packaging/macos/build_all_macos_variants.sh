@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 DIST_DIR="$ROOT_DIR/dist"
@@ -117,6 +117,7 @@ build_binary() {
       --add-data "frontend/dist:frontend_dist" \
       --add-data "data/db:data/db" \
       --add-data "data/report:data/report" \
+      --add-data "proteomicscopylot/example_data:proteomicscopylot/example_data" \
       --add-data "viewer_config.json:." \
       --add-data "viewer_data:viewer_data" \
       "$entry_point"
