@@ -11,6 +11,7 @@ from app.schemas.completeness import CompletenessTablesResponse
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
+from app.services.plot_images import _advanced_label, _apply_advanced_axes
 
 
 def _get_plt():
@@ -45,6 +46,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
     if tight:
         save_kwargs["bbox_inches"] = "tight"
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
     fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
@@ -168,6 +171,7 @@ def _missing_value_plot_from_matrix(
     width_cm: float,
     height_cm: float,
     dpi: int,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     if matrix.empty or matrix.shape[1] == 0:
@@ -216,6 +220,7 @@ def _missing_value_plot_from_matrix(
 
     ax.tick_params(axis="x", rotation=0)
     ax.grid(axis="y", linestyle="--", alpha=0.7)
+    _apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -285,6 +290,7 @@ def completeness_missing_value_plot(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     frame, meta = _frame_and_meta(kind)
     data_filtered, _ = _filtered_data(frame, meta, include_id=False)
@@ -299,6 +305,7 @@ def completeness_missing_value_plot(
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
+        advanced=advanced,
     )
 
 
@@ -312,6 +319,7 @@ def completeness_missing_value_plot_peptide(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     from app.services.peptide_tools import get_peptide_frame
 
@@ -340,6 +348,7 @@ def completeness_missing_value_plot_peptide(
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
+        advanced=advanced,
     )
 
 
@@ -353,6 +362,7 @@ def completeness_missing_value_plot_precursor(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     from app.services.peptide_tools import get_peptide_frame
 
@@ -381,6 +391,7 @@ def completeness_missing_value_plot_precursor(
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
+        advanced=advanced,
     )
 
 
@@ -391,11 +402,16 @@ def completeness_missing_value_heatmap(
     width_cm: float = 10,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     sns = _get_sns()
     frame, meta = _frame_and_meta(kind)
-    data_filtered, _ = _filtered_data(frame, meta, include_id=include_id)
+    data_filtered, renamed_meta = _filtered_data(frame, meta, include_id=include_id)
+    original_by_label = {
+        str(row["new_sample"]): str(row["sample"])
+        for _, row in renamed_meta.iterrows()
+    }
 
     fig, ax = plt.subplots(
         figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)),
@@ -410,6 +426,19 @@ def completeness_missing_value_heatmap(
     ax.set_xlabel("Sample")
     ax.set_ylabel("Protein Numbers")
     ax.tick_params(axis="x", rotation=90, labelsize=7)
+    ax.set_xticklabels(
+        [
+            _advanced_label(
+                label.get_text(),
+                advanced,
+                "sampleLabels",
+                original_by_label.get(label.get_text()),
+            )
+            for label in ax.get_xticklabels()
+        ],
+        rotation=90,
+    )
+    _apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=True)
 

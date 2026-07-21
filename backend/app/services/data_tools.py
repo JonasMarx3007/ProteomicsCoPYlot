@@ -54,7 +54,7 @@ def _get_sample_columns(kind: AnnotationKind, frame: pd.DataFrame) -> list[str]:
         cols = [c for c in annotation.metadata["sample"].tolist() if c in frame.columns]
         if cols:
             return cols
-    return frame.select_dtypes(include=[np.number]).columns.astype(str).tolist()
+    return []
 
 
 def _best_imputation_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:

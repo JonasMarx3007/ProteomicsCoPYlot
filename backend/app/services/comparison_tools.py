@@ -8,6 +8,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -50,6 +51,9 @@ def _get_plotly():
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     buf = io.BytesIO()
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
+        save_kwargs["facecolor"] = "none"
     if tight:
         save_kwargs["bbox_inches"] = "tight"
     fig.savefig(buf, **save_kwargs)
@@ -67,6 +71,7 @@ def _cm_to_px(value_cm: float) -> int:
 
 
 def _plotly_html(fig) -> str:
+    background = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff")
     body = fig.to_html(
         full_html=False,
         include_plotlyjs=True,
@@ -75,7 +80,7 @@ def _plotly_html(fig) -> str:
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        f"html,body{{margin:0;padding:0;background:{background};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
         ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
         "</style>"
@@ -342,6 +347,7 @@ def pearson_correlation_png(
     width_cm: float = 20,
     height_cm: float = 12,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     x, y, label1, label2 = _pearson_vectors(
@@ -384,6 +390,7 @@ def pearson_correlation_png(
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
     )
     ax.grid(True, alpha=0.2)
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -402,6 +409,7 @@ def pearson_correlation_html(
     header: bool = True,
     width_cm: float = 20,
     height_cm: float = 12,
+    advanced: dict | None = None,
 ) -> str:
     go = _get_plotly()
     x, y, features, label1, label2 = _pearson_vectors_with_features(
@@ -494,6 +502,13 @@ def pearson_correlation_html(
         autosize=True,
         height=_cm_to_px(height_cm),
         margin=dict(l=50, r=24, t=(70 if header else 20), b=50),
+    )
+    fig.update_layout(
+        **_advanced_plotly_layout(
+            advanced,
+            width_px=_cm_to_px(width_cm),
+            height_px=_cm_to_px(height_cm),
+        )
     )
     note = f"r = {corr:.4f}<br>N = {len(points)}" if np.isfinite(corr) else f"r = n/a<br>N = {len(points)}"
     fig.add_annotation(
@@ -614,6 +629,7 @@ def venn_png(
     width_cm: float = 15,
     height_cm: float = 12,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     venn2, venn3 = _get_venn()
@@ -642,6 +658,7 @@ def venn_png(
     if header:
         mode_label = "samples" if str(mode).strip().lower() in {"single", "sample"} else "conditions"
         ax.set_title(f"Venn Diagram ({mode_label})")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 

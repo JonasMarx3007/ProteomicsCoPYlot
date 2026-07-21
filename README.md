@@ -224,6 +224,18 @@ set COPYLOT_AI_MODE=1
 - `launch_tool.py`: analysis launcher entrypoint
 - `launch_viewer.py`: viewer launcher entrypoint
 
+## Development Map
+
+- The React/TypeScript frontend calls the FastAPI routes under `backend/app/api/` through `frontend/src/lib/api.ts`.
+- FastAPI routes validate models from `backend/app/schemas/`; analysis logic belongs in `backend/app/services/`.
+- Session-scoped datasets and metadata are managed by backend stores. Browser-only presentation settings use local storage and are included in saved UI state.
+- Plot generation is split between interactive Plotly responses and static Matplotlib/Seaborn images. Advanced plot settings travel from the frontend as an `advanced` query parameter.
+- Notebook helpers live in `proteomicscopylot/notebook_functions.py` for Python and `proteomicscopylot/notebook_functions.R` for R.
+
+## R Notebook Compatibility
+
+The Settings page reports whether `Rscript` is available. Detection checks `COPYLOT_RSCRIPT`, `COPYLOT_R_BINARY`, or `RSCRIPT`, then `PATH`, then common platform-specific installation paths. Run `example.R` from the repository for an R usage example; installed Python distributions also include `proteomicscopylot/notebook_functions.R`.
+
 ## Docker Compose (Viewer Portals)
 
 Use the dedicated compose file for hosted viewer portals:

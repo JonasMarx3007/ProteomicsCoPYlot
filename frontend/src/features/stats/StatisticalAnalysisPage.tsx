@@ -17,6 +17,7 @@ import {
   removeVolcanoReportEntry,
 } from "../../lib/reportState";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
+import { getActiveAdvancedPlotSettingsJson, getAdvancedPlotMode } from "../../lib/appSettings";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
@@ -40,9 +41,32 @@ import type {
 type Props = {
   activeTab: StatsTab;
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 };
 
-export default function StatisticalAnalysisPage({ activeTab, onContextModeChange }: Props) {
+function currentAdvancedPlotSignal(): string {
+  return `${getAdvancedPlotMode() ? "1" : "0"}:${getActiveAdvancedPlotSettingsJson()}`;
+}
+
+function useAdvancedPlotSignal(): string {
+  const [signal, setSignal] = useState(() => currentAdvancedPlotSignal());
+
+  useEffect(() => {
+    const refresh = () => setSignal(currentAdvancedPlotSignal());
+    window.addEventListener("copylot:advancedPlotModeChanged", refresh);
+    window.addEventListener("copylot:advancedPlotSettingsChanged", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("copylot:advancedPlotModeChanged", refresh);
+      window.removeEventListener("copylot:advancedPlotSettingsChanged", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
+
+  return signal;
+}
+
+export default function StatisticalAnalysisPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
   const { kindOptions } = useCurrentDatasetsSnapshot();
 
   if (kindOptions.length === 0) {
@@ -55,10 +79,10 @@ export default function StatisticalAnalysisPage({ activeTab, onContextModeChange
     );
   }
 
-  if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
-  if (activeTab === "anova") return <AnovaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
-  if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
-  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} />;
+  if (activeTab === "volcano") return <VolcanoPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
+  if (activeTab === "anova") return <AnovaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
+  if (activeTab === "gsea") return <GseaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
+  if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
   return <SimulationPanel kindOptions={kindOptions} />;
 }
 
@@ -349,10 +373,13 @@ function InfoSection({ message }: { message: string }) {
 function VolcanoPanel({
   kindOptions,
   onContextModeChange,
+  advancedPlotOptions,
 }: {
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 }) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("stats.volcano.v1", {}),
     []
@@ -701,7 +728,7 @@ function VolcanoPanel({
       useUncorrected: debouncedRequestPayload.useUncorrected,
       highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
     });
-  }, [debouncedRequestPayload]);
+  }, [debouncedRequestPayload, advancedPlotSignal]);
 
   return (
     <div className="space-y-6">
@@ -789,6 +816,7 @@ function VolcanoPanel({
 
       <Notice error={error} warnings={removeSourceUsageWarnings(options?.warnings)} />
       </SectionCard>
+      {advancedPlotOptions}
       {!canRun && options ? (
         <InfoSection
           message={
@@ -812,10 +840,13 @@ function VolcanoPanel({
 function AnovaPanel({
   kindOptions,
   onContextModeChange,
+  advancedPlotOptions,
 }: {
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 }) {
+  useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("stats.anova.v1", {}),
     []
@@ -1073,6 +1104,7 @@ function AnovaPanel({
         <Notice error={error} warnings={removeSourceUsageWarnings(options?.warnings)} />
       </SectionCard>
 
+      {advancedPlotOptions}
       {!canRun && options ? <InfoSection message="At least two conditions with replicate samples are required to run ANOVA." /> : null}
       {result ? (
         <>
@@ -1100,10 +1132,13 @@ function AnovaPanel({
 function GseaPanel({
   kindOptions,
   onContextModeChange,
+  advancedPlotOptions,
 }: {
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 }) {
+  useAdvancedPlotSignal();
   const gseaKindOptions = useMemo(
     () => kindOptions.filter((option) => option.value === "protein" || option.value === "phosprot"),
     [kindOptions]
@@ -1454,6 +1489,7 @@ function GseaPanel({
         </div>
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
+      {advancedPlotOptions}
       {options && !geneNamesAvailable ? <InfoSection message="Gene names are required for GSEA. Please generate or load gene names first." /> : null}
       {options && geneNamesAvailable && !canRun ? (
         <InfoSection
@@ -1504,10 +1540,13 @@ function GseaPanel({
 function PathwayHeatmapPanel({
   kindOptions,
   onContextModeChange,
+  advancedPlotOptions,
 }: {
   kindOptions: { value: string; label: string }[];
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 }) {
+  useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("stats.pathwayHeatmap.v1", {}),
     []
@@ -1673,6 +1712,7 @@ function PathwayHeatmapPanel({
         </div>
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
+      {advancedPlotOptions}
       {!geneNamesAvailable && options ? <InfoSection message="Gene names are required for pathway heatmaps. Please generate or load gene names first." /> : null}
       {geneNamesAvailable && pathway && selectedConditions.length > 0 ? <ImageSection title="Pathway Heatmap" url={heatmapUrl} /> : null}
     </div>

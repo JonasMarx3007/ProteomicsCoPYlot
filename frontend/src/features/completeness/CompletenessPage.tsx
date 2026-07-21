@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getCompletenessTables } from "../../lib/api";
+import { buildPlotUrl, getCompletenessTables, getQcPlotOptions } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -8,7 +8,18 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { AnnotationKind, CompletenessTab, CompletenessTablesResponse } from "../../lib/types";
+import { getAdvancedPlotMode } from "../../lib/appSettings";
+import { IS_VIEWER_MODE } from "../../lib/appMode";
+import AdvancedPlotOptions, {
+  type AdvancedPlotControlDefaults,
+  type AdvancedPlotVisibleControls,
+} from "../../components/plots/AdvancedPlotOptions";
+import type {
+  AdvancedPlotSettings,
+  AnnotationKind,
+  CompletenessTab,
+  CompletenessTablesResponse,
+} from "../../lib/types";
 
 type Props = {
   activeTab: CompletenessTab;
@@ -16,9 +27,107 @@ type Props = {
 };
 
 type CompletenessKind = AnnotationKind | "peptide" | "precursor";
+type AdvancedPlotState = Partial<Record<CompletenessTab, AdvancedPlotSettings>>;
 
 function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
+}
+
+function compactMap(value: Record<string, string> | undefined): Record<string, string> | undefined {
+  const entries = Object.entries(value ?? {})
+    .map(([key, val]) => [key.trim(), val.trim()] as const)
+    .filter(([key, val]) => key && val);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
+  if (!value) return undefined;
+  const text = value.text?.trim();
+  const next = {
+    ...(text ? { text } : {}),
+    ...(value.size && value.size > 0 ? { size: value.size } : {}),
+    ...(value.xOffset ? { xOffset: value.xOffset } : {}),
+    ...(value.yOffset ? { yOffset: value.yOffset } : {}),
+    ...(value.bold ? { bold: true } : {}),
+    ...(value.italic ? { italic: true } : {}),
+  };
+  return Object.keys(next).length ? next : undefined;
+}
+
+function compactAdvancedSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
+  const next: AdvancedPlotSettings = {};
+  const title = settings.title?.trim();
+  const xLabel = settings.xLabel?.trim();
+  const yLabel = settings.yLabel?.trim();
+  const backgroundColor = settings.backgroundColor?.trim();
+  const plotTheme = settings.plotTheme?.trim();
+  const axisLineColor = settings.axisLineColor?.trim();
+  const axisLineStyle = settings.axisLineStyle?.trim();
+  const gridLineAxis = settings.gridLineAxis?.trim();
+  const gridLineColor = settings.gridLineColor?.trim();
+  const gridLineStyle = settings.gridLineStyle?.trim();
+  const titleElement = compactTextElement(settings.titleElement);
+  const xLabelElement = compactTextElement(settings.xLabelElement);
+  const yLabelElement = compactTextElement(settings.yLabelElement);
+
+  if (title) next.title = title;
+  if (xLabel) next.xLabel = xLabel;
+  if (yLabel) next.yLabel = yLabel;
+  if (titleElement) {
+    next.titleElement = titleElement;
+    if (titleElement.text) next.title = titleElement.text;
+    if (titleElement.size) next.titleSize = titleElement.size;
+  }
+  if (xLabelElement) {
+    next.xLabelElement = xLabelElement;
+    if (xLabelElement.text) next.xLabel = xLabelElement.text;
+  }
+  if (yLabelElement) {
+    next.yLabelElement = yLabelElement;
+    if (yLabelElement.text) next.yLabel = yLabelElement.text;
+  }
+  if (settings.titleSize && settings.titleSize > 0) next.titleSize = settings.titleSize;
+  if (settings.axisLabelSize && settings.axisLabelSize > 0) next.axisLabelSize = settings.axisLabelSize;
+  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
+  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
+  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
+  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
+  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
+  if (settings.textXOffset) next.textXOffset = settings.textXOffset;
+  if (settings.textYOffset) next.textYOffset = settings.textYOffset;
+  if (backgroundColor) next.backgroundColor = backgroundColor;
+  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
+  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
+  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
+  if (axisLineColor) next.axisLineColor = axisLineColor;
+  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
+  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
+  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
+  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
+  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
+  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
+  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
+  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
+  if (gridLineColor) next.gridLineColor = gridLineColor;
+  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
+  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
+
+  const sampleLabels = compactMap(settings.sampleLabels);
+  if (sampleLabels) next.sampleLabels = sampleLabels;
+  return next;
+}
+
+function advancedParam(settings: AdvancedPlotSettings, enabled: boolean): string {
+  if (!enabled) return "";
+  const compacted = compactAdvancedSettings(settings);
+  return Object.keys(compacted).length ? JSON.stringify(compacted) : "";
+}
+
+function withAdvancedParams(
+  params: Record<string, string | number | boolean>,
+  advanced: string
+): Record<string, string | number | boolean> {
+  return { ...params, advanced };
 }
 
 export default function CompletenessPage({ activeTab, onContextModeChange }: Props) {
@@ -29,6 +138,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const persistedMissing = (persisted.missingPlot as Record<string, unknown>) ?? {};
   const persistedHeatmap = (persisted.heatmap as Record<string, unknown>) ?? {};
   const persistedTables = (persisted.tables as Record<string, unknown>) ?? {};
+  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advanced as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<CompletenessKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
@@ -36,6 +146,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [imageError, setImageError] = useState<string | null>(null);
+  const [sampleOptions, setSampleOptions] = useState<string[]>([]);
+  const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
+  const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -43,6 +156,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     const value = String(persisted.downloadFormat ?? "png").trim();
     return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
   });
+  const [advancedModeEnabled, setAdvancedModeEnabled] = useState(() => getAdvancedPlotMode());
+  const [advancedByTab, setAdvancedByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
+  const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
 
   const [missingPlot, setMissingPlot] = useState({
     header: Boolean(persistedMissing.header ?? true),
@@ -67,14 +183,37 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   });
 
   useEffect(() => {
-    writePersistedUiState("completeness.v1", {
+    const nextState: Record<string, unknown> = {
       kind,
       downloadFormat,
       missingPlot,
       heatmap,
       tables,
-    });
-  }, [kind, downloadFormat, missingPlot, heatmap, tables]);
+    };
+    if (!IS_VIEWER_MODE) {
+      nextState.advanced = advancedByTab;
+    }
+    writePersistedUiState("completeness.v1", nextState);
+  }, [kind, downloadFormat, missingPlot, heatmap, tables, advancedByTab]);
+
+  useEffect(() => {
+    const refresh = () => setAdvancedModeEnabled(getAdvancedPlotMode());
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", refresh);
+    window.addEventListener("copylot:advancedPlotModeChanged", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("copylot:advancedPlotModeChanged", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setAdvancedRenderByTab(advancedByTab);
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [advancedByTab]);
 
   const activeKindOptions = useMemo<Array<{ value: CompletenessKind; label: string }>>(() => {
     if (activeTab !== "missingPlot") return kindOptions;
@@ -119,6 +258,33 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   }, [activeKindOptions, kind]);
 
   useEffect(() => {
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
+      setSampleOptions([]);
+      setSampleDisplayLabels({});
+      setSampleDisplayLabelsWithId({});
+      return;
+    }
+    let cancelled = false;
+    getQcPlotOptions(kind)
+      .then((payload) => {
+        if (cancelled) return;
+        const samples = Array.from(new Set((payload.samples ?? []).map((value) => value.trim()).filter(Boolean)));
+        setSampleOptions(samples);
+        setSampleDisplayLabels(payload.sampleLabels ?? {});
+        setSampleDisplayLabelsWithId(payload.sampleLabelsWithId ?? {});
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSampleOptions([]);
+        setSampleDisplayLabels({});
+        setSampleDisplayLabelsWithId({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, availableKinds]);
+
+  useEffect(() => {
     if (!onContextModeChange) return;
     if (activeTab !== "missingPlot" && activeTab !== "heatmap" && activeTab !== "tables") {
       onContextModeChange("");
@@ -139,23 +305,86 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     loadTables();
   }, [activeTab, kind, tables.includeId, tables.outlierThreshold, availableKinds]);
 
+  const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
+  const activeAdvancedRenderSettings = advancedRenderByTab[activeTab] ?? {};
+  const activeSampleDisplayLabels = useMemo(() => {
+    const rawLabels = Object.fromEntries(sampleOptions.map((sample) => [sample, sample]));
+    if (activeTab === "heatmap") {
+      return heatmap.includeId ? sampleDisplayLabelsWithId : sampleDisplayLabels;
+    }
+    return rawLabels;
+  }, [activeTab, heatmap.includeId, sampleDisplayLabels, sampleDisplayLabelsWithId, sampleOptions]);
+  const activeAdvancedParam = useMemo(
+    () => advancedParam(activeAdvancedRenderSettings, advancedModeEnabled),
+    [activeAdvancedRenderSettings, advancedModeEnabled]
+  );
+  const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
+    if (activeTab === "missingPlot") {
+      return {
+        legendControls: false,
+        conditionLabels: false,
+        sampleLabels: false,
+        conditionColors: false,
+      };
+    }
+    if (activeTab === "heatmap") {
+      return {
+        legendControls: false,
+        conditionLabels: false,
+        sampleLabels: true,
+        conditionColors: false,
+      };
+    }
+    return {};
+  }, [activeTab]);
+  const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
+    if (activeTab === "missingPlot") {
+      return {
+        gridLineVisible: true,
+        gridLineAxis: "y",
+        gridLineColor: "#b0b0b0",
+        gridLineStyle: "dashed",
+        gridLineWidth: 0.8,
+        axisLineLeft: true,
+        axisLineRight: true,
+        axisLineBottom: true,
+        axisLineTop: true,
+      };
+    }
+    return {
+      gridLineVisible: false,
+      gridLineAxis: "y",
+      gridLineStyle: "dashed",
+      axisLineLeft: true,
+      axisLineRight: true,
+      axisLineBottom: true,
+      axisLineTop: true,
+    };
+  }, [activeTab]);
+
   const plotView = useMemo(() => {
     if (activeTab === "missingPlot") {
       return {
         title: "Missing Value Plot",
         filename: `completeness_missing_plot_${kind}.png`,
-        url: buildPlotUrl(`/api/plots/completeness/${kind}/missing-value.png`, missingPlot),
+        url: buildPlotUrl(
+          `/api/plots/completeness/${kind}/missing-value.png`,
+          withAdvancedParams(missingPlot, activeAdvancedParam)
+        ),
       };
     }
     if (activeTab === "heatmap") {
       return {
         title: "Missing Value Heatmap",
         filename: `completeness_missing_heatmap_${kind}.png`,
-        url: buildPlotUrl(`/api/plots/completeness/${kind}/missing-heatmap.png`, heatmap),
+        url: buildPlotUrl(
+          `/api/plots/completeness/${kind}/missing-heatmap.png`,
+          withAdvancedParams(heatmap, activeAdvancedParam)
+        ),
       };
     }
     return null;
-  }, [activeTab, kind, missingPlot, heatmap]);
+  }, [activeTab, kind, missingPlot, heatmap, activeAdvancedParam]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView) return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -221,6 +450,18 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
       </section>
+      ) : null}
+
+      {activeKindOptions.length > 0 && activeTab !== "tables" && advancedModeEnabled ? (
+        <AdvancedPlotOptions
+          key={activeTab}
+          value={activeAdvancedSettings}
+          onChange={(next) => setAdvancedByTab((prev) => ({ ...prev, [activeTab]: next }))}
+          sampleOptions={sampleOptions}
+          sampleDisplayLabels={activeSampleDisplayLabels}
+          visibleControls={activeAdvancedVisibleControls}
+          controlDefaults={activeAdvancedControlDefaults}
+        />
       ) : null}
 
       {activeKindOptions.length > 0 && plotView ? (

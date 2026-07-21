@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getComparisonOptions, getComparisonTable } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -8,11 +8,13 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type { AnnotationKind, ComparisonOptionsResponse, ComparisonTab } from "../../lib/types";
 
 type Props = {
   activeTab: ComparisonTab;
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 };
 
 type PlotView = {
@@ -27,7 +29,8 @@ type TableRequest = {
   params: Record<string, string | number | boolean>;
 } | null;
 
-export default function ComparisonPipelinePage({ activeTab, onContextModeChange }: Props) {
+export default function ComparisonPipelinePage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("comparison.pipeline.v1", {}),
     []
@@ -254,7 +257,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
       renderMode: "image",
       url: buildPlotUrl(`/api/plots/comparison/${kind}/venn.png`, params),
     };
-  }, [activeTab, hasKind, kind, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce]);
+  }, [activeTab, hasKind, kind, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce, advancedPlotSignal]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.renderMode !== "image") return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -484,6 +487,8 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange 
           )}
         </section>
       ) : null}
+
+      {kindOptions.length > 0 ? advancedPlotOptions : null}
 
       {kindOptions.length > 0 ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">

@@ -3,6 +3,74 @@ export type AnnotationKind = Extract<DatasetKind, "protein" | "phospho" | "phosp
 export type MetadataAnnotationKind = Extract<AnnotationKind, "protein" | "phospho">;
 export type FilterMode = "per_group" | "in_at_least_one_group";
 
+export type RRuntimeStatusResponse = {
+  available: boolean;
+  executable: string | null;
+  version: string | null;
+  versionOutput: string | null;
+  detectedFrom: "env" | "path" | "common_path" | null;
+  candidates: string[];
+  error: string | null;
+};
+
+export type AdvancedTextElementSettings = {
+  text?: string;
+  size?: number;
+  xOffset?: number;
+  yOffset?: number;
+  bold?: boolean;
+  italic?: boolean;
+};
+
+export type AdvancedPlotSettings = {
+  title?: string;
+  xLabel?: string;
+  yLabel?: string;
+  titleElement?: AdvancedTextElementSettings;
+  xLabelElement?: AdvancedTextElementSettings;
+  yLabelElement?: AdvancedTextElementSettings;
+  titleSize?: number;
+  axisLabelSize?: number;
+  tickLabelSize?: number;
+  xTickLabelSize?: number;
+  yTickLabelSize?: number;
+  xTickLabelRotation?: number;
+  yTickLabelRotation?: number;
+  legendFontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  textXOffset?: number;
+  textYOffset?: number;
+  legendXOffset?: number;
+  legendYOffset?: number;
+  referenceLineColor?: string;
+  boxBorderColor?: string;
+  boxMedianColor?: string;
+  boxOutlierColor?: string;
+  boxOutlierEdgeColor?: string;
+  boxOutlierSize?: number;
+  correlationColorMap?: string;
+  backgroundColor?: string;
+  transparentBackground?: boolean;
+  plotTheme?: string;
+  axisLineVisible?: boolean;
+  axisLineColor?: string;
+  axisLineWidth?: number;
+  axisLineStyle?: string;
+  axisLineTop?: boolean;
+  axisLineRight?: boolean;
+  axisLineBottom?: boolean;
+  axisLineLeft?: boolean;
+  gridLineVisible?: boolean;
+  gridLineAxis?: string;
+  gridLineColor?: string;
+  gridLineWidth?: number;
+  gridLineStyle?: string;
+  conditionLabels?: Record<string, string>;
+  sampleLabels?: Record<string, string>;
+  conditionColors?: Record<string, string>;
+};
+
 export type DatasetPreviewResponse = {
   filename: string;
   kind: DatasetKind;
@@ -279,6 +347,9 @@ export type QcSummaryResponse = {
 
 export type QcPlotOptionsResponse = {
   conditions: string[];
+  samples?: string[];
+  sampleLabels?: Record<string, string>;
+  sampleLabelsWithId?: Record<string, string>;
 };
 
 export type QcTableResponse = {
@@ -607,6 +678,10 @@ export type SummaryVolcanoEntry = {
 export type SummaryReportContext = {
   qcSettings?: Record<string, Record<string, unknown>>;
   volcanoEntries?: SummaryVolcanoEntry[];
+  advancedPlotMode?: boolean;
+  advancedPlotSettingsByKey?: Record<string, AdvancedPlotSettings>;
+  qcAdvancedSettingsByTab?: Record<string, AdvancedPlotSettings>;
+  completenessAdvancedSettingsByTab?: Record<string, AdvancedPlotSettings>;
 };
 
 export type SummaryTab = "tables" | "text" | "report";
@@ -622,7 +697,8 @@ export type SidebarSection =
   | "phospho"
   | "comparison"
   | "summary"
-  | "external";
+  | "external"
+  | "settings";
 
 export type DataTab =
   | "upload"

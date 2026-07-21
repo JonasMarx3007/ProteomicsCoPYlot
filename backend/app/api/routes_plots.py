@@ -86,6 +86,7 @@ from app.services.peptide_tools import (
     peptide_rt_interactive_html,
     peptide_rt_plot,
 )
+from app.services.plot_images import _sample_label, parse_advanced_plot_settings
 
 router = APIRouter(prefix="/api/plots", tags=["plots"])
 
@@ -111,6 +112,7 @@ async def stats_volcano_route(
     testType: str = "unpaired",
     useUncorrected: bool = False,
     highlightTerms: str = "",
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         payload = VolcanoRequest(
@@ -125,7 +127,7 @@ async def stats_volcano_route(
             useUncorrected=useUncorrected,
             highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
         )
-        return HTMLResponse(content=volcano_html(payload))
+        return HTMLResponse(content=volcano_html(payload, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -146,6 +148,7 @@ async def stats_volcano_control_route(
     testType: str = "unpaired",
     useUncorrected: bool = False,
     highlightTerms: str = "",
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         payload = VolcanoControlRequest(
@@ -162,7 +165,7 @@ async def stats_volcano_control_route(
             useUncorrected=useUncorrected,
             highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
         )
-        return HTMLResponse(content=volcano_control_html(payload))
+        return HTMLResponse(content=volcano_control_html(payload, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -182,6 +185,7 @@ async def stats_anova_route(
     nClusters: int = 4,
     minClusterFraction: float = 0.05,
     selectedCluster: int | None = None,
+    advanced: str = "",
 ) -> Response:
     try:
         payload = AnovaRequest(
@@ -196,7 +200,7 @@ async def stats_anova_route(
             nClusters=nClusters,
             minClusterFraction=minClusterFraction,
         )
-        return _png_response(anova_png(payload, selected_cluster=selectedCluster))
+        return _png_response(anova_png(payload, selected_cluster=selectedCluster, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -221,6 +225,7 @@ async def stats_gsea_route(
     topN: int = 10,
     minTermSize: int = 20,
     maxTermSize: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         payload = EnrichmentRequest(
@@ -240,7 +245,7 @@ async def stats_gsea_route(
             minTermSize=minTermSize,
             maxTermSize=maxTermSize,
         )
-        return _png_response(gsea_plot_png(payload, direction=direction))
+        return _png_response(gsea_plot_png(payload, direction=direction, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -261,6 +266,7 @@ async def stats_pathway_heatmap_route(
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         condition_list = [value.strip() for value in conditions.split(",") if value.strip()]
@@ -278,6 +284,7 @@ async def stats_pathway_heatmap_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -295,6 +302,7 @@ async def stats_simulation_route(
     log2fcThreshold: float = 1.0,
     varianceMultiplier: float = 1.0,
     sampleSizeOverride: int = 0,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         payload = SimulationRequest(
@@ -306,7 +314,7 @@ async def stats_simulation_route(
             varianceMultiplier=varianceMultiplier,
             sampleSizeOverride=sampleSizeOverride,
         )
-        return HTMLResponse(content=simulation_html(payload))
+        return HTMLResponse(content=simulation_html(payload, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -322,6 +330,7 @@ async def peptide_rt_route(
     widthCm: float = 20,
     heightCm: float = 15,
     dpi: int = 100,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -333,6 +342,7 @@ async def peptide_rt_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -347,6 +357,7 @@ async def peptide_rt_interactive_route(
     header: bool = True,
     widthCm: float = 20,
     heightCm: float = 15,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         return HTMLResponse(
@@ -355,6 +366,7 @@ async def peptide_rt_interactive_route(
                 header=header,
                 width_cm=widthCm,
                 height_cm=heightCm,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -373,6 +385,7 @@ async def peptide_modification_route(
     widthCm: float = 25,
     heightCm: float = 15,
     dpi: int = 100,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -383,6 +396,7 @@ async def peptide_modification_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -400,6 +414,7 @@ async def peptide_missed_cleavage_route(
     widthCm: float = 25,
     heightCm: float = 15,
     dpi: int = 100,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -411,6 +426,7 @@ async def peptide_missed_cleavage_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -430,9 +446,19 @@ async def imputation_before_route(
     adjustStd: float = 1.0,
     seed: int = 1337,
     sampleWise: bool = False,
+    advanced: str = "",
 ) -> Response:
     try:
-        return _png_response(imputation_before_plot(kind, qValue, adjustStd, seed, sampleWise))
+        return _png_response(
+            imputation_before_plot(
+                kind,
+                qValue,
+                adjustStd,
+                seed,
+                sampleWise,
+                advanced=parse_advanced_plot_settings(advanced),
+            )
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -446,9 +472,19 @@ async def imputation_overall_route(
     adjustStd: float = 1.0,
     seed: int = 1337,
     sampleWise: bool = False,
+    advanced: str = "",
 ) -> Response:
     try:
-        return _png_response(imputation_overall_fit_plot(kind, qValue, adjustStd, seed, sampleWise))
+        return _png_response(
+            imputation_overall_fit_plot(
+                kind,
+                qValue,
+                adjustStd,
+                seed,
+                sampleWise,
+                advanced=parse_advanced_plot_settings(advanced),
+            )
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -462,9 +498,19 @@ async def imputation_after_route(
     adjustStd: float = 1.0,
     seed: int = 1337,
     sampleWise: bool = False,
+    advanced: str = "",
 ) -> Response:
     try:
-        return _png_response(imputation_after_plot(kind, qValue, adjustStd, seed, sampleWise))
+        return _png_response(
+            imputation_after_plot(
+                kind,
+                qValue,
+                adjustStd,
+                seed,
+                sampleWise,
+                advanced=parse_advanced_plot_settings(advanced),
+            )
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -472,9 +518,9 @@ async def imputation_after_route(
 
 
 @router.get("/distribution/{kind}/qqnorm.png")
-async def distribution_qq_route(kind: AnnotationKind) -> Response:
+async def distribution_qq_route(kind: AnnotationKind, advanced: str = "") -> Response:
     try:
-        return _png_response(distribution_qqnorm_plot(kind))
+        return _png_response(distribution_qqnorm_plot(kind, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -492,9 +538,11 @@ async def completeness_missing_value_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         kind_normalized = kind.strip().lower()
+        advanced_settings = parse_advanced_plot_settings(advanced)
         if kind_normalized == "peptide":
             return _png_response(
                 completeness_missing_value_plot_peptide(
@@ -506,6 +554,7 @@ async def completeness_missing_value_route(
                     width_cm=widthCm,
                     height_cm=heightCm,
                     dpi=dpi,
+                    advanced=advanced_settings,
                 )
             )
         if kind_normalized == "precursor":
@@ -519,6 +568,7 @@ async def completeness_missing_value_route(
                     width_cm=widthCm,
                     height_cm=heightCm,
                     dpi=dpi,
+                    advanced=advanced_settings,
                 )
             )
         if kind_normalized in {"protein", "phospho", "phosprot"}:
@@ -533,6 +583,7 @@ async def completeness_missing_value_route(
                     width_cm=widthCm,
                     height_cm=heightCm,
                     dpi=dpi,
+                    advanced=advanced_settings,
                 )
             )
         raise ValueError("Unsupported completeness dataset level.")
@@ -550,6 +601,7 @@ async def completeness_missing_heatmap_route(
     widthCm: float = 10,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -560,6 +612,7 @@ async def completeness_missing_heatmap_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -580,9 +633,11 @@ async def qc_coverage_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         kind_normalized = kind.strip().lower()
+        advanced_settings = parse_advanced_plot_settings(advanced)
         if kind_normalized == "peptide":
             return _png_response(
                 qc_peptide_coverage_plot(
@@ -592,6 +647,7 @@ async def qc_coverage_route(
                     width_cm=widthCm,
                     height_cm=heightCm,
                     dpi=dpi,
+                    advanced=advanced_settings,
                 )
             )
         if kind_normalized in {"protein", "phospho", "phosprot"}:
@@ -607,6 +663,7 @@ async def qc_coverage_route(
                     width_cm=widthCm,
                     height_cm=heightCm,
                     dpi=dpi,
+                    advanced=advanced_settings,
                 )
             )
         raise ValueError("Unsupported QC dataset level.")
@@ -630,15 +687,38 @@ async def qc_coverage_table_route(
 
 
 @router.get("/qc/{kind}/options")
-async def qc_options_route(kind: AnnotationKind) -> dict[str, list[str]]:
+async def qc_options_route(kind: AnnotationKind) -> dict[str, object]:
     annotation = get_annotation(kind)
     if annotation is None or annotation.metadata.empty:
-        return {"conditions": []}
+        return {"conditions": [], "samples": [], "sampleLabels": {}, "sampleLabelsWithId": {}}
     conditions = [
         str(value)
         for value in annotation.metadata["condition"].dropna().astype(str).drop_duplicates().tolist()
     ]
-    return {"conditions": conditions}
+    samples = [
+        str(value)
+        for value in annotation.metadata["sample"].dropna().astype(str).drop_duplicates().tolist()
+    ] if "sample" in annotation.metadata.columns else []
+    sample_labels: dict[str, str] = {}
+    sample_labels_with_id: dict[str, str] = {}
+    if "sample" in annotation.metadata.columns and "condition" in annotation.metadata.columns:
+        meta = annotation.metadata[["sample", "condition"]].dropna().copy()
+        meta["sample"] = meta["sample"].astype(str)
+        meta["condition"] = meta["condition"].astype(str)
+        meta = meta.drop_duplicates(subset=["sample"], keep="first")
+        meta["sample_index"] = meta.groupby("condition").cumcount()
+        for row in meta.itertuples(index=False):
+            sample = str(row.sample)
+            condition = str(row.condition)
+            index = int(row.sample_index)
+            sample_labels[sample] = _sample_label(sample, condition, index, include_id=False)
+            sample_labels_with_id[sample] = _sample_label(sample, condition, index, include_id=True).replace("\n", " ")
+    return {
+        "conditions": conditions,
+        "samples": samples,
+        "sampleLabels": sample_labels,
+        "sampleLabelsWithId": sample_labels_with_id,
+    }
 
 
 @router.get("/qc/{kind}/intensity-histogram.png")
@@ -649,6 +729,7 @@ async def qc_hist_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -659,6 +740,7 @@ async def qc_hist_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -680,8 +762,25 @@ async def qc_boxplot_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
+    boxBorderColor: str = "",
+    boxMedianColor: str = "",
+    boxOutlierColor: str = "",
+    boxOutlierEdgeColor: str = "",
+    boxOutlierSize: float | None = None,
 ) -> Response:
     try:
+        advanced_settings = parse_advanced_plot_settings(advanced)
+        if boxBorderColor.strip():
+            advanced_settings["boxBorderColor"] = boxBorderColor.strip()
+        if boxMedianColor.strip():
+            advanced_settings["boxMedianColor"] = boxMedianColor.strip()
+        if boxOutlierColor.strip():
+            advanced_settings["boxOutlierColor"] = boxOutlierColor.strip()
+        if boxOutlierEdgeColor.strip():
+            advanced_settings["boxOutlierEdgeColor"] = boxOutlierEdgeColor.strip()
+        if boxOutlierSize is not None and boxOutlierSize > 0:
+            advanced_settings["boxOutlierSize"] = boxOutlierSize
         return _png_response(
             qc_boxplot_plot(
                 kind=kind,
@@ -695,6 +794,7 @@ async def qc_boxplot_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=advanced_settings,
             )
         )
     except ValueError as e:
@@ -727,6 +827,7 @@ async def qc_cv_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -740,6 +841,7 @@ async def qc_cv_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -780,8 +882,10 @@ async def qc_pca_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
+        advanced_settings = parse_advanced_plot_settings(advanced)
         return _png_response(
             qc_pca_plot(
                 kind=kind,
@@ -804,6 +908,7 @@ async def qc_pca_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=advanced_settings,
             )
         )
     except ValueError as e:
@@ -833,6 +938,7 @@ async def qc_pca_interactive_route(
     randomState: int = 42,
     widthCm: float = 20,
     heightCm: float = 10,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         html = qc_pca_interactive_html(
@@ -855,6 +961,7 @@ async def qc_pca_interactive_route(
             random_state=randomState,
             width_cm=widthCm,
             height_cm=heightCm,
+            advanced=parse_advanced_plot_settings(advanced),
         )
         return HTMLResponse(content=html)
     except ValueError as e:
@@ -874,6 +981,7 @@ async def qc_abundance_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -885,6 +993,7 @@ async def qc_abundance_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -901,6 +1010,7 @@ async def qc_abundance_interactive_route(
     condition: str = "All Conditions",
     widthCm: float = 20,
     heightCm: float = 10,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         html = qc_abundance_interactive_html(
@@ -910,6 +1020,7 @@ async def qc_abundance_interactive_route(
             condition=condition,
             width_cm=widthCm,
             height_cm=heightCm,
+            advanced=parse_advanced_plot_settings(advanced),
         )
         return HTMLResponse(content=html)
     except ValueError as e:
@@ -929,8 +1040,13 @@ async def qc_correlation_route(
     widthCm: float = 20,
     heightCm: float = 16,
     dpi: int = 400,
+    advanced: str = "",
+    correlationColorMap: str = "",
 ) -> Response:
     try:
+        advanced_settings = parse_advanced_plot_settings(advanced)
+        if correlationColorMap.strip():
+            advanced_settings["correlationColorMap"] = correlationColorMap.strip()
         return _png_response(
             qc_correlation_plot(
                 kind=kind,
@@ -940,6 +1056,7 @@ async def qc_correlation_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=advanced_settings,
             )
         )
     except ValueError as e:
@@ -978,6 +1095,7 @@ async def single_protein_boxplot_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -993,6 +1111,7 @@ async def single_protein_boxplot_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1015,6 +1134,7 @@ async def single_protein_lineplot_route(
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1029,6 +1149,7 @@ async def single_protein_lineplot_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1055,6 +1176,7 @@ async def single_protein_heatmap_route(
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1073,6 +1195,7 @@ async def single_protein_heatmap_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1180,6 +1303,7 @@ async def phosphosite_plot_route(
     widthCm: float = 15,
     heightCm: float = 10,
     dpi: int = 100,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1189,6 +1313,7 @@ async def phosphosite_plot_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1223,6 +1348,7 @@ async def phospho_coverage_route(
     heightCm: float = 10,
     dpi: int = 300,
     conditions: str = "",
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1237,6 +1363,7 @@ async def phospho_coverage_route(
                 height_cm=heightCm,
                 dpi=dpi,
                 conditions=_csv_values(conditions),
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1275,6 +1402,7 @@ async def phospho_distribution_route(
     widthCm: float = 20,
     heightCm: float = 15,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1285,6 +1413,7 @@ async def phospho_distribution_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1323,6 +1452,7 @@ async def phospho_ksea_route(
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 220,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1341,6 +1471,7 @@ async def phospho_ksea_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1395,6 +1526,7 @@ async def phospho_ksea_uploaded_volcano_route(
     condition2: str = Form(""),
     highlightGrk: bool = Form(False),
     annotateHits: bool = Form(False),
+    advanced: str = Form(""),
 ) -> HTMLResponse:
     if not fileSt.filename or not fileTnc.filename:
         raise HTTPException(status_code=400, detail="Both KSEA result files are required.")
@@ -1412,6 +1544,7 @@ async def phospho_ksea_uploaded_volcano_route(
                 condition2=condition2,
                 highlight_grk=highlightGrk,
                 annotate_hits=annotateHits,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1436,6 +1569,7 @@ async def phospho_phosprot_regulation_route(
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 220,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1452,6 +1586,7 @@ async def phospho_phosprot_regulation_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1473,6 +1608,7 @@ async def phospho_phosprot_regulation_html_route(
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
     header: bool = True,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         return HTMLResponse(
@@ -1486,6 +1622,7 @@ async def phospho_phosprot_regulation_html_route(
                 max_hover_sites=maxHoverSites,
                 show_phosphosites=showPhosphosites,
                 header=header,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1532,6 +1669,7 @@ async def phospho_sty_route(
     widthCm: float = 17.78,
     heightCm: float = 11.43,
     dpi: int = 140,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1540,6 +1678,7 @@ async def phospho_sty_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1588,6 +1727,7 @@ async def comparison_pearson_route(
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1606,6 +1746,7 @@ async def comparison_pearson_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1631,6 +1772,7 @@ async def comparison_pearson_interactive_route(
     header: bool = True,
     widthCm: float = 20,
     heightCm: float = 12,
+    advanced: str = "",
 ) -> HTMLResponse:
     try:
         return HTMLResponse(
@@ -1648,6 +1790,7 @@ async def comparison_pearson_interactive_route(
                 header=header,
                 width_cm=widthCm,
                 height_cm=heightCm,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:
@@ -1707,6 +1850,7 @@ async def comparison_venn_route(
     widthCm: float = 15,
     heightCm: float = 12,
     dpi: int = 300,
+    advanced: str = "",
 ) -> Response:
     try:
         return _png_response(
@@ -1726,6 +1870,7 @@ async def comparison_venn_route(
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
+                advanced=parse_advanced_plot_settings(advanced),
             )
         )
     except ValueError as e:

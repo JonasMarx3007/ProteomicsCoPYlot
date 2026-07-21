@@ -53,6 +53,7 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 proteomicscopylot = [
+  "notebook_functions.R",
   "example_data/*.csv",
   "example_data/*.tsv",
   "example_data/*.md",

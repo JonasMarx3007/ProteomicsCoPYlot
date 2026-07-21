@@ -38,6 +38,7 @@ from app.schemas.stats import (
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame
 from app.services.functions import impute_values_with_diagnostics
+from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -61,6 +62,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
     if tight:
         save_kwargs["bbox_inches"] = "tight"
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
     fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
@@ -68,6 +71,7 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 
 def _plotly_html(fig) -> str:
+    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
     body = fig.to_html(
         full_html=False,
         include_plotlyjs=True,
@@ -76,7 +80,7 @@ def _plotly_html(fig) -> str:
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        "html,body{margin:0;padding:0;background:#fff;width:100%;height:100%;}"
+        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
         ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:360px;}"
         "</style>"
@@ -611,7 +615,7 @@ def _volcano_figure(
     return fig
 
 
-def volcano_html(payload: VolcanoRequest) -> str:
+def volcano_html(payload: VolcanoRequest, advanced: dict | None = None) -> str:
     _, label_column, df, _ = _volcano_dataframe(
         kind=payload.kind,
         condition1=payload.condition1,
@@ -633,10 +637,11 @@ def volcano_html(payload: VolcanoRequest) -> str:
         use_uncorrected=payload.useUncorrected,
         highlight_terms=payload.highlightTerms,
     )
+    fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
-def volcano_control_html(payload: VolcanoControlRequest) -> str:
+def volcano_control_html(payload: VolcanoControlRequest, advanced: dict | None = None) -> str:
     _, label_column, df, _ = _volcano_dataframe(
         kind=payload.kind,
         condition1=payload.condition1,
@@ -660,6 +665,7 @@ def volcano_control_html(payload: VolcanoControlRequest) -> str:
         use_uncorrected=payload.useUncorrected,
         highlight_terms=payload.highlightTerms,
     )
+    fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
@@ -1081,7 +1087,7 @@ def _anova_heatmap_figure(
     return fig, plt
 
 
-def anova_png(payload: AnovaRequest, selected_cluster: int | None = None) -> bytes:
+def anova_png(payload: AnovaRequest, selected_cluster: int | None = None, advanced: dict | None = None) -> bytes:
     plot_df, metadata, label_column = _prepare_anova_plot_frame(payload, selected_cluster=selected_cluster)
     fig, plt = _anova_heatmap_figure(
         plot_df,
@@ -1093,6 +1099,8 @@ def anova_png(payload: AnovaRequest, selected_cluster: int | None = None) -> byt
         show_legend=payload.showLegend,
         selected_cluster=selected_cluster,
     )
+    for ax in fig.axes:
+        _apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt, dpi=150)
 
 
@@ -1343,7 +1351,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
     )
 
 
-def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection) -> bytes:
+def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection, advanced: dict | None = None) -> bytes:
     plt = _get_plt()
     from matplotlib.colors import Normalize
 
@@ -1379,6 +1387,7 @@ def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection) -> bytes
     ax.set_title(f"{'Up' if direction == 'up' else 'Down'}regulated Gene Set Enrichment")
     cbar = fig.colorbar(scatter, ax=ax, pad=0.15)
     cbar.set_label("-log10 adjusted p-value")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=220)
 
@@ -1397,6 +1406,7 @@ def pathway_heatmap_png(
     width_cm: float,
     height_cm: float,
     dpi: int,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     _, frame, metadata, _ = _stats_source(kind)
@@ -1490,6 +1500,7 @@ def pathway_heatmap_png(
     ax.set_title(f"{pathway} ({'Z-transformed' if value_type == 'z' else 'log2 Intensities'})")
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label(color_label)
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -1570,7 +1581,7 @@ def run_simulation(payload: SimulationRequest) -> SimulationResultResponse:
     )
 
 
-def simulation_html(payload: SimulationRequest) -> str:
+def simulation_html(payload: SimulationRequest, advanced: dict | None = None) -> str:
     go = _get_plotly()
     _, frame, _ = _simulation_dataframe(payload)
     color_mapping = {
@@ -1613,6 +1624,7 @@ def simulation_html(payload: SimulationRequest) -> str:
         hovermode="closest",
         margin=dict(l=40, r=20, t=50, b=40),
     )
+    fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 

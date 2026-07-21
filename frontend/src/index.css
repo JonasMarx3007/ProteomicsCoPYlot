@@ -12,6 +12,56 @@ body {
   min-height: 100vh;
 }
 
+html.dark {
+  color-scheme: dark;
+  background: #020617;
+}
+
+html.dark body,
+html.dark #root {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+html.dark .bg-white:not([class*="dark:bg-"]) {
+  background-color: #0f172a !important;
+}
+
+html.dark .bg-slate-50:not([class*="dark:bg-"]) {
+  background-color: #111827 !important;
+}
+
+html.dark .bg-slate-100:not([class*="dark:bg-"]) {
+  background-color: #1e293b !important;
+}
+
+html.dark .border-slate-200:not([class*="dark:border-"]),
+html.dark .border-slate-300:not([class*="dark:border-"]) {
+  border-color: #334155 !important;
+}
+
+html.dark .text-black:not([class*="dark:text-"]),
+html.dark .text-slate-950:not([class*="dark:text-"]),
+html.dark .text-slate-900:not([class*="dark:text-"]) {
+  color: #f8fafc !important;
+}
+
+html.dark .text-slate-800:not([class*="dark:text-"]),
+html.dark .text-slate-700:not([class*="dark:text-"]) {
+  color: #e2e8f0 !important;
+}
+
+html.dark .text-slate-600:not([class*="dark:text-"]),
+html.dark .text-slate-500:not([class*="dark:text-"]) {
+  color: #94a3b8 !important;
+}
+
+html.dark input,
+html.dark select,
+html.dark textarea {
+  color-scheme: dark;
+}
+
 #root {
   width: 100%;
   min-height: 100vh;

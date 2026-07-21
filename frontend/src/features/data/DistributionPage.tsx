@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getDistributionSummary } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -8,9 +8,15 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { withBasePath } from "../../lib/basePath";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
-export default function DistributionPage() {
+type Props = {
+  advancedPlotOptions?: ReactNode;
+};
+
+export default function DistributionPage({ advancedPlotOptions }: Props) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [loading, setLoading] = useState(false);
@@ -48,7 +54,10 @@ export default function DistributionPage() {
     loadSummary();
   }, [kind, availableKinds]);
 
-  const qqPlotUrl = buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`);
+  const qqPlotUrl = useMemo(
+    () => buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`),
+    [kind, advancedPlotSignal]
+  );
   const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
   const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
   const qqReferenceImageUrl = withBasePath("/assets/qqnorm.jpg");
@@ -84,6 +93,8 @@ export default function DistributionPage() {
           </div>
         )}
       </section>
+
+      {kindOptions.length > 0 ? advancedPlotOptions : null}
 
       {kindOptions.length === 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">

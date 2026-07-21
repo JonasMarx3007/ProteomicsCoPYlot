@@ -25,7 +25,7 @@ type SummaryEditorState = {
   reportAuthor?: unknown;
 };
 
-const peptideTextKeys = ["RT", "Modification", "MissedCleavage"] as const;
+const peptideTextKeys = ["CoveragePep", "MissingValuePep", "RT", "Modification", "MissedCleavage"] as const;
 const proteinTextKeys = [
   "CoverageProt",
   "MissingValueProt",
@@ -56,6 +56,39 @@ type Props = {
 };
 
 const SUMMARY_EDITOR_STATE_KEY = "summary.editor.v1";
+
+const plotTextLabels: Record<string, string> = {
+  Introduction: "Introduction",
+  CoveragePep: "Coverage Plot - Peptide Level",
+  MissingValuePep: "Missing Value Plot - Peptide Level",
+  RT: "Retention Time Plot",
+  Modification: "Modification Plot",
+  MissedCleavage: "Missed Cleavage Plot",
+  CoverageProt: "Coverage Plot - Protein Level",
+  MissingValueProt: "Missing Value Plot - Protein Level",
+  HistogramIntProt: "Histogram Intensity - Protein Level",
+  BoxplotIntProt: "Boxplot Intensity - Protein Level",
+  CovProt: "Coefficient of Variation - Protein Level",
+  PCAProt: "PCA Plot - Protein Level",
+  AbundanceProt: "Abundance Plot - Protein Level",
+  CorrelationProt: "Correlation Plot - Protein Level",
+  VolcanoProt: "Volcano Plot - Protein Level",
+  Phossite: "Overview Phosphosites",
+  "Coverage(Number)Phos": "Coverage Plot (Number) - Phosphosite Level",
+  "Coverage(Quality)Phos": "Coverage Plot (Quality) - Phosphosite Level",
+  MissingValuePhos: "Missing Value Plot - Phosphosite Level",
+  HistogramIntPhos: "Histogram Intensity - Phosphosite Level",
+  BoxplotIntPhos: "Boxplot Intensity - Phosphosite Level",
+  CovPhos: "Coefficient of Variation - Phosphosite Level",
+  PCAPhos: "PCA Plot - Phosphosite Level",
+  AbundancePhos: "Abundance Plot - Phosphosite Level",
+  CorrelationPhos: "Correlation Plot - Phosphosite Level",
+  VolcanoPhos: "Volcano Plot - Phosphosite Level",
+};
+
+function plotTextLabel(key: string): string {
+  return plotTextLabels[key] ?? key;
+}
 
 function asStringRecord(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object") return {};
@@ -293,7 +326,7 @@ export default function SummaryPage({ activeTab }: Props) {
                 >
                   {plotOptions.map((option) => (
                     <option key={option} value={option}>
-                      {option}
+                      {plotTextLabel(option)}
                     </option>
                   ))}
                 </select>

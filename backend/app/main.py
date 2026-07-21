@@ -20,6 +20,7 @@ from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
 from app.api.routes_summary import router as summary_router
 from app.api.routes_restore import router as restore_router
+from app.api.routes_runtime import router as runtime_router
 from app.api.routes_tool_auth import router as tool_auth_router
 from app.api.routes_viewer_auth import router as viewer_auth_router
 from app.services.session_context import (
@@ -276,6 +277,7 @@ app.include_router(plots_router)
 app.include_router(external_router)
 app.include_router(summary_router)
 app.include_router(restore_router)
+app.include_router(runtime_router)
 app.include_router(tool_auth_router)
 app.include_router(viewer_auth_router)
 

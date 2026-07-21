@@ -1,9 +1,12 @@
 import type {
   AnnotationKind,
+  AdvancedPlotSettings,
   CurrentDatasetsResponse,
   SummaryReportContext,
   SummaryVolcanoEntry,
 } from "./types";
+import { getAdvancedPlotMode, getAdvancedPlotSettingsByKey } from "./appSettings";
+import { readPersistedUiState } from "./persistedUiState";
 
 const QC_SETTINGS_KEY = "pcopylot.report.qcSettings.v1";
 const VOLCANO_LOG_KEY = "pcopylot.report.volcanoLog.v1";
@@ -109,6 +112,14 @@ export function listVolcanoReportEntries(): SummaryVolcanoEntry[] {
   return readJson<SummaryVolcanoEntry[]>(VOLCANO_LOG_KEY, []);
 }
 
+function readAdvancedUiState(key: string): Record<string, AdvancedPlotSettings> {
+  const state = readPersistedUiState<Record<string, unknown>>(key, {});
+  const advanced = state.advanced;
+  return advanced && typeof advanced === "object" && !Array.isArray(advanced)
+    ? (advanced as Record<string, AdvancedPlotSettings>)
+    : {};
+}
+
 function normalizeDataSource(value: unknown): "data" | "imputed" {
   if (String(value ?? "").trim().toLowerCase() === "data") return "data";
   return "imputed";
@@ -168,5 +179,12 @@ export function getSummaryReportContext(): SummaryReportContext {
     {}
   );
   const volcanoEntries = listVolcanoReportEntries();
-  return { qcSettings, volcanoEntries };
+  return {
+    qcSettings,
+    volcanoEntries,
+    advancedPlotMode: getAdvancedPlotMode(),
+    advancedPlotSettingsByKey: getAdvancedPlotSettingsByKey(),
+    qcAdvancedSettingsByTab: readAdvancedUiState("qc.pipeline.v1"),
+    completenessAdvancedSettingsByTab: readAdvancedUiState("completeness.v1"),
+  };
 }

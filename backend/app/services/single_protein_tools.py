@@ -10,6 +10,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.plot_images import _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
 SingleProteinIdentifier = Literal["workflow", "genes"]
@@ -45,6 +46,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
     if tight:
         save_kwargs["bbox_inches"] = "tight"
+    if getattr(fig, "_copylot_transparent_background", False):
+        save_kwargs["transparent"] = True
     fig.savefig(buf, **save_kwargs)
     plt.close(fig)
     buf.seek(0)
@@ -607,6 +610,7 @@ def single_protein_lineplot_plot(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     table, ordered_samples = _lineplot_long_table(
@@ -639,13 +643,15 @@ def single_protein_lineplot_plot(
         resolved_identifier = _normalize_identifier(identifier)
         workflow = "Gene" if resolved_identifier == "genes" else ("Protein" if kind == "protein" else "Phosphosite")
         ax.set_title(f"{workflow} expression across samples")
+    ax.grid(True, alpha=0.2)
     if legend:
         ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.84, 1])
     else:
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
-    ax.grid(True, alpha=0.2)
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
 
@@ -671,6 +677,7 @@ def single_protein_boxplot_plot(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     intensities, labels, condition_values, _ = _boxplot_data(
@@ -715,8 +722,10 @@ def single_protein_boxplot_plot(
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_color[label], lw=4) for label in labels]
         ax.legend(handles, labels, title="Condition", bbox_to_anchor=(1.02, 1), loc="upper left")
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.84, 1])
     else:
+        _apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -765,6 +774,7 @@ def single_protein_heatmap_plot(
     width_cm: float = 20,
     height_cm: float = 12,
     dpi: int = 300,
+    advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
     sns = _get_seaborn()
@@ -798,6 +808,7 @@ def single_protein_heatmap_plot(
         ax.set_title(f"{protein} ({suffix})")
     ax.set_xlabel("Sample")
     ax.set_ylabel("PTM site")
+    _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 

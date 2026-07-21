@@ -20,6 +20,10 @@ STRUCTURE_MAP*.md
 functions_maintanance.md
 functions_maintenance.md
 
+# Local agent state and ad-hoc automation
+.agents/
+scripts/
+
 # Notebook and editor state
 .ipynb_checkpoints/
 .idea/

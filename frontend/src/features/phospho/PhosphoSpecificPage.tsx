@@ -10,11 +10,13 @@ import {
 } from "../../lib/plotDownload";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type { PhosphoOptionsResponse, PhosphoTab } from "../../lib/types";
 
 type Props = {
   activeTab: PhosphoTab;
   onContextModeChange?: (mode: string) => void;
+  advancedPlotOptions?: ReactNode;
 };
 
 type PlotView = {
@@ -29,7 +31,8 @@ type TableRequest = {
   params?: Record<string, string | number | boolean>;
 } | null;
 
-export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: Props) {
+export default function PhosphoSpecificPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
+  const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("phospho.specific.v1", {}),
     []
@@ -320,6 +323,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: 
     debouncedSty,
     debouncedKsea,
     debouncedPhosprotRegulation,
+    advancedPlotSignal,
   ]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.type !== "image") return "";
@@ -558,6 +562,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange }: 
           <div className="mt-4">{renderOptions()}</div>
         )}
       </section>
+
+      {advancedPlotOptions}
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
