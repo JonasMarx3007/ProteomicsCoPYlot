@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 PYTHON_BIN="$BACKEND_DIR/.venv/bin/python3"
@@ -18,7 +19,7 @@ fi
 for arg in "$@"; do
   case "$arg" in
     --dev|--dev0|--dev2|--dev20|--model|--model=*)
-      exec "$ROOT_DIR/run_viewer_ai_macos.sh" "$@"
+      exec "$SCRIPT_DIR/run_viewer_ai_macos.sh" "$@"
       ;;
   esac
 done

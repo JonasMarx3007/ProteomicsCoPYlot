@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
-set "ROOT=%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
@@ -148,5 +149,5 @@ endlocal & set "PROJECT_FOUND=%FOUND%"
 exit /b 0
 
 :delegate_ai
-call "%ROOT%run_viewer_ai.bat" %*
+call "%SCRIPT_DIR%run_viewer_ai.bat" %*
 exit /b %errorlevel%

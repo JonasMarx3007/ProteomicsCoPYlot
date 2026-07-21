@@ -44,7 +44,10 @@ bio = [
 ]
 dev = [
   "build",
+  "httpx",
+  "pytest",
   "twine",
+  "wheel",
 ]
 
 [tool.setuptools]
@@ -58,3 +61,8 @@ proteomicscopylot = [
   "example_data/*.tsv",
   "example_data/*.md",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "backend"]
+addopts = "-ra"

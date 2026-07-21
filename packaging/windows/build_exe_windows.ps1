@@ -8,14 +8,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $BackendDir = Join-Path $RootDir "backend"
 $FrontendDir = Join-Path $RootDir "frontend"
 $FrontendDistDir = Join-Path $FrontendDir "dist"
 $DataDbDir = Join-Path $RootDir "data\db"
 $DataReportDir = Join-Path $RootDir "data\report"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
-$IconPath = Join-Path $RootDir "favicon.ico"
+$IconPath = Join-Path $FrontendDir "public\favicon.ico"
 $FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
 $SpecDir = Join-Path $RootDir "build\specs"
 $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
@@ -124,7 +124,8 @@ function Invoke-PyInstallerBuild {
     "--collect-all", "openpyxl",
     "--add-data", "$FrontendDistDir;frontend_dist",
     "--add-data", "$DataDbDir;data\db",
-    "--add-data", "$DataReportDir;data\report"
+    "--add-data", "$DataReportDir;data\report",
+    "--add-data", "$(Join-Path $RootDir "proteomicscopylot\example_data");proteomicscopylot\example_data"
   )
 
   foreach ($viewerDataSpec in $ViewerDataAddData) {
