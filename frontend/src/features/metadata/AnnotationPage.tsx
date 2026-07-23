@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   aggregatePhosprot,
   createMetadataProfile,
+  detectAnnotationLog2Scale,
   downloadCurrentAnnotationFilteredData,
   downloadCurrentAnnotationMetadataData,
   downloadCurrentAnnotationSourceData,
@@ -14,6 +15,7 @@ import {
   uploadAnnotationMetadata,
 } from "../../lib/api";
 import { subscribeDatasetStateChanged } from "../../lib/datasetEvents";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   AnnotationKind,
   AnnotationFilterConfig,
@@ -36,6 +38,8 @@ const DEFAULT_FILTER: AnnotationFilterConfig = {
   minPresent: 0,
   mode: "per_group",
 };
+
+const ANNOTATION_MANAGER_VISIBILITY_KEY = "data.annotationManager.visible.v1";
 
 export default function AnnotationPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
@@ -63,6 +67,9 @@ export default function AnnotationPage() {
   const [metadataProfileBusy, setMetadataProfileBusy] = useState(false);
   const [newMetadataProfileName, setNewMetadataProfileName] = useState("");
   const [renameMetadataProfileName, setRenameMetadataProfileName] = useState("");
+  const [annotationManagerVisible, setAnnotationManagerVisible] = useState(() =>
+    readPersistedUiState(ANNOTATION_MANAGER_VISIBILITY_KEY, false)
+  );
 
   const activeDataset = currentDatasets?.[kind] ?? null;
   const availableColumns = activeDataset?.columnNames ?? [];
@@ -143,9 +150,6 @@ export default function AnnotationPage() {
   }, [availableKinds, kind]);
 
   useEffect(() => {
-    const suggestedLog2 =
-      kind === "phosprot" ? true : activeDataset?.suggestedIsLog2Transformed ?? true;
-
     getCurrentAnnotation(kind)
       .then((stored) => {
         setResult(stored);
@@ -156,12 +160,12 @@ export default function AnnotationPage() {
       })
       .catch(() => {
         setResult(null);
-        setIsLog2Transformed(suggestedLog2);
+        setIsLog2Transformed(true);
       });
   }, [
     kind,
     activeDataset?.filename,
-    activeDataset?.suggestedIsLog2Transformed,
+    activeDataset?.sourcePath,
     currentDatasets?.activeMetadataProfile,
   ]);
 
@@ -197,7 +201,9 @@ export default function AnnotationPage() {
   }
 
   function removeCondition(id: number) {
-    setConditions((prev) => prev.filter((condition) => condition.id !== id));
+    const next = conditions.filter((condition) => condition.id !== id);
+    setConditions(next);
+    updateLog2FromConditions(next);
   }
 
   function updateConditionName(id: number, name: string) {
@@ -209,11 +215,31 @@ export default function AnnotationPage() {
   }
 
   function updateConditionColumns(id: number, columns: string[]) {
-    setConditions((prev) =>
-      prev.map((condition) =>
-        condition.id === id ? { ...condition, columns } : condition
-      )
+    const next = conditions.map((condition) =>
+      condition.id === id ? { ...condition, columns } : condition
     );
+    setConditions(next);
+    updateLog2FromConditions(next);
+  }
+
+  function updateLog2FromConditions(nextConditions: ConditionDraft[]) {
+    const sampleColumns = Array.from(
+      new Set(nextConditions.flatMap((condition) => condition.columns))
+    );
+    if (sampleColumns.length === 0) return;
+    applyDetectedLog2State(sampleColumns);
+  }
+
+  async function applyDetectedLog2State(sampleColumns: string[]) {
+    if (!activeDataset) return;
+    try {
+      const detection = await detectAnnotationLog2Scale({ kind, sampleColumns });
+      if (typeof detection.isLog2Transformed === "boolean") {
+        setIsLog2Transformed(detection.isLog2Transformed);
+      }
+    } catch {
+      // Detection is advisory; preserve the current manual checkbox state on failure.
+    }
   }
 
   const requestConditions = useMemo<ConditionAssignment[]>(() => {
@@ -273,6 +299,7 @@ export default function AnnotationPage() {
       );
       setUploadedMetadata(uploaded);
       await refreshCurrent();
+      await applyDetectedLog2State([]);
       setMetadataFile(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to upload metadata");
@@ -385,6 +412,11 @@ export default function AnnotationPage() {
     }
   }
 
+  function updateAnnotationManagerVisibility(visible: boolean) {
+    setAnnotationManagerVisible(visible);
+    writePersistedUiState(ANNOTATION_MANAGER_VISIBILITY_KEY, visible);
+  }
+
   const canAggregatePhosprot =
     kind === "phospho" &&
     result !== null &&
@@ -403,15 +435,32 @@ export default function AnnotationPage() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Data Annotation</h2>
+      {!annotationManagerVisible ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            aria-expanded="false"
+            onClick={() => updateAnnotationManagerVisibility(true)}
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Show Annotation Manager
+          </button>
+        </div>
+      ) : (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold text-slate-900">Annotation Manager</h2>
+            <button
+              type="button"
+              aria-expanded="true"
+              onClick={() => updateAnnotationManagerVisibility(false)}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Hide Annotation Manager
+            </button>
+          </div>
 
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-700">Metadata Profiles</div>
-          <p className="mt-1 text-sm text-slate-600">
-            Manage selected metadata profile for this dataset package.
-          </p>
-          <div className="mt-3 grid gap-3 lg:grid-cols-3">
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Selected metadata</label>
               <select
@@ -467,7 +516,11 @@ export default function AnnotationPage() {
               </div>
             </div>
           </div>
-        </div>
+        </section>
+      )}
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Data Annotation</h2>
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
           <div>
@@ -742,25 +795,7 @@ export default function AnnotationPage() {
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Metadata Preview</h3>
-            <div className="mt-4">
-              <PreviewTable
-                rows={result.metadataPreview}
-                emptyText="No metadata rows available."
-                downloadAction={{
-                  label:
-                    downloadBusyKey === `${kind}:metadata`
-                      ? "Downloading..."
-                      : "Download Full CSV",
-                  onClick: () => handleDownloadFullData(kind, "metadata"),
-                  disabled: downloadBusyKey !== null,
-                }}
-              />
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Filtered Data Preview</h3>
+            <h3 className="text-lg font-semibold text-slate-900">Filtered Data</h3>
             <div className="mt-4">
               <PreviewTable
                 rows={result.filteredPreview}
@@ -771,6 +806,24 @@ export default function AnnotationPage() {
                       ? "Downloading..."
                       : "Download Full CSV",
                   onClick: () => handleDownloadFullData(kind, "filtered"),
+                  disabled: downloadBusyKey !== null,
+                }}
+              />
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">Metadata</h3>
+            <div className="mt-4">
+              <PreviewTable
+                rows={result.metadataPreview}
+                emptyText="No metadata rows available."
+                downloadAction={{
+                  label:
+                    downloadBusyKey === `${kind}:metadata`
+                      ? "Downloading..."
+                      : "Download Full CSV",
+                  onClick: () => handleDownloadFullData(kind, "metadata"),
                   disabled: downloadBusyKey !== null,
                 }}
               />

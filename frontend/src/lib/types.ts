@@ -79,7 +79,7 @@ export type DatasetPreviewResponse = {
   columns: number;
   columnNames: string[];
   preview: Record<string, unknown>[];
-  suggestedIsLog2Transformed: boolean;
+  suggestedIsLog2Transformed: boolean | null;
   sourcePath?: string | null;
 };
 
@@ -128,6 +128,17 @@ export type AnnotationGenerateRequest = {
   filter: AnnotationFilterConfig;
 };
 
+export type Log2DetectionRequest = {
+  kind: AnnotationKind;
+  sampleColumns: string[];
+};
+
+export type Log2DetectionResponse = {
+  isLog2Transformed: boolean | null;
+  sampleCount: number;
+  reason: string;
+};
+
 export type AnnotationImputationInfo = {
   mode: string;
   applied: boolean;
@@ -162,6 +173,7 @@ export type AnnotationResultResponse = {
   filteredColumns: number;
   filteredPreview: Record<string, unknown>[];
   isLog2Transformed: boolean;
+  log2AutoDetected: boolean;
   metadataSource: "manual" | "auto" | "uploaded" | "shared_phospho";
   filter: AnnotationFilterConfig | null;
   autoDetected: boolean;
@@ -730,6 +742,7 @@ export type PhosphoTab =
 
 export type ChatRole = "system" | "user" | "assistant";
 export type ChatProvider = "ollama" | "openai" | "anthropic" | "gemini";
+export type ModelContextTier = "compact" | "standard" | "extended";
 
 export type ChatMessage = {
   role: ChatRole;
@@ -767,6 +780,20 @@ export type OllamaModelsResponse = {
   models: string[];
   selectedModel: string | null;
   warnings: string[];
+};
+
+export type ModelCapabilityResponse = {
+  provider: ChatProvider;
+  model: string;
+  level: 1 | 2 | 3;
+  label: "Low" | "Medium" | "High";
+  contextTier: ModelContextTier;
+  contextWindow: number | null;
+  parameterCountB: number | null;
+  supportsTools: boolean | null;
+  supportsVision: boolean | null;
+  source: "metadata" | "model_name" | "configured" | "fallback";
+  reason: string;
 };
 
 export type AnovaRequest = {
@@ -812,6 +839,7 @@ export type ModuleContextResponse = {
   manualPath?: string | null;
   contextPrompt: string;
   contextSummary: string;
+  contextTier: ModelContextTier;
   contextData: Record<string, unknown>;
   warnings: string[];
 };

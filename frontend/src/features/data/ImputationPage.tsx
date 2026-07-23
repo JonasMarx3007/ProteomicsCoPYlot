@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -19,6 +19,8 @@ export default function ImputationPage() {
   const [adjustStd, setAdjustStd] = useState(1);
   const [seed, setSeed] = useState(1337);
   const [sampleWise, setSampleWise] = useState(false);
+  const [showImputationDraw, setShowImputationDraw] = useState(true);
+  const [afterNormalization, setAfterNormalization] = useState<"together" | "separate">("separate");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImputationResultResponse | null>(null);
@@ -136,12 +138,22 @@ export default function ImputationPage() {
     [kind, plotParams, advancedPlotSignal]
   );
   const overallPlotUrl = useMemo(
-    () => buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, plotParams),
-    [kind, plotParams, advancedPlotSignal]
+    () =>
+      buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, {
+        ...plotParams,
+        showImputationDraw,
+        _plotVersion: 5,
+      }),
+    [kind, plotParams, showImputationDraw, advancedPlotSignal]
   );
   const afterPlotUrl = useMemo(
-    () => buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, plotParams),
-    [kind, plotParams, advancedPlotSignal]
+    () =>
+      buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, {
+        ...plotParams,
+        normalization: afterNormalization,
+        _plotVersion: 5,
+      }),
+    [kind, plotParams, afterNormalization, advancedPlotSignal]
   );
 
   async function handleDownloadImputedCsv() {
@@ -169,11 +181,12 @@ export default function ImputationPage() {
     }
   }
 
-  const previewCsvUrl = useMemo(() => {
-    if (!result || result.preview.length === 0) return null;
-    const csv = rowsToCsv(result.preview);
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
-  }, [result]);
+  const totalValueCount = result ? result.rows * result.sampleColumns.length : 0;
+  const imputedValueCount = result
+    ? Math.max(0, result.missingBefore - result.missingAfter)
+    : 0;
+  const imputedPercent =
+    totalValueCount > 0 ? `${((imputedValueCount / totalValueCount) * 100).toFixed(2)}%` : "0.00%";
 
   return (
     <div className="space-y-6">
@@ -241,16 +254,62 @@ export default function ImputationPage() {
 
       {kindOptions.length > 0 && result ? (
         <>
+          <PlotSection
+            alt="Before: With vs Without Missing Values"
+            imageUrl={beforePlotUrl}
+            filename={`imputation_before_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
+          />
+
+          <PlotSection
+            alt="Overall Distribution with Normal Fit"
+            imageUrl={overallPlotUrl}
+            filename={`imputation_fit_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
+            controls={
+              <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showImputationDraw}
+                  onChange={(e) => setShowImputationDraw(e.target.checked)}
+                />
+                Show imputation draw distribution
+              </label>
+            }
+          />
+
+          <PlotSection
+            alt="After: Non-Imputed vs Imputed Values"
+            imageUrl={afterPlotUrl}
+            filename={`imputation_after_${kind}.png`}
+            downloadFormat={downloadFormat}
+            setDownloadFormat={setDownloadFormat}
+            controls={
+              <div className="min-w-56">
+                <select
+                  aria-label="After-plot normalization"
+                  value={afterNormalization}
+                  onChange={(e) =>
+                    setAfterNormalization(e.target.value as "together" | "separate")
+                  }
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+                >
+                  <option value="separate">Separately</option>
+                  <option value="together">Together</option>
+                </select>
+              </div>
+            }
+          />
+
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Summary</h3>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <SummaryCard label="Rows" value={String(result.rows)} />
-              <SummaryCard label="Missing Before" value={String(result.missingBefore)} />
-              <SummaryCard label="Missing After" value={String(result.missingAfter)} />
-              <SummaryCard
-                label="Imputation Quantile"
-                value={result.quantile == null ? "n/a" : result.quantile.toFixed(4)}
-              />
+              <SummaryCard label="Number of values" value={String(totalValueCount)} />
+              <SummaryCard label="Number imputed" value={String(imputedValueCount)} />
+              <SummaryCard label="Imputed %" value={imputedPercent} />
             </div>
             {result.warnings.length > 0 ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -259,43 +318,10 @@ export default function ImputationPage() {
             ) : null}
           </section>
 
-          <PlotSection
-            title="Before: With vs Without Missing Values"
-            imageUrl={beforePlotUrl}
-            filename={`imputation_before_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
-          />
-
-          <PlotSection
-            title="Overall Distribution with Normal Fit"
-            imageUrl={overallPlotUrl}
-            filename={`imputation_fit_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
-          />
-
-          <PlotSection
-            title="After: Non-Imputed vs Imputed Values"
-            imageUrl={afterPlotUrl}
-            filename={`imputation_after_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
-          />
-
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-lg font-semibold text-slate-900">Imputed Data (Preview)</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Imputed Data</h3>
               <div className="flex flex-wrap gap-2">
-                {previewCsvUrl ? (
-                  <a
-                    href={previewCsvUrl}
-                    download={`imputed_preview_${kind}.csv`}
-                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-                  >
-                    Download Preview CSV
-                  </a>
-                ) : null}
                 <button
                   type="button"
                   onClick={handleDownloadImputedCsv}
@@ -317,24 +343,26 @@ export default function ImputationPage() {
 }
 
 function PlotSection({
-  title,
+  alt,
   imageUrl,
   filename,
   downloadFormat,
   setDownloadFormat,
+  controls,
 }: {
-  title: string;
+  alt: string;
   imageUrl: string;
   filename: string;
   downloadFormat: PlotDownloadFormat;
   setDownloadFormat: (value: PlotDownloadFormat) => void;
+  controls?: ReactNode;
 }) {
   const downloadUrl = withPlotDownloadFormat(imageUrl, downloadFormat);
   const downloadFilename = withPlotDownloadFilename(filename, downloadFormat);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>{controls}</div>
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={downloadFormat}
@@ -357,7 +385,7 @@ function PlotSection({
         </div>
       </div>
       <div className="mt-4">
-        <img src={imageUrl} alt={title} className="w-full rounded-xl border border-slate-200" />
+        <img src={imageUrl} alt={alt} className="w-full rounded-xl border border-slate-200" />
       </div>
     </section>
   );
@@ -520,21 +548,4 @@ function PreviewTable({
       </table>
     </div>
   );
-}
-
-function rowsToCsv(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return "";
-  const columns = Array.from(
-    rows.reduce((acc, row) => {
-      Object.keys(row).forEach((key) => acc.add(key));
-      return acc;
-    }, new Set<string>())
-  );
-
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const lines = [
-    columns.join(","),
-    ...rows.map((row) => columns.map((column) => escape(row[column])).join(",")),
-  ];
-  return lines.join("\n");
 }

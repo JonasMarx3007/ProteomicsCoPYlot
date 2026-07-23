@@ -9,6 +9,7 @@ from app.schemas.annotation import (
     PhosprotAggregationSource,
 )
 from app.services.annotation_store import get_annotation, save_annotation
+from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
     filter_data,
@@ -160,7 +161,7 @@ def _shared_filter_config(phospho_annotation) -> AnnotationFilterConfig:
 
 def _store_phosprot_annotation(
     frame: pd.DataFrame,
-    is_log2_transformed: bool,
+    is_log2_transformed: bool | None,
     warning_prefix: str,
 ) -> object:
     phospho_annotation = _shared_phospho_annotation()
@@ -172,7 +173,13 @@ def _store_phosprot_annotation(
         )
     metadata = metadata[metadata["sample"].astype(str).isin(sample_columns)].copy()
 
-    if is_log2_transformed:
+    resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
+        frame,
+        sample_columns,
+        is_log2_transformed,
+    )
+
+    if resolved_log2:
         log2_data = use_existing_log2_data(frame, sample_columns)
     else:
         log2_data = log2_transform_data(frame, sample_columns)
@@ -188,17 +195,20 @@ def _store_phosprot_annotation(
     warnings: list[str] = [
         f"{warning_prefix} Metadata and filter settings were inherited from phospho annotation."
     ]
+    if log2_warning:
+        warnings.append(log2_warning)
     return save_annotation(
         kind="phosprot",
         source_data=frame,
         metadata=metadata,
         log2_data=log2_data,
         filtered_data=filtered_data,
-        is_log2_transformed=is_log2_transformed,
+        is_log2_transformed=resolved_log2,
         metadata_source="shared_phospho",
         filter_config=filter_config,
         auto_detected=False,
         warnings=warnings,
+        log2_auto_detected=log2_auto_detected,
     )
 
 
@@ -297,12 +307,7 @@ def upload_phosprot(
     is_log2_transformed: bool | None = None,
 ) -> object:
     _shared_phospho_annotation()
-    stored_dataset = save_table_dataset(filename=filename, kind="phosprot", frame=frame)
-    resolved_is_log2_transformed = (
-        bool(is_log2_transformed)
-        if is_log2_transformed is not None
-        else bool(getattr(stored_dataset, "suggested_is_log2_transformed", True))
-    )
+    save_table_dataset(filename=filename, kind="phosprot", frame=frame)
     warning_prefix = (
         "Phosphoprotein dataset was uploaded manually. "
         "Log2 state was auto-detected from the uploaded dataset."
@@ -311,6 +316,6 @@ def upload_phosprot(
     )
     return _store_phosprot_annotation(
         frame=frame,
-        is_log2_transformed=resolved_is_log2_transformed,
+        is_log2_transformed=is_log2_transformed,
         warning_prefix=warning_prefix,
     )

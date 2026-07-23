@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import pandas as pd
-import re
 from itertools import combinations
+import re
+
+import numpy as np
+import pandas as pd
 
 from app.schemas.annotation import ConditionAssignment, FilterMode
 from app.services.functions import (
@@ -30,8 +31,106 @@ class AnnotationComputationResult:
     metadata: pd.DataFrame
     log2_data: pd.DataFrame
     filtered_data: pd.DataFrame
+    is_log2_transformed: bool
+    log2_auto_detected: bool
     auto_detected: bool
     warnings: list[str]
+
+
+@dataclass(frozen=True)
+class Log2ScaleDetection:
+    is_log2_transformed: bool | None
+    reason: str
+
+
+def detect_log2_transformed(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+) -> Log2ScaleDetection:
+    """Classify scale using only confirmed measurement/sample columns."""
+    selected_columns = [str(column) for column in sample_columns if str(column) in data.columns]
+    if not selected_columns:
+        return Log2ScaleDetection(None, "no matching sample columns were available")
+
+    explicit_log2 = [column for column in selected_columns if "log2" in column.lower()]
+    if explicit_log2:
+        return Log2ScaleDetection(
+            True,
+            f"{len(explicit_log2)} selected sample column name(s) explicitly indicate log2 values",
+        )
+
+    numeric = data[selected_columns].apply(pd.to_numeric, errors="coerce")
+    usable: list[np.ndarray] = []
+    for column in selected_columns:
+        values = numeric[column].to_numpy(dtype=float, copy=False)
+        finite = values[np.isfinite(values)]
+        if finite.size >= 3:
+            usable.append(finite)
+
+    if not usable:
+        return Log2ScaleDetection(None, "the selected sample columns contain no usable numeric values")
+
+    combined = np.concatenate(usable)
+    negative_fraction = float(np.mean(combined < 0))
+    if negative_fraction >= 0.001:
+        return Log2ScaleDetection(
+            True,
+            "selected sample values include a reproducible negative-value signal",
+        )
+
+    q01, q99 = np.nanquantile(combined, [0.01, 0.99])
+    if q01 >= 0 and q99 <= 2:
+        return Log2ScaleDetection(
+            None,
+            "non-negative values are confined to 0-2, which can represent either ratios or transformed data",
+        )
+
+    log2_votes = 0
+    linear_votes = 0
+    for finite in usable:
+        q50, q95, column_q99 = np.nanquantile(finite, [0.50, 0.95, 0.99])
+        if q95 > 50 or column_q99 > 100:
+            linear_votes += 1
+        elif q50 <= 35 and q95 <= 45 and column_q99 <= 60:
+            log2_votes += 1
+
+    required_votes = max(1, (len(usable) + 1) // 2)
+    if log2_votes >= required_votes and log2_votes > linear_votes:
+        return Log2ScaleDetection(
+            True,
+            f"{log2_votes} of {len(usable)} selected sample columns have a log2-like value range",
+        )
+    if linear_votes >= required_votes and linear_votes > log2_votes:
+        return Log2ScaleDetection(
+            False,
+            f"{linear_votes} of {len(usable)} selected sample columns have a linear-intensity value range",
+        )
+    return Log2ScaleDetection(
+        None,
+        "the selected sample columns do not provide a consistent scale signal",
+    )
+
+
+def resolve_log2_state(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+    requested_state: bool | None,
+) -> tuple[bool, bool, str | None]:
+    if requested_state is not None:
+        return bool(requested_state), False, None
+
+    detection = detect_log2_transformed(data, sample_columns)
+    if detection.is_log2_transformed is None:
+        raise ValueError(
+            "Could not reliably auto-detect whether the selected sample columns are log2 "
+            f"transformed: {detection.reason}. Choose an explicit log2 scale setting."
+        )
+    scale_label = "already log2 transformed" if detection.is_log2_transformed else "linear"
+    warning = (
+        f"Sample scale was auto-detected as {scale_label} from {len(sample_columns)} "
+        f"selected sample column(s): {detection.reason}."
+    )
+    return detection.is_log2_transformed, True, warning
 
 
 def normalize_uploaded_metadata(
@@ -182,7 +281,7 @@ def _append_combined_subset_columns(metadata: pd.DataFrame) -> pd.DataFrame:
 def compute_annotation(
     data: pd.DataFrame,
     conditions: list[ConditionAssignment],
-    is_log2_transformed: bool,
+    is_log2_transformed: bool | None,
     min_present: int,
     filter_mode: FilterMode,
 ) -> AnnotationComputationResult:
@@ -197,7 +296,13 @@ def compute_annotation(
     if not sample_columns:
         raise ValueError("No sample columns could be determined for metadata.")
 
-    if is_log2_transformed:
+    resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
+        data,
+        sample_columns,
+        is_log2_transformed,
+    )
+
+    if resolved_log2:
         log2_data = use_existing_log2_data(data, sample_columns)
     else:
         log2_data = log2_transform_data(data, sample_columns)
@@ -205,6 +310,8 @@ def compute_annotation(
     filtered_data = filter_data(log2_data, metadata, min_present=min_present, mode=filter_mode)
 
     warnings: list[str] = []
+    if log2_warning:
+        warnings.append(log2_warning)
     if auto_detected:
         warnings.append("Metadata was auto-generated from date-like column names.")
 
@@ -212,6 +319,8 @@ def compute_annotation(
         metadata=metadata,
         log2_data=log2_data,
         filtered_data=filtered_data,
+        is_log2_transformed=resolved_log2,
+        log2_auto_detected=log2_auto_detected,
         auto_detected=auto_detected,
         warnings=warnings,
     )
@@ -220,7 +329,7 @@ def compute_annotation(
 def compute_annotation_from_metadata(
     data: pd.DataFrame,
     metadata: pd.DataFrame,
-    is_log2_transformed: bool,
+    is_log2_transformed: bool | None,
     min_present: int,
     filter_mode: FilterMode,
 ) -> AnnotationComputationResult:
@@ -229,7 +338,13 @@ def compute_annotation_from_metadata(
     if not sample_columns:
         raise ValueError("No valid sample columns found in uploaded metadata.")
 
-    if is_log2_transformed:
+    resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
+        data,
+        sample_columns,
+        is_log2_transformed,
+    )
+
+    if resolved_log2:
         log2_data = use_existing_log2_data(data, sample_columns)
     else:
         log2_data = log2_transform_data(data, sample_columns)
@@ -241,10 +356,16 @@ def compute_annotation_from_metadata(
         mode=filter_mode,
     )
 
+    warnings = ["Using uploaded metadata table for annotation."]
+    if log2_warning:
+        warnings.append(log2_warning)
+
     return AnnotationComputationResult(
         metadata=normalized_metadata,
         log2_data=log2_data,
         filtered_data=filtered_data,
+        is_log2_transformed=resolved_log2,
+        log2_auto_detected=log2_auto_detected,
         auto_detected=False,
-        warnings=["Using uploaded metadata table for annotation."],
+        warnings=warnings,
     )

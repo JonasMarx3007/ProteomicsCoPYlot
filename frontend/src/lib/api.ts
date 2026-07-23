@@ -8,6 +8,8 @@ import type {
   AnalysisVolcanoResponse,
   AnnotationKind,
   AnnotationResultResponse,
+  Log2DetectionRequest,
+  Log2DetectionResponse,
   ComparisonOptionsResponse,
   ComparisonTableResponse,
   CompletenessTablesResponse,
@@ -57,6 +59,8 @@ import type {
   ToolAuthLoginResponse,
   ToolAuthStatusResponse,
   OllamaGpuStatusResponse,
+  ModelCapabilityResponse,
+  ModelContextTier,
   OllamaModelManageResponse,
   OllamaModelsResponse,
   OllamaChatResponse,
@@ -752,6 +756,26 @@ export async function generateAnnotation(
   return data as AnnotationResultResponse;
 }
 
+export async function detectAnnotationLog2Scale(
+  payload: Log2DetectionRequest
+): Promise<Log2DetectionResponse> {
+  const response = await fetch(`${API_BASE}/api/annotations/log2-detect`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to detect intensity scale"
+    );
+  }
+  return data as Log2DetectionResponse;
+}
+
 export async function getCurrentAnnotation(
   kind: AnnotationKind
 ): Promise<AnnotationResultResponse> {
@@ -1435,7 +1459,8 @@ export async function streamChatMessage(
 export async function getAiModuleContext(
   moduleKey: string,
   workflow?: string,
-  mode?: string
+  mode?: string,
+  contextTier?: ModelContextTier
 ): Promise<ModuleContextResponse> {
   const workflowValue = String(workflow ?? "").trim();
   const modeValue = String(mode ?? "").trim();
@@ -1448,6 +1473,7 @@ export async function getAiModuleContext(
       moduleKey,
       workflow: workflowValue || undefined,
       mode: modeValue || undefined,
+      contextTier,
     }),
   });
   const data = await parseJson(response);
@@ -1465,6 +1491,12 @@ export async function getAiModuleContext(
     manualPath: raw.manualPath == null ? null : String(raw.manualPath),
     contextPrompt: String(raw.contextPrompt ?? ""),
     contextSummary: String(raw.contextSummary ?? ""),
+    contextTier:
+      raw.contextTier === "extended"
+        ? "extended"
+        : raw.contextTier === "standard"
+          ? "standard"
+          : "compact",
     contextData: (raw.contextData && typeof raw.contextData === "object"
       ? (raw.contextData as Record<string, unknown>)
       : {}) as Record<string, unknown>,
@@ -1778,6 +1810,52 @@ export async function runPeptideCollapse(
   }
 
   return data as PeptideCollapseResponse;
+}
+
+export async function getModelCapability(
+  provider: ChatProvider,
+  model: string,
+  endpoint?: string
+): Promise<ModelCapabilityResponse> {
+  const params = new URLSearchParams({ provider, model: model.trim() });
+  if (provider === "ollama" && endpoint?.trim()) {
+    params.set("endpoint", endpoint.trim());
+  }
+  const response = await fetch(`${API_BASE}/api/chat/model-capability?${params.toString()}`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to inspect model capabilities"
+    );
+  }
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const level = Number(raw.level);
+  return {
+    provider,
+    model: String(raw.model ?? model),
+    level: level === 3 ? 3 : level === 2 ? 2 : 1,
+    label: raw.label === "High" ? "High" : raw.label === "Medium" ? "Medium" : "Low",
+    contextTier:
+      raw.contextTier === "extended"
+        ? "extended"
+        : raw.contextTier === "standard"
+          ? "standard"
+          : "compact",
+    contextWindow: raw.contextWindow == null ? null : Number(raw.contextWindow),
+    parameterCountB: raw.parameterCountB == null ? null : Number(raw.parameterCountB),
+    supportsTools: raw.supportsTools == null ? null : Boolean(raw.supportsTools),
+    supportsVision: raw.supportsVision == null ? null : Boolean(raw.supportsVision),
+    source:
+      raw.source === "metadata"
+        ? "metadata"
+        : raw.source === "model_name"
+          ? "model_name"
+          : raw.source === "configured"
+            ? "configured"
+            : "fallback",
+    reason: String(raw.reason ?? "Capability estimate unavailable"),
+  };
 }
 
 export async function runPeptideCollapseFile(

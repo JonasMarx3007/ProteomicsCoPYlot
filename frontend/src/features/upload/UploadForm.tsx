@@ -37,11 +37,6 @@ export default function UploadForm({
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4">
         <h2 className="text-lg font-semibold">Upload Dataset</h2>
-        <p className="text-sm text-slate-500">
-          Protein, phospho, and phosphoprotein prefer the selected local file path when the desktop
-          picker exposes it, and otherwise store an app-managed local copy for restore. Peptide
-          stores only the selected local file path.
-        </p>
       </div>
 
       <div className="grid gap-4">

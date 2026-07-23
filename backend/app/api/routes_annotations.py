@@ -11,6 +11,8 @@ from app.schemas.annotation import (
     AnnotationGenerateRequest,
     AnnotationKind,
     AnnotationResultResponse,
+    Log2DetectionRequest,
+    Log2DetectionResponse,
     MetadataAnnotationKind,
     MetadataUploadResponse,
     PhosprotAggregateRequest,
@@ -18,6 +20,8 @@ from app.schemas.annotation import (
 from app.services.annotation_processor import (
     compute_annotation,
     compute_annotation_from_metadata,
+    detect_log2_transformed,
+    normalize_uploaded_metadata,
 )
 from app.services.annotation_store import clear_annotation, get_annotation, save_annotation
 from app.services.dataset_reader import get_extension, read_dataframe
@@ -54,6 +58,7 @@ def _response_from_stored(stored) -> AnnotationResultResponse:
         filteredColumns=len(stored.filtered_data.columns),
         filteredPreview=_to_preview(stored.filtered_data, max_rows=20),
         isLog2Transformed=stored.is_log2_transformed,
+        log2AutoDetected=getattr(stored, "log2_auto_detected", False),
         metadataSource=getattr(stored, "metadata_source", "manual"),
         filter=stored.filter_config,
         autoDetected=stored.auto_detected,
@@ -100,12 +105,14 @@ def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> No
 
     base_annotation = get_annotation(kind)
     if base_annotation is not None:
-        is_log2_transformed = base_annotation.is_log2_transformed
+        is_log2_transformed = (
+            None
+            if getattr(base_annotation, "log2_auto_detected", False)
+            else base_annotation.is_log2_transformed
+        )
         filter_config = base_annotation.filter_config
     else:
-        is_log2_transformed = bool(
-            getattr(current_dataset, "suggested_is_log2_transformed", True)
-        )
+        is_log2_transformed = None
         filter_config = AnnotationFilterConfig()
 
     for profile_name in list_auto_generated_profiles():
@@ -127,11 +134,12 @@ def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> No
             metadata=computed.metadata,
             log2_data=computed.log2_data,
             filtered_data=computed.filtered_data,
-            is_log2_transformed=is_log2_transformed,
+            is_log2_transformed=computed.is_log2_transformed,
             metadata_source="uploaded",
             filter_config=filter_config,
             auto_detected=computed.auto_detected,
             warnings=computed.warnings,
+            log2_auto_detected=computed.log2_auto_detected,
             metadata_profile_name=profile_name,
         )
 
@@ -227,11 +235,12 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
         metadata=computed.metadata,
         log2_data=computed.log2_data,
         filtered_data=computed.filtered_data,
-        is_log2_transformed=payload.isLog2Transformed,
+        is_log2_transformed=computed.is_log2_transformed,
         metadata_source=metadata_source,
         filter_config=filter_config,
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
+        log2_auto_detected=computed.log2_auto_detected,
     )
 
     return _response_from_stored(stored)
@@ -244,6 +253,43 @@ async def get_current_annotation(kind: AnnotationKind) -> AnnotationResultRespon
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
 
     return _response_from_stored(stored)
+
+
+@router.post("/log2-detect", response_model=Log2DetectionResponse)
+async def detect_annotation_log2_scale(
+    payload: Log2DetectionRequest,
+) -> Log2DetectionResponse:
+    current_dataset = get_current_dataset(payload.kind)
+    if current_dataset is None or not hasattr(current_dataset, "frame"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {payload.kind} dataset is currently loaded. Upload data first.",
+        )
+
+    metadata_kind: MetadataAnnotationKind = (
+        "protein" if payload.kind == "protein" else "phospho"
+    )
+    uploaded_metadata = get_uploaded_metadata(metadata_kind)
+    if uploaded_metadata is not None:
+        try:
+            normalized = normalize_uploaded_metadata(
+                data=current_dataset.frame,
+                metadata=uploaded_metadata.frame,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sample_columns = normalized["sample"].astype(str).tolist()
+    else:
+        requested = [str(column) for column in payload.sampleColumns]
+        available = set(str(column) for column in current_dataset.frame.columns)
+        sample_columns = list(dict.fromkeys(column for column in requested if column in available))
+
+    detection = detect_log2_transformed(current_dataset.frame, sample_columns)
+    return Log2DetectionResponse(
+        isLog2Transformed=detection.is_log2_transformed,
+        sampleCount=len(sample_columns),
+        reason=detection.reason,
+    )
 
 
 @router.get("/current/{kind}/filtered/download")

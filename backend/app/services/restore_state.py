@@ -345,6 +345,9 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                         "profile": profile_name,
                         "kind": kind,
                         "isLog2Transformed": bool(stored_annotation.is_log2_transformed),
+                        "log2AutoDetected": bool(
+                            getattr(stored_annotation, "log2_auto_detected", False)
+                        ),
                         "metadataSource": str(getattr(stored_annotation, "metadata_source", "manual")),
                         "filter": {
                             "minPresent": int(stored_annotation.filter_config.minPresent),
@@ -796,6 +799,7 @@ def apply_restore_state(
                     continue
                 filter_config = _coerce_filter_config(annotation_entry.get("filter"))
                 is_log2_transformed = bool(annotation_entry.get("isLog2Transformed", True))
+                log2_auto_detected = bool(annotation_entry.get("log2AutoDetected", False))
                 metadata_source = _normalize_metadata_source(annotation_entry.get("metadataSource"))
                 imputation = _coerce_imputation(annotation_entry.get("imputation"))
                 try:
@@ -817,6 +821,7 @@ def apply_restore_state(
                         filter_config=filter_config,
                         auto_detected=computed.auto_detected,
                         warnings=computed.warnings,
+                        log2_auto_detected=log2_auto_detected,
                         imputation=imputation,
                         package_name=package_name,
                         metadata_profile_name=profile_name,

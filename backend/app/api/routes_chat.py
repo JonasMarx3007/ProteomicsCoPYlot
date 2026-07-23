@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas.chat import (
+    ChatProvider,
+    ModelCapabilityResponse,
     ModuleContextRequest,
     ModuleContextResponse,
     OllamaChatRequest,
@@ -17,6 +19,7 @@ from app.services.ai_context_tools import build_module_context
 from app.services.chat_tools import (
     ai_mode_enabled,
     chat_stream,
+    model_capability,
     ollama_chat,
     ollama_chat_stream,
     ollama_gpu_status,
@@ -90,11 +93,28 @@ async def module_context_route(payload: ModuleContextRequest) -> ModuleContextRe
             payload.moduleKey,
             workflow_hint=payload.workflow,
             mode_hint=payload.mode,
+            context_tier=payload.contextTier,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to build module context: {exc}") from exc
+
+
+@router.get("/model-capability", response_model=ModelCapabilityResponse)
+async def model_capability_route(
+    model: str = Query(min_length=1),
+    provider: ChatProvider = Query(default="ollama"),
+    endpoint: str | None = Query(default=None),
+) -> ModelCapabilityResponse:
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    try:
+        return model_capability(provider, model, endpoint_override=endpoint)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to inspect model capabilities: {exc}") from exc
 
 
 @router.get("/gpu-status", response_model=OllamaGpuStatusResponse)

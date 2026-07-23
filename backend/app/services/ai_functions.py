@@ -7,6 +7,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import EnrichmentRequest
 from app.services.annotation_store import get_annotation
+from app.services.dataset_store import get_active_package, get_all_current_datasets
 from app.services.condition_palette_store import build_condition_color_map
 from app.services.completeness_tools import completeness_tables as _completeness_tables
 from app.services import plot_images as _plot_images
@@ -19,23 +20,6 @@ from app.services.peptide_tools import _extract_id_or_number as _extract_peptide
 from app.services.peptide_tools import get_peptide_frame
 from app.services.peptide_tools import peptide_overview as _peptide_overview
 from app.services.peptide_tools import peptide_sequence_coverage as _peptide_sequence_coverage
-
-_GENERAL_PROTEOMICS_CONTEXT_PREFIX = (
-    "This application analyzes proteomics data. "
-    "Treat this as mass-spectrometry proteomics analysis, not RNA-seq or transcriptomics. "
-    "Focus on data analysis and statistical interpretation. "
-    "Do not discuss instrumentation or acquisition settings unless the user explicitly asks for them. "
-    "Do not mention plotting options, display toggles, or UI controls unless the user explicitly asks for those controls. "
-    "Do not mention colors, palettes, or visual encoding details unless the user explicitly asks for color/visual mapping information. "
-    "If color information is explicitly requested, prefer color names rather than hex values. "
-    "Avoid unnecessary parenthetical examples like '(e.g., ...)'; use examples only when needed to disambiguate or when explicitly requested. "
-    "Avoid ambiguous claims; be explicit and precise. "
-    "Use code-backed calculations for requested math, and do not run extra mathematical operations unless the user explicitly asks for them. "
-    "General quality-assessment rule: if no explicit thresholds or cutoffs are defined, do not make dataset quality assessments. "
-    "In that case, give only general, non-data-specific guidance and state that strict cutoff-based interpretation is not available. "
-    "Hard claim gate: only make data-specific findings when explicit numeric evidence and explicit cutoff/rule definitions are provided. "
-    "If evidence or cutoffs/rules are missing, do not claim findings for the current dataset; provide checklist-style interpretation guidance only. "
-)
 
 _WORKFLOW_ENTITY_LABELS: dict[str, tuple[str, str]] = {
     "protein": ("protein", "proteins"),
@@ -119,6 +103,21 @@ def _workflow_kind(workflow: str) -> AnnotationKind:
     return "protein"
 
 
+def _context_tier_limit(
+    context_tier: str,
+    *,
+    compact: int,
+    standard: int,
+    extended: int,
+) -> int:
+    key = str(context_tier or "").strip().lower()
+    if key == "extended":
+        return extended
+    if key == "standard":
+        return standard
+    return compact
+
+
 def _normalize_boxplot_mode(mode: str) -> str:
     key = str(mode or "").strip().lower()
     if key == "single":
@@ -138,9 +137,20 @@ def _extract_condition_from_sample(sample_name: str) -> str:
 
 def _fmt_value(value: float | int) -> str:
     number = float(value)
+    if pd.isna(number) or number in {float("inf"), float("-inf")}:
+        return "NA"
     if abs(number - round(number)) < 1e-9:
         return str(int(round(number)))
     return f"{number:.2f}"
+
+
+def _fmt_probability(value: float | int) -> str:
+    number = float(value)
+    if pd.isna(number) or number in {float("inf"), float("-inf")}:
+        return "NA"
+    if number == 0:
+        return "0"
+    return f"{number:.3e}"
 
 
 def _color_name(color_value: str) -> str:
@@ -273,7 +283,14 @@ def _conditions_for_workflow(workflow: str) -> list[str]:
 
 
 def _safe_context_text(value: Any) -> str:
-    text = str(value or "").replace("|", "/").replace("\n", " ").replace("\r", " ").strip()
+    if value is None:
+        return "unknown"
+    try:
+        if bool(pd.isna(value)):
+            return "unknown"
+    except (TypeError, ValueError):
+        pass
+    text = str(value).replace("|", "/").replace("\n", " ").replace("\r", " ").strip()
     if not text:
         return "unknown"
     return text
@@ -603,6 +620,236 @@ def _pca_variance_lines(workflow: str, *, method: str = "PCA", plot_dim: str = "
             f"pca_variance|PC3={pc3:.2f}|PC1_PC2_PC3_total={(pc1 + pc2 + pc3):.2f}|unit=percent_sample_variance"
         )
 
+    component_columns = [column for column in ("PC1", "PC2", "PC3") if column in pca_scores.columns]
+    if len(component_columns) >= 2 and "condition" in pca_scores.columns:
+        scores = pca_scores.copy()
+        scores["condition"] = scores["condition"].astype(str)
+        scores["display_sample"] = (
+            scores["condition"] + "_" + (scores.groupby("condition").cumcount() + 1).astype(str)
+        )
+        for _, row in scores.iterrows():
+            coordinates = "|".join(
+                f"{column}={_fmt_value(float(row[column]))}" for column in component_columns
+            )
+            lines.append(
+                f"pca_sample_score|sample={_safe_context_text(row['display_sample'])}|condition={_safe_context_text(row['condition'])}|{coordinates}"
+            )
+
+        condition_summaries: dict[str, tuple[list[float], float]] = {}
+        for condition, subset in scores.groupby("condition", sort=False):
+            centroid = [float(subset[column].mean()) for column in component_columns]
+            squared_distances = []
+            for _, row in subset.iterrows():
+                squared_distances.append(
+                    sum((float(row[column]) - centroid[index]) ** 2 for index, column in enumerate(component_columns))
+                )
+            within_rms = (sum(squared_distances) / max(1, len(squared_distances))) ** 0.5
+            condition_summaries[str(condition)] = (centroid, within_rms)
+            centroid_text = "|".join(
+                f"centroid_{column}={_fmt_value(value)}"
+                for column, value in zip(component_columns, centroid)
+            )
+            lines.append(
+                f"pca_condition_geometry|condition={_safe_context_text(condition)}|sample_count={int(subset.shape[0])}|{centroid_text}|within_condition_rms_distance={_fmt_value(within_rms)}"
+            )
+
+        condition_names = list(condition_summaries)
+        for left_index, left in enumerate(condition_names):
+            for right in condition_names[left_index + 1 :]:
+                left_centroid, left_rms = condition_summaries[left]
+                right_centroid, right_rms = condition_summaries[right]
+                centroid_distance = sum(
+                    (left_value - right_value) ** 2
+                    for left_value, right_value in zip(left_centroid, right_centroid)
+                ) ** 0.5
+                pooled_within = ((left_rms ** 2 + right_rms ** 2) / 2.0) ** 0.5
+                ratio = centroid_distance / pooled_within if pooled_within > 0 else float("inf")
+                lines.append(
+                    "pca_condition_comparison|"
+                    f"left={_safe_context_text(left)}|right={_safe_context_text(right)}|"
+                    f"centroid_distance={_fmt_value(centroid_distance)}|pooled_within_condition_rms={_fmt_value(pooled_within)}|"
+                    f"centroid_to_within_ratio={_fmt_value(ratio)}"
+                )
+        lines.append(
+            "pca_geometry_rule|centroid_to_within_ratio_is_descriptive_only|no_universal_clean_separation_cutoff_is_assumed"
+        )
+
+    return lines
+
+
+def _histogram_data_lines(workflow: str) -> list[str]:
+    kind = _workflow_kind(workflow)
+    try:
+        frame = _plot_images._log2_qc_frame(kind)
+        sample_columns = _plot_images._get_sample_columns(kind, frame)
+        meta = _plot_images._metadata_for_kind(kind, frame, sample_columns).copy()
+    except Exception as exc:
+        return [f"histogram_data|status=unavailable|detail={_safe_context_text(exc)}"]
+    if not sample_columns:
+        return ["histogram_data|status=unavailable|detail=no_sample_columns"]
+
+    numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
+    lines = [
+        f"histogram_data|status=available|sample_count={len(sample_columns)}|value_scale=log2_intensity"
+    ]
+    meta["sample"] = meta["sample"].astype(str)
+    meta["condition"] = meta["condition"].astype(str)
+    summaries: list[dict[str, Any]] = []
+    for condition in meta["condition"].drop_duplicates().tolist():
+        condition_columns = [
+            sample
+            for sample in meta.loc[meta["condition"] == condition, "sample"].tolist()
+            if sample in numeric.columns
+        ]
+        if not condition_columns:
+            continue
+        subset = numeric[condition_columns]
+        values = subset.mean(axis=1, skipna=True).dropna().astype(float)
+        total_slots = int(subset.shape[0] * subset.shape[1])
+        observed_slots = int(subset.notna().sum().sum())
+        if values.empty or total_slots <= 0:
+            continue
+        missing_percent = ((total_slots - observed_slots) / total_slots) * 100.0
+        summaries.append(
+            {
+                "condition": str(condition),
+                "mean": float(values.mean()),
+                "median": float(values.median()),
+                "sd": float(values.std(ddof=0)),
+                "skewness": float(values.skew()),
+            }
+        )
+        lines.append(
+            "histogram_condition_stats|"
+            f"condition={_safe_context_text(condition)}|samples={len(condition_columns)}|entity_condition_means={int(values.shape[0])}|"
+            f"missing_percent={_fmt_value(missing_percent)}|mean={_fmt_value(values.mean())}|median={_fmt_value(values.median())}|"
+            f"sd={_fmt_value(values.std(ddof=0))}|Q1={_fmt_value(values.quantile(0.25))}|Q3={_fmt_value(values.quantile(0.75))}|"
+            f"skewness={_fmt_value(values.skew())}"
+        )
+    if len(summaries) == 2:
+        left, right = summaries
+        lines.append(
+            "histogram_answer_summary|comparison_is_descriptive=true|normality_not_proven=true|"
+            f"left={_safe_context_text(left['condition'])}|right={_safe_context_text(right['condition'])}|"
+            f"mean_difference_right_minus_left={_fmt_value(round(right['mean'], 2) - round(left['mean'], 2))}|"
+            f"median_difference_right_minus_left={_fmt_value(round(right['median'], 2) - round(left['median'], 2))}|"
+            f"sd_difference_right_minus_left={_fmt_value(round(right['sd'], 2) - round(left['sd'], 2))}|"
+            f"skewness_difference_right_minus_left={_fmt_value(round(right['skewness'], 2) - round(left['skewness'], 2))}"
+        )
+    lines.append(
+        "histogram_inference_rule|summary_statistics_support_location_spread_and_skew_comparisons_but_do_not_by_themselves_prove_normality"
+    )
+    lines.append(
+        "histogram_response_rule|when_asked_about_normality_or_similarity_report_each_condition_mean_median_sd_and_skewness|"
+        "state_that_normality_and_full_shape_similarity_cannot_be_determined_from_these_summaries|"
+        "do_not_classify_skewness_as_small_or_large_without_a_defined_criterion|answer_in_at_most_90_words"
+    )
+    return lines
+
+
+def _abundance_data_lines(workflow: str, *, limit: int = 5) -> list[str]:
+    kind = _workflow_kind(workflow)
+    try:
+        mean_intensities, conditions, _, key_column = _plot_images._abundance_mean_intensities(kind)
+    except Exception as exc:
+        return [f"abundance_data|status=unavailable|detail={_safe_context_text(exc)}"]
+
+    lines = [
+        f"abundance_data|status=available|conditions={len(conditions)}|identifier_column={_safe_context_text(key_column)}|value=log10_of_mean_original_scale_intensity_plus_1"
+    ]
+    for condition in conditions:
+        ranked = mean_intensities[[key_column, condition]].dropna(subset=[condition]).copy()
+        ranked = ranked.sort_values(condition, ascending=False).head(max(1, int(limit)))
+        for rank, (_, row) in enumerate(ranked.iterrows(), start=1):
+            lines.append(
+                "abundance_top_entity|"
+                f"condition={_safe_context_text(condition)}|rank={rank}|identifier={_safe_context_text(row[key_column])}|"
+                f"log10_mean_intensity={float(row[condition]):.4f}"
+            )
+    return lines
+
+
+def _correlation_data_lines(workflow: str, *, limit: int = 6) -> list[str]:
+    kind = _workflow_kind(workflow)
+    try:
+        frame = _plot_images._original_scale_frame(kind)
+        sample_columns = _plot_images._get_sample_columns(kind, frame)
+        meta = _plot_images._metadata_for_kind(kind, frame, sample_columns).copy()
+    except Exception as exc:
+        return [f"correlation_data|status=unavailable|detail={_safe_context_text(exc)}"]
+    if len(sample_columns) < 2:
+        return ["correlation_data|status=unavailable|detail=fewer_than_two_samples"]
+
+    meta["sample"] = meta["sample"].astype(str)
+    meta["condition"] = meta["condition"].astype(str)
+    meta["display_sample"] = (
+        meta["condition"] + "_" + (meta.groupby("condition").cumcount() + 1).astype(str)
+    )
+    rename_map = dict(zip(meta["sample"], meta["display_sample"]))
+    condition_by_display = dict(zip(meta["display_sample"], meta["condition"]))
+    numeric = frame[sample_columns].rename(columns=rename_map).apply(pd.to_numeric, errors="coerce")
+    correlations = numeric.corr(method="pearson")
+
+    pairs: list[dict[str, Any]] = []
+    labels = correlations.columns.astype(str).tolist()
+    for left_index, left in enumerate(labels):
+        for right in labels[left_index + 1 :]:
+            value = correlations.loc[left, right]
+            if pd.isna(value):
+                continue
+            overlap = int(numeric[[left, right]].dropna().shape[0])
+            pairs.append(
+                {
+                    "left": left,
+                    "right": right,
+                    "r": float(value),
+                    "overlap": overlap,
+                    "within": condition_by_display.get(left) == condition_by_display.get(right),
+                }
+            )
+    if not pairs:
+        return ["correlation_data|status=unavailable|detail=no_finite_pairs"]
+
+    lines = [f"correlation_data|status=available|sample_count={len(labels)}|pair_count={len(pairs)}"]
+    for group_name, within in (("within_condition", True), ("between_condition", False)):
+        values = pd.Series([pair["r"] for pair in pairs if pair["within"] is within], dtype=float)
+        if values.empty:
+            continue
+        lines.append(
+            "correlation_group_summary|"
+            f"group={group_name}|pair_count={int(values.shape[0])}|mean_r={float(values.mean()):.4f}|"
+            f"median_r={float(values.median()):.4f}|min_r={float(values.min()):.4f}|max_r={float(values.max()):.4f}"
+        )
+
+    sorted_pairs = sorted(pairs, key=lambda item: item["r"])
+    for rank, pair in enumerate(sorted_pairs[: max(1, int(limit))], start=1):
+        lines.append(
+            "correlation_low_pair|"
+            f"rank={rank}|"
+            f"left={_safe_context_text(pair['left'])}|right={_safe_context_text(pair['right'])}|"
+            f"pearson_r={float(pair['r']):.4f}|pairwise_complete_proteins={pair['overlap']}|"
+            f"relationship={'within_condition' if pair['within'] else 'between_condition'}"
+        )
+    lowest = sorted_pairs[0]
+    within_values = pd.Series([pair["r"] for pair in pairs if pair["within"] is True], dtype=float)
+    between_values = pd.Series([pair["r"] for pair in pairs if pair["within"] is False], dtype=float)
+    group_comparison = "unavailable"
+    if not within_values.empty and not between_values.empty:
+        if float(within_values.median()) > float(between_values.median()):
+            group_comparison = "within_condition_median_is_higher"
+        elif float(within_values.median()) < float(between_values.median()):
+            group_comparison = "between_condition_median_is_higher"
+        else:
+            group_comparison = "medians_are_equal"
+    lines.append(
+        "correlation_answer_summary|"
+        f"lowest_pair={_safe_context_text(lowest['left'])}_vs_{_safe_context_text(lowest['right'])}|"
+        f"lowest_pearson_r={float(lowest['r']):.4f}|group_median_comparison={group_comparison}|"
+        "comparison_is_descriptive_not_a_quality_classification=true"
+    )
+    lines.append(
+        "correlation_inference_rule|exact_correlations_and_group_summaries_are_descriptive|quality_or_outlier_labels_require_a_defined_cutoff"
+    )
     return lines
 
 
@@ -669,22 +916,70 @@ def _coverage_text_from_rows(
             f"condition_stats|name={condition}|mean={_fmt_value(values.mean())}|median={_fmt_value(values.median())}|min={_fmt_value(values.min())}|max={_fmt_value(values.max())}|color={color if color else 'unassigned'}"
         )
 
+    highest = data.loc[data["Count"].idxmax()]
+    lowest = data.loc[data["Count"].idxmin()]
+    lines.append(
+        "coverage_answer_summary|sample_values_are_final_computed_counts=true|do_not_recalculate_from_assumed_missingness=true|"
+        f"highest_sample={_safe_context_text(highest['Sample'])}|highest_count={_fmt_value(highest['Count'])}|"
+        f"lowest_sample={_safe_context_text(lowest['Sample'])}|lowest_count={_fmt_value(lowest['Count'])}"
+    )
+
     return "\n".join(lines)
 
 
 def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
-    text = (
-        f"{_GENERAL_PROTEOMICS_CONTEXT_PREFIX}"
-        f"Current workflow scope is '{workflow_key}'. "
-        f"Use {entity_plural} terminology for this context. "
-        "Do not use generic terms like 'features'; always use the concrete workflow entity name "
-        f"({entity_singular}/{entity_plural}). "
-        "Do not mix proteins, phosphosites, phosphoproteins, and peptides unless the user explicitly asks for cross-level interpretation. "
-        "If workflow scope is unclear from context, ask one focused follow-up question before making level-specific claims."
-    )
-    return _text_payload("general_proteomics_context", text)
+    lines = [
+        f"project_scope|domain=mass_spectrometry_proteomics|active_workflow={workflow_key}|entity_singular={entity_singular}|entity_plural={entity_plural}",
+        f"project_state|active_dataset_package={_safe_context_text(get_active_package())}",
+    ]
+    try:
+        datasets = get_all_current_datasets()
+    except Exception as exc:
+        lines.append(f"project_datasets|status=unavailable|detail={_safe_context_text(exc)}")
+        return _text_payload("general_proteomics_context", "\n".join(lines))
+
+    for kind in ("protein", "phospho", "phosprot", "peptide"):
+        stored = datasets.get(kind)
+        if stored is None:
+            lines.append(f"project_dataset|kind={kind}|status=not_loaded")
+            continue
+        filename = _safe_context_text(getattr(stored, "filename", "")) or "unknown"
+        frame = getattr(stored, "frame", None)
+        if isinstance(frame, pd.DataFrame):
+            dataset_details = f"rows={int(frame.shape[0])}|columns={int(frame.shape[1])}"
+        else:
+            dataset_details = "storage=local_path"
+
+        if kind == "peptide":
+            lines.append(
+                f"project_dataset|kind={kind}|status=loaded|filename={filename}|{dataset_details}|annotation=not_applicable"
+            )
+            continue
+
+        annotation = get_annotation(kind)  # type: ignore[arg-type]
+        if annotation is None:
+            lines.append(
+                f"project_dataset|kind={kind}|status=loaded|filename={filename}|{dataset_details}|annotation=not_available"
+            )
+            continue
+        metadata = annotation.metadata.copy()
+        sample_count = int(metadata["sample"].nunique()) if "sample" in metadata.columns else 0
+        condition_count = int(metadata["condition"].nunique()) if "condition" in metadata.columns else 0
+        imputation = annotation.imputation
+        imputation_text = "none"
+        if imputation is not None and imputation.applied:
+            imputation_text = (
+                f"applied:{_safe_context_text(imputation.mode)}:"
+                f"missing_before={imputation.missingBefore}:missing_after={imputation.missingAfter}"
+            )
+        lines.append(
+            f"project_dataset|kind={kind}|status=loaded|filename={filename}|{dataset_details}|annotation=available|"
+            f"filtered_rows={int(annotation.filtered_data.shape[0])}|samples={sample_count}|conditions={condition_count}|"
+            f"data_are_log2={str(bool(annotation.is_log2_transformed)).lower()}|imputation={imputation_text}"
+        )
+    return _text_payload("general_proteomics_context", "\n".join(lines))
 
 
 def qc_coverage_plot(workflow: str = "protein") -> dict[str, Any]:
@@ -715,16 +1010,13 @@ def qc_histogram_intensity(workflow: str = "protein") -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
     text = (
-        "Intensity values are evaluated on a per-condition basis: "
+        "The rendered density curves are calculated on a per-condition basis: "
         f"for each {entity_singular}, the mean value across all replicates within each condition is calculated row-wise. "
-        "The resulting condition-specific vectors are then used for visualization. "
-        "Each condition is displayed as a separate histogram, distinguished by color. "
-        "These histograms provide an overview of the data distribution and allow assessment of whether values approximate a normal distribution or deviate from it. "
-        "For high-quality data, each condition should be approximately normally distributed, and overall distribution shapes should be similar across conditions. "
+        "The resulting condition-specific vectors are the values summarized below. "
         f"Use workflow-appropriate terminology ({entity_plural}) in explanations. "
-        "Important limitation for this context: this is guidance-only and not data-aware. "
-        "Do not claim observed properties of the current dataset (for example normality, skewness, outliers, or condition differences) unless explicit computed statistics are provided in context. "
-        "Only provide what to look for and how to interpret it, and clearly label such statements as checks rather than findings."
+        "The context includes statistics calculated from the same row-wise condition means used by the plot. "
+        "Use them for descriptive comparisons of location, spread, and skew only.\n"
+        + "\n".join(_histogram_data_lines(workflow_key))
     )
     return _text_payload("qc_histogram_intensity", text)
 
@@ -753,13 +1045,10 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: str = "Mean") -> dict[
         "boxplot_general|per_condition_processing=for_each_entity_extract_condition_values_from_replicates"
     )
     lines.append(
-        "boxplot_general|quality_interpretation=compare_conditions_detect_shifts_outliers_symmetry_spread_skewness"
-    )
-    lines.append(
         "boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=beyond_whiskers"
     )
     lines.append(
-        "boxplot_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "boxplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -802,6 +1091,28 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: str = "Mean") -> dict[
                 f"lower_whisker={_fmt_value(row.get('lower_whisker', 0.0))}|upper_whisker={_fmt_value(row.get('upper_whisker', 0.0))}|"
                 f"color={color if color else 'unassigned'}"
             )
+        median_rows = data.dropna(subset=["median"])
+        if not median_rows.empty:
+            highest = median_rows.loc[median_rows["median"].idxmax()]
+            lowest = median_rows.loc[median_rows["median"].idxmin()]
+            lines.append(
+                "boxplot_answer_summary|comparison_is_descriptive=true|"
+                f"highest_median_condition={_safe_context_text(highest['Condition'])}|highest_median={_fmt_value(highest['median'])}|"
+                f"lowest_median_condition={_safe_context_text(lowest['Condition'])}|lowest_median={_fmt_value(lowest['median'])}"
+            )
+        if int(data.shape[0]) == 2:
+            left = data.iloc[0]
+            right = data.iloc[1]
+            left_iqr = float(left["Q3"] - left["Q1"])
+            right_iqr = float(right["Q3"] - right["Q1"])
+            lines.append(
+                "boxplot_numeric_comparison|"
+                f"left={_safe_context_text(left['Condition'])}|right={_safe_context_text(right['Condition'])}|"
+                f"mean_difference_right_minus_left={_fmt_value(right['mean'] - left['mean'])}|"
+                f"median_difference_right_minus_left={_fmt_value(right['median'] - left['median'])}|"
+                f"left_IQR={_fmt_value(left_iqr)}|right_IQR={_fmt_value(right_iqr)}|"
+                f"IQR_difference_right_minus_left={_fmt_value(right_iqr - left_iqr)}"
+            )
     else:
         if "Sample" not in data.columns:
             lines.append("boxplot_data|status=missing_sample_column")
@@ -842,10 +1153,8 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: str = "Mean") -> dict[
             )
 
     lines.append(
-        "boxplot_quality_guidance|general_check=consistent_shapes_similar_replicate_medians_reasonable_symmetry_after_log2"
-    )
-    lines.append(
-        "boxplot_quality_guidance|general_warning_signals=asymmetry_many_outliers_or_large_shifts_can_reflect_technical_issues_or_biological_variation"
+        "boxplot_evidence_limit|inferential_test_results=not_available|outlier_count=not_available|full_distribution_shape=not_available|"
+        "report_only_numerical_differences_from_available_summary_statistics|do_not_assign_importance_or_claim_outlier_presence_or_shape_similarity"
     )
 
     return _text_payload("qc_boxplot_intensity", "\n".join(lines))
@@ -889,7 +1198,7 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
         "cov_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=beyond_whiskers"
     )
     lines.append(
-        "cov_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "cov_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "cov_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -921,6 +1230,17 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
             f"name={condition}|mean_cv={_fmt_value(row.get('mean', 0.0))}|median_cv={_fmt_value(row.get('median', 0.0))}|"
             f"Q1_cv={_fmt_value(row.get('Q1', 0.0))}|Q3_cv={_fmt_value(row.get('Q3', 0.0))}|"
             f"lower_whisker_cv={_fmt_value(row.get('lower_whisker', 0.0))}|upper_whisker_cv={_fmt_value(row.get('upper_whisker', 0.0))}"
+        )
+
+    median_rows = data.dropna(subset=["median"])
+    if not median_rows.empty:
+        lowest = median_rows.loc[median_rows["median"].idxmin()]
+        highest = median_rows.loc[median_rows["median"].idxmax()]
+        lines.append(
+            "cov_answer_summary|lower_median_cv_means_more_consistent_by_this_descriptive_metric=true|"
+            f"lowest_median_cv_condition={_safe_context_text(lowest['Condition'])}|lowest_median_cv={_fmt_value(lowest['median'])}|"
+            f"highest_median_cv_condition={_safe_context_text(highest['Condition'])}|highest_median_cv={_fmt_value(highest['median'])}|"
+            "quality_cutoff_applied=false"
         )
 
     lines.append(
@@ -960,7 +1280,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
         "pca_projection|benefit=condense_high_dimensional_information_into_few_axes_to_reveal_sample_patterns_clusters_and_trends"
     )
     lines.append(
-        "pca_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "pca_quality_rule|coordinates_and_geometry_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "pca_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -975,7 +1295,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
         "pca_quality_guidance|type=checklist_only_not_findings|check=inspect_for_possible_outlier_samples"
     )
     lines.append(
-        "pca_quality_guidance|hard_claim_gate=do_not_state_any_of_the_above_as_observed_dataset_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
+        "pca_quality_guidance|coordinates_and_geometry_may_be_reported_descriptively|outlier_or_clean_separation_labels_require_a_defined_rule"
     )
     lines.append(
         "pca_usage|supports=identify_outliers_assess_condition_separation_evaluate_overall_dataset_structure"
@@ -989,7 +1309,10 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
     return _text_payload("qc_pca_plot", "\n".join(lines))
 
 
-def qc_abundance_plot(workflow: str = "protein") -> dict[str, Any]:
+def qc_abundance_plot(
+    workflow: str = "protein",
+    context_tier: str = "compact",
+) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
 
@@ -1025,7 +1348,7 @@ def qc_abundance_plot(workflow: str = "protein") -> dict[str, Any]:
         "abundance_special_case|phosphoprotein_context=optional_truncation_of_extended_ptm_text_for_readability"
     )
     lines.append(
-        "abundance_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "abundance_quality_rule|ranked_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "abundance_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1040,16 +1363,31 @@ def qc_abundance_plot(workflow: str = "protein") -> dict[str, Any]:
         "abundance_quality_guidance|type=checklist_only_not_findings|check=inspect_for_sharp_deviations_or_possible_outlier_entities"
     )
     lines.append(
-        "abundance_quality_guidance|hard_claim_gate=do_not_state_any_of_the_above_as_observed_dataset_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
+        "abundance_quality_guidance|ranked_entities_and_values_may_be_reported_descriptively|curve_shape_or_quality_claims_require_matching_evidence_and_a_defined_rule"
     )
     lines.append(
         "abundance_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    lines.extend(
+        _abundance_data_lines(
+            workflow_key,
+            limit=_context_tier_limit(context_tier, compact=2, standard=3, extended=6),
+        )
+    )
+    lines.append(
+        "abundance_response_rule|ranked_rows_are_supporting_evidence_not_a_required_output_list|"
+        "when_asked_only_which_or_most_abundant_report_rank_1_per_condition|"
+        "report_more_ranks_only_when_the_user_requests_a_count_rank_or_longer_list|"
+        "do_not_repeat_condition_headings_or_restart_a_list_during_continuation"
     )
 
     return _text_payload("qc_abundance_plot", "\n".join(lines))
 
 
-def qc_correlation_plot(workflow: str = "protein") -> dict[str, Any]:
+def qc_correlation_plot(
+    workflow: str = "protein",
+    context_tier: str = "compact",
+) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
 
@@ -1061,7 +1399,7 @@ def qc_correlation_plot(workflow: str = "protein") -> dict[str, Any]:
         "correlation_scope|purpose=visualize_pairwise_sample_similarity_assess_replicate_consistency_and_flag_possible_anomalies"
     )
     lines.append(
-        "correlation_input|vectors=log_transformed_sample_intensity_vectors"
+        "correlation_input|vectors=original_scale_sample_intensity_vectors_used_by_the_rendered_plot"
     )
     lines.append(
         "correlation_formula|pearson_r=cov(x_i,x_j)/(sigma_x_i*sigma_x_j)"
@@ -1094,7 +1432,7 @@ def qc_correlation_plot(workflow: str = "protein") -> dict[str, Any]:
         "correlation_usage|supports=global_sample_relationship_review_and_detection_of_possible_batch_or_labeling_issues"
     )
     lines.append(
-        "correlation_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "correlation_quality_rule|coefficients_and_group_summaries_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "correlation_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1109,10 +1447,16 @@ def qc_correlation_plot(workflow: str = "protein") -> dict[str, Any]:
         "correlation_quality_guidance|type=checklist_only_not_findings|check=inspect_for_weak_or_asymmetric_sample_relationships"
     )
     lines.append(
-        "correlation_quality_guidance|hard_claim_gate=do_not_state_any_of_the_above_as_observed_dataset_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
+        "correlation_quality_guidance|pairwise_coefficients_and_group_summaries_may_be_reported_descriptively|quality_or_outlier_labels_require_a_defined_rule"
     )
     lines.append(
         "correlation_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    lines.extend(
+        _correlation_data_lines(
+            workflow_key,
+            limit=_context_tier_limit(context_tier, compact=3, standard=6, extended=12),
+        )
     )
 
     return _text_payload("qc_correlation_plot", "\n".join(lines))
@@ -1698,7 +2042,7 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: str | None 
             )
 
     lines.append(
-        "missing_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "missing_quality_rule|missingness_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "missing_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1746,11 +2090,41 @@ def completeness_missing_value_heatmap(workflow: str = "protein", mode: str | No
     lines.append(
         "missing_heatmap_usage|supports=quick_detection_of_systematic_missingness_and_missing-data_trends"
     )
+    overall_missing, sample_count, sample_rows, feature_rows, _, error = _completeness_tables_payload(
+        kind,
+        outlier_threshold=100.0,
+        include_id=True,
+    )
+    if error is not None:
+        lines.append(f"missing_heatmap_data|status=unavailable|detail={_safe_context_text(error)}")
+    else:
+        lines.append(
+            "missing_heatmap_data|"
+            f"status=available|overall_missing_values_percent={_fmt_value(overall_missing if overall_missing is not None else 0.0)}|"
+            f"sample_count={sample_count}|feature_missingness_bins={len(feature_rows)}"
+        )
+        ranked_samples = sorted(
+            sample_rows,
+            key=lambda row: float(pd.to_numeric(row.get("%_missing_values"), errors="coerce"))
+            if pd.notna(pd.to_numeric(row.get("%_missing_values"), errors="coerce"))
+            else float("-inf"),
+            reverse=True,
+        )
+        for row in ranked_samples[:5]:
+            sample = str(row.get("Sample", "")).strip() or "unknown"
+            lines.append(
+                "missing_heatmap_high_missing_sample|"
+                f"sample={_safe_context_text(sample)}|condition={_safe_context_text(_extract_condition_from_sample(sample))}|"
+                f"missing_count={_safe_context_text(row.get('Counts'))}|missing_percent={_safe_context_text(row.get('%_missing_values'))}"
+            )
+        lines.append(
+            "missing_heatmap_evidence_rule|sample_summaries_support_column_level_comparisons|specific_row_or_block_patterns_require_the_rendered_heatmap_or_row_level_matrix"
+        )
     lines.append(
-        "missing_heatmap_scope|general_information_only_not_data_specific_findings"
+        "missing_heatmap_scope|aggregated_sample_findings_are_data_specific|visual_row_and_block_patterns_are_not_available_in_context"
     )
     lines.append(
-        "missing_heatmap_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "missing_heatmap_quality_rule|sample_missingness_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "missing_heatmap_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1762,7 +2136,7 @@ def completeness_missing_value_heatmap(workflow: str = "protein", mode: str | No
         "missing_heatmap_quality_guidance|type=checklist_only_not_findings|check=inspect_for_row_wise_missingness_patterns"
     )
     lines.append(
-        "missing_heatmap_quality_guidance|hard_claim_gate=do_not_state_any_of_the_above_as_observed_dataset_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
+        "missing_heatmap_quality_guidance|sample_missingness_values_may_be_reported_descriptively|quality_or_outlier_labels_require_a_defined_rule"
     )
     lines.append(
         "missing_heatmap_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
@@ -1792,7 +2166,7 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
         f"missing_tables_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}"
     )
     lines.append(
-        f"missing_tables_outlier_criterion|rule=sample_missing_percent_greater_than_threshold|threshold_percent={_fmt_value(outlier_threshold)}"
+        f"missing_tables_outlier_criterion|samples_exceed_when_missing_percent_is_strictly_greater_than={_fmt_value(outlier_threshold)}|threshold_percent={_fmt_value(outlier_threshold)}"
     )
     lines.append(
         f"missing_tables_parameters|include_id={str(include_id).lower()}"
@@ -1849,9 +2223,16 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
                     f"sample={sample_name}|condition={condition}|missing_percent={_safe_context_text(missing_percent)}|"
                     f"defined_by_threshold_percent_gt={_fmt_value(outlier_threshold)}"
                 )
+            lines.append(
+                f"missing_outlier_answer_summary|threshold_percent={_fmt_value(outlier_threshold)}|count={len(outliers)}|result=only_the_listed_samples_exceed_the_threshold"
+            )
+        else:
+            lines.append(
+                f"missing_outlier_answer_summary|threshold_percent={_fmt_value(outlier_threshold)}|count=0|result=no_samples_exceed_the_threshold"
+            )
 
     lines.append(
-        "missing_tables_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "missing_tables_quality_rule|configured_outlier_rule_and_descriptive_values_may_be_reported=true|broader_quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "missing_tables_quality_guidance|hard_claim_gate=do_not_state_unqualified_quality_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
@@ -1859,11 +2240,19 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
     lines.append(
         "missing_tables_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
+    lines.append(
+        "missing_tables_response_rule|if_outlier_count_is_zero_state_that_no_samples_exceed_the_threshold|"
+        "never_call_below_threshold_samples_high_or_outliers|do_not_list_below_threshold_samples_when_the_user_asks_only_for_exceeding_samples"
+    )
 
     return _text_payload("completeness_missing_value_tables", "\n".join(lines))
 
 
-def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_volcano_plot(
+    workflow: str = "protein",
+    mode: str | None = None,
+    context_tier: str = "compact",
+) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
@@ -1906,14 +2295,15 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
         default=1.0,
         minimum=0.0,
     )
+    tier_rank_limit = _context_tier_limit(context_tier, compact=2, standard=5, extended=10)
     max_ranked_per_group = int(
         _float_from_mode(
             mode_pairs,
             "maxranked",
             "max_ranked",
             "ranklimit",
-            default=100.0,
-            minimum=10.0,
+            default=float(tier_rank_limit),
+            minimum=2.0,
             maximum=500.0,
         )
     )
@@ -2003,6 +2393,13 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
         f"volcano_counts|upregulated={up_count}|downregulated={down_count}|not_significant={not_significant_count}"
     )
     lines.append(
+        "volcano_answer_summary|"
+        f"comparison={_safe_context_text(condition2)}_minus_{_safe_context_text(condition1)}|"
+        f"significance_metric={'raw_p_value' if use_uncorrected else 'adjusted_p_value'}|"
+        f"p_value_threshold={_fmt_value(p_value_threshold)}|absolute_log2fc_threshold={_fmt_value(log2fc_threshold)}|"
+        f"upregulated={up_count}|downregulated={down_count}|not_significant={not_significant_count}"
+    )
+    lines.append(
         f"volcano_fractions|upregulated_fraction={up_count/denom:.4f}|downregulated_fraction={down_count/denom:.4f}|not_significant_fraction={not_significant_count/denom:.4f}"
     )
     if warnings:
@@ -2035,16 +2432,18 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
                 "volcano_term|"
                 f"group=upregulated|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
                 f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"pval={_fmt_value(float(row.get('pval', 1.0)))}|adj_pval={_fmt_value(float(row.get('adj_pval', 1.0)))}|"
-                f"neg_log10_adj_pval={_fmt_value(float(row.get('neg_log10_adj_pval', 0.0)))}|rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
+                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
+                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
+                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
             )
         for rank, (_, row) in enumerate(down_ranked.iterrows(), start=1):
             lines.append(
                 "volcano_term|"
                 f"group=downregulated|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
                 f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"pval={_fmt_value(float(row.get('pval', 1.0)))}|adj_pval={_fmt_value(float(row.get('adj_pval', 1.0)))}|"
-                f"neg_log10_adj_pval={_fmt_value(float(row.get('neg_log10_adj_pval', 0.0)))}|rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
+                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
+                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
+                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
             )
     else:
         lines.append(
@@ -2054,14 +2453,14 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
             frame.copy(),
             label_column=label_column,
             group="up",
-            limit=10,
+            limit=2,
             strategy="fold_change_priority",
         )
         down_top, _ = _volcano_ranked_rows(
             frame.copy(),
             label_column=label_column,
             group="down",
-            limit=10,
+            limit=2,
             strategy="fold_change_priority",
         )
         lines.append(
@@ -2072,16 +2471,18 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
                 "volcano_term|"
                 f"group=upregulated_candidate_not_significant|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
                 f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"pval={_fmt_value(float(row.get('pval', 1.0)))}|adj_pval={_fmt_value(float(row.get('adj_pval', 1.0)))}|"
-                f"neg_log10_adj_pval={_fmt_value(float(row.get('neg_log10_adj_pval', 0.0)))}|rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
+                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
+                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
+                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
             )
         for rank, (_, row) in enumerate(down_top.iterrows(), start=1):
             lines.append(
                 "volcano_term|"
                 f"group=downregulated_candidate_not_significant|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
                 f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"pval={_fmt_value(float(row.get('pval', 1.0)))}|adj_pval={_fmt_value(float(row.get('adj_pval', 1.0)))}|"
-                f"neg_log10_adj_pval={_fmt_value(float(row.get('neg_log10_adj_pval', 0.0)))}|rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
+                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
+                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
+                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
             )
 
     lines.append(
@@ -2089,6 +2490,11 @@ def stats_volcano_plot(workflow: str = "protein", mode: str | None = None) -> di
     )
     lines.append(
         "volcano_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+    )
+    lines.append(
+        "volcano_response_rule|for_strongest_targets_report_at_most_the_two_ranked_entities_per_direction|"
+        "include_log2fc_selected_p_value_and_minus_log10_selected_p|do_not_replace_small_p_values_with_rounded_zero|"
+        "use_plain_paragraphs_or_simple_hyphen_bullets_without_nested_lists"
     )
     return _text_payload("stats_volcano_plot", "\n".join(lines))
 
@@ -3302,7 +3708,7 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
         f"single_protein_boxplot_labels|entity_terms={entity_singular}/{entity_plural}"
     )
     lines.append(
-        "single_protein_boxplot_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "single_protein_boxplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "single_protein_boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -3423,7 +3829,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
         f"single_protein_lineplot_labels|entity_terms={entity_singular}/{entity_plural}"
     )
     lines.append(
-        "single_protein_lineplot_quality_rule|scope=general_not_data_specific|assessment_requires_defined_thresholds_or_cutoffs=true"
+        "single_protein_lineplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
     )
     lines.append(
         "single_protein_lineplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
