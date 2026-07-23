@@ -284,6 +284,8 @@ def compute_annotation(
     is_log2_transformed: bool | None,
     min_present: int,
     filter_mode: FilterMode,
+    filter_method="at_least_n",
+    min_percentage=70.0,
 ) -> AnnotationComputationResult:
     metadata_result = build_metadata_from_conditions(
         data,
@@ -307,7 +309,14 @@ def compute_annotation(
     else:
         log2_data = log2_transform_data(data, sample_columns)
 
-    filtered_data = filter_data(log2_data, metadata, min_present=min_present, mode=filter_mode)
+    filtered_data = filter_data(
+        log2_data,
+        metadata,
+        min_present=min_present,
+        mode=filter_mode,
+        method=filter_method,
+        min_percentage=min_percentage,
+    )
 
     warnings: list[str] = []
     if log2_warning:
@@ -332,6 +341,8 @@ def compute_annotation_from_metadata(
     is_log2_transformed: bool | None,
     min_present: int,
     filter_mode: FilterMode,
+    filter_method="at_least_n",
+    min_percentage=70.0,
 ) -> AnnotationComputationResult:
     normalized_metadata = normalize_uploaded_metadata(data=data, metadata=metadata)
     sample_columns = normalized_metadata["sample"].tolist()
@@ -354,6 +365,8 @@ def compute_annotation_from_metadata(
         normalized_metadata,
         min_present=min_present,
         mode=filter_mode,
+        method=filter_method,
+        min_percentage=min_percentage,
     )
 
     warnings = ["Using uploaded metadata table for annotation."]

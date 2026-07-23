@@ -174,6 +174,9 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 function formatImputationSummary(imputation: AnnotationImputationInfo | null): string {
   if (!imputation) return "none";
   if (imputation.mode && imputation.mode !== "none") {
+    if (imputation.mode === "numerical") {
+      return `numerical, downshift=${formatValue(imputation.downShift)}, width=${formatValue(imputation.width)}`;
+    }
     return `q=${formatValue(imputation.qValue)}, adj_std=${formatValue(imputation.adjustStd)}`;
   }
   return "none";

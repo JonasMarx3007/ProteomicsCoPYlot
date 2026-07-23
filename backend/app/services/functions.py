@@ -39,10 +39,32 @@ except ModuleNotFoundError:
         reject = adjusted <= alpha
         return reject, adjusted, None, None
 
-FilterMode = Literal["per_group", "in_at_least_one_group"]
+FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 DataSource = Literal["filtered", "log2", "raw"]
 
 AUTO_SAMPLE_PATTERN = re.compile(r"20\d{6}")
+_SAMPLE_DOTTED_SUFFIX = re.compile(
+    r"(?:(?:\.(?:PG|GG|EG|FG|PEP|PR|Precursor|Protein|Peptide))?\."
+    r"(?:(?:Avg|Average)?Log[._\s-]*2(?:Normal(?:i[sz]ed|isation|ization))?"
+    r"(?:Quantity|Intensity|Abundance)|Normal(?:i[sz]ed|isation|ization)"
+    r"(?:Quantity|Intensity|Abundance)?|Max[._\s-]*LFQ(?:Quantity|Intensity|Abundance)?|"
+    r"TotalQuantity|Quantity|Intensity|Abundance))$",
+    re.IGNORECASE,
+)
+_SAMPLE_TEXT_SUFFIX = re.compile(
+    r"[\s._-]+(?:(?:Max[\s._-]*LFQ[\s._-]+)?"
+    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Intensity|"
+    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Spectral[\s._-]+Count|"
+    r"PSMs?|Percent[\s._-]+PSMs?|LFQ[\s._-]+Intensity|iBAQ|"
+    r"MS\s*/\s*MS[\s._-]+Count|MS[12][\s._-]+(?:Intensity|Count)|"
+    r"Razor\s*\+\s*Unique[\s._-]+Peptides|Unique[\s._-]+Peptides|Peptides|"
+    r"Sequence[\s._-]+Coverage(?:[\s._-]*\[%\])?|"
+    r"Log[._\s-]*2[\s._-]*(?:Quantity|Intensity|Abundance|Ratio)|"
+    r"(?:Quantity|Abundance|Ratio))$",
+    re.IGNORECASE,
+)
+_SAMPLE_ACQUISITION_SUFFIX = re.compile(r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$", re.IGNORECASE)
+_SAMPLE_NUMBER = re.compile(r"\d+")
 
 
 @dataclass
@@ -64,6 +86,20 @@ class ImputationDiagnostics:
     overall_observed: np.ndarray
     after_non_imputed: np.ndarray
     after_imputed: np.ndarray
+    draw_components: list[tuple[float, float, int]]
+
+
+def extract_sample_id(value):
+    original = str(value).strip()
+    sample = re.split(r"[\\/]", original)[-1]
+    previous = None
+    while sample != previous:
+        previous = sample
+        sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
+        sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
+    sample = _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
+    numbers = _SAMPLE_NUMBER.findall(sample)
+    return numbers[-1] if numbers else original
 
 
 # Data Pipeline
@@ -125,17 +161,38 @@ def filter_data(
     metadata: pd.DataFrame,
     min_present: int,
     mode: FilterMode,
+    method="at_least_n",
+    min_percentage=70.0,
 ) -> pd.DataFrame:
     sample_columns = metadata["sample"].tolist()
     data_selected = data[sample_columns].copy()
-    conditions = metadata["condition"].unique()
+    method = str(method or "at_least_n").strip().lower()
+    if method not in {"at_least_n", "percentage"}:
+        raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
+    if mode not in {"per_group", "in_at_least_one_group", "overall"}:
+        raise ValueError("Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'.")
+    if min_present < 0:
+        raise ValueError("Minimum valid values must be zero or greater.")
+    if min_percentage < 0 or min_percentage > 100:
+        raise ValueError("Minimum completeness percentage must be between 0 and 100.")
 
-    mask = pd.DataFrame(False, index=data_selected.index, columns=conditions)
-    for condition in conditions:
-        cols = metadata.loc[metadata["condition"] == condition, "sample"].tolist()
-        mask[condition] = data_selected[cols].notna().sum(axis=1) >= min_present
-
-    rows_to_keep = mask.all(axis=1) if mode == "per_group" else mask.any(axis=1)
+    if mode == "overall":
+        valid = data_selected[sample_columns].notna().sum(axis=1)
+        if method == "percentage":
+            rows_to_keep = valid / len(sample_columns) >= min_percentage / 100
+        else:
+            rows_to_keep = valid >= min_present
+    else:
+        conditions = metadata["condition"].unique()
+        mask = pd.DataFrame(False, index=data_selected.index, columns=conditions)
+        for condition in conditions:
+            cols = metadata.loc[metadata["condition"] == condition, "sample"].tolist()
+            valid = data_selected[cols].notna().sum(axis=1)
+            if method == "percentage":
+                mask[condition] = valid / len(cols) >= min_percentage / 100
+            else:
+                mask[condition] = valid >= min_present
+        rows_to_keep = mask.all(axis=1) if mode == "per_group" else mask.any(axis=1)
     return data.loc[rows_to_keep].reset_index(drop=True)
 
 
@@ -155,10 +212,22 @@ def impute_values_with_diagnostics(
     data: pd.DataFrame,
     sample_columns: list[str],
     q: float = 0.01,
-    adj_std: float = 1.0,
+    adj_std: float = 0.3,
     seed: int = 1337,
     sample_wise: bool = False,
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
 ) -> ImputationDiagnostics:
+    method = str(method or "quantile").strip().lower()
+    if method == "normal":
+        method = "quantile"
+    if method not in {"quantile", "numerical"}:
+        raise ValueError("Imputation method must be 'quantile' or 'numerical'.")
+    if down_shift < 0:
+        raise ValueError("Numerical downshift must be zero or greater.")
+    if width < 0:
+        raise ValueError("Numerical width must be zero or greater.")
     np.random.seed(seed)
     numeric = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
     missing_mask = numeric.isna()
@@ -180,6 +249,7 @@ def impute_values_with_diagnostics(
 
     imputed_numeric = numeric.copy()
     missing_before = int(imputed_numeric.isna().sum().sum())
+    draw_components = []
 
     if sample_wise:
         for col in sample_columns:
@@ -189,22 +259,40 @@ def impute_values_with_diagnostics(
                 continue
             col_observed = col_values.dropna().values
             if col_observed.size == 0:
-                draws = np.random.normal(quantile_val, std_val * adj_std, missing_count)
+                if method == "numerical":
+                    draw_center = mean_val - down_shift * std_val
+                    draw_std = std_val * width
+                else:
+                    draw_center = quantile_val
+                    draw_std = std_val * adj_std
             else:
-                col_q = float(np.nanquantile(col_observed, q))
                 col_sd = float(np.nanstd(col_observed))
-                draw_sd = col_sd if col_sd > 0 else std_val
-                draws = np.random.normal(col_q, draw_sd, missing_count)
+                if method == "numerical":
+                    effective_sd = col_sd if col_sd > 0 else std_val
+                    draw_center = float(np.nanmean(col_observed)) - down_shift * effective_sd
+                    draw_std = effective_sd * width
+                else:
+                    draw_center = float(np.nanquantile(col_observed, q))
+                    draw_std = col_sd if col_sd > 0 else std_val
+            draws = np.random.normal(draw_center, draw_std, missing_count)
             imputed_numeric.loc[col_values.isna(), col] = draws
+            draw_components.append((draw_center, draw_std, missing_count))
     else:
-        draw_sd = std_val * adj_std
+        if method == "numerical":
+            draw_center = mean_val - down_shift * std_val
+            draw_std = std_val * width
+        else:
+            draw_center = quantile_val
+            draw_std = std_val * adj_std
         for col in sample_columns:
             col_values = imputed_numeric[col]
             missing_count = int(col_values.isna().sum())
             if missing_count <= 0:
                 continue
-            draws = np.random.normal(quantile_val, draw_sd, missing_count)
+            draws = np.random.normal(draw_center, draw_std, missing_count)
             imputed_numeric.loc[col_values.isna(), col] = draws
+        if missing_before > 0:
+            draw_components.append((draw_center, draw_std, missing_before))
 
     result = data.copy()
     result[sample_columns] = imputed_numeric
@@ -227,7 +315,120 @@ def impute_values_with_diagnostics(
         overall_observed=observed,
         after_non_imputed=after_non_imputed,
         after_imputed=after_imputed,
+        draw_components=draw_components,
     )
+
+
+def analysis_data_source(kind, data_source="data"):
+    from app.services.annotation_store import get_annotation
+    from app.services.data_tools import _get_current_frame
+
+    requested_source = str(data_source or "data").strip().lower()
+    if requested_source not in {"data", "imputed"}:
+        raise ValueError("Unsupported data source. Choose 'data' or 'imputed'.")
+
+    raw = _get_current_frame(kind)
+    annotation = get_annotation(kind)
+    if annotation is None or annotation.metadata.empty:
+        raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
+
+    source_used, base_frame = choose_best_source(
+        annotation.filtered_data,
+        annotation.log2_data,
+        raw,
+    )
+    warnings: list[str] = []
+    if source_used == "raw":
+        warnings.append("Using raw data because filtered/log2 annotated data is unavailable.")
+
+    imputation = getattr(annotation, "imputation", None)
+    imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
+    if requested_source == "imputed" and imputation is not None and imputation_mode != "none":
+        sample_columns = [
+            sample
+            for sample in annotation.metadata["sample"].astype(str).tolist()
+            if sample in base_frame.columns
+        ]
+        if sample_columns:
+            q_value = (
+                float(imputation.qValue)
+                if getattr(imputation, "qValue", None) is not None
+                else 0.01
+            )
+            adjust_std = (
+                float(imputation.adjustStd)
+                if getattr(imputation, "adjustStd", None) is not None
+                else 0.3
+            )
+            seed = (
+                int(imputation.seed)
+                if getattr(imputation, "seed", None) is not None
+                else 1337
+            )
+            sample_wise = (
+                bool(imputation.sampleWise)
+                if getattr(imputation, "sampleWise", None) is not None
+                else False
+            )
+            method = imputation_mode if imputation_mode in {"quantile", "numerical"} else "quantile"
+            down_shift = (
+                float(imputation.downShift)
+                if getattr(imputation, "downShift", None) is not None
+                else 1.8
+            )
+            width = (
+                float(imputation.width)
+                if getattr(imputation, "width", None) is not None
+                else 0.3
+            )
+            try:
+                diagnostics = impute_values_with_diagnostics(
+                    data=base_frame,
+                    sample_columns=sample_columns,
+                    q=q_value,
+                    adj_std=adjust_std,
+                    seed=seed,
+                    sample_wise=sample_wise,
+                    method=method,
+                    down_shift=down_shift,
+                    width=width,
+                )
+                return (
+                    source_used,
+                    diagnostics.imputed_data,
+                    annotation.metadata.copy(),
+                    warnings,
+                )
+            except Exception:
+                pass
+
+    return source_used, base_frame, annotation.metadata.copy(), warnings
+
+
+def imputed_data_available(kind):
+    from app.services.annotation_store import get_annotation
+    from app.services.data_tools import _get_current_frame
+
+    annotation = get_annotation(kind)
+    if annotation is None or annotation.metadata.empty:
+        return False
+    imputation = getattr(annotation, "imputation", None)
+    if imputation is None:
+        return False
+    if str(getattr(imputation, "mode", "none")).strip().lower() == "none":
+        return False
+
+    _, frame = choose_best_source(
+        annotation.filtered_data,
+        annotation.log2_data,
+        _get_current_frame(kind),
+    )
+    sample_columns = [
+        sample
+        for sample in annotation.metadata["sample"].astype(str).tolist()
+        if sample in frame.columns
+    ]
+    return len(sample_columns) > 0
 
 
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
@@ -749,11 +950,24 @@ def imputation_before_plot(
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict | None = None,
 ) -> bytes:
     from app.services.plot_images import imputation_before_plot as _impl
 
-    return _impl(kind, q_value, adjust_std, seed, sample_wise, advanced=advanced)
+    return _impl(
+        kind,
+        q_value,
+        adjust_std,
+        seed,
+        sample_wise,
+        method=method,
+        down_shift=down_shift,
+        width=width,
+        advanced=advanced,
+    )
 
 
 def imputation_overall_fit_plot(
@@ -763,6 +977,9 @@ def imputation_overall_fit_plot(
     seed: int,
     sample_wise: bool,
     show_imputation_draw: bool = True,
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict | None = None,
 ) -> bytes:
     from app.services.plot_images import imputation_overall_fit_plot as _impl
@@ -774,6 +991,9 @@ def imputation_overall_fit_plot(
         seed,
         sample_wise,
         show_imputation_draw,
+        method=method,
+        down_shift=down_shift,
+        width=width,
         advanced=advanced,
     )
 
@@ -785,6 +1005,9 @@ def imputation_after_plot(
     seed: int,
     sample_wise: bool,
     normalization: str = "separate",
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict | None = None,
 ) -> bytes:
     from app.services.plot_images import imputation_after_plot as _impl
@@ -796,6 +1019,9 @@ def imputation_after_plot(
         seed,
         sample_wise,
         normalization,
+        method=method,
+        down_shift=down_shift,
+        width=width,
         advanced=advanced,
     )
 
@@ -1061,6 +1287,7 @@ def qc_cv_plot(
 
 def qc_pca_plot(
     kind: AnnotationKind,
+    data_source: str = "data",
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
@@ -1086,6 +1313,7 @@ def qc_pca_plot(
 
     return _impl(
         kind=kind,
+        data_source=data_source,
         header=header,
         legend=legend,
         plot_dim=plot_dim,
@@ -1111,6 +1339,7 @@ def qc_pca_plot(
 
 def qc_pca_interactive_html(
     kind: AnnotationKind,
+    data_source: str = "data",
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
@@ -1135,6 +1364,7 @@ def qc_pca_interactive_html(
 
     return _impl(
         kind=kind,
+        data_source=data_source,
         header=header,
         legend=legend,
         plot_dim=plot_dim,

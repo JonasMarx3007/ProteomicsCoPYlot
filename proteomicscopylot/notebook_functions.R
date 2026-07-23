@@ -280,9 +280,58 @@ read_data <- function(file) {
   rename_cols(df)
 }
 
+strip_sample_measurement_suffix <- function(x) {
+  text <- trimws(as.character(x))
+  sample_name <- sub("^.*[\\\\/]", "", text, perl = TRUE)
+
+  suffixes <- c(
+    paste0(
+      "(?i)(?:\\.(?:PG|GG|EG|FG|PEP|PR|Precursor|Protein|Peptide))?\\.",
+      "(?:(?:Avg|Average)?Log[._[:space:]-]*2",
+      "(?:Normal(?:i[sz]ed|isation|ization))?(?:Quantity|Intensity|Abundance)",
+      "|Normal(?:i[sz]ed|isation|ization)(?:Quantity|Intensity|Abundance)?",
+      "|Max[._[:space:]-]*LFQ(?:Quantity|Intensity|Abundance)?",
+      "|TotalQuantity|Quantity|Intensity|Abundance)$"
+    ),
+    paste0(
+      "(?i)[[:space:]_.-]+(?:",
+      "(?:Max[[:space:]_.-]*LFQ[[:space:]_.-]+)?",
+      "(?:Unique[[:space:]_.-]+|Total[[:space:]_.-]+|Razor[[:space:]_.-]+)?Intensity",
+      "|(?:Unique[[:space:]_.-]+|Total[[:space:]_.-]+|Razor[[:space:]_.-]+)?",
+      "Spectral[[:space:]_.-]+Count",
+      "|PSMs?|Percent[[:space:]_.-]+PSMs?",
+      "|LFQ[[:space:]_.-]+Intensity|iBAQ",
+      "|MS[[:space:]]*/[[:space:]]*MS[[:space:]_.-]+Count",
+      "|MS[12][[:space:]_.-]+(?:Intensity|Count)",
+      "|Razor[[:space:]]*\\+[[:space:]]*Unique[[:space:]_.-]+Peptides",
+      "|Unique[[:space:]_.-]+Peptides|Peptides",
+      "|Sequence[[:space:]_.-]+Coverage(?:[[:space:]_.-]*\\[%\\])?",
+      "|Log[._[:space:]-]*2[[:space:]_.-]*(?:Quantity|Intensity|Abundance|Ratio)",
+      "|(?:Quantity|Abundance|Ratio))$"
+    )
+  )
+
+  previous <- NULL
+  while (!identical(sample_name, previous)) {
+    previous <- sample_name
+    for (suffix in suffixes) {
+      sample_name <- trimws(sub(suffix, "", sample_name, perl = TRUE))
+    }
+  }
+
+  trimws(sub(
+    "(?i)\\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$",
+    "",
+    sample_name,
+    perl = TRUE
+  ))
+}
+
 extract_id_or_number <- function(x) {
-  m <- gregexpr("[0-9]+", as.character(x))[[1]]
-  if (m[1] < 0) as.character(x) else tail(regmatches(as.character(x), list(m))[[1]], 1)
+  original <- trimws(as.character(x))
+  sample_name <- strip_sample_measurement_suffix(original)
+  m <- gregexpr("[0-9]+", sample_name)[[1]]
+  if (m[1] < 0) original else tail(regmatches(sample_name, list(m))[[1]], 1)
 }
 
 log2_transform_data <- function(data, meta) {
@@ -301,11 +350,26 @@ inverse_log2_transform_data <- function(data, meta) {
   output
 }
 
-filter_data <- function(data, meta, num, filterops = "per group") {
-  conditions <- unique(meta$condition)
-  keep <- sapply(conditions, function(cond) rowSums(!is.na(data[, meta$sample[meta$condition == cond], drop = FALSE])) >= num)
-  if (is.null(dim(keep))) keep <- matrix(keep, ncol = 1)
-  data[if (filterops == "per group") apply(keep, 1, all) else apply(keep, 1, any), , drop = FALSE]
+filter_data <- function(data, meta, num, filterops = "per group", method = "at_least_n", percentage = 70) {
+  method <- tolower(trimws(method))
+  filterops <- gsub("_", " ", tolower(trimws(filterops)))
+  if (!method %in% c("at_least_n", "percentage")) {
+    stop("Filter method must be 'at_least_n' or 'percentage'.", call. = FALSE)
+  }
+  if (filterops == "overall") {
+    valid <- rowSums(!is.na(data[, meta$sample, drop = FALSE]))
+    rows_to_keep <- if (method == "percentage") valid / length(meta$sample) >= percentage / 100 else valid >= num
+  } else {
+    conditions <- unique(meta$condition)
+    keep <- sapply(conditions, function(cond) {
+      columns <- meta$sample[meta$condition == cond]
+      valid <- rowSums(!is.na(data[, columns, drop = FALSE]))
+      if (method == "percentage") valid / length(columns) >= percentage / 100 else valid >= num
+    })
+    if (is.null(dim(keep))) keep <- matrix(keep, ncol = 1)
+    rows_to_keep <- if (filterops == "per group") apply(keep, 1, all) else apply(keep, 1, any)
+  }
+  data[rows_to_keep, , drop = FALSE]
 }
 
 transform_phosprot <- function(data, meta, mode = "sum_mean_impute") {
@@ -407,7 +471,12 @@ qqnorm_plot <- function(data, meta) {
   .plot_result()
 }
 
-impute_values <- function(data, meta, q=0.01, adj_std=1, ret=0, sample_wise=FALSE, seed=69) {
+impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=FALSE, seed=69, method="quantile", down_shift=1.8, width=0.3) {
+  method <- tolower(trimws(method))
+  if (method == "normal") method <- "quantile"
+  if (!method %in% c("quantile", "numerical")) {
+    stop("Imputation method must be 'quantile' or 'numerical'.", call. = FALSE)
+  }
   set.seed(seed)
   samples <- as.character(meta$sample)
   output <- data
@@ -479,17 +548,28 @@ impute_values <- function(data, meta, q=0.01, adj_std=1, ret=0, sample_wise=FALS
     if (!number_missing) next
 
     if (sample_wise) {
-      sample_quantile <- quantile(values[, column_index], q, na.rm = TRUE)
       sample_sd <- sd(values[, column_index], na.rm = TRUE)
+      if (method == "numerical") {
+        draw_center <- mean(values[, column_index], na.rm = TRUE) - down_shift * sample_sd
+        draw_sd <- sample_sd * width
+      } else {
+        draw_center <- quantile(values[, column_index], q, na.rm = TRUE)
+        draw_sd <- sample_sd
+      }
     } else {
-      sample_quantile <- quantile_value
-      sample_sd <- sd_value * adj_std
+      if (method == "numerical") {
+        draw_center <- mean_value - down_shift * sd_value
+        draw_sd <- sd_value * width
+      } else {
+        draw_center <- quantile_value
+        draw_sd <- sd_value * adj_std
+      }
     }
 
     values[missing_mask[, column_index], column_index] <- rnorm(
       number_missing,
-      mean = sample_quantile,
-      sd = sample_sd
+      mean = draw_center,
+      sd = draw_sd
     )
   }
 

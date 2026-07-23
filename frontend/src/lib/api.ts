@@ -1118,7 +1118,14 @@ export async function getQcPlotOptions(kind: AnnotationKind): Promise<QcPlotOpti
         "Failed to load QC plot options"
     );
   }
-  return data as QcPlotOptionsResponse;
+  const payload = data as Partial<QcPlotOptionsResponse>;
+  return {
+    conditions: Array.isArray(payload.conditions) ? payload.conditions : [],
+    imputedAvailable: Boolean(payload.imputedAvailable),
+    samples: Array.isArray(payload.samples) ? payload.samples : [],
+    sampleLabels: payload.sampleLabels ?? {},
+    sampleLabelsWithId: payload.sampleLabelsWithId ?? {},
+  };
 }
 
 export async function getQcTable(

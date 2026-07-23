@@ -127,6 +127,8 @@ def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> No
             is_log2_transformed=is_log2_transformed,
             min_present=filter_config.minPresent,
             filter_mode=filter_config.mode,
+            filter_method=filter_config.method,
+            min_percentage=filter_config.minPercentage,
         )
         save_annotation(
             kind=kind,
@@ -213,6 +215,8 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
                 is_log2_transformed=payload.isLog2Transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
+                filter_method=filter_config.method,
+                min_percentage=filter_config.minPercentage,
             )
             metadata_source = "shared_phospho" if payload.kind == "phosprot" else "uploaded"
         else:
@@ -222,6 +226,8 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
                 is_log2_transformed=payload.isLog2Transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
+                filter_method=filter_config.method,
+                min_percentage=filter_config.minPercentage,
             )
             metadata_source = "auto" if computed.auto_detected else "manual"
     except ValueError as e:

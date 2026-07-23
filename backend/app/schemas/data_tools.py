@@ -88,14 +88,18 @@ class ConditionPaletteResponse(BaseModel):
 
 class ImputationRunRequest(BaseModel):
     kind: AnnotationKind
+    method: Literal["quantile", "numerical"] = "quantile"
     qValue: float = Field(default=0.01, ge=0.0, le=1.0)
-    adjustStd: float = Field(default=1.0, ge=0.0)
+    adjustStd: float = Field(default=0.3, ge=0.0)
+    downShift: float = Field(default=1.8, ge=0.0)
+    width: float = Field(default=0.3, ge=0.0)
     seed: int = 1337
     sampleWise: bool = False
 
 
 class ImputationResultResponse(BaseModel):
     kind: AnnotationKind
+    method: Literal["quantile", "numerical"]
     sourceUsed: DataSource
     rows: int
     columns: int
@@ -107,6 +111,8 @@ class ImputationResultResponse(BaseModel):
     quantile: float | None
     qValue: float
     adjustStd: float
+    downShift: float
+    width: float
     seed: int
     sampleWise: bool
     beforeMissingHistogram: list[ComparativeHistogramBin]

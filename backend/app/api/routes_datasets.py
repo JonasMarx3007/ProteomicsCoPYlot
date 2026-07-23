@@ -226,6 +226,8 @@ def _ensure_profile_annotation_for_kind(
         is_log2_transformed=is_log2_transformed,
         min_present=filter_config.minPresent,
         filter_mode=filter_config.mode,
+        filter_method=filter_config.method,
+        min_percentage=filter_config.minPercentage,
     )
     save_annotation(
         kind=kind,

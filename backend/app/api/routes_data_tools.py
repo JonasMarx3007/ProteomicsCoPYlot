@@ -48,8 +48,11 @@ async def download_imputation_route(payload: ImputationRunRequest) -> StreamingR
         buffer = io.BytesIO(csv_bytes)
         filename = (
             f"imputed_{payload.kind}"
+            f"_{payload.method}"
             f"_q{payload.qValue}"
             f"_std{payload.adjustStd}"
+            f"_down{payload.downShift}"
+            f"_width{payload.width}"
             f"_seed{payload.seed}"
             f"_samplewise{int(payload.sampleWise)}.csv"
         )

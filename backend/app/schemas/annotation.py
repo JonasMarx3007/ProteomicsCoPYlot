@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 AnnotationKind = Literal["protein", "phospho", "phosprot"]
 MetadataAnnotationKind = Literal["protein", "phospho"]
-FilterMode = Literal["per_group", "in_at_least_one_group"]
+FilterMethod = Literal["at_least_n", "percentage"]
+FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 MetadataSource = Literal["manual", "auto", "uploaded", "shared_phospho"]
 PhosprotAggregationMode = Literal[
     "sum_mean_impute",
@@ -23,7 +24,9 @@ class ConditionAssignment(BaseModel):
 
 
 class AnnotationFilterConfig(BaseModel):
+    method: FilterMethod = "at_least_n"
     minPresent: int = Field(default=0, ge=0)
+    minPercentage: float = Field(default=70.0, ge=0.0, le=100.0)
     mode: FilterMode = "per_group"
 
 
@@ -50,6 +53,8 @@ class AnnotationImputationInfo(BaseModel):
     applied: bool = False
     qValue: float | None = None
     adjustStd: float | None = None
+    downShift: float | None = None
+    width: float | None = None
     seed: int | None = None
     sampleWise: bool | None = None
     sampleCount: int | None = None

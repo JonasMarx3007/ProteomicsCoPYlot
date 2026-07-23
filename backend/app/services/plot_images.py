@@ -14,7 +14,9 @@ from app.services.annotation_store import get_annotation
 from app.services.condition_palette_store import build_condition_color_map
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
+    analysis_data_source,
     choose_best_source,
+    extract_sample_id as _extract_id_or_number,
     impute_values_with_diagnostics,
     inverse_log2_transform_data,
     qqnorm_plot_data,
@@ -256,11 +258,6 @@ def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
     )
     ordered = ordered.sort_values("__condition_order", kind="stable")
     return ordered.drop(columns="__condition_order").reset_index(drop=True)
-
-
-def _extract_id_or_number(sample: str) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(sample))
-    return match.group(0) if match else str(sample)
 
 
 def _sample_label(sample: str, condition: str, index: int, include_id: bool) -> str:
@@ -1004,6 +1001,9 @@ def imputation_before_plot(
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
@@ -1016,6 +1016,9 @@ def imputation_before_plot(
         adj_std=adjust_std,
         seed=seed,
         sample_wise=sample_wise,
+        method=method,
+        down_shift=down_shift,
+        width=width,
     )
 
     fig, ax = plt.subplots()
@@ -1052,6 +1055,9 @@ def imputation_overall_fit_plot(
     seed: int,
     sample_wise: bool,
     show_imputation_draw: bool = True,
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
@@ -1064,41 +1070,14 @@ def imputation_overall_fit_plot(
         adj_std=adjust_std,
         seed=seed,
         sample_wise=sample_wise,
+        method=method,
+        down_shift=down_shift,
+        width=width,
     )
 
     values = diagnostics.overall_observed
     histogram_bin_edges = _imputation_histogram_bin_edges(values, diagnostics.after_imputed)
-    numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
-    draw_components: list[tuple[float, float, int]] = []
-    if show_imputation_draw and sample_wise:
-        for column in sample_columns:
-            column_values = numeric[column]
-            missing_count = int(column_values.isna().sum())
-            if missing_count <= 0:
-                continue
-            observed = column_values.dropna().to_numpy(dtype=float)
-            if observed.size == 0:
-                draw_components.append(
-                    (diagnostics.quantile, diagnostics.std * adjust_std, missing_count)
-                )
-                continue
-            column_quantile = float(np.nanquantile(observed, q_value))
-            column_std = float(np.nanstd(observed))
-            draw_components.append(
-                (
-                    column_quantile,
-                    column_std if column_std > 0 else diagnostics.std,
-                    missing_count,
-                )
-            )
-    elif show_imputation_draw:
-        draw_components.append(
-            (
-                diagnostics.quantile,
-                diagnostics.std * adjust_std,
-                max(1, diagnostics.missing_before),
-            )
-        )
+    draw_components = diagnostics.draw_components if show_imputation_draw else []
 
     positive_draw_components = [component for component in draw_components if component[1] > 0]
     x_min = float(np.nanmin(values))
@@ -1149,7 +1128,8 @@ def imputation_overall_fit_plot(
 
     ax.legend()
 
-    ax.set_title("Overall data distribution and norm fit")
+    method_label = "Numerical" if str(method).strip().lower() == "numerical" else "Quantile"
+    ax.set_title(f"Overall data distribution and norm fit ({method_label})")
     ax.set_xlabel("log2 Intensity")
     ax.set_ylabel("Density")
     _apply_advanced_axes(ax, advanced)
@@ -1163,6 +1143,9 @@ def imputation_after_plot(
     seed: int,
     sample_wise: bool,
     normalization: str = "separate",
+    method="quantile",
+    down_shift=1.8,
+    width=0.3,
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
@@ -1175,6 +1158,9 @@ def imputation_after_plot(
         adj_std=adjust_std,
         seed=seed,
         sample_wise=sample_wise,
+        method=method,
+        down_shift=down_shift,
+        width=width,
     )
 
     non_imputed = diagnostics.after_non_imputed
@@ -1195,7 +1181,8 @@ def imputation_after_plot(
         label=["Non-Imputed Values", "Imputed Values"],
     )
     ax.legend()
-    ax.set_title("Distribution of data after imputation")
+    method_label = "Numerical" if str(method).strip().lower() == "numerical" else "Quantile"
+    ax.set_title(f"Distribution of data after {method_label.lower()} imputation")
     ax.set_xlabel("log2 Intensity")
     ax.set_ylabel("Density")
     _apply_advanced_axes(ax, advanced)
@@ -1930,6 +1917,7 @@ def _pca_feature_matrix(numeric: pd.DataFrame, *, n_components: int) -> pd.DataF
 
 def _pca_projection(
     kind: AnnotationKind,
+    data_source: str = "data",
     plot_dim: str = "2D",
     method: str = "PCA",
     umap_n_neighbors: int = 15,
@@ -1938,7 +1926,7 @@ def _pca_projection(
     tsne_learning_rate: float = 200.0,
     random_state: int = 42,
 ) -> tuple[pd.DataFrame, np.ndarray | None, str]:
-    frame = _log2_qc_frame(kind)
+    _, frame, _, _ = analysis_data_source(kind, data_source=data_source)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
         raise ValueError("At least two sample columns are required for dimensionality reduction.")
@@ -2067,6 +2055,7 @@ def _cluster_display_label(label: int) -> str:
 
 def qc_pca_plot(
     kind: AnnotationKind,
+    data_source: str = "data",
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
@@ -2093,6 +2082,7 @@ def qc_pca_plot(
     plt = _get_plt()
     pca_scores, explained, axis_prefix = _pca_projection(
         kind,
+        data_source=data_source,
         plot_dim=plot_dim,
         method=method,
         umap_n_neighbors=umap_n_neighbors,
@@ -2214,6 +2204,7 @@ def qc_pca_plot(
 
 def qc_pca_interactive_html(
     kind: AnnotationKind,
+    data_source: str = "data",
     header: bool = True,
     legend: bool = True,
     plot_dim: str = "2D",
@@ -2237,6 +2228,7 @@ def qc_pca_interactive_html(
     px, go = _get_plotly()
     pca_scores, explained, axis_prefix = _pca_projection(
         kind,
+        data_source=data_source,
         plot_dim=plot_dim,
         method=method,
         umap_n_neighbors=umap_n_neighbors,

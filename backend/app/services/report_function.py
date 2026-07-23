@@ -383,12 +383,12 @@ def _format_imputation_value(value: Any, *, digits: int = 4) -> str:
     return str(value)
 
 
-def _volcano_imputation_tail_html(
+def _imputation_settings_html(
     *,
     kind: str,
-    entries: list[SummaryVolcanoEntry],
+    enabled=False,
 ) -> str:
-    if not any(_is_imputed_volcano_entry(entry) for entry in entries):
+    if not enabled:
         return ""
 
     if kind not in {"protein", "phospho", "phosprot"}:
@@ -396,6 +396,9 @@ def _volcano_imputation_tail_html(
 
     q_value = "n/a"
     adjust_std = "n/a"
+    down_shift = "n/a"
+    width = "n/a"
+    imputation_mode = "none"
     annotation = get_annotation(kind)
     imputation = getattr(annotation, "imputation", None) if annotation is not None else None
     if imputation is not None:
@@ -403,9 +406,21 @@ def _volcano_imputation_tail_html(
         if imputation_mode != "none":
             q_value = _format_imputation_value(getattr(imputation, "qValue", None))
             adjust_std = _format_imputation_value(getattr(imputation, "adjustStd", None))
+            down_shift = _format_imputation_value(getattr(imputation, "downShift", None))
+            width = _format_imputation_value(getattr(imputation, "width", None))
+    if imputation_mode == "none":
+        return ""
 
     template_paragraphs = GENERAL_COMMENTS.get("Imputation", [])
-    if template_paragraphs:
+    if imputation_mode == "numerical":
+        rendered = [
+            (
+                "For analyses based on imputed data, missing values were sampled from a shifted normal "
+                f"distribution with a downshift of {down_shift} standard deviations and width "
+                f"{width} times the observed standard deviation."
+            )
+        ]
+    elif template_paragraphs:
         rendered = [
             paragraph.replace("{qValue}", q_value).replace("{adjustStd}", adjust_std)
             for paragraph in template_paragraphs
@@ -414,7 +429,7 @@ def _volcano_imputation_tail_html(
     else:
         rendered = [
             (
-                "For imputed volcano comparisons, missing values were sampled from a shifted normal "
+                "For analyses based on imputed data, missing values were sampled from a shifted normal "
                 f"distribution with q = {q_value} and adjusted standard deviation = {adjust_std}."
             )
         ]
@@ -493,6 +508,40 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         warnings.append("Protein dataset found but annotation metadata is missing. Generate annotation first.")
     if get_current_dataset("phospho") is not None and not has_phospho:
         warnings.append("Phospho dataset found but annotation metadata is missing. Generate annotation first.")
+
+    filter_paragraphs = {}
+    for kind, annotation in (("protein", protein_annotation), ("phospho", phospho_annotation)):
+        if annotation is None:
+            continue
+        filter_config = getattr(annotation, "filter_config", None)
+        if filter_config is None:
+            continue
+        method = str(getattr(filter_config, "method", "at_least_n")).strip().lower()
+        mode = str(getattr(filter_config, "mode", "per_group")).strip().lower()
+        if mode == "overall":
+            scope = "across all annotated samples, independent of condition groups"
+        elif mode == "in_at_least_one_group":
+            scope = "in at least one condition group"
+        else:
+            scope = "in every condition group"
+        if method == "percentage":
+            threshold = float(getattr(filter_config, "minPercentage", 70.0))
+            threshold_text = f"{threshold:.4f}".rstrip("0").rstrip(".")
+            description = (
+                f"Rows with at least {threshold_text}% completeness {scope} were retained."
+            )
+        else:
+            threshold = int(getattr(filter_config, "minPresent", 0))
+            description = (
+                f"Rows with at least {threshold} valid values {scope} were retained."
+            )
+        description += (
+            f" Filtered data contains {len(annotation.filtered_data)} out of "
+            f"{len(annotation.source_data)} source rows."
+        )
+        filter_paragraphs[kind] = (
+            f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
+        )
 
     report_context = payload.reportContext or SummaryReportContext()
     protein_volcano_entries = _volcano_entries(report_context, "protein")
@@ -702,6 +751,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
 
     if protein_block is not None:
         html_parts.append(f"<h1>{protein_block} Protein Level</h1>")
+        if "protein" in filter_paragraphs:
+            html_parts.append(filter_paragraphs["protein"])
         protein_coverage = _module_settings(report_context, "protein", "coverage")
         protein_hist = _module_settings(report_context, "protein", "hist")
         protein_box = _module_settings(report_context, "protein", "box")
@@ -856,6 +907,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         protein_pca_height_cm = _to_float(protein_pca.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         protein_pca_interactive = _to_str(protein_pca.get("type"), "Normal").lower() == "interactive"
+        protein_pca_data_source = (
+            "imputed"
+            if _to_str(protein_pca.get("dataSource"), "data").strip().lower() == "imputed"
+            else "data"
+        )
+        protein_pca_source_html = (
+            _imputation_settings_html(
+                kind="protein",
+                enabled=protein_pca_data_source == "imputed",
+            )
+            + f"<p><strong>Data source:</strong> "
+            f"{'Imputed Data' if protein_pca_data_source == 'imputed' else 'Data'}</p>"
+        )
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{protein_block}.6",
@@ -865,9 +929,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="PCAProt",
             content_html=(
-                _safe_plotly(
-                    renderer=lambda: qc_pca_interactive_html(
+                (
+                    protein_pca_source_html
+                    + _safe_plotly(
+                        renderer=lambda: qc_pca_interactive_html(
                         kind="protein",
+                        data_source=protein_pca_data_source,
                         header=_to_bool(protein_pca.get("header"), True),
                         legend=_to_bool(protein_pca.get("legend"), True),
                         plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
@@ -893,15 +960,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=protein_pca_height_cm,
                         advanced=qc_pca_advanced,
-                    ),
-                    fallback_title="Protein PCA Interactive Plot",
-                    warnings=warnings,
-                    height_px=_interactive_height_px(protein_pca_height_cm),
+                        ),
+                        fallback_title="Protein PCA Interactive Plot",
+                        warnings=warnings,
+                        height_px=_interactive_height_px(protein_pca_height_cm),
+                    )
                 )
                 if protein_pca_interactive
-                else _safe_png(
-                    renderer=lambda: qc_pca_plot(
+                else (
+                    protein_pca_source_html
+                    + _safe_png(
+                        renderer=lambda: qc_pca_plot(
                         kind="protein",
+                        data_source=protein_pca_data_source,
                         header=_to_bool(protein_pca.get("header"), True),
                         legend=_to_bool(protein_pca.get("legend"), True),
                         plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
@@ -928,9 +999,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         height_cm=protein_pca_height_cm,
                         dpi=_to_int(protein_pca.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_pca_advanced,
-                    ),
-                    fallback_title="Protein PCA Plot",
-                    warnings=warnings,
+                        ),
+                        fallback_title="Protein PCA Plot",
+                        warnings=warnings,
+                    )
                 )
             ),
         )
@@ -992,9 +1064,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 text_entries=text_entries,
                 text_key="VolcanoProt",
                 content_html=(
-                    _volcano_imputation_tail_html(
+                    _imputation_settings_html(
                         kind="protein",
-                        entries=protein_volcano_entries,
+                        enabled=any(
+                            _is_imputed_volcano_entry(entry)
+                            for entry in protein_volcano_entries
+                        ),
                     )
                     + _volcano_block_html(
                         kind="protein",
@@ -1007,6 +1082,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
 
     if phospho_block is not None:
         html_parts.append(f"<h1>{phospho_block} Phosphosite Level</h1>")
+        if "phospho" in filter_paragraphs:
+            html_parts.append(filter_paragraphs["phospho"])
         phospho_coverage = _module_settings(report_context, "phospho", "coverage")
         phospho_hist = _module_settings(report_context, "phospho", "hist")
         phospho_box = _module_settings(report_context, "phospho", "box")
@@ -1177,6 +1254,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         phospho_pca_height_cm = _to_float(phospho_pca.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         phospho_pca_interactive = _to_str(phospho_pca.get("type"), "Normal").lower() == "interactive"
+        phospho_pca_data_source = (
+            "imputed"
+            if _to_str(phospho_pca.get("dataSource"), "data").strip().lower() == "imputed"
+            else "data"
+        )
+        phospho_pca_source_html = (
+            _imputation_settings_html(
+                kind="phospho",
+                enabled=phospho_pca_data_source == "imputed",
+            )
+            + f"<p><strong>Data source:</strong> "
+            f"{'Imputed Data' if phospho_pca_data_source == 'imputed' else 'Data'}</p>"
+        )
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{phospho_block}.8",
@@ -1186,9 +1276,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="PCAPhos",
             content_html=(
-                _safe_plotly(
-                    renderer=lambda: qc_pca_interactive_html(
+                (
+                    phospho_pca_source_html
+                    + _safe_plotly(
+                        renderer=lambda: qc_pca_interactive_html(
                         kind="phospho",
+                        data_source=phospho_pca_data_source,
                         header=_to_bool(phospho_pca.get("header"), True),
                         legend=_to_bool(phospho_pca.get("legend"), True),
                         plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
@@ -1214,15 +1307,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=phospho_pca_height_cm,
                         advanced=qc_pca_advanced,
-                    ),
-                    fallback_title="Phospho PCA Interactive Plot",
-                    warnings=warnings,
-                    height_px=_interactive_height_px(phospho_pca_height_cm),
+                        ),
+                        fallback_title="Phospho PCA Interactive Plot",
+                        warnings=warnings,
+                        height_px=_interactive_height_px(phospho_pca_height_cm),
+                    )
                 )
                 if phospho_pca_interactive
-                else _safe_png(
-                    renderer=lambda: qc_pca_plot(
+                else (
+                    phospho_pca_source_html
+                    + _safe_png(
+                        renderer=lambda: qc_pca_plot(
                         kind="phospho",
+                        data_source=phospho_pca_data_source,
                         header=_to_bool(phospho_pca.get("header"), True),
                         legend=_to_bool(phospho_pca.get("legend"), True),
                         plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
@@ -1249,9 +1346,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         height_cm=phospho_pca_height_cm,
                         dpi=_to_int(phospho_pca.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_pca_advanced,
-                    ),
-                    fallback_title="Phospho PCA Plot",
-                    warnings=warnings,
+                        ),
+                        fallback_title="Phospho PCA Plot",
+                        warnings=warnings,
+                    )
                 )
             ),
         )
@@ -1313,9 +1411,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 text_entries=text_entries,
                 text_key="VolcanoPhos",
                 content_html=(
-                    _volcano_imputation_tail_html(
+                    _imputation_settings_html(
                         kind="phospho",
-                        entries=phospho_volcano_entries,
+                        enabled=any(
+                            _is_imputed_volcano_entry(entry)
+                            for entry in phospho_volcano_entries
+                        ),
                     )
                     + _volcano_block_html(
                         kind="phospho",

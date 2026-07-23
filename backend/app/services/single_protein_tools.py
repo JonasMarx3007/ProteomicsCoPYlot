@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import re
 from typing import Literal
 
 import numpy as np
@@ -10,6 +9,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.plot_images import _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
@@ -56,11 +56,6 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 def _cm_to_inch(value_cm: float) -> float:
     return max(1.0, float(value_cm) / 2.54)
-
-
-def _extract_id_or_number(sample: str) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(sample))
-    return match.group(0) if match else str(sample)
 
 
 def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:

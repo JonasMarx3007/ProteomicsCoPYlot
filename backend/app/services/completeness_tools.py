@@ -11,6 +11,7 @@ from app.schemas.completeness import CompletenessTablesResponse
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
+from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.plot_images import _advanced_label, _apply_advanced_axes
 
 
@@ -56,11 +57,6 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
 
 def _cm_to_inch(value_cm: float) -> float:
     return max(1.0, float(value_cm) / 2.54)
-
-
-def _extract_id_or_number(sample: str) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(sample))
-    return match.group(0) if match else str(sample)
 
 
 def _feature_label(frame: pd.DataFrame) -> str:

@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import re
-
 import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import inverse_log2_transform_data
+from app.services.functions import extract_sample_id as _extract_id_or_number, inverse_log2_transform_data
 from app.services.runtime_cache import apply_cached_wrappers
-
-
-def _extract_id_or_number(sample: str) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(sample))
-    return match.group(0) if match else str(sample)
 
 
 def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:

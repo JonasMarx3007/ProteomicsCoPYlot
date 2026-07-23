@@ -21,6 +21,7 @@ from app.services.functions import (
     completeness_missing_value_plot_peptide,
     completeness_missing_value_plot_precursor,
     distribution_qqnorm_plot,
+    imputed_data_available,
     imputation_after_plot,
     imputation_before_plot,
     imputation_overall_fit_plot,
@@ -450,8 +451,11 @@ def _csv_values(raw: str) -> list[str]:
 @router.get("/imputation/{kind}/before-missing.png")
 async def imputation_before_route(
     kind: AnnotationKind,
+    method: str = "quantile",
     qValue: float = 0.01,
-    adjustStd: float = 1.0,
+    adjustStd: float = 0.3,
+    downShift: float = 1.8,
+    width: float = 0.3,
     seed: int = 1337,
     sampleWise: bool = False,
     advanced: str = "",
@@ -459,11 +463,14 @@ async def imputation_before_route(
     try:
         return _png_response(
             imputation_before_plot(
-                kind,
-                qValue,
-                adjustStd,
-                seed,
-                sampleWise,
+                kind=kind,
+                q_value=qValue,
+                adjust_std=adjustStd,
+                seed=seed,
+                sample_wise=sampleWise,
+                method=method,
+                down_shift=downShift,
+                width=width,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
@@ -476,8 +483,11 @@ async def imputation_before_route(
 @router.get("/imputation/{kind}/overall-fit.png")
 async def imputation_overall_route(
     kind: AnnotationKind,
+    method: str = "quantile",
     qValue: float = 0.01,
-    adjustStd: float = 1.0,
+    adjustStd: float = 0.3,
+    downShift: float = 1.8,
+    width: float = 0.3,
     seed: int = 1337,
     sampleWise: bool = False,
     showImputationDraw: bool = True,
@@ -486,12 +496,15 @@ async def imputation_overall_route(
     try:
         return _png_response(
             imputation_overall_fit_plot(
-                kind,
-                qValue,
-                adjustStd,
-                seed,
-                sampleWise,
-                showImputationDraw,
+                kind=kind,
+                q_value=qValue,
+                adjust_std=adjustStd,
+                seed=seed,
+                sample_wise=sampleWise,
+                show_imputation_draw=showImputationDraw,
+                method=method,
+                down_shift=downShift,
+                width=width,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
@@ -504,8 +517,11 @@ async def imputation_overall_route(
 @router.get("/imputation/{kind}/after-imputation.png")
 async def imputation_after_route(
     kind: AnnotationKind,
+    method: str = "quantile",
     qValue: float = 0.01,
-    adjustStd: float = 1.0,
+    adjustStd: float = 0.3,
+    downShift: float = 1.8,
+    width: float = 0.3,
     seed: int = 1337,
     sampleWise: bool = False,
     normalization: str = "separate",
@@ -514,12 +530,15 @@ async def imputation_after_route(
     try:
         return _png_response(
             imputation_after_plot(
-                kind,
-                qValue,
-                adjustStd,
-                seed,
-                sampleWise,
-                normalization,
+                kind=kind,
+                q_value=qValue,
+                adjust_std=adjustStd,
+                seed=seed,
+                sample_wise=sampleWise,
+                normalization=normalization,
+                method=method,
+                down_shift=downShift,
+                width=width,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
@@ -702,7 +721,13 @@ async def qc_coverage_table_route(
 async def qc_options_route(kind: AnnotationKind) -> dict[str, object]:
     annotation = get_annotation(kind)
     if annotation is None or annotation.metadata.empty:
-        return {"conditions": [], "samples": [], "sampleLabels": {}, "sampleLabelsWithId": {}}
+        return {
+            "conditions": [],
+            "samples": [],
+            "sampleLabels": {},
+            "sampleLabelsWithId": {},
+            "imputedAvailable": False,
+        }
     conditions = [
         str(value)
         for value in annotation.metadata["condition"].dropna().astype(str).drop_duplicates().tolist()
@@ -730,6 +755,7 @@ async def qc_options_route(kind: AnnotationKind) -> dict[str, object]:
         "samples": samples,
         "sampleLabels": sample_labels,
         "sampleLabelsWithId": sample_labels_with_id,
+        "imputedAvailable": imputed_data_available(kind),
     }
 
 
@@ -875,6 +901,7 @@ async def qc_cv_table_route(kind: AnnotationKind) -> dict[str, list[dict[str, ob
 @router.get("/qc/{kind}/pca.png")
 async def qc_pca_route(
     kind: AnnotationKind,
+    dataSource: str = "data",
     header: bool = True,
     legend: bool = True,
     plotDim: str = "2D",
@@ -901,6 +928,7 @@ async def qc_pca_route(
         return _png_response(
             qc_pca_plot(
                 kind=kind,
+                data_source=dataSource,
                 header=header,
                 legend=legend,
                 plot_dim=plotDim,
@@ -932,6 +960,7 @@ async def qc_pca_route(
 @router.get("/qc/{kind}/pca-interactive.html")
 async def qc_pca_interactive_route(
     kind: AnnotationKind,
+    dataSource: str = "data",
     header: bool = True,
     legend: bool = True,
     plotDim: str = "2D",
@@ -955,6 +984,7 @@ async def qc_pca_interactive_route(
     try:
         html = qc_pca_interactive_html(
             kind=kind,
+            data_source=dataSource,
             header=header,
             legend=legend,
             plot_dim=plotDim,

@@ -174,10 +174,10 @@ export default function SummaryPage({ activeTab }: Props) {
   }, [textEntries, selectedPlot, position, editorValue, showEntries, reportTitle, reportAuthor]);
 
   useEffect(() => {
-    refreshTables();
+    loadTables();
   }, []);
 
-  async function refreshTables() {
+  async function loadTables() {
     try {
       setTablesLoading(true);
       setTablesError(null);
@@ -229,7 +229,6 @@ export default function SummaryPage({ activeTab }: Props) {
     if (!reportResult) return null;
     return `data:text/html;charset=utf-8,${encodeURIComponent(reportResult.html)}`;
   }, [reportResult]);
-  const hasAvailableTables = Boolean(tables?.protein.available || tables?.phospho.available);
 
   async function handleDownloadMetadata(kind: SummaryMetadataTable["kind"]) {
     try {
@@ -270,41 +269,22 @@ export default function SummaryPage({ activeTab }: Props) {
             </div>
           ) : null}
 
-          <MetadataTableCard title="Normal Data Metadata" table={tables?.protein ?? null} />
-          <MetadataTableCard title="Phospho Data Metadata" table={tables?.phospho ?? null} />
-
-          {hasAvailableTables ? (
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={refreshTables}
-                disabled={tablesLoading || tableDownloadBusyKey !== null}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              >
-                {tablesLoading ? "Refreshing..." : "Refresh"}
-              </button>
-              {tables?.protein.available ? (
-                <button
-                  type="button"
-                  onClick={() => handleDownloadMetadata("protein")}
-                  disabled={tableDownloadBusyKey !== null}
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                >
-                  {tableDownloadBusyKey === "protein" ? "Downloading..." : "Download Normal Metadata"}
-                </button>
-              ) : null}
-              {tables?.phospho.available ? (
-                <button
-                  type="button"
-                  onClick={() => handleDownloadMetadata("phospho")}
-                  disabled={tableDownloadBusyKey !== null}
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                >
-                  {tableDownloadBusyKey === "phospho" ? "Downloading..." : "Download Phospho Metadata"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <MetadataTableCard
+            title="Protein Metadata"
+            table={tables?.protein ?? null}
+            downloadLabel="Download Protein Metadata"
+            downloading={tableDownloadBusyKey === "protein"}
+            downloadDisabled={tableDownloadBusyKey !== null}
+            onDownload={() => handleDownloadMetadata("protein")}
+          />
+          <MetadataTableCard
+            title="Phospho Metadata"
+            table={tables?.phospho ?? null}
+            downloadLabel="Download Phospho Metadata"
+            downloading={tableDownloadBusyKey === "phospho"}
+            downloadDisabled={tableDownloadBusyKey !== null}
+            onDownload={() => handleDownloadMetadata("phospho")}
+          />
         </div>
       ) : null}
 
@@ -515,11 +495,19 @@ function TabButton({
 function MetadataTableCard({
   title,
   table,
+  downloadLabel,
+  downloading,
+  downloadDisabled,
+  onDownload,
 }: {
   title: string;
   table: SummaryMetadataTable | null;
+  downloadLabel: string;
+  downloading: boolean;
+  downloadDisabled: boolean;
+  onDownload: () => void;
 }) {
-  const rows = table?.table ?? [];
+  const rows = useMemo(() => table?.table ?? [], [table?.table]);
   const columns = useMemo(() => collectColumns(rows), [rows]);
 
   return (
@@ -531,8 +519,18 @@ function MetadataTableCard({
         </div>
       ) : (
         <>
-          <div className="mt-3 text-sm text-slate-600">
-            Rows: {table.rows} | Columns: {table.columns}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-slate-600">
+              Rows: {table.rows} | Columns: {table.columns}
+            </div>
+            <button
+              type="button"
+              onClick={onDownload}
+              disabled={downloadDisabled}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+            >
+              {downloading ? "Downloading..." : downloadLabel}
+            </button>
           </div>
           <div className="mt-4">
             {rows.length === 0 || columns.length === 0 ? (

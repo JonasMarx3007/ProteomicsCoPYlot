@@ -190,6 +190,8 @@ def _store_phosprot_annotation(
         metadata,
         min_present=filter_config.minPresent,
         mode=filter_config.mode,
+        method=filter_config.method,
+        min_percentage=filter_config.minPercentage,
     )
 
     warnings: list[str] = [
@@ -225,7 +227,7 @@ def _impute_phospho_source(
         )
 
     q_value = 0.01
-    adjust_std = 1.0
+    adjust_std = 0.3
     seed = 1337
     sample_wise = False
     config_label = "default settings"
@@ -249,10 +251,20 @@ def _impute_phospho_source(
         if getattr(imputation, "sampleWise", None) is not None
         else sample_wise
     )
-    config_label = (
-        f"stored imputation settings (q={q_value}, adjustStd={adjust_std}, "
-        f"seed={seed}, sampleWise={sample_wise})"
+    method = str(getattr(imputation, "mode", "quantile")).strip().lower()
+    if method not in {"quantile", "numerical"}:
+        method = "quantile"
+    down_shift = (
+        float(imputation.downShift)
+        if getattr(imputation, "downShift", None) is not None
+        else 1.8
     )
+    width = (
+        float(imputation.width)
+        if getattr(imputation, "width", None) is not None
+        else 0.3
+    )
+    config_label = f"stored {method} imputation settings"
 
     diagnostics = impute_values_with_diagnostics(
         data=source,
@@ -261,6 +273,9 @@ def _impute_phospho_source(
         adj_std=adjust_std,
         seed=seed,
         sample_wise=sample_wise,
+        method=method,
+        down_shift=down_shift,
+        width=width,
     )
     return diagnostics.imputed_data, config_label
 
