@@ -98,7 +98,7 @@ def _table_preview_response(stored) -> DatasetPreviewResponse:
         columnNames=[str(c) for c in df.columns],
         preview=df.head(20).replace({float("nan"): None}).to_dict(orient="records"),
         suggestedIsLog2Transformed=getattr(
-            stored, "suggested_is_log2_transformed", True
+            stored, "suggested_is_log2_transformed", None
         ),
         sourcePath=getattr(stored, "source_path", None),
     )
@@ -209,9 +209,10 @@ def _ensure_profile_annotation_for_kind(
     reference_annotation = source_annotation or target_annotation
 
     is_log2_transformed = (
-        reference_annotation.is_log2_transformed
-        if reference_annotation is not None
-        else bool(getattr(current_dataset, "suggested_is_log2_transformed", True))
+        None
+        if reference_annotation is None
+        or getattr(reference_annotation, "log2_auto_detected", False)
+        else reference_annotation.is_log2_transformed
     )
     filter_config = (
         reference_annotation.filter_config
@@ -232,11 +233,12 @@ def _ensure_profile_annotation_for_kind(
         metadata=computed.metadata,
         log2_data=computed.log2_data,
         filtered_data=computed.filtered_data,
-        is_log2_transformed=is_log2_transformed,
+        is_log2_transformed=computed.is_log2_transformed,
         metadata_source="uploaded",
         filter_config=filter_config,
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
+        log2_auto_detected=computed.log2_auto_detected,
         metadata_profile_name=profile_name,
     )
 

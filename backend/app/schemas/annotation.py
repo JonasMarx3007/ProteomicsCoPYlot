@@ -30,8 +30,19 @@ class AnnotationFilterConfig(BaseModel):
 class AnnotationGenerateRequest(BaseModel):
     kind: AnnotationKind
     conditions: list[ConditionAssignment] = Field(default_factory=list)
-    isLog2Transformed: bool = True
+    isLog2Transformed: bool | None = None
     filter: AnnotationFilterConfig | None = None
+
+
+class Log2DetectionRequest(BaseModel):
+    kind: AnnotationKind
+    sampleColumns: list[str] = Field(default_factory=list)
+
+
+class Log2DetectionResponse(BaseModel):
+    isLog2Transformed: bool | None
+    sampleCount: int
+    reason: str
 
 
 class AnnotationImputationInfo(BaseModel):
@@ -60,6 +71,7 @@ class AnnotationResultResponse(BaseModel):
     filteredColumns: int
     filteredPreview: list[dict[str, Any]]
     isLog2Transformed: bool
+    log2AutoDetected: bool = False
     metadataSource: MetadataSource = "manual"
     filter: AnnotationFilterConfig | None = None
     autoDetected: bool

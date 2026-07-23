@@ -28,6 +28,7 @@ class StoredAnnotation:
     metadata_source: MetadataSource
     filter_config: AnnotationFilterConfig
     auto_detected: bool
+    log2_auto_detected: bool
     warnings: list[str]
     imputation: AnnotationImputationInfo | None
     created_at: str
@@ -97,6 +98,7 @@ def save_annotation(
     filter_config: AnnotationFilterConfig,
     auto_detected: bool,
     warnings: list[str],
+    log2_auto_detected: bool = False,
     imputation: AnnotationImputationInfo | None = None,
     *,
     package_name: str | None = None,
@@ -119,6 +121,7 @@ def save_annotation(
         metadata_source=metadata_source,
         filter_config=filter_config,
         auto_detected=auto_detected,
+        log2_auto_detected=log2_auto_detected,
         warnings=list(warnings),
         imputation=imputation,
         created_at=datetime.now(timezone.utc).isoformat(),

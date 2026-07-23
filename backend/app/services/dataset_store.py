@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 
 from app.services.runtime_cache import invalidate_runtime_cache
@@ -20,7 +19,7 @@ class StoredTableDataset:
     filename: str
     kind: TableDatasetKind
     frame: pd.DataFrame
-    suggested_is_log2_transformed: bool = True
+    suggested_is_log2_transformed: bool | None = None
     source_path: str | None = None
 
 
@@ -85,55 +84,6 @@ def _ensure_package(package_name: str) -> str:
 def _package_state(package_name: str | None = None) -> dict[str, StoredTableDataset | StoredPeptideDataset | None]:
     resolved = _ensure_package(_normalize_package_name(package_name))
     return _session_state().datasets_by_package[resolved]
-
-
-_NON_INTENSITY_NUMERIC_COLUMNS: dict[TableDatasetKind, set[str]] = {
-    "protein": set(),
-    "phospho": {
-        "PTM_localization",
-        "PTM_0_num",
-        "PTM_pep_pos",
-    },
-    "phosprot": {
-        "site_num",
-        "PTM_localization",
-        "PTM_0_num",
-        "PTM_pep_pos",
-    },
-}
-
-
-def _guess_log2_transformed(frame: pd.DataFrame, kind: TableDatasetKind) -> bool:
-    numeric = frame.select_dtypes(include=["number"]).replace([np.inf, -np.inf], np.nan)
-    if numeric.empty:
-        return True
-
-    excluded_columns = _NON_INTENSITY_NUMERIC_COLUMNS.get(kind, set())
-    candidate_columns = [
-        column for column in numeric.columns if str(column) not in excluded_columns
-    ]
-    if candidate_columns:
-        numeric = numeric[candidate_columns]
-    if numeric.empty:
-        return True
-
-    values = numeric.to_numpy(dtype=float, copy=False).ravel()
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return True
-
-    if finite.size > 200_000:
-        rng = np.random.default_rng(187)
-        finite = rng.choice(finite, 200_000, replace=False)
-
-    q50 = float(np.nanquantile(finite, 0.50))
-    q95 = float(np.nanquantile(finite, 0.95))
-    q99 = float(np.nanquantile(finite, 0.99))
-    vmax = float(np.nanmax(finite))
-
-    if q95 > 50 or q99 > 100 or vmax > 200:
-        return False
-    return q50 <= 35 and q95 <= 45 and q99 <= 60
 
 
 def get_active_package() -> str:
@@ -210,7 +160,6 @@ def save_table_dataset(
         filename=filename,
         kind=kind,
         frame=frame,
-        suggested_is_log2_transformed=_guess_log2_transformed(frame, kind),
         source_path=str(source_path).strip() or None if source_path is not None else None,
     )
     state[kind] = stored

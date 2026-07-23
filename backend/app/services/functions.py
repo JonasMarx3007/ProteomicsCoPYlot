@@ -762,11 +762,20 @@ def imputation_overall_fit_plot(
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    show_imputation_draw: bool = True,
     advanced: dict | None = None,
 ) -> bytes:
     from app.services.plot_images import imputation_overall_fit_plot as _impl
 
-    return _impl(kind, q_value, adjust_std, seed, sample_wise, advanced=advanced)
+    return _impl(
+        kind,
+        q_value,
+        adjust_std,
+        seed,
+        sample_wise,
+        show_imputation_draw,
+        advanced=advanced,
+    )
 
 
 def imputation_after_plot(
@@ -775,11 +784,20 @@ def imputation_after_plot(
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    normalization: str = "separate",
     advanced: dict | None = None,
 ) -> bytes:
     from app.services.plot_images import imputation_after_plot as _impl
 
-    return _impl(kind, q_value, adjust_std, seed, sample_wise, advanced=advanced)
+    return _impl(
+        kind,
+        q_value,
+        adjust_std,
+        seed,
+        sample_wise,
+        normalization,
+        advanced=advanced,
+    )
 
 
 # Distribution Pipeline

@@ -11,6 +11,7 @@ import {
 } from "../../lib/api";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
 import { subscribeDatasetStateChanged } from "../../lib/datasetEvents";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   CurrentDatasetsResponse,
   DatasetKind,
@@ -28,6 +29,8 @@ type UploadPageProps = {
 type LocalFile = File & {
   path?: string;
 };
+
+const DATASET_MANAGER_VISIBILITY_KEY = "data.datasetManager.visible.v1";
 
 function resolveSelectedLocalPath(file: File, inputValue: string): string | null {
   const localPath = (file as LocalFile).path?.trim();
@@ -51,6 +54,9 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
   const [packageBusy, setPackageBusy] = useState(false);
   const [newPackageName, setNewPackageName] = useState("");
   const [renamePackageName, setRenamePackageName] = useState("");
+  const [datasetManagerVisible, setDatasetManagerVisible] = useState(() =>
+    readPersistedUiState(DATASET_MANAGER_VISIBILITY_KEY, false)
+  );
 
   const refreshCurrentDatasets = useCallback(async () => {
     const data = await getCurrentDatasets();
@@ -219,6 +225,11 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
     }
   }
 
+  function updateDatasetManagerVisibility(visible: boolean) {
+    setDatasetManagerVisible(visible);
+    writePersistedUiState(DATASET_MANAGER_VISIBILITY_KEY, visible);
+  }
+
   return (
     <div className="space-y-6">
       {readOnly ? (
@@ -244,13 +255,32 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
         </section>
       ) : (
         <>
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">Dataset Manager</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Create, rename, and select dataset packages. Upload and annotation actions apply to the selected package.
-            </p>
+          {!datasetManagerVisible ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                aria-expanded="false"
+                onClick={() => updateDatasetManagerVisibility(true)}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Show Dataset Manager
+              </button>
+            </div>
+          ) : (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <h2 className="text-lg font-semibold text-slate-900">Dataset Manager</h2>
+                <button
+                  type="button"
+                  aria-expanded="true"
+                  onClick={() => updateDatasetManagerVisibility(false)}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  Hide Dataset Manager
+                </button>
+              </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-3">
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700">Selected dataset</label>
                 <select
@@ -308,8 +338,9 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
                   </button>
                 </div>
               </div>
-            </div>
-          </section>
+              </div>
+            </section>
+          )}
 
           <UploadForm
             kind={kind}

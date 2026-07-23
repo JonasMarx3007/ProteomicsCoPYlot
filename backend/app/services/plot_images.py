@@ -1035,12 +1035,23 @@ def imputation_before_plot(
     return _to_png_bytes(fig, plt)
 
 
+def _imputation_histogram_bin_edges(
+    observed: np.ndarray,
+    imputed: np.ndarray,
+) -> np.ndarray:
+    combined = np.concatenate([observed, imputed])
+    if combined.size <= 0:
+        raise ValueError("No values are available for the imputation histogram.")
+    return np.histogram_bin_edges(combined, bins=50)
+
+
 def imputation_overall_fit_plot(
     kind: AnnotationKind,
     q_value: float,
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    show_imputation_draw: bool = True,
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
@@ -1056,10 +1067,56 @@ def imputation_overall_fit_plot(
     )
 
     values = diagnostics.overall_observed
+    histogram_bin_edges = _imputation_histogram_bin_edges(values, diagnostics.after_imputed)
+    numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+    draw_components: list[tuple[float, float, int]] = []
+    if show_imputation_draw and sample_wise:
+        for column in sample_columns:
+            column_values = numeric[column]
+            missing_count = int(column_values.isna().sum())
+            if missing_count <= 0:
+                continue
+            observed = column_values.dropna().to_numpy(dtype=float)
+            if observed.size == 0:
+                draw_components.append(
+                    (diagnostics.quantile, diagnostics.std * adjust_std, missing_count)
+                )
+                continue
+            column_quantile = float(np.nanquantile(observed, q_value))
+            column_std = float(np.nanstd(observed))
+            draw_components.append(
+                (
+                    column_quantile,
+                    column_std if column_std > 0 else diagnostics.std,
+                    missing_count,
+                )
+            )
+    elif show_imputation_draw:
+        draw_components.append(
+            (
+                diagnostics.quantile,
+                diagnostics.std * adjust_std,
+                max(1, diagnostics.missing_before),
+            )
+        )
+
+    positive_draw_components = [component for component in draw_components if component[1] > 0]
+    x_min = float(np.nanmin(values))
+    x_max = float(np.nanmax(values))
+    if diagnostics.std > 0:
+        x_min = min(x_min, diagnostics.mean - 4 * diagnostics.std)
+        x_max = max(x_max, diagnostics.mean + 4 * diagnostics.std)
+    if positive_draw_components:
+        x_min = min(x_min, min(center - 4 * std for center, std, _ in positive_draw_components))
+        x_max = max(x_max, max(center + 4 * std for center, std, _ in positive_draw_components))
+    if x_max <= x_min:
+        x_min -= 1
+        x_max += 1
+
     fig, ax = plt.subplots()
     ax.hist(
         values[~np.isnan(values)],
-        bins=50,
+        bins=histogram_bin_edges,
         density=True,
         alpha=0.6,
         color="blue",
@@ -1068,11 +1125,29 @@ def imputation_overall_fit_plot(
 
     std_val = diagnostics.std
     mean_val = diagnostics.mean
+    x = np.linspace(x_min, x_max, 400)
     if std_val > 0:
-        x = np.linspace(np.nanmin(values), np.nanmax(values), 200)
         y = (1 / (std_val * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mean_val) / std_val) ** 2)
         ax.plot(x, y, color="red", label="Normal fit")
-        ax.legend()
+
+    if positive_draw_components:
+        total_weight = float(sum(weight for _, _, weight in positive_draw_components))
+        draw_density = np.zeros_like(x)
+        for center, draw_std, weight in positive_draw_components:
+            component_density = (
+                1 / (draw_std * np.sqrt(2 * np.pi))
+            ) * np.exp(-0.5 * ((x - center) / draw_std) ** 2)
+            draw_density += (weight / total_weight) * component_density
+        ax.plot(x, draw_density, color="cyan", linewidth=2.5, label="Draw area")
+    elif draw_components:
+        ax.axvline(
+            draw_components[0][0],
+            color="cyan",
+            linewidth=2.5,
+            label="Draw area",
+        )
+
+    ax.legend()
 
     ax.set_title("Overall data distribution and norm fit")
     ax.set_xlabel("log2 Intensity")
@@ -1087,6 +1162,7 @@ def imputation_after_plot(
     adjust_std: float,
     seed: int,
     sample_wise: bool,
+    normalization: str = "separate",
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
@@ -1101,11 +1177,19 @@ def imputation_after_plot(
         sample_wise=sample_wise,
     )
 
+    non_imputed = diagnostics.after_non_imputed
+    imputed = diagnostics.after_imputed
+    bin_edges, weights = _imputation_density_histogram_spec(
+        non_imputed,
+        imputed,
+        normalization,
+    )
+
     fig, ax = plt.subplots()
     ax.hist(
-        [diagnostics.after_non_imputed, diagnostics.after_imputed],
-        bins=50,
-        density=True,
+        [non_imputed, imputed],
+        bins=bin_edges,
+        weights=weights,
         alpha=0.6,
         histtype="stepfilled",
         label=["Non-Imputed Values", "Imputed Values"],
@@ -1116,6 +1200,47 @@ def imputation_after_plot(
     ax.set_ylabel("Density")
     _apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt)
+
+
+def _imputation_density_histogram_spec(
+    non_imputed: np.ndarray,
+    imputed: np.ndarray,
+    normalization: str,
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    normalization_mode = str(normalization or "separate").strip().lower()
+    if normalization_mode not in {"together", "separate"}:
+        raise ValueError("After-imputation normalization must be 'together' or 'separate'.")
+
+    combined = np.concatenate([non_imputed, imputed])
+    if combined.size <= 0:
+        raise ValueError("No values are available after imputation.")
+
+    bin_edges = _imputation_histogram_bin_edges(non_imputed, imputed)
+    bin_width = float(bin_edges[1] - bin_edges[0])
+    if bin_width <= 0:
+        raise ValueError("A positive histogram bin width is required.")
+
+    if normalization_mode == "separate":
+        weights = [
+            (
+                np.full(non_imputed.size, 1.0 / (non_imputed.size * bin_width))
+                if non_imputed.size
+                else np.array([], dtype=float)
+            ),
+            (
+                np.full(imputed.size, 1.0 / (imputed.size * bin_width))
+                if imputed.size
+                else np.array([], dtype=float)
+            ),
+        ]
+    else:
+        combined_density_weight = 1.0 / (combined.size * bin_width)
+        weights = [
+            np.full(non_imputed.size, combined_density_weight),
+            np.full(imputed.size, combined_density_weight),
+        ]
+
+    return bin_edges, weights
 
 
 def distribution_qqnorm_plot(kind: AnnotationKind, advanced: dict[str, Any] | None = None) -> bytes:

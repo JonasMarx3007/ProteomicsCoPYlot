@@ -92,7 +92,15 @@ router = APIRouter(prefix="/api/plots", tags=["plots"])
 
 
 def _png_response(content: bytes) -> Response:
-    return Response(content=content, media_type="image/png")
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 def _table_rows(df) -> dict[str, list[dict[str, object]]]:
@@ -472,6 +480,7 @@ async def imputation_overall_route(
     adjustStd: float = 1.0,
     seed: int = 1337,
     sampleWise: bool = False,
+    showImputationDraw: bool = True,
     advanced: str = "",
 ) -> Response:
     try:
@@ -482,6 +491,7 @@ async def imputation_overall_route(
                 adjustStd,
                 seed,
                 sampleWise,
+                showImputationDraw,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
@@ -498,6 +508,7 @@ async def imputation_after_route(
     adjustStd: float = 1.0,
     seed: int = 1337,
     sampleWise: bool = False,
+    normalization: str = "separate",
     advanced: str = "",
 ) -> Response:
     try:
@@ -508,6 +519,7 @@ async def imputation_after_route(
                 adjustStd,
                 seed,
                 sampleWise,
+                normalization,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )

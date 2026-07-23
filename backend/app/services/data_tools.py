@@ -117,6 +117,7 @@ def _persist_imputation_settings(
         filter_config=annotation.filter_config,
         auto_detected=annotation.auto_detected,
         warnings=annotation.warnings,
+        log2_auto_detected=getattr(annotation, "log2_auto_detected", False),
         imputation=imputation_info,
     )
 

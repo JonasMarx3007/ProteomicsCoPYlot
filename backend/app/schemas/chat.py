@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 ChatRole = Literal["system", "user", "assistant"]
 ChatProvider = Literal["ollama", "openai", "anthropic", "gemini"]
+ModelContextTier = Literal["compact", "standard", "extended"]
 
 
 class ChatMessage(BaseModel):
@@ -47,6 +48,20 @@ class OllamaModelsResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ModelCapabilityResponse(BaseModel):
+    provider: ChatProvider
+    model: str
+    level: Literal[1, 2, 3]
+    label: Literal["Low", "Medium", "High"]
+    contextTier: ModelContextTier
+    contextWindow: int | None = None
+    parameterCountB: float | None = None
+    supportsTools: bool | None = None
+    supportsVision: bool | None = None
+    source: Literal["metadata", "model_name", "configured", "fallback"] = "fallback"
+    reason: str
+
+
 class OllamaModelManageRequest(BaseModel):
     model: str = Field(default="", min_length=1)
     endpoint: str | None = Field(default=None, min_length=1)
@@ -66,6 +81,7 @@ class ModuleContextRequest(BaseModel):
     moduleKey: str = Field(default="", min_length=1)
     workflow: str | None = Field(default=None, min_length=1)
     mode: str | None = Field(default=None, min_length=1)
+    contextTier: ModelContextTier | None = None
 
 
 class ModuleContextResponse(BaseModel):
@@ -75,5 +91,6 @@ class ModuleContextResponse(BaseModel):
     manualPath: str | None = None
     contextPrompt: str
     contextSummary: str
+    contextTier: ModelContextTier = "compact"
     contextData: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
