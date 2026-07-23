@@ -50,7 +50,9 @@ class ViewerBootstrapResult:
 class ViewerImputationConfig:
     mode: str = "none"
     q_value: float = 0.01
-    adjust_std: float = 1.0
+    adjust_std: float = 0.3
+    down_shift: float = 1.8
+    width: float = 0.3
     seed: int = 1337
     sample_wise: bool = False
 
@@ -323,6 +325,8 @@ def _bootstrap_annotation(
                 is_log2_transformed=is_log2_transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
+                filter_method=filter_config.method,
+                min_percentage=filter_config.minPercentage,
             )
             metadata_source = metadata_source_with_metadata
         else:
@@ -332,16 +336,25 @@ def _bootstrap_annotation(
                 is_log2_transformed=is_log2_transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
+                filter_method=filter_config.method,
+                min_percentage=filter_config.minPercentage,
             )
             metadata_source = "auto" if computed.auto_detected else "manual"
 
         warnings = list(computed.warnings)
         if imputation_info.mode != "none":
+            if imputation_info.mode == "numerical":
+                imputation_settings = (
+                    f"downShift={imputation_info.downShift}, width={imputation_info.width}"
+                )
+            else:
+                imputation_settings = (
+                    f"qValue={imputation_info.qValue}, adjustStd={imputation_info.adjustStd}"
+                )
             warnings.append(
                 "Viewer imputation configured for selectable statistics only; "
                 "original data is retained for completeness, QC, and missing-value plots "
-                f"(mode={imputation_info.mode}, qValue={imputation_info.qValue}, "
-                f"adjustStd={imputation_info.adjustStd}, seed={imputation_info.seed}, "
+                f"(mode={imputation_info.mode}, {imputation_settings}, seed={imputation_info.seed}, "
                 f"sampleWise={imputation_info.sampleWise}, samples={imputation_info.sampleCount}, "
                 f"missing={imputation_info.missingBefore}->{imputation_info.missingAfter})."
             )
@@ -398,9 +411,19 @@ def _extract_named_dataset_packages(config: dict[str, Any]) -> dict[str, dict[st
 
 def _filter_config(config: dict[str, Any], suffix: str) -> AnnotationFilterConfig:
     min_present = _config_int(config, f"filter_min_{suffix}", 0)
+    min_percentage = _float_from_any(config.get(f"filter_percentage_{suffix}", 70.0), default=70.0)
+    min_percentage = min(100.0, max(0.0, min_percentage))
+    method = str(config.get(f"filter_method_{suffix}", "at_least_n")).strip().lower()
+    if method not in {"at_least_n", "percentage"}:
+        method = "at_least_n"
     mode_raw = _config_string(config, f"filter_mode_{suffix}")
     mode = _normalize_filter_mode(mode_raw)
-    return AnnotationFilterConfig(minPresent=min_present, mode=mode)
+    return AnnotationFilterConfig(
+        method=method,
+        minPresent=min_present,
+        minPercentage=min_percentage,
+        mode=mode,
+    )
 
 
 def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImputationConfig:
@@ -420,7 +443,7 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
     if not isinstance(entry, dict):
         return ViewerImputationConfig()
 
-    mode = _normalize_imputation_mode(str(entry.get("mode", "none")))
+    mode = _normalize_imputation_mode(str(entry.get("method", entry.get("mode", "none"))))
     q_value = _float_from_any(
         entry.get(
             "q_value",
@@ -439,8 +462,13 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
                 ),
             ),
         ),
-        default=1.0,
+        default=0.3,
     )
+    down_shift = _float_from_any(
+        entry.get("down_shift", entry.get("downShift", 1.8)),
+        default=1.8,
+    )
+    width = _float_from_any(entry.get("width", 0.3), default=0.3)
     seed = _int_from_any(entry.get("seed", 1337), default=1337)
     sample_wise = _bool_from_any(entry.get("sample_wise", entry.get("sampleWise", False)))
 
@@ -448,6 +476,8 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
         mode=mode,
         q_value=q_value,
         adjust_std=adjust_std,
+        down_shift=down_shift,
+        width=width,
         seed=seed,
         sample_wise=sample_wise,
     )
@@ -477,6 +507,8 @@ def _viewer_imputation_info(
             applied=False,
             qValue=config.q_value,
             adjustStd=config.adjust_std,
+            downShift=config.down_shift,
+            width=config.width,
             seed=config.seed,
             sampleWise=config.sample_wise,
             sampleCount=0,
@@ -489,12 +521,17 @@ def _viewer_imputation_info(
         adj_std=config.adjust_std,
         seed=config.seed,
         sample_wise=config.sample_wise,
+        method=config.mode,
+        down_shift=config.down_shift,
+        width=config.width,
     )
     return AnnotationImputationInfo(
         mode=config.mode,
         applied=False,
         qValue=config.q_value,
         adjustStd=config.adjust_std,
+        downShift=config.down_shift,
+        width=config.width,
         seed=config.seed,
         sampleWise=config.sample_wise,
         sampleCount=len(sample_columns),
@@ -569,6 +606,8 @@ def _normalize_filter_mode(raw: str) -> FilterMode:
     value = raw.strip().lower().replace("-", "_").replace(" ", "_")
     if value in {"in_at_least_one_group", "inatleastonegroup"}:
         return "in_at_least_one_group"
+    if value == "overall":
+        return "overall"
     return "per_group"
 
 
@@ -576,8 +615,10 @@ def _normalize_imputation_mode(raw: str) -> str:
     value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
     if value in {"", "none", "off", "disabled", "false", "0"}:
         return "none"
-    if value in {"normal", "gaussian", "left_shifted_normal"}:
-        return "normal"
+    if value in {"normal", "gaussian"}:
+        return "quantile"
+    if value in {"left_shifted_normal", "perseus", "numerical"}:
+        return "numerical"
     return value
 
 

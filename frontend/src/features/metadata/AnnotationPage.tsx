@@ -35,7 +35,9 @@ type ConditionDraft = {
 };
 
 const DEFAULT_FILTER: AnnotationFilterConfig = {
+  method: "at_least_n",
   minPresent: 0,
+  minPercentage: 70,
   mode: "per_group",
 };
 
@@ -155,7 +157,7 @@ export default function AnnotationPage() {
         setResult(stored);
         setIsLog2Transformed(stored.isLog2Transformed);
         if (stored.filter) {
-          setFilterConfig(stored.filter);
+          setFilterConfig({ ...DEFAULT_FILTER, ...stored.filter });
         }
       })
       .catch(() => {
@@ -717,29 +719,69 @@ export default function AnnotationPage() {
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Filter Settings</h3>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-700">
-              Keep rows with at least N values
+              Filter method
             </label>
-            <input
-              type="text"
-              lang="en-US"
-              inputMode="decimal"
-              value={String(filterConfig.minPresent)}
+            <select
+              value={filterConfig.method}
               onChange={(e) =>
                 setFilterConfig((prev) => ({
                   ...prev,
-                  minPresent: Number(e.target.value.replace(",", ".")) || 0,
+                  method: e.target.value as AnnotationFilterConfig["method"],
                 }))
               }
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
-            />
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+            >
+              <option value="at_least_n">At least N values</option>
+              <option value="percentage">Percentage</option>
+            </select>
           </div>
 
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-700">
-              Filter mode
+              {filterConfig.method === "percentage"
+                ? "Minimum completeness (%)"
+                : "Minimum valid values"}
+            </label>
+            {filterConfig.method === "percentage" ? (
+              <input
+                type="text"
+                lang="en-US"
+                inputMode="decimal"
+                value={String(filterConfig.minPercentage)}
+                onChange={(e) => {
+                  const value = Number(e.target.value.replace(",", "."));
+                  setFilterConfig((prev) => ({
+                    ...prev,
+                    minPercentage: Number.isFinite(value)
+                      ? Math.min(100, Math.max(0, value))
+                      : 0,
+                  }));
+                }}
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
+              />
+            ) : (
+              <input
+                type="text"
+                lang="en-US"
+                inputMode="numeric"
+                value={String(filterConfig.minPresent)}
+                onChange={(e) =>
+                  setFilterConfig((prev) => ({
+                    ...prev,
+                    minPresent: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                  }))
+                }
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
+              />
+            )}
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">
+              Scope
             </label>
             <select
               value={filterConfig.mode}
@@ -751,8 +793,9 @@ export default function AnnotationPage() {
               }
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
             >
-              <option value="per_group">Per group</option>
-              <option value="in_at_least_one_group">In at least one group</option>
+              <option value="per_group">Each group</option>
+              <option value="in_at_least_one_group">At least one group</option>
+              <option value="overall">Overall</option>
             </select>
           </div>
         </div>

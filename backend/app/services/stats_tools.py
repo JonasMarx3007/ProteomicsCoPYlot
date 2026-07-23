@@ -37,7 +37,11 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame
-from app.services.functions import impute_values_with_diagnostics
+from app.services.functions import (
+    analysis_data_source,
+    extract_sample_id as _extract_id_or_number,
+    imputed_data_available,
+)
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
@@ -151,90 +155,15 @@ def _stats_source(
     *,
     data_source: VolcanoDataSource = "imputed",
 ) -> tuple[StatsSource, pd.DataFrame, pd.DataFrame, list[str]]:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is None or annotation.metadata.empty:
-        raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
-
-    warnings: list[str] = []
-    if not annotation.filtered_data.empty:
-        source_used: StatsSource = "filtered"
-        base_frame = annotation.filtered_data.copy()
-    elif not annotation.log2_data.empty:
-        source_used = "log2"
-        base_frame = annotation.log2_data.copy()
-    else:
-        source_used = "raw"
-        base_frame = raw
-        warnings.append("Using raw data because filtered/log2 annotated data is unavailable.")
-
-    use_imputed = str(data_source).strip().lower() == "imputed"
-    imputation = getattr(annotation, "imputation", None)
-    imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
-    if use_imputed and imputation is not None and imputation_mode != "none":
-        sample_columns = [
-            sample
-            for sample in annotation.metadata["sample"].astype(str).tolist()
-            if sample in base_frame.columns
-        ]
-        if sample_columns:
-            q_value = (
-                float(imputation.qValue)
-                if getattr(imputation, "qValue", None) is not None
-                else 0.01
-            )
-            adjust_std = (
-                float(imputation.adjustStd)
-                if getattr(imputation, "adjustStd", None) is not None
-                else 1.0
-            )
-            seed = (
-                int(imputation.seed)
-                if getattr(imputation, "seed", None) is not None
-                else 1337
-            )
-            sample_wise = (
-                bool(imputation.sampleWise)
-                if getattr(imputation, "sampleWise", None) is not None
-                else False
-            )
-            try:
-                diagnostics = impute_values_with_diagnostics(
-                    data=base_frame,
-                    sample_columns=sample_columns,
-                    q=q_value,
-                    adj_std=adjust_std,
-                    seed=seed,
-                    sample_wise=sample_wise,
-                )
-                return source_used, diagnostics.imputed_data, annotation.metadata.copy(), warnings
-            except Exception:
-                pass
-
-    return source_used, base_frame, annotation.metadata.copy(), warnings
+    source_used, frame, metadata, warnings = analysis_data_source(
+        kind,
+        data_source=data_source,
+    )
+    return source_used, frame, metadata, warnings
 
 
 def _imputed_available(kind: AnnotationKind) -> bool:
-    annotation = get_annotation(kind)
-    if annotation is None or annotation.metadata.empty:
-        return False
-    imputation = getattr(annotation, "imputation", None)
-    if imputation is None:
-        return False
-    if str(getattr(imputation, "mode", "none")).strip().lower() == "none":
-        return False
-    if not annotation.filtered_data.empty:
-        frame = annotation.filtered_data
-    elif not annotation.log2_data.empty:
-        frame = annotation.log2_data
-    else:
-        frame = _get_current_frame(kind)
-    sample_columns = [
-        sample
-        for sample in annotation.metadata["sample"].astype(str).tolist()
-        if sample in frame.columns
-    ]
-    return len(sample_columns) > 0
+    return imputed_data_available(kind)
 
 
 def _first_available_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -1472,7 +1401,10 @@ def pathway_heatmap_png(
     meta_filtered["sample_index"] = meta_filtered.groupby("condition").cumcount() + 1
     if include_id:
         meta_filtered["display"] = meta_filtered.apply(
-            lambda row: f"{row['condition']}_{int(row['sample_index'])}_{row['sample']}",
+            lambda row: (
+                f"{row['condition']}_{int(row['sample_index'])}\n"
+                f"({_extract_id_or_number(row['sample'])})"
+            ),
             axis=1,
         )
     else:

@@ -150,14 +150,29 @@ def _normalize_table_kind(value: Any) -> TableKind | None:
 def _coerce_filter_config(payload: Any) -> AnnotationFilterConfig:
     if not isinstance(payload, dict):
         return AnnotationFilterConfig()
+    method_raw = str(payload.get("method", "at_least_n")).strip()
     min_present_raw = payload.get("minPresent", 0)
+    min_percentage_raw = payload.get("minPercentage", 70.0)
     mode_raw = str(payload.get("mode", "per_group")).strip()
     min_present = int(min_present_raw) if isinstance(min_present_raw, (int, float)) else 0
+    min_percentage = (
+        float(min_percentage_raw)
+        if isinstance(min_percentage_raw, (int, float))
+        else 70.0
+    )
     if min_present < 0:
         min_present = 0
-    if mode_raw not in {"per_group", "in_at_least_one_group"}:
+    min_percentage = min(100.0, max(0.0, min_percentage))
+    if method_raw not in {"at_least_n", "percentage"}:
+        method_raw = "at_least_n"
+    if mode_raw not in {"per_group", "in_at_least_one_group", "overall"}:
         mode_raw = "per_group"
-    return AnnotationFilterConfig(minPresent=min_present, mode=mode_raw)  # type: ignore[arg-type]
+    return AnnotationFilterConfig(
+        method=method_raw,
+        minPresent=min_present,
+        minPercentage=min_percentage,
+        mode=mode_raw,
+    )  # type: ignore[arg-type]
 
 
 def _coerce_imputation(payload: Any) -> AnnotationImputationInfo | None:
@@ -350,7 +365,9 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                         ),
                         "metadataSource": str(getattr(stored_annotation, "metadata_source", "manual")),
                         "filter": {
+                            "method": str(stored_annotation.filter_config.method),
                             "minPresent": int(stored_annotation.filter_config.minPresent),
+                            "minPercentage": float(stored_annotation.filter_config.minPercentage),
                             "mode": str(stored_annotation.filter_config.mode),
                         },
                         "imputation": (
@@ -809,6 +826,8 @@ def apply_restore_state(
                         is_log2_transformed=is_log2_transformed,
                         min_present=filter_config.minPresent,
                         filter_mode=filter_config.mode,
+                        filter_method=filter_config.method,
+                        min_percentage=filter_config.minPercentage,
                     )
                     save_annotation(
                         kind=kind,

@@ -15,8 +15,11 @@ export default function ImputationPage() {
   const [kind, setKind] = useState<AnnotationKind>("protein");
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const availableKindsKey = useMemo(() => availableKinds.join("|"), [availableKinds]);
+  const [method, setMethod] = useState<"quantile" | "numerical">("quantile");
   const [qValue, setQValue] = useState(0.01);
-  const [adjustStd, setAdjustStd] = useState(1);
+  const [adjustStd, setAdjustStd] = useState(0.3);
+  const [downShift, setDownShift] = useState(1.8);
+  const [width, setWidth] = useState(0.3);
   const [seed, setSeed] = useState(1337);
   const [sampleWise, setSampleWise] = useState(false);
   const [showImputationDraw, setShowImputationDraw] = useState(true);
@@ -39,8 +42,11 @@ export default function ImputationPage() {
       setError(null);
       const response = await runImputation({
         kind,
+        method,
         qValue,
         adjustStd,
+        downShift,
+        width,
         seed,
         sampleWise,
       });
@@ -77,22 +83,33 @@ export default function ImputationPage() {
         const info = annotation.imputation;
         const mode = String(info?.mode ?? "").trim().toLowerCase();
         if (info && mode && mode !== "none") {
+          setMethod(mode === "numerical" ? "numerical" : "quantile");
           setQValue(typeof info.qValue === "number" && Number.isFinite(info.qValue) ? info.qValue : 0.01);
           setAdjustStd(
-            typeof info.adjustStd === "number" && Number.isFinite(info.adjustStd) ? info.adjustStd : 1
+            typeof info.adjustStd === "number" && Number.isFinite(info.adjustStd) ? info.adjustStd : 0.3
           );
+          setDownShift(
+            typeof info.downShift === "number" && Number.isFinite(info.downShift) ? info.downShift : 1.8
+          );
+          setWidth(typeof info.width === "number" && Number.isFinite(info.width) ? info.width : 0.3);
           setSeed(typeof info.seed === "number" && Number.isFinite(info.seed) ? Math.round(info.seed) : 1337);
           setSampleWise(Boolean(info.sampleWise));
         } else {
+          setMethod("quantile");
           setQValue(0.01);
-          setAdjustStd(1);
+          setAdjustStd(0.3);
+          setDownShift(1.8);
+          setWidth(0.3);
           setSeed(1337);
           setSampleWise(false);
         }
       } catch {
         if (cancelled) return;
+        setMethod("quantile");
         setQValue(0.01);
-        setAdjustStd(1);
+        setAdjustStd(0.3);
+        setDownShift(1.8);
+        setWidth(0.3);
         setSeed(1337);
         setSampleWise(false);
       } finally {
@@ -121,16 +138,19 @@ export default function ImputationPage() {
       return;
     }
     void fetchPreview();
-  }, [settingsReady, kind, qValue, adjustStd, seed, sampleWise, availableKindsKey]);
+  }, [settingsReady, kind, method, qValue, adjustStd, downShift, width, seed, sampleWise, availableKindsKey]);
 
   const plotParams = useMemo(
     () => ({
+      method,
       qValue,
       adjustStd,
+      downShift,
+      width,
       seed,
       sampleWise,
     }),
-    [qValue, adjustStd, seed, sampleWise]
+    [method, qValue, adjustStd, downShift, width, seed, sampleWise]
   );
 
   const beforePlotUrl = useMemo(
@@ -142,7 +162,7 @@ export default function ImputationPage() {
       buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, {
         ...plotParams,
         showImputationDraw,
-        _plotVersion: 5,
+        _plotVersion: 6,
       }),
     [kind, plotParams, showImputationDraw, advancedPlotSignal]
   );
@@ -151,7 +171,7 @@ export default function ImputationPage() {
       buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, {
         ...plotParams,
         normalization: afterNormalization,
-        _plotVersion: 5,
+        _plotVersion: 6,
       }),
     [kind, plotParams, afterNormalization, advancedPlotSignal]
   );
@@ -161,8 +181,11 @@ export default function ImputationPage() {
       setDownloadingCsv(true);
       const blob = await downloadImputationCsv({
         kind,
+        method,
         qValue,
         adjustStd,
+        downShift,
+        width,
         seed,
         sampleWise,
       });
@@ -193,12 +216,21 @@ export default function ImputationPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Impute Data</h2>
 
-        <div className="mt-4 max-w-xs">
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <SelectField
             label="Dataset level"
             value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
             options={kindOptions}
+          />
+          <SelectField
+            label="Method"
+            value={method}
+            onChange={(value) => setMethod(value === "numerical" ? "numerical" : "quantile")}
+            options={[
+              { value: "quantile", label: "Quantile" },
+              { value: "numerical", label: "Numerical" },
+            ]}
           />
         </div>
 
@@ -214,13 +246,32 @@ export default function ImputationPage() {
         </div>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <NumberField label="q-Value" value={qValue} onChange={setQValue} step={0.001} />
-          <NumberField
-            label="Adjust standard deviation"
-            value={adjustStd}
-            onChange={setAdjustStd}
-            step={0.1}
-          />
+          {method === "quantile" ? (
+            <>
+              <NumberField label="Quantile" value={qValue} onChange={setQValue} step={0.001} />
+              <NumberField
+                label="Adjust standard deviation"
+                value={adjustStd}
+                onChange={setAdjustStd}
+                step={0.1}
+              />
+            </>
+          ) : (
+            <>
+              <NumberField
+                label="Downshift"
+                value={downShift}
+                onChange={setDownShift}
+                step={0.1}
+              />
+              <NumberField
+                label="Adjust standard deviation"
+                value={width}
+                onChange={setWidth}
+                step={0.1}
+              />
+            </>
+          )}
           <NumberField
             label="Random seed"
             value={seed}
@@ -385,7 +436,7 @@ function PlotSection({
         </div>
       </div>
       <div className="mt-4">
-        <img src={imageUrl} alt={alt} className="w-full rounded-xl border border-slate-200" />
+        <img key={imageUrl} src={imageUrl} alt={alt} className="w-full rounded-xl border border-slate-200" />
       </div>
     </section>
   );

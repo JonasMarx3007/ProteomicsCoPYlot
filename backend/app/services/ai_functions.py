@@ -531,12 +531,13 @@ def _volcano_ranked_rows(
     return trimmed, total > int(trimmed.shape[0])
 
 
-def _parse_pca_mode(mode: str | None) -> tuple[str, str]:
+def _parse_pca_mode(mode: str | None) -> tuple[str, str, str]:
     method = "PCA"
     plot_dim = "2D"
+    data_source = "data"
     raw = str(mode or "").strip()
     if not raw:
-        return method, plot_dim
+        return method, plot_dim, data_source
     for part in raw.split("|"):
         token = str(part or "").strip()
         if "=" not in token:
@@ -552,10 +553,18 @@ def _parse_pca_mode(mode: str | None) -> tuple[str, str]:
             value_up = value_norm.upper()
             if value_up in {"2D", "3D"}:
                 plot_dim = value_up
-    return method, plot_dim
+        if key_norm in {"datasource", "data_source"}:
+            data_source = "imputed" if value_norm.lower() == "imputed" else "data"
+    return method, plot_dim, data_source
 
 
-def _pca_variance_lines(workflow: str, *, method: str = "PCA", plot_dim: str = "2D") -> list[str]:
+def _pca_variance_lines(
+    workflow: str,
+    *,
+    method: str = "PCA",
+    plot_dim: str = "2D",
+    data_source: str = "data",
+) -> list[str]:
     kind = _workflow_kind(workflow)
     lines: list[str] = []
     method_key = str(method or "PCA").strip().lower()
@@ -579,6 +588,7 @@ def _pca_variance_lines(workflow: str, *, method: str = "PCA", plot_dim: str = "
     try:
         pca_scores, explained, axis_prefix = _plot_images._pca_projection(
             kind,
+            data_source=data_source,
             plot_dim=target_dim,
             method="PCA",
         )
@@ -969,9 +979,14 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
         condition_count = int(metadata["condition"].nunique()) if "condition" in metadata.columns else 0
         imputation = annotation.imputation
         imputation_text = "none"
-        if imputation is not None and imputation.applied:
+        imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
+        if imputation is not None and imputation_mode != "none":
+            if imputation_mode == "numerical":
+                settings = f"downshift={imputation.downShift}:width={imputation.width}"
+            else:
+                settings = f"q={imputation.qValue}:adjust_std={imputation.adjustStd}"
             imputation_text = (
-                f"applied:{_safe_context_text(imputation.mode)}:"
+                f"configured:{_safe_context_text(imputation_mode)}:{settings}:"
                 f"missing_before={imputation.missingBefore}:missing_after={imputation.missingAfter}"
             )
         lines.append(
@@ -1256,14 +1271,16 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
 def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
-    method, plot_dim = _parse_pca_mode(mode)
+    method, plot_dim, data_source = _parse_pca_mode(mode)
     method_clean = _safe_context_text(method)
 
     lines: list[str] = []
     lines.append(
         f"pca_overview|workflow={workflow_key}|entity={entity_plural}|plot_types=static_and_interactive|dimensions=2D_or_3D"
     )
-    lines.append(f"pca_active_view|method={method_clean}|plot_dim={plot_dim}")
+    lines.append(
+        f"pca_active_view|method={method_clean}|plot_dim={plot_dim}|data_source={data_source}"
+    )
     lines.append(
         "pca_description|goal=reduce_dimensionality_and_visualize_relationships_between_samples_based_on_measured_entities"
     )
@@ -1301,7 +1318,14 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
         "pca_usage|supports=identify_outliers_assess_condition_separation_evaluate_overall_dataset_structure"
     )
     lines.append("pca_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping")
-    lines.extend(_pca_variance_lines(workflow_key, method=method, plot_dim=plot_dim))
+    lines.extend(
+        _pca_variance_lines(
+            workflow_key,
+            method=method,
+            plot_dim=plot_dim,
+            data_source=data_source,
+        )
+    )
 
     conditions = _conditions_for_workflow(workflow_key)
     lines.append(f"pca_conditions|count={len(conditions)}")

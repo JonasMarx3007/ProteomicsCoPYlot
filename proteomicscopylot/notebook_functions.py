@@ -22,6 +22,29 @@ from scipy.stats import t
 from scipy.stats import ttest_ind, ttest_rel
 from sklearn.decomposition import PCA
 
+_SAMPLE_DOTTED_SUFFIX = re.compile(
+    r"(?:(?:\.(?:PG|GG|EG|FG|PEP|PR|Precursor|Protein|Peptide))?\."
+    r"(?:(?:Avg|Average)?Log[._\s-]*2(?:Normal(?:i[sz]ed|isation|ization))?"
+    r"(?:Quantity|Intensity|Abundance)|Normal(?:i[sz]ed|isation|ization)"
+    r"(?:Quantity|Intensity|Abundance)?|Max[._\s-]*LFQ(?:Quantity|Intensity|Abundance)?|"
+    r"TotalQuantity|Quantity|Intensity|Abundance))$",
+    re.IGNORECASE,
+)
+_SAMPLE_TEXT_SUFFIX = re.compile(
+    r"[\s._-]+(?:(?:Max[\s._-]*LFQ[\s._-]+)?"
+    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Intensity|"
+    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Spectral[\s._-]+Count|"
+    r"PSMs?|Percent[\s._-]+PSMs?|LFQ[\s._-]+Intensity|iBAQ|"
+    r"MS\s*/\s*MS[\s._-]+Count|MS[12][\s._-]+(?:Intensity|Count)|"
+    r"Razor\s*\+\s*Unique[\s._-]+Peptides|Unique[\s._-]+Peptides|Peptides|"
+    r"Sequence[\s._-]+Coverage(?:[\s._-]*\[%\])?|"
+    r"Log[._\s-]*2[\s._-]*(?:Quantity|Intensity|Abundance|Ratio)|"
+    r"(?:Quantity|Abundance|Ratio))$",
+    re.IGNORECASE,
+)
+_SAMPLE_ACQUISITION_SUFFIX = re.compile(r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$", re.IGNORECASE)
+_SAMPLE_NUMBER = re.compile(r"\d+")
+
 try:
     from statsmodels.stats.multitest import multipletests
 except ModuleNotFoundError:
@@ -192,9 +215,21 @@ def read_data(file):
     return df
 
 
+def extract_sample_id(value):
+    original = str(value).strip()
+    sample = re.split(r"[\\/]", original)[-1]
+    previous = None
+    while sample != previous:
+        previous = sample
+        sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
+        sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
+    sample = _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
+    numbers = _SAMPLE_NUMBER.findall(sample)
+    return numbers[-1] if numbers else original
+
+
 def extract_id_or_number(x):
-    matches = re.findall(r'\d+', x)
-    return matches[-1] if matches else x
+    return extract_sample_id(x)
 
 
 def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
@@ -220,24 +255,34 @@ def inverse_log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     return combined_data
 
 
-def filter_data(data, meta, num, filterops="per group"):
+def filter_data(data, meta, num, filterops="per group", method="at_least_n", percentage=70):
     meta = meta.copy()
     meta['id'] = meta['sample'].apply(extract_id_or_number)
 
     annotated_columns = meta['sample'].tolist()
     data_filtered = data[annotated_columns].copy()
+    method = str(method).strip().lower()
+    filterops = str(filterops).strip().lower().replace("_", " ")
+    if method not in {"at_least_n", "percentage"}:
+        raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
 
-    conditions = meta['condition'].unique()
-
-    mask = pd.DataFrame(False, index=data_filtered.index, columns=conditions)
-    for cond in conditions:
-        cols = meta.loc[meta['condition'] == cond, 'sample']
-        mask[cond] = (data_filtered[cols].notna().sum(axis=1) >= num)
-
-    if filterops == "per group":
-        rows_to_keep = mask.all(axis=1)
+    if filterops == "overall":
+        valid = data_filtered.notna().sum(axis=1)
+        if method == "percentage":
+            rows_to_keep = valid / len(annotated_columns) >= percentage / 100
+        else:
+            rows_to_keep = valid >= num
     else:
-        rows_to_keep = mask.any(axis=1)
+        conditions = meta['condition'].unique()
+        mask = pd.DataFrame(False, index=data_filtered.index, columns=conditions)
+        for cond in conditions:
+            cols = meta.loc[meta['condition'] == cond, 'sample']
+            valid = data_filtered[cols].notna().sum(axis=1)
+            if method == "percentage":
+                mask[cond] = valid / len(cols) >= percentage / 100
+            else:
+                mask[cond] = valid >= num
+        rows_to_keep = mask.all(axis=1) if filterops == "per group" else mask.any(axis=1)
 
     return data.loc[rows_to_keep]
 
@@ -361,7 +406,12 @@ def qqnorm_plot(data, meta):
     ax.set_ylabel("Sample Quantiles")
     return fig
 
-def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=1, ret=0, sample_wise=False, seed=69):
+def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, ret=0, sample_wise=False, seed=69, method="quantile", down_shift=1.8, width=0.3):
+    method = str(method).strip().lower()
+    if method == "normal":
+        method = "quantile"
+    if method not in {"quantile", "numerical"}:
+        raise ValueError("Imputation method must be 'quantile' or 'numerical'.")
     np.random.seed(seed)
     data = data.replace(0, np.nan).copy()
     annotated_columns = meta["sample"].tolist()
@@ -406,15 +456,26 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=1, ret
             col_vals = data_filtered[col]
             col_sd = np.nanstd(col_vals)
             num_na = col_vals.isna().sum()
-            col_quantile_val = np.nanquantile(col_vals, q)
             if num_na > 0:
-                data_filtered.loc[col_vals.isna(), col] = np.random.normal(col_quantile_val, col_sd, num_na)
+                if method == "numerical":
+                    center = np.nanmean(col_vals) - down_shift * col_sd
+                    draw_sd = col_sd * width
+                else:
+                    center = np.nanquantile(col_vals, q)
+                    draw_sd = col_sd
+                data_filtered.loc[col_vals.isna(), col] = np.random.normal(center, draw_sd, num_na)
     else:
+        if method == "numerical":
+            center = mean_val - down_shift * sd_val
+            draw_sd = sd_val * width
+        else:
+            center = quantile_val
+            draw_sd = sd_val * adj_std
         for col in annotated_columns:
             col_vals = data_filtered[col]
             num_na = col_vals.isna().sum()
             if num_na > 0:
-                data_filtered.loc[col_vals.isna(), col] = np.random.normal(quantile_val, sd_val*adj_std, num_na)
+                data_filtered.loc[col_vals.isna(), col] = np.random.normal(center, draw_sd, num_na)
 
     imputed_data = data_filtered[missing_value_mask]
     non_imputed_data = data_filtered[~missing_value_mask]

@@ -96,10 +96,12 @@ def _persist_imputation_settings(
     if annotation is None:
         return
     imputation_info = AnnotationImputationInfo(
-        mode="normal",
+        mode=payload.method,
         applied=False,
         qValue=payload.qValue,
         adjustStd=payload.adjustStd,
+        downShift=payload.downShift,
+        width=payload.width,
         seed=payload.seed,
         sampleWise=payload.sampleWise,
         sampleCount=len(sample_columns),
@@ -135,6 +137,9 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         adj_std=payload.adjustStd,
         seed=payload.seed,
         sample_wise=payload.sampleWise,
+        method=payload.method,
+        down_shift=payload.downShift,
+        width=payload.width,
     )
 
     before_hist = comparative_histogram(
@@ -158,6 +163,7 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
 
     return ImputationResultResponse(
         kind=payload.kind,
+        method=payload.method,
         sourceUsed=source_used,
         rows=len(diagnostics.imputed_data),
         columns=len(diagnostics.imputed_data.columns),
@@ -169,6 +175,8 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         quantile=diagnostics.quantile,
         qValue=payload.qValue,
         adjustStd=payload.adjustStd,
+        downShift=payload.downShift,
+        width=payload.width,
         seed=payload.seed,
         sampleWise=payload.sampleWise,
         beforeMissingHistogram=[
@@ -211,6 +219,9 @@ def imputed_dataframe(payload: ImputationRunRequest) -> pd.DataFrame:
         adj_std=payload.adjustStd,
         seed=payload.seed,
         sample_wise=payload.sampleWise,
+        method=payload.method,
+        down_shift=payload.downShift,
+        width=payload.width,
     )
     return diagnostics.imputed_data
 

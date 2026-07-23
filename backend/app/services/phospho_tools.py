@@ -10,7 +10,7 @@ from scipy.stats import t
 
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import impute_values_with_diagnostics
+from app.services.functions import extract_sample_id as _extract_id_or_number, impute_values_with_diagnostics
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
@@ -100,11 +100,6 @@ def _plotly_html(fig) -> str:
     )
 
 
-def _extract_id_or_number(sample: str) -> str:
-    match = re.search(r"\d+|[A-Za-z]+", str(sample))
-    return match.group(0) if match else str(sample)
-
-
 def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     raw = _get_current_frame("phospho")
     annotation = get_annotation("phospho")
@@ -172,7 +167,7 @@ def _ksea_context(
         adjust_std = (
             float(annotation.imputation.adjustStd)
             if getattr(annotation.imputation, "adjustStd", None) is not None
-            else 1.0
+            else 0.3
         )
         seed = (
             int(annotation.imputation.seed)
@@ -184,6 +179,19 @@ def _ksea_context(
             if getattr(annotation.imputation, "sampleWise", None) is not None
             else False
         )
+        method = str(getattr(annotation.imputation, "mode", "quantile")).strip().lower()
+        if method not in {"quantile", "numerical"}:
+            method = "quantile"
+        down_shift = (
+            float(annotation.imputation.downShift)
+            if getattr(annotation.imputation, "downShift", None) is not None
+            else 1.8
+        )
+        width = (
+            float(annotation.imputation.width)
+            if getattr(annotation.imputation, "width", None) is not None
+            else 0.3
+        )
         try:
             diagnostics = impute_values_with_diagnostics(
                 data=frame,
@@ -192,6 +200,9 @@ def _ksea_context(
                 adj_std=adjust_std,
                 seed=seed,
                 sample_wise=sample_wise,
+                method=method,
+                down_shift=down_shift,
+                width=width,
             )
             frame = diagnostics.imputed_data
         except Exception:

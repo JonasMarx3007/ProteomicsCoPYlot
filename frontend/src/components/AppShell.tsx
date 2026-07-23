@@ -979,7 +979,7 @@ export default function AppShell({
             </div>
           </aside>
 
-          {!chatOpen ? (
+          {rightPanel === "none" ? (
             <button
               type="button"
               onClick={() => onRightPanelChange?.("chat")}

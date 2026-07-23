@@ -219,6 +219,7 @@ export default function QCPipelinePage({
   const [sampleOptions, setSampleOptions] = useState<string[]>([]);
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
   const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
+  const [imputedAvailable, setImputedAvailable] = useState(false);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -271,6 +272,7 @@ export default function QCPipelinePage({
     dpi: Number(persistedCv.dpi ?? 300),
   });
   const [pca, setPca] = useState({
+    dataSource: String(persistedPca.dataSource ?? "data") === "imputed" ? "imputed" : "data",
     type: String(persistedPca.type ?? "Normal"),
     header: Boolean(persistedPca.header ?? true),
     legend: Boolean(persistedPca.legend ?? true),
@@ -410,9 +412,10 @@ export default function QCPipelinePage({
       `method=${method || "PCA"}`,
       `plotDim=${plotDim || "2D"}`,
       `type=${type || "Normal"}`,
+      `dataSource=${pca.dataSource}`,
     ];
     onPcaContextModeChange(parts.join("|"));
-  }, [activeTab, pca.method, pca.plotDim, pca.type, onPcaContextModeChange]);
+  }, [activeTab, pca.dataSource, pca.method, pca.plotDim, pca.type, onPcaContextModeChange]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
@@ -420,6 +423,7 @@ export default function QCPipelinePage({
       setSampleOptions([]);
       setSampleDisplayLabels({});
       setSampleDisplayLabelsWithId({});
+      setImputedAvailable(false);
       return;
     }
     let cancelled = false;
@@ -432,6 +436,12 @@ export default function QCPipelinePage({
         setSampleOptions(samples);
         setSampleDisplayLabels(payload.sampleLabels ?? {});
         setSampleDisplayLabelsWithId(payload.sampleLabelsWithId ?? {});
+        setImputedAvailable(payload.imputedAvailable);
+        if (!payload.imputedAvailable) {
+          setPca((current) =>
+            current.dataSource === "data" ? current : { ...current, dataSource: "data" }
+          );
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -439,6 +449,7 @@ export default function QCPipelinePage({
         setSampleOptions([]);
         setSampleDisplayLabels({});
         setSampleDisplayLabelsWithId({});
+        setImputedAvailable(false);
       });
     return () => {
       cancelled = true;
@@ -1103,6 +1114,15 @@ export default function QCPipelinePage({
               : []),
           ]}
           inputs={[
+            <SelectField
+              key="data-source"
+              label="Data Source"
+              value={pca.dataSource === "imputed" ? "Imputed Data" : "Data"}
+              onChange={(value) =>
+                setPca({ ...pca, dataSource: value === "Imputed Data" ? "imputed" : "data" })
+              }
+              options={imputedAvailable ? ["Data", "Imputed Data"] : ["Data"]}
+            />,
             <SelectField
               key="method"
               label="Method"

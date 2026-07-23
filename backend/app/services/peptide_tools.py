@@ -13,6 +13,7 @@ from app.schemas.peptide import PeptideSpecies
 from app.services.annotation_store import get_annotation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import get_current_dataset
+from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 
 
@@ -145,12 +146,6 @@ def get_peptide_frame() -> pd.DataFrame:
     path = _peptide_dataset_path()
     stat = path.stat()
     return _load_peptide_frame_cached(str(path), stat.st_mtime_ns).copy()
-
-
-def _extract_id_or_number(value: object) -> str:
-    text = str(value)
-    matches = re.findall(r"\d+", text)
-    return matches[-1] if matches else text
 
 
 def _require_column(frame: pd.DataFrame, column: str) -> str:

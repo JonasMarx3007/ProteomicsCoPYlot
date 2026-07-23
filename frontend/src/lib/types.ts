@@ -1,7 +1,8 @@
 export type DatasetKind = "protein" | "phospho" | "phosprot" | "peptide";
 export type AnnotationKind = Extract<DatasetKind, "protein" | "phospho" | "phosprot">;
 export type MetadataAnnotationKind = Extract<AnnotationKind, "protein" | "phospho">;
-export type FilterMode = "per_group" | "in_at_least_one_group";
+export type FilterMethod = "at_least_n" | "percentage";
+export type FilterMode = "per_group" | "in_at_least_one_group" | "overall";
 
 export type RRuntimeStatusResponse = {
   available: boolean;
@@ -117,7 +118,9 @@ export type ConditionAssignment = {
 };
 
 export type AnnotationFilterConfig = {
+  method: FilterMethod;
   minPresent: number;
+  minPercentage: number;
   mode: FilterMode;
 };
 
@@ -144,6 +147,8 @@ export type AnnotationImputationInfo = {
   applied: boolean;
   qValue: number | null;
   adjustStd: number | null;
+  downShift: number | null;
+  width: number | null;
   seed: number | null;
   sampleWise: boolean | null;
   sampleCount: number | null;
@@ -226,14 +231,18 @@ export type DataSource = "filtered" | "log2" | "raw";
 
 export type ImputationRunRequest = {
   kind: AnnotationKind;
+  method: "quantile" | "numerical";
   qValue: number;
   adjustStd: number;
+  downShift: number;
+  width: number;
   seed: number;
   sampleWise: boolean;
 };
 
 export type ImputationResultResponse = {
   kind: AnnotationKind;
+  method: "quantile" | "numerical";
   sourceUsed: DataSource;
   rows: number;
   columns: number;
@@ -245,6 +254,8 @@ export type ImputationResultResponse = {
   quantile: number | null;
   qValue: number;
   adjustStd: number;
+  downShift: number;
+  width: number;
   seed: number;
   sampleWise: boolean;
   beforeMissingHistogram: ComparativeHistogramBin[];
@@ -359,6 +370,7 @@ export type QcSummaryResponse = {
 
 export type QcPlotOptionsResponse = {
   conditions: string[];
+  imputedAvailable: boolean;
   samples?: string[];
   sampleLabels?: Record<string, string>;
   sampleLabelsWithId?: Record<string, string>;
