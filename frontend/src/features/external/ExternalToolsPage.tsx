@@ -199,8 +199,8 @@ function PeptideCollapseTool() {
               onChange={(event) => setCollapseVersion(event.target.value as "fixed" | "newest" | "legacy")}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
             >
-              <option value="fixed">Peptide collapse (Jonas)</option>
-              <option value="newest">Newest (Yue Yang)</option>
+              <option value="fixed">Default improved (Yue+Jonas)</option>
+              <option value="newest">Default (Yue)</option>
               <option value="legacy">Legacy (Denis Oleynik)</option>
             </select>
           </label>

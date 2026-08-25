@@ -175,3 +175,47 @@ def test_analysis_source_converts_zero_only_when_raw_is_selected() -> None:
         source, selected, _, _ = analysis_data_source("protein", "data")
     assert source == "filtered"
     assert selected.loc[0, "s1"] == 0.0
+
+
+NON_FINITE_SAMPLES = ["WT_1", "WT_2", "WT_3", "KO_1", "KO_2", "KO_3"]
+
+
+def _non_finite_frame() -> pd.DataFrame:
+    frame = pd.DataFrame(
+        [
+            [18.0, 18.1, -np.inf, 19.0, 19.1, 18.9],
+            [17.5, 17.6, 17.4, 18.2, 18.3, 18.1],
+        ],
+        columns=NON_FINITE_SAMPLES,
+    )
+    frame.insert(0, "ProteinNames", ["P_INF", "P_OK"])
+    return frame
+
+
+def test_an_already_log2_upload_treats_non_finite_values_as_missing() -> None:
+    out = use_existing_log2_data(_non_finite_frame(), NON_FINITE_SAMPLES)
+    values = out.loc[0, NON_FINITE_SAMPLES].to_numpy(dtype=float)
+    assert not np.isinf(values).any(), (
+        "an -inf survived ingest; filter_data counts with notna(), so it would pass "
+        "the completeness filter as a measurement and yield an infinite fold change"
+    )
+    assert np.isnan(values).sum() == 1
+
+
+def test_a_non_finite_value_does_not_survive_the_completeness_filter() -> None:
+    from app.services.functions import filter_data
+
+    metadata = pd.DataFrame(
+        {"sample": NON_FINITE_SAMPLES, "condition": ["WT"] * 3 + ["KO"] * 3}
+    )
+    ingested = use_existing_log2_data(_non_finite_frame(), NON_FINITE_SAMPLES)
+    kept = set(filter_data(ingested, metadata, 3, "per_group")["ProteinNames"])
+    assert "P_INF" not in kept
+    assert "P_OK" in kept
+
+
+def test_raw_ingest_coerces_infinities_alongside_zero() -> None:
+    out = raw_zero_to_nan(pd.DataFrame({"a": [np.inf, -np.inf, 0.0, 5.0]}), ["a"])
+    assert out["a"].isna().sum() == 3
+    assert out["a"].dropna().tolist() == [5.0]
+

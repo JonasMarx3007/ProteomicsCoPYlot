@@ -183,7 +183,7 @@ class _WorkloadGate:
                     )
                     self._grant(session_id, token)
                     acquired = True
-                except TimeoutError as exc:
+                except asyncio.TimeoutError as exc:
                     raise HeavyWorkloadBusyError(
                         "The server remained busy while this analysis was waiting. Try again shortly."
                     ) from exc

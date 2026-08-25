@@ -305,21 +305,39 @@ def _resolve_frontend_dist() -> Path | None:
 
     return None
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def cors_origins() -> list[str]:
+    """Cross-origin callers allowed to send credentials. Empty unless configured.
+
+    Neither shipped path needs this. The packaged app serves the built bundle from
+    the same origin as the API, and the dev launchers run Vite with a `/api` proxy
+    (`frontend/vite.config.ts`), so the browser only ever talks to port 5173 and
+    the request is same-origin there too.
+
+    The Vite dev origins used to be hardcoded here with `allow_credentials=True`,
+    and they shipped in the pip package and the desktop bundle. On a default
+    install that let any page served from `localhost:5173` -- the most common local
+    dev port -- make credentialed calls to the API and read the responses, which
+    chained with the server-local path endpoints into arbitrary file read.
+    """
+    raw = str(os.getenv("COPYLOT_CORS_ORIGINS", "")).strip()
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
-_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "testserver"}
+_CORS_ORIGINS = cors_origins()
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+# Loopback names only. "0.0.0.0" is a bind address, never a Host header a client
+# sends, and "testserver" is the FastAPI TestClient default -- the test suite adds
+# it through COPYLOT_ALLOWED_HOSTS rather than shipping it to users.
+_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 
 def allowed_hosts() -> set[str]:

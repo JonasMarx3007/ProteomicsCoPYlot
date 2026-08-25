@@ -127,7 +127,10 @@ def _png_response(content: bytes) -> Response:
 
 
 def _table_rows(df) -> dict[str, list[dict[str, object]]]:
-    safe_df = df.fillna("")
+    # Categorical columns reject replacement values that are not registered
+    # categories (including the empty string). Convert to ordinary Python
+    # objects before replacing missing values for JSON serialization.
+    safe_df = df.astype(object).where(df.notna(), "")
     return {"rows": safe_df.to_dict(orient="records")}
 
 
