@@ -49,6 +49,7 @@ bio = [
 dev = [
   "build",
   "httpx",
+  "ipython",
   "pytest",
   "twine",
   "wheel",
