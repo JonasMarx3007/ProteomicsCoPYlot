@@ -63,7 +63,7 @@ def test_session_isolation_is_on_unless_it_is_explicitly_turned_off(monkeypatch)
         "state and a second user reads and overwrites the first one's upload"
     )
     monkeypatch.setenv("COPYLOT_TOOL_ACCESS_ENABLED", "1")
-    assert _authentication_configuration_error() is None
+    assert _authentication_configuration_error(validate_credentials=False) is None
 
 
 def test_viewer_policy_blocks_mutation_but_allows_analysis() -> None:

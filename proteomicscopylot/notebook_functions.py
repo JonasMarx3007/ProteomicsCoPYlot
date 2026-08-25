@@ -1211,7 +1211,7 @@ def histo_int(data, meta, plot_colors=None, header=True, legend=True,
     if plot_colors is None:
         colors = plt.cm.tab10.colors
         if n_conditions > len(colors):
-            colors = plt.cm.get_cmap('tab20').colors
+            colors = plt.get_cmap('tab20').colors
     else:
         if len(plot_colors) < n_conditions:
             plot_colors = (plot_colors * (n_conditions // len(plot_colors) + 1))[:n_conditions]
@@ -1254,7 +1254,7 @@ def boxplot_int(data, meta, outliers=False, header=True, plot_colors=None,
     else:
         base_colors = plt.cm.tab10.colors
         if n_conditions > len(base_colors):
-            base_colors = plt.cm.get_cmap('tab20').colors
+            base_colors = plt.get_cmap('tab20').colors
         plot_colors = base_colors[:n_conditions]
 
     annotated_columns = meta['sample'].tolist()
@@ -1360,7 +1360,7 @@ def boxplot_int_single(
 
     unique_conditions = meta["condition"].unique()
     if plot_colors is None:
-        cmap = plt.cm.get_cmap("tab10", len(unique_conditions))
+        cmap = plt.get_cmap("tab10", len(unique_conditions))
         condition_colors = dict(zip(unique_conditions, [cmap(i) for i in range(len(unique_conditions))]))
     else:
         condition_colors = dict(zip(unique_conditions, plot_colors))
@@ -1459,7 +1459,7 @@ def cov_plot(data, meta, outliers=False, header=True, legend=True, plot_colors=N
     else:
         base_colors = plt.cm.tab10.colors
         if n_conditions > len(base_colors):
-            base_colors = plt.cm.get_cmap('tab20').colors
+            base_colors = plt.get_cmap('tab20').colors
         plot_colors = base_colors[:n_conditions]
 
     fig, ax = plt.subplots(figsize=(width_cm / 2.54, height_cm / 2.54), dpi=dpi)
@@ -1746,7 +1746,7 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
             reps = int(np.ceil(len(unique_conditions) / len(plot_colors)))
             plot_colors = (plot_colors * reps)[:len(unique_conditions)]
     else:
-        plot_colors = plt.cm.get_cmap('tab10').colors[:len(unique_conditions)]
+        plot_colors = plt.get_cmap('tab10').colors[:len(unique_conditions)]
 
     annotated_columns = meta['sample'].tolist()
 

@@ -809,7 +809,7 @@ def single_protein_lineplot_plot(
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     features = table["Feature"].drop_duplicates().tolist()
-    color_map = plt.cm.get_cmap("tab10", max(1, len(features)))
+    color_map = plt.get_cmap("tab10", max(1, len(features)))
 
     for idx, feature in enumerate(features):
         subset = table[table["Feature"] == feature].sort_values("x")
