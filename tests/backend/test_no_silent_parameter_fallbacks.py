@@ -5,17 +5,26 @@ import re
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
+from app.api.routes_plots import _table_rows
 from app.main import app
 from app.services.viewer_bootstrap import load_viewer_state
 
 API = ROOT / "backend" / "app" / "api"
 ROUTE_FILES = sorted(API.glob("routes_*.py"))
+
+
+def test_table_rows_serializes_missing_categorical_values() -> None:
+    frame = pd.DataFrame({"group": pd.Categorical(["A", None])})
+
+    assert _table_rows(frame) == {"rows": [{"group": "A"}, {"group": ""}]}
+
 
 ENUM_PROBES = [
     ("/api/plots/qc/protein/pca.png", "plotDim", "9D", "3D", {}),

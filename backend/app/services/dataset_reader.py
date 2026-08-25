@@ -88,14 +88,69 @@ def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_CHUNK_ROWS = 50_000
+
+
+def _rewind(fileobj: BinaryIO) -> None:
+    try:
+        fileobj.seek(0)
+    except Exception:  # noqa: BLE001 - an unseekable stream is simply read once
+        pass
+
+
+def _read_delimited_within_budget(fileobj: BinaryIO, *, sep: str) -> pd.DataFrame:
+    """Read a delimited table, refusing one that exceeds the cell budget.
+
+    Delimited text is not compressed, so the byte limit bounds it loosely -- but a
+    512 MB upload still expands to several GB as a frame. Reading in chunks caps
+    the cost of an oversized file at one chunk beyond the budget rather than the
+    whole thing, which is the same reasoning the parquet path applies to its
+    footer metadata.
+    """
+    chunks: list[pd.DataFrame] = []
+    rows = 0
+    columns = 0
+    for chunk in pd.read_csv(fileobj, sep=sep, chunksize=_CHUNK_ROWS):
+        columns = len(chunk.columns)
+        rows += len(chunk)
+        ensure_table_within_cell_budget(rows, columns, label="Upload")
+        chunks.append(chunk)
+    if not chunks:
+        _rewind(fileobj)
+        return pd.read_csv(fileobj, sep=sep)
+    return pd.concat(chunks, ignore_index=True) if len(chunks) > 1 else chunks[0]
+
+
+def _ensure_workbook_within_budget(fileobj: BinaryIO) -> None:
+    """Check an xlsx against the cell budget using its worksheet dimensions."""
+    try:
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(fileobj, read_only=True)
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 - let pandas report a malformed workbook
+        _rewind(fileobj)
+        return
+    try:
+        for sheet in workbook.worksheets:
+            ensure_table_within_cell_budget(
+                sheet.max_row or 0, sheet.max_column or 0, label="Upload"
+            )
+    finally:
+        workbook.close()
+        _rewind(fileobj)
+
+
 def read_dataframe(filename: str, fileobj: BinaryIO) -> pd.DataFrame:
     ext = get_extension(filename)
 
-    if ext == "csv":
-        df = pd.read_csv(fileobj)
-    elif ext in {"tsv", "txt"}:
-        df = pd.read_csv(fileobj, sep="\t")
+    if ext in {"csv", "tsv", "txt"}:
+        df = _read_delimited_within_budget(fileobj, sep="," if ext == "csv" else "\t")
     elif ext == "xlsx":
+        # xlsx is a compressed container too, so the shape is checked from the
+        # worksheet dimensions before openpyxl materialises the cells.
+        _ensure_workbook_within_budget(fileobj)
         df = pd.read_excel(fileobj)
     elif ext == "parquet":
         # Parquet carries its own shape, so the budget is checked before the frame

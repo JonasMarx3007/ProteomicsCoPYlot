@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -103,3 +104,60 @@ def test_a_compressed_parquet_bomb_is_refused_before_it_is_materialised(
         "the bomb was rejected only after being read into memory; the shape is in "
         "the parquet metadata, so it must be refused before allocating 448 MB"
     )
+
+
+def test_an_oversized_delimited_table_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COPYLOT_UPLOAD_MAX_CELLS", "200000")
+    rows, columns = 60_000, 10
+    frame = pd.DataFrame(np.zeros((rows, columns)))
+    buffer = io.BytesIO(frame.to_csv(index=False).encode())
+    with pytest.raises(ValueError, match="cell limit"):
+        read_dataframe("big.csv", buffer)
+
+
+def test_an_oversized_workbook_is_refused_from_its_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import openpyxl
+
+    monkeypatch.setenv("COPYLOT_UPLOAD_MAX_CELLS", "200000")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    for _ in range(30_000):
+        sheet.append([0] * 10)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    read_calls: list[str] = []
+    original = pd.read_excel
+
+    def spy(*args, **kwargs):
+        read_calls.append("read_excel")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_excel", spy)
+    with pytest.raises(ValueError, match="cell limit"):
+        read_dataframe("big.xlsx", buffer)
+    assert not read_calls, (
+        "the workbook was rejected only after pandas materialised it; the shape is "
+        "in the worksheet dimensions, so it must be refused before that"
+    )
+
+
+@pytest.mark.parametrize("name,sep", [("t.csv", ","), ("t.tsv", "	")])
+def test_an_ordinary_delimited_table_still_reads(name: str, sep: str) -> None:
+    frame = pd.DataFrame(np.arange(500).reshape(100, 5), columns=list("abcde"))
+    buffer = io.BytesIO(frame.to_csv(index=False, sep=sep).encode())
+    out = read_dataframe(name, buffer)
+    assert out.shape == (100, 5)
+
+
+def test_a_table_spanning_several_chunks_is_reassembled_intact() -> None:
+    rows = 120_000
+    frame = pd.DataFrame({"a": np.arange(rows), "b": np.arange(rows) * 2})
+    buffer = io.BytesIO(frame.to_csv(index=False).encode())
+    out = read_dataframe("many.csv", buffer)
+    assert len(out) == rows, "chunked reading must not drop or duplicate rows"
+    assert out["a"].iloc[-1] == rows - 1
+

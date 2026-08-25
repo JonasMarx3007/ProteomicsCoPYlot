@@ -13,8 +13,8 @@ _PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
-def _truthy_env(name: str) -> bool:
-    return str(os.getenv(name, "")).strip().lower() in _TRUTHY_VALUES
+def _truthy_env(name: str, default: str = "") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in _TRUTHY_VALUES
 
 
 def _host_is_loopback(host: str) -> bool:
@@ -41,7 +41,10 @@ def _validate_network_binding(host: str, *, allow_unsafe_public: bool) -> None:
     authentication_enabled = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED") or _truthy_env(
         "COPYLOT_VIEWER_PORTAL_ENABLED"
     )
-    session_isolation = _truthy_env("COPYLOT_SESSION_ISOLATION")
+    # Must match app.services.session_context.session_isolation_enabled, which
+    # defaults this on. Reading it as off here refused a non-loopback bind to an
+    # operator who was relying on the safe default.
+    session_isolation = _truthy_env("COPYLOT_SESSION_ISOLATION", "1")
     if authentication_enabled and session_isolation:
         return
     if allow_unsafe_public:

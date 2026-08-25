@@ -266,6 +266,9 @@ def test_protected_backend_rejects_shell_bypass_and_anonymous_session_flood(
             json={"password": "test-password"},
         )
         assert login.status_code == 200
+        # Authentication rotates the session id; a header-based client adopts the
+        # one the login response hands back.
+        session_id = login.json()["sessionId"]
 
         for index in range(4):
             client.cookies.clear()

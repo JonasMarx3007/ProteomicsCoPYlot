@@ -381,7 +381,11 @@ def raw_zero_to_nan(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFra
     out = data.copy()
     present = [column for column in sample_columns if column in out.columns]
     if present:
-        out[present] = out[present].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+        out[present] = (
+            out[present]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf, 0], np.nan)
+        )
     return out
 
 
@@ -393,7 +397,22 @@ def log2_transform_data(data: pd.DataFrame, sample_columns: list[str]) -> pd.Dat
 
 
 def use_existing_log2_data(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    selected = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce")
+    """Take an upload that is already on the log2 scale, as measurement columns.
+
+    Non-finite values are missing, not observed. An upload can carry -inf: log2 of
+    a zero, which is what the deprecated collapse variants write for a Spectronaut
+    non-detection. `filter_data` counts with `notna()`, so an -inf survives the
+    completeness filter as though it were a measurement and then yields an
+    infinite fold change. The notebook package has always coerced these; the web
+    app did not, so a file this application produced could corrupt an analysis
+    without the user ever leaving it.
+    """
+    selected = (
+        data[sample_columns]
+        .copy()
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+    )
     remaining = [col for col in data.columns if col not in sample_columns]
     return pd.concat([selected, data[remaining]], axis=1)
 

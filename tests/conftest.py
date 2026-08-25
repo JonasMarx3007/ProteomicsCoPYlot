@@ -7,6 +7,7 @@ from pathlib import Path
 os.environ["COPYLOT_TOOL_ACCESS_ENABLED"] = "0"
 os.environ["COPYLOT_VIEWER_PORTAL_ENABLED"] = "0"
 os.environ["COPYLOT_SESSION_ISOLATION"] = "0"
+os.environ["COPYLOT_ALLOWED_HOSTS"] = "testserver"
 
 import matplotlib
 
