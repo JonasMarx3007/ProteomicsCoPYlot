@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable } from "../../lib/api";
+import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable, isAbortError } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -14,6 +15,7 @@ import type {
   SingleProteinIdentifier,
   SingleProteinOptionsResponse,
   SingleProteinTab,
+  VisualizationDataSource,
 } from "../../lib/types";
 
 type Props = {
@@ -51,6 +53,11 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   });
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [options, setOptions] = useState<SingleProteinOptionsResponse | null>(null);
+  const [dataSource, setDataSource] = useState<VisualizationDataSource>(() => {
+    const value = String(persisted.dataSource ?? "log2").trim();
+    // "data" is the historical spelling for this control's default.
+    return value === "filtered" || value === "imputed" || value === "auto" ? value : "log2";
+  });
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
@@ -68,6 +75,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     conditions: Array.isArray(persistedBox.conditions) ? persistedBox.conditions.map((value) => String(value ?? "")) : ([] as string[]),
     outliers: Boolean(persistedBox.outliers ?? false),
     dots: Boolean(persistedBox.dots ?? false),
+    randomSeed: Number(persistedBox.randomSeed ?? 69),
     header: Boolean(persistedBox.header ?? true),
     legend: Boolean(persistedBox.legend ?? true),
     widthCm: Number(persistedBox.widthCm ?? 20),
@@ -104,12 +112,13 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   useEffect(() => {
     writePersistedUiState("single.protein.v1", {
       kind,
+      dataSource,
       downloadFormat,
       box,
       line,
       heatmap,
     });
-  }, [kind, downloadFormat, box, line, heatmap]);
+  }, [kind, dataSource, downloadFormat, box, line, heatmap]);
 
   const effectiveKind: AnnotationKind = activeTab === "heatmap" ? "phospho" : kind;
   const activeIdentifier: SingleProteinIdentifier =
@@ -137,28 +146,31 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    setOptions(null);
     setOptionsLoading(true);
     setOptionsError(null);
-    getSingleProteinOptions(effectiveKind, activeTab, activeIdentifier)
+    getSingleProteinOptions(effectiveKind, activeTab, activeIdentifier, dataSource, { signal: controller.signal })
       .then((data) => {
-        if (cancelled) return;
         setOptions(data);
+        if (data.dataSource !== dataSource) {
+          setDataSource(data.dataSource);
+        }
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setOptions(null);
         setOptionsError(err instanceof Error ? err.message : "Failed to load options");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setOptionsLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [activeTab, effectiveKind, hasRequiredDataset, activeIdentifier]);
+  }, [activeTab, effectiveKind, hasRequiredDataset, activeIdentifier, dataSource]);
 
   useEffect(() => {
     if (!options) return;
@@ -210,6 +222,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   }, [activeTab, options]);
 
   const plotView = useMemo<PlotView>(() => {
+    void advancedPlotSignal;
+    if (options?.dataSource !== dataSource) return null;
     if (activeTab === "boxplot") {
       if (!box.protein || box.conditions.length === 0) return null;
       return {
@@ -217,10 +231,12 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         filename: `single_protein_boxplot_${effectiveKind}.png`,
         url: buildPlotUrl(`/api/plots/single-protein/${effectiveKind}/boxplot.png`, {
           identifier: box.identifier,
+          dataSource,
           protein: box.protein,
           conditions: box.conditions.join(","),
           outliers: box.outliers,
           dots: box.dots,
+          randomSeed: box.randomSeed,
           header: box.header,
           legend: box.legend,
           widthCm: box.widthCm,
@@ -237,6 +253,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         filename: `single_protein_lineplot_${effectiveKind}.png`,
         url: buildPlotUrl(`/api/plots/single-protein/${effectiveKind}/lineplot.png`, {
           identifier: line.identifier,
+          dataSource,
           proteins: line.proteins.join(","),
           conditions: line.conditions.join(","),
           includeId: line.includeId,
@@ -255,6 +272,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       filename: "single_protein_heatmap_phospho.png",
       url: buildPlotUrl("/api/plots/single-protein/phospho/heatmap.png", {
         identifier: heatmap.identifier,
+        dataSource,
         protein: heatmap.protein,
         conditions: heatmap.conditions.join(","),
         includeId: heatmap.includeId,
@@ -269,7 +287,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         dpi: heatmap.dpi,
       }),
     };
-  }, [activeTab, box, line, heatmap, effectiveKind, advancedPlotSignal]);
+  }, [activeTab, box, line, heatmap, effectiveKind, dataSource, options?.dataSource, advancedPlotSignal]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView) return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -280,10 +298,12 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   }, [plotView, downloadFormat]);
 
   const tableRequest = useMemo<TableRequest | null>(() => {
+    if (options?.dataSource !== dataSource) return null;
     if (activeTab === "boxplot") {
       if (!box.protein || box.conditions.length === 0) return null;
       const params: Record<string, string | number | boolean> = {
         identifier: box.identifier,
+        dataSource,
         protein: box.protein,
         conditions: box.conditions.join(","),
       };
@@ -298,6 +318,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       if (line.proteins.length === 0 || line.conditions.length === 0) return null;
       const params: Record<string, string | number | boolean> = {
         identifier: line.identifier,
+        dataSource,
         proteins: line.proteins.join(","),
         conditions: line.conditions.join(","),
         includeId: line.includeId,
@@ -312,6 +333,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     if (!heatmap.protein || heatmap.conditions.length === 0) return null;
     const params: Record<string, string | number | boolean> = {
       identifier: heatmap.identifier,
+      dataSource,
       protein: heatmap.protein,
       conditions: heatmap.conditions.join(","),
       includeId: heatmap.includeId,
@@ -325,7 +347,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       tab: "heatmap" as const,
       params,
     };
-  }, [activeTab, box, line, heatmap, effectiveKind]);
+  }, [activeTab, box, line, heatmap, effectiveKind, dataSource, options?.dataSource]);
 
   useEffect(() => {
     if (!tableRequest) {
@@ -334,25 +356,24 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       setTableError(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
-    getSingleProteinTable(tableRequest.kind, tableRequest.tab, tableRequest.params)
+    getSingleProteinTable(tableRequest.kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setTableRows(payload.rows ?? []);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setTableRows([]);
         setTableError(err instanceof Error ? err.message : "Failed to load table");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setTableLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [tableRequest]);
 
@@ -367,18 +388,21 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       activeTab === "boxplot"
         ? [
             `kind=${effectiveKind}`,
+            `dataSource=${dataSource}`,
             `tab=boxplot`,
             `identifier=${box.identifier}`,
             `protein=${sanitize(box.protein)}`,
             `conditions=${box.conditions.map((value) => sanitize(value)).join(",")}`,
             `outliers=${box.outliers ? "true" : "false"}`,
             `dots=${box.dots ? "true" : "false"}`,
+            `randomSeed=${box.randomSeed}`,
             `header=${box.header ? "true" : "false"}`,
             `legend=${box.legend ? "true" : "false"}`,
           ]
         : activeTab === "lineplot"
         ? [
             `kind=${effectiveKind}`,
+            `dataSource=${dataSource}`,
             `tab=lineplot`,
             `identifier=${line.identifier}`,
             `proteins=${line.proteins.map((value) => sanitize(value)).join(",")}`,
@@ -389,6 +413,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           ]
         : [
             `kind=phospho`,
+            `dataSource=${dataSource}`,
             `tab=heatmap`,
             `identifier=${heatmap.identifier}`,
             `protein=${sanitize(heatmap.protein)}`,
@@ -405,11 +430,13 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     onContextModeChange,
     activeTab,
     effectiveKind,
+    dataSource,
     box.identifier,
     box.protein,
     box.conditions,
     box.outliers,
     box.dots,
+    box.randomSeed,
     box.header,
     box.legend,
     line.identifier,
@@ -435,6 +462,17 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     if (columns.length === 0) return null;
     return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
   }, [tableRows]);
+  const tableWarnings = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          tableRows
+            .map((row) => String(row.Warning ?? "").trim())
+            .filter((warning) => warning.length > 0)
+        )
+      ),
+    [tableRows]
+  );
 
   async function handleImageError(url: string) {
     try {
@@ -457,35 +495,51 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Single Protein Pipeline</h2>
-        <div className="mt-4 max-w-xs">
-          <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
-          <select
-            value={activeTab === "heatmap" ? (hasPhospho ? "phospho" : "") : kind}
-            disabled={activeTab === "heatmap" || kindOptions.length === 0}
-            onChange={(e) => setKind(e.target.value as AnnotationKind)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
-          >
-            {activeTab === "heatmap" ? (
-              hasPhospho ? (
-                <option value="phospho">Phospho</option>
+        <div className="mt-4 grid max-w-2xl gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="mb-2 block font-medium text-slate-700">Dataset level</span>
+            <select
+              value={activeTab === "heatmap" ? (hasPhospho ? "phospho" : "") : kind}
+              disabled={activeTab === "heatmap" || kindOptions.length === 0}
+              onChange={(e) => setKind(e.target.value as AnnotationKind)}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
+            >
+              {activeTab === "heatmap" ? (
+                hasPhospho ? (
+                  <option value="phospho">Phospho</option>
+                ) : (
+                  <option value="">No phospho dataset available</option>
+                )
+              ) : kindOptions.length === 0 ? (
+                <option value="">No dataset available</option>
               ) : (
-                <option value="">No phospho dataset available</option>
-              )
-            ) : kindOptions.length === 0 ? (
-              <option value="">No dataset available</option>
-            ) : (
-              kindOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))
-            )}
-          </select>
-          {activeTab === "heatmap" ? (
-            <p className="mt-2 text-xs text-slate-500">
-              Heatmap uses phospho dataset level.
-            </p>
-          ) : null}
+                kindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              )}
+            </select>
+            {activeTab === "heatmap" ? (
+              <span className="mt-2 block text-xs text-slate-500">Heatmap uses phospho dataset level.</span>
+            ) : null}
+          </label>
+          <label className="block text-sm">
+            <span className="mb-2 block font-medium text-slate-700">Data source</span>
+            <select
+              value={dataSource}
+              onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
+              disabled={!hasRequiredDataset || optionsLoading}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+            >
+              <option value="log2">Log2 data</option>
+              {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
+              {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
+            </select>
+            <span className="mt-2 block text-xs text-slate-500">
+              Log2 data is the full matrix before filtering and may still contain missing values.
+            </span>
+          </label>
         </div>
       </section>
 
@@ -511,10 +565,23 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         ) : (
           <div className="mt-4">{renderOptions()}</div>
         )}
+        {activeTab === "heatmap" && (heatmap.clusterRows || heatmap.clusterCols) && dataSource !== "imputed" ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Clustering uses only complete values. If this selected matrix contains missing values, choose successfully imputed data or disable clustering; values and data sources are never changed automatically.
+          </div>
+        ) : null}
       </section>
       ) : null}
 
       {hasRequiredDataset ? advancedPlotOptions : null}
+
+      {hasRequiredDataset && !tableLoading && tableWarnings.length > 0 ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 px-6 py-4 text-sm text-amber-900">
+          {tableWarnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </section>
+      ) : null}
 
       {hasRequiredDataset ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -638,6 +705,18 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               options={conditionOptions}
               onChange={(value) => setBox({ ...box, conditions: value })}
             />,
+            ...(box.dots
+              ? [
+                  <NumericField
+                    key="randomSeed"
+                    label="Random Seed"
+                    value={box.randomSeed}
+                    onChange={(value) =>
+                      setBox({ ...box, randomSeed: Math.max(0, Math.round(value)) })
+                    }
+                  />,
+                ]
+              : []),
           ]}
           toggles={[
             <Checkbox key="header" label="Toggle Header" checked={box.header} onChange={(value) => setBox({ ...box, header: value })} />,
@@ -812,9 +891,9 @@ function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={onWidthChange} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={onHeightChange} />
-      <NumericField label="DPI" value={dpi} onChange={onDpiChange} />
+      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
+      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
     </div>
   );
 }
@@ -895,25 +974,22 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -923,7 +999,7 @@ function NumericField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         onChange={(event) => {
           const normalized = event.target.value.replace(",", ".");
           setDraft(normalized);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getQcPlotOptions, getQcTable } from "../../lib/api";
+import { buildPlotUrl, getPeptideQuantityOptions, getQcPcaFeatures, getQcPlotOptions, getQcTable, isAbortError } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -8,14 +9,24 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { saveQcReportSettings } from "../../lib/reportState";
-import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
+import {
+  readPersistedSessionUiState,
+  readPersistedUiState,
+  writePersistedSessionUiState,
+  writePersistedUiState,
+} from "../../lib/persistedUiState";
 import { getAdvancedPlotMode } from "../../lib/appSettings";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
 import AdvancedPlotOptions, {
   type AdvancedPlotControlDefaults,
   type AdvancedPlotVisibleControls,
 } from "../../components/plots/AdvancedPlotOptions";
-import type { AdvancedPlotSettings, AnnotationKind, QcTab } from "../../lib/types";
+import type {
+  AdvancedPlotSettings,
+  AnnotationKind,
+  QcPcaFeatureSummary,
+  QcTab,
+} from "../../lib/types";
 
 type Props = {
   activeTab: QcTab;
@@ -207,7 +218,9 @@ export default function QCPipelinePage({
   const persistedPca = (persisted.pca as Record<string, unknown>) ?? {};
   const persistedAbundance = (persisted.abundance as Record<string, unknown>) ?? {};
   const persistedCorrelation = (persisted.correlation as Record<string, unknown>) ?? {};
-  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advanced as AdvancedPlotState) ?? {};
+  const persistedAdvanced = IS_VIEWER_MODE
+    ? readPersistedSessionUiState<AdvancedPlotState>("qc.advanced.v1", {})
+    : (persisted.advanced as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide") return value;
@@ -220,6 +233,9 @@ export default function QCPipelinePage({
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
   const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
   const [imputedAvailable, setImputedAvailable] = useState(false);
+  const [peptideQuantityColumns, setPeptideQuantityColumns] = useState<string[]>([]);
+  const [peptideQuantityRequiresSelection, setPeptideQuantityRequiresSelection] = useState(false);
+  const [peptideQuantityError, setPeptideQuantityError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -232,12 +248,14 @@ export default function QCPipelinePage({
   const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
 
   const [coverage, setCoverage] = useState({
+    quantityColumn: String(persistedCoverage.quantityColumn ?? ""),
     includeId: Boolean(persistedCoverage.includeId ?? false),
     header: Boolean(persistedCoverage.header ?? true),
     legend: Boolean(persistedCoverage.legend ?? true),
     summary: Boolean(persistedCoverage.summary ?? false),
     text: Boolean(persistedCoverage.text ?? false),
     textSize: Number(persistedCoverage.textSize ?? 9),
+    randomSeed: Number(persistedCoverage.randomSeed ?? 187),
     widthCm: Number(persistedCoverage.widthCm ?? 20),
     heightCm: Number(persistedCoverage.heightCm ?? 10),
     dpi: Number(persistedCoverage.dpi ?? 300),
@@ -277,6 +295,7 @@ export default function QCPipelinePage({
     header: Boolean(persistedPca.header ?? true),
     legend: Boolean(persistedPca.legend ?? true),
     method: String(persistedPca.method ?? "PCA"),
+    scaling: String(persistedPca.scaling ?? "auto"),
     plotDim: String(persistedPca.plotDim ?? "2D"),
     addEllipses: Boolean(persistedPca.addEllipses ?? false),
     dotSize: Number(persistedPca.dotSize ?? 5),
@@ -326,6 +345,8 @@ export default function QCPipelinePage({
     };
     if (!IS_VIEWER_MODE) {
       nextState.advanced = advancedByTab;
+    } else {
+      writePersistedSessionUiState("qc.advanced.v1", advancedByTab);
     }
     writePersistedUiState("qc.pipeline.v1", nextState);
   }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation, advancedByTab]);
@@ -382,6 +403,39 @@ export default function QCPipelinePage({
   }, [activeKindOptions, kind]);
 
   useEffect(() => {
+    if (kind !== "peptide" || !datasets?.peptide) {
+      setPeptideQuantityColumns([]);
+      setPeptideQuantityRequiresSelection(false);
+      setPeptideQuantityError(null);
+      return;
+    }
+    const controller = new AbortController();
+    getPeptideQuantityOptions({ signal: controller.signal })
+      .then((payload) => {
+        setPeptideQuantityColumns(payload.columns);
+        setPeptideQuantityRequiresSelection(payload.requiresSelection);
+        setPeptideQuantityError(
+          payload.columns.length === 0
+            ? "No supported peptide abundance column was found in this dataset."
+            : null
+        );
+        setCoverage((current) => {
+          if (current.quantityColumn && payload.columns.includes(current.quantityColumn)) return current;
+          return { ...current, quantityColumn: payload.defaultColumn ?? "" };
+        });
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        setPeptideQuantityColumns([]);
+        setPeptideQuantityRequiresSelection(false);
+        setPeptideQuantityError(
+          error instanceof Error ? error.message : "Failed to load peptide abundance columns"
+        );
+      });
+    return () => controller.abort();
+  }, [kind, datasets?.peptide]);
+
+  useEffect(() => {
     if (!onWorkflowScopeChange) return;
     if (activeKindOptions.length === 0) {
       onWorkflowScopeChange("");
@@ -417,6 +471,28 @@ export default function QCPipelinePage({
     onPcaContextModeChange(parts.join("|"));
   }, [activeTab, pca.dataSource, pca.method, pca.plotDim, pca.type, onPcaContextModeChange]);
 
+  const [pcaFeatures, setPcaFeatures] = useState<QcPcaFeatureSummary | null>(null);
+
+  // Dimensionality reduction drops any feature with a missing value, so the
+  // projection can rest on a small, abundance-biased subset. Surface that.
+  useEffect(() => {
+    if (activeTab !== "pca" || !isAnnotationKind(kind) || !availableKinds.includes(kind)) {
+      setPcaFeatures(null);
+      return;
+    }
+    const controller = new AbortController();
+    getQcPcaFeatures(kind, pca.dataSource, pca.plotDim, { signal: controller.signal })
+      .then((payload) => {
+        setPcaFeatures(payload);
+      })
+      .catch((error) => {
+        if (!isAbortError(error)) setPcaFeatures(null);
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [activeTab, kind, availableKinds, pca.dataSource, pca.plotDim]);
+
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setConditionOptions([]);
@@ -426,10 +502,9 @@ export default function QCPipelinePage({
       setImputedAvailable(false);
       return;
     }
-    let cancelled = false;
-    getQcPlotOptions(kind)
+    const controller = new AbortController();
+    getQcPlotOptions(kind, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         const unique = Array.from(new Set(payload.conditions.map((value) => value.trim()).filter(Boolean)));
         setConditionOptions(unique);
         const samples = Array.from(new Set((payload.samples ?? []).map((value) => value.trim()).filter(Boolean)));
@@ -443,8 +518,8 @@ export default function QCPipelinePage({
           );
         }
       })
-      .catch(() => {
-        if (cancelled) return;
+      .catch((error) => {
+        if (isAbortError(error)) return;
         setConditionOptions([]);
         setSampleOptions([]);
         setSampleDisplayLabels({});
@@ -452,7 +527,7 @@ export default function QCPipelinePage({
         setImputedAvailable(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [kind, availableKinds]);
 
@@ -507,32 +582,34 @@ export default function QCPipelinePage({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
 
-    getQcTable(kind, tableRequest.tab, tableRequest.params)
+    getQcTable(kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((response) => {
-        if (cancelled) return;
         setTableRows(response.rows ?? []);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setTableRows([]);
         setTableError(err instanceof Error ? err.message : "Failed to load table");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setTableLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [kind, tableRequest, availableKinds]);
 
   const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
-  const activeAdvancedRenderSettings = advancedRenderByTab[activeTab] ?? {};
+  const activeAdvancedRenderSettings = useMemo(
+    () => advancedRenderByTab[activeTab] ?? {},
+    [activeTab, advancedRenderByTab]
+  );
   const activeConditionDisplayLabels = useMemo(
     () => Object.fromEntries(conditionOptions.map((condition) => [condition, condition])),
     [conditionOptions]
@@ -645,6 +722,7 @@ export default function QCPipelinePage({
     coverage.legend,
     coverage.summary,
     cv.legend,
+    cv.outliers,
     hist.legend,
     pca.clusterMethod,
     pca.colorBy,
@@ -688,6 +766,7 @@ export default function QCPipelinePage({
   const plotView = useMemo(() => {
     if (!activeKindOptions.some((option) => option.value === kind)) return null;
     if (activeTab === "coverage") {
+      if (kind === "peptide" && (!coverage.quantityColumn || peptideQuantityError)) return null;
       return {
         mode: "image" as const,
         url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, withAdvancedParams(coverage, activeAdvancedParam)),
@@ -752,6 +831,7 @@ export default function QCPipelinePage({
     activeKindOptions,
     activeAdvancedParam,
     activeAdvancedRenderSettings,
+    peptideQuantityError,
   ]);
 
   const plotDownloadUrl = useMemo(() => {
@@ -839,6 +919,11 @@ export default function QCPipelinePage({
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
+        {kind === "peptide" && peptideQuantityError ? (
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {peptideQuantityError}
+          </div>
+        ) : null}
       </section>
       ) : null}
 
@@ -971,12 +1056,34 @@ export default function QCPipelinePage({
             <Checkbox key="text" label="Toggle Text" checked={coverage.text} onChange={(v) => setCoverage({ ...coverage, text: v })} />,
           ]}
           inputs={[
+            ...(kind === "peptide"
+              ? [
+                  <SelectField
+                    key="quantity-column"
+                    label="Abundance Column"
+                    value={coverage.quantityColumn}
+                    onChange={(value) => setCoverage({ ...coverage, quantityColumn: value })}
+                    options={peptideQuantityColumns}
+                    placeholder={peptideQuantityRequiresSelection ? "Select abundance column" : undefined}
+                  />,
+                ]
+              : []),
             <NumericField
               key="text-size"
               label="Text Size"
               value={coverage.textSize}
               onChange={(v) => setCoverage({ ...coverage, textSize: Math.max(6, Math.min(20, Math.round(v))) })}
             />,
+            ...(coverage.summary
+              ? [
+                  <NumericField
+                    key="random-seed"
+                    label="Random Seed"
+                    value={coverage.randomSeed}
+                    onChange={(v) => setCoverage({ ...coverage, randomSeed: Math.max(0, Math.round(v)) })}
+                  />,
+                ]
+              : []),
           ]}
           sizeRow={
             <SizeRow
@@ -1098,6 +1205,8 @@ export default function QCPipelinePage({
       const showEllipsesToggle = pca.plotDim === "2D";
 
       return (
+        <div className="space-y-4">
+          <PcaFeatureNotice summary={pcaFeatures} dataSource={pca.dataSource} />
         <OptionsLayout
           toggles={[
             <Checkbox key="header" label="Toggle Header" checked={pca.header} onChange={(v) => setPca({ ...pca, header: v })} />,
@@ -1139,6 +1248,13 @@ export default function QCPipelinePage({
                 });
               }}
               options={["PCA", "UMAP", "t-SNE"]}
+            />,
+            <SelectField
+              key="scaling"
+              label="Feature scaling"
+              value={scalingLabel(pca.scaling, pca.method)}
+              onChange={(value) => setPca({ ...pca, scaling: scalingValue(value) })}
+              options={[scalingDefaultLabel(pca.method), "Centred only", "Unit variance"]}
             />,
             <SelectField
               key="type"
@@ -1275,6 +1391,7 @@ export default function QCPipelinePage({
             />
           }
         />
+        </div>
       );
     }
 
@@ -1346,6 +1463,62 @@ export default function QCPipelinePage({
   }
 }
 
+function PcaFeatureNotice({
+  summary,
+  dataSource,
+}: {
+  summary: QcPcaFeatureSummary | null;
+  dataSource: string;
+}) {
+  if (!summary || summary.featuresTotal <= 0) return null;
+  const { featuresComplete, featuresUsed, featuresTotal, featuresRequired } = summary;
+  const fraction = featuresUsed / featuresTotal;
+  const missingnessBlocksPca = featuresComplete < featuresRequired;
+  const constantFeaturesBlockPca = !missingnessBlocksPca && featuresUsed < featuresRequired;
+  const cannotRun = missingnessBlocksPca || constantFeaturesBlockPca;
+  // Features with any missing value are dropped before projection, so a low
+  // fraction means the plot reflects a small, abundance-biased subset.
+  const severe = cannotRun || featuresUsed < 3 || fraction < 0.05;
+  const warn = severe || fraction < 0.25;
+  const tone = severe
+    ? "border-red-300 bg-red-50 text-red-800"
+    : warn
+      ? "border-amber-300 bg-amber-50 text-amber-800"
+      : "border-slate-200 bg-slate-50 text-slate-600";
+  return (
+    <div className={`rounded-xl border px-3 py-2 text-sm ${tone}`}>
+      <span className="font-medium">
+        PCA-usable features: {featuresUsed.toLocaleString()} of {featuresTotal.toLocaleString()}
+        ({(fraction * 100).toFixed(1)}%)
+      </span>
+      {missingnessBlocksPca ? (
+        <span>
+          {" "}
+          &mdash; PCA cannot run because only {featuresComplete.toLocaleString()} complete feature
+          {featuresComplete === 1 ? " remains" : "s remain"}; the missingness is too high. {dataSource === "imputed"
+            ? "Rerun Imputation successfully and then retry with Imputed Data."
+            : "Run Imputation, then select Imputed Data here."}
+        </span>
+      ) : null}
+      {constantFeaturesBlockPca ? (
+        <span>
+          {" "}
+          &mdash; PCA cannot run because fewer than {featuresRequired} complete, variable features
+          remain after constant features are excluded.
+        </span>
+      ) : null}
+      {warn && !cannotRun ? (
+        <span>
+          {" "}
+          &mdash; features missing in any sample are excluded, so this projection reflects only
+          the consistently detected (and therefore more abundant) subset.
+          {severe ? " Too few features remain for the plot to be meaningful." : ""}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function OptionsLayout({
   toggles,
   inputs,
@@ -1383,9 +1556,9 @@ function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="DPI" value={dpi} onChange={onDpiChange} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={onHeightChange} />
-      <NumericField label="Width (cm)" value={widthCm} onChange={onWidthChange} />
+      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
+      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
     </div>
   );
 }
@@ -1416,6 +1589,26 @@ function pcaMethodLabel(method: string): string {
   return "PCA";
 }
 
+// "Method default" is `auto`: centred for PCA, unit variance for UMAP and
+// t-SNE. Both are legitimate and they answer different questions, so the choice
+// is exposed rather than left implicit in whichever method was picked.
+function scalingDefaultLabel(method: string): string {
+  return `Method default (${pcaMethodLabel(method) === "PCA" ? "centred" : "unit variance"})`;
+}
+
+function scalingLabel(scaling: string, method: string): string {
+  const key = String(scaling || "auto").trim().toLowerCase();
+  if (key === "centered" || key === "centred") return "Centred only";
+  if (key === "unit_variance" || key === "scaled") return "Unit variance";
+  return scalingDefaultLabel(method);
+}
+
+function scalingValue(label: string): string {
+  if (label === "Centred only") return "centered";
+  if (label === "Unit variance") return "unit_variance";
+  return "auto";
+}
+
 function Checkbox({
   label,
   checked,
@@ -1442,25 +1635,22 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -1470,7 +1660,7 @@ function NumericField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         onChange={(e) => {
           const normalized = e.target.value.replace(",", ".");
           setDraft(normalized);
@@ -1497,11 +1687,13 @@ function SelectField({
   value,
   onChange,
   options,
+  placeholder,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   options: string[];
+  placeholder?: string;
 }) {
   return (
     <div>
@@ -1511,6 +1703,7 @@ function SelectField({
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       >
+        {placeholder ? <option value="">{placeholder}</option> : null}
         {options.map((option) => (
           <option key={option} value={option}>
             {option}

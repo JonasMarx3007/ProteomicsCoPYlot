@@ -9,9 +9,18 @@ import pandas as pd
 from app.schemas.external import PeptideCollapseRequest, PeptideCollapseResponse
 from app.services.external_functions import (
     peptideCollapse,
+    peptideCollapse_fixed,
     peptideCollapse_old,
     process_and_export,
 )
+
+# The schema restricts collapseVersion to these keys, so an unknown value is a
+# 422 rather than a silent fall back to one particular implementation.
+COLLAPSE_VERSIONS = {
+    "fixed": peptideCollapse_fixed,
+    "newest": peptideCollapse,
+    "legacy": peptideCollapse_old,
+}
 
 
 def _normalize_path(path: str) -> str:
@@ -43,7 +52,7 @@ def run_peptide_collapse(payload: PeptideCollapseRequest) -> PeptideCollapseResp
     if not os.path.exists(input_path):
         raise ValueError(f"Input file not found: {input_path}")
 
-    collapse_func = peptideCollapse if payload.collapseVersion == "newest" else peptideCollapse_old
+    collapse_func = COLLAPSE_VERSIONS[payload.collapseVersion]
     resolved_output_path = _resolve_output_path(input_path, output_path)
 
     buffer = io.StringIO()

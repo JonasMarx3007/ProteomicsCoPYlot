@@ -5,6 +5,20 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class NormalizationCapabilityResponse(BaseModel):
+    """Normalization methods this installation can actually run.
+
+    `methods` includes 'vsn' only when Rscript and the Bioconductor package are
+    both present, since VSN is delegated to the reference implementation rather
+    than reimplemented.
+    """
+
+    methods: list[str]
+    vsnAvailable: bool
+    vsnUnavailableReason: str | None = None
+    vsnPackageVersion: str | None = None
+
+
 class RRuntimeStatusResponse(BaseModel):
     available: bool
     executable: str | None = None

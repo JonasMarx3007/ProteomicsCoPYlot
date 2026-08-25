@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, runImputation } from "../../lib/api";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, isAbortError, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -21,7 +21,7 @@ export default function ImputationPage() {
   const [downShift, setDownShift] = useState(1.8);
   const [width, setWidth] = useState(0.3);
   const [seed, setSeed] = useState(1337);
-  const [sampleWise, setSampleWise] = useState(false);
+  const [sampleWise, setSampleWise] = useState(true);
   const [showImputationDraw, setShowImputationDraw] = useState(true);
   const [afterNormalization, setAfterNormalization] = useState<"together" | "separate">("separate");
   const [loading, setLoading] = useState(false);
@@ -31,7 +31,7 @@ export default function ImputationPage() {
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
   const [settingsReady, setSettingsReady] = useState(false);
 
-  async function fetchPreview() {
+  const fetchPreview = useCallback(async (signal?: AbortSignal) => {
     if (!availableKinds.includes(kind)) {
       setResult(null);
       setError("Please upload a protein, phospho, or phosphoprotein dataset first.");
@@ -49,21 +49,22 @@ export default function ImputationPage() {
         width,
         seed,
         sampleWise,
-      });
+      }, { signal });
       setResult(response);
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : "Imputation failed");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  }
+  }, [adjustStd, availableKinds, downShift, kind, method, qValue, sampleWise, seed, width]);
 
   async function handleRun() {
     await fetchPreview();
   }
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function initializeKindSettings() {
       if (availableKinds.length === 0) {
@@ -78,8 +79,7 @@ export default function ImputationPage() {
 
       setSettingsReady(false);
       try {
-        const annotation = await getCurrentAnnotation(kind);
-        if (cancelled) return;
+        const annotation = await getCurrentAnnotation(kind, { signal: controller.signal });
         const info = annotation.imputation;
         const mode = String(info?.mode ?? "").trim().toLowerCase();
         if (info && mode && mode !== "none") {
@@ -103,8 +103,8 @@ export default function ImputationPage() {
           setSeed(1337);
           setSampleWise(false);
         }
-      } catch {
-        if (cancelled) return;
+      } catch (error) {
+        if (isAbortError(error)) return;
         setMethod("quantile");
         setQValue(0.01);
         setAdjustStd(0.3);
@@ -113,7 +113,7 @@ export default function ImputationPage() {
         setSeed(1337);
         setSampleWise(false);
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setSettingsReady(true);
         }
       }
@@ -121,9 +121,9 @@ export default function ImputationPage() {
 
     void initializeKindSettings();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [kind, availableKindsKey]);
+  }, [kind, availableKinds, availableKindsKey]);
 
   useEffect(() => {
     if (!settingsReady) {
@@ -137,8 +137,10 @@ export default function ImputationPage() {
       setKind(availableKinds[0]);
       return;
     }
-    void fetchPreview();
-  }, [settingsReady, kind, method, qValue, adjustStd, downShift, width, seed, sampleWise, availableKindsKey]);
+    const controller = new AbortController();
+    void fetchPreview(controller.signal);
+    return () => controller.abort();
+  }, [settingsReady, kind, method, qValue, adjustStd, downShift, width, seed, sampleWise, availableKinds, availableKindsKey, fetchPreview]);
 
   const plotParams = useMemo(
     () => ({
@@ -154,25 +156,32 @@ export default function ImputationPage() {
   );
 
   const beforePlotUrl = useMemo(
-    () => buildPlotUrl(`/api/plots/imputation/${kind}/before-missing.png`, plotParams),
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl(`/api/plots/imputation/${kind}/before-missing.png`, plotParams);
+    },
     [kind, plotParams, advancedPlotSignal]
   );
   const overallPlotUrl = useMemo(
-    () =>
-      buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, {
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl(`/api/plots/imputation/${kind}/overall-fit.png`, {
         ...plotParams,
         showImputationDraw,
         _plotVersion: 6,
-      }),
+      });
+    },
     [kind, plotParams, showImputationDraw, advancedPlotSignal]
   );
   const afterPlotUrl = useMemo(
-    () =>
-      buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, {
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl(`/api/plots/imputation/${kind}/after-imputation.png`, {
         ...plotParams,
         normalization: afterNormalization,
         _plotVersion: 6,
-      }),
+      });
+    },
     [kind, plotParams, afterNormalization, advancedPlotSignal]
   );
 
@@ -482,25 +491,22 @@ function NumberField({
   onChange: (value: number) => void;
   step?: number;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -510,7 +516,7 @@ function NumberField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         step={step}
         onChange={(e) => setDraft(e.target.value.replace(",", "."))}
         onBlur={commit}

@@ -12,6 +12,7 @@ from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
+from app.services.functions import raw_zero_to_nan, sample_id_map
 from app.services.plot_images import _advanced_label, _apply_advanced_axes
 
 
@@ -99,17 +100,10 @@ def _peptide_precursor_column(frame: pd.DataFrame) -> str:
     raise ValueError("Peptide dataset is missing a precursor-id column.")
 
 
-def _peptide_quantity_column(frame: pd.DataFrame) -> str:
-    if "Precursor.Quantity" in frame.columns:
-        return "Precursor.Quantity"
-    for column in frame.columns:
-        normalized = str(column).strip().lower()
-        if "quantity" in normalized:
-            return str(column)
-    numeric_cols = frame.select_dtypes(include=[np.number]).columns.astype(str).tolist()
-    if numeric_cols:
-        return numeric_cols[0]
-    raise ValueError("Peptide dataset is missing a usable quantity column.")
+def _peptide_quantity_column(frame: pd.DataFrame, requested: str | None = None) -> str:
+    from app.services.peptide_quantity import resolve_peptide_quantity_column
+
+    return resolve_peptide_quantity_column(frame, requested=requested)
 
 
 def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
@@ -136,9 +130,18 @@ def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
     meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
     file_set = set(ordered_files)
-    id_to_file: dict[str, str] = {}
-    for value in ordered_files:
-        id_to_file.setdefault(_extract_id_or_number(value), value)
+    unmatched = [
+        str(row["sample"])
+        for _, row in meta.iterrows()
+        if str(row["sample"]) not in file_set
+    ]
+    if not unmatched:
+        id_to_file: dict[str, str] = {}
+    else:
+        # Only pay for the number fallback when a name actually needs it, and let
+        # it raise rather than silently collapse two runs onto one id.
+        id_to_file = sample_id_map(ordered_files)
+        sample_id_map(unmatched)
 
     matched: list[str] = []
     for _, row in meta.iterrows():
@@ -173,7 +176,14 @@ def _missing_value_plot_from_matrix(
     if matrix.empty or matrix.shape[1] == 0:
         raise ValueError("No data columns are available to calculate missing values.")
 
+    # Exclude never-identified features before bucketing. Doing it afterwards by
+    # string comparison silently stopped working whenever binning was on: an
+    # all-missing row becomes ">N" rather than the sample count, so it was folded
+    # into the top bucket instead and the same dataset reported different totals
+    # depending on the bin setting.
     na_count = matrix.isna().sum(axis=1)
+    na_count = na_count[na_count != matrix.shape[1]]
+
     if bin_count > 0:
         na_count = na_count.apply(lambda x: f">{bin_count}" if x > bin_count else str(int(x)))
         levels_vec = [str(i) for i in range(bin_count + 1)] + [f">{bin_count}"]
@@ -184,7 +194,6 @@ def _missing_value_plot_from_matrix(
 
     miss_vals = na_count.value_counts().reset_index()
     miss_vals.columns = ["na_count", "Freq"]
-    miss_vals = miss_vals[miss_vals["na_count"] != str(matrix.shape[1])]
     miss_vals["na_count"] = pd.Categorical(
         miss_vals["na_count"],
         categories=levels_vec,
@@ -234,6 +243,8 @@ def _frame_and_meta(kind: AnnotationKind) -> tuple[pd.DataFrame, pd.DataFrame]:
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
+    if annotation is None or not bool(getattr(annotation, "is_log2_transformed", False)):
+        frame = raw_zero_to_nan(frame, sample_columns)
 
     if annotation is not None and not annotation.metadata.empty:
         meta = annotation.metadata.copy()
@@ -269,7 +280,7 @@ def _renamed_meta(meta: pd.DataFrame, include_id: bool = True) -> pd.DataFrame:
 def _filtered_data(frame: pd.DataFrame, meta: pd.DataFrame, include_id: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     renamed_meta = _renamed_meta(meta, include_id=include_id)
     rename_map = dict(zip(renamed_meta["sample"], renamed_meta["new_sample"]))
-    filtered = frame.replace(0, np.nan).rename(columns=rename_map)
+    filtered = frame.rename(columns=rename_map)
     columns = [c for c in renamed_meta["new_sample"].tolist() if c in filtered.columns]
     if not columns:
         raise ValueError("No metadata sample columns are present in the dataset.")
@@ -316,13 +327,14 @@ def completeness_missing_value_plot_peptide(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from app.services.peptide_tools import get_peptide_frame
 
     frame = get_peptide_frame()
     file_col = _peptide_file_column(frame)
     seq_col = _peptide_sequence_column(frame)
-    quantity_col = _peptide_quantity_column(frame)
+    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
     pivot = frame.pivot_table(
         index=seq_col,
         columns=file_col,
@@ -332,7 +344,7 @@ def completeness_missing_value_plot_peptide(
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
     if not sample_cols:
         sample_cols = list(pivot.columns.astype(str))
-    matrix = pivot[sample_cols].copy() if sample_cols else pd.DataFrame()
+    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols) if sample_cols else pd.DataFrame()
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Peptide",
@@ -359,23 +371,26 @@ def completeness_missing_value_plot_precursor(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from app.services.peptide_tools import get_peptide_frame
 
     frame = get_peptide_frame()
     file_col = _peptide_file_column(frame)
     precursor_col = _peptide_precursor_column(frame)
-    quantity_col = _peptide_quantity_column(frame)
+    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
     pivot = frame.pivot_table(
         index=precursor_col,
         columns=file_col,
         values=quantity_col,
-        aggfunc="first",
+        # "max" matches the peptide pivot above. "first" was order-dependent, so
+        # two exports of the same search gave different precursor completeness.
+        aggfunc="max",
     )
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
     if not sample_cols:
         sample_cols = list(pivot.columns.astype(str))
-    matrix = pivot[sample_cols].copy() if sample_cols else pd.DataFrame()
+    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols) if sample_cols else pd.DataFrame()
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Precursor",

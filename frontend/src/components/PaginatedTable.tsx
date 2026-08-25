@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type Props = {
   rows: Record<string, unknown>[];
@@ -14,7 +14,7 @@ export default function PaginatedTable({
   maxHeightClassName = "max-h-[28rem]",
 }: Props) {
   const resolvedPageSize = Math.max(1, Math.round(pageSize));
-  const [page, setPage] = useState(1);
+  const [requestedPage, setRequestedPage] = useState(1);
 
   const columns = useMemo(() => {
     const keys = new Set<string>();
@@ -25,16 +25,10 @@ export default function PaginatedTable({
   }, [rows]);
 
   const totalPages = Math.max(1, Math.ceil(rows.length / resolvedPageSize));
-
-  useEffect(() => {
-    setPage(1);
-  }, [rows, resolvedPageSize]);
-
-  useEffect(() => {
-    if (page > totalPages) {
-      setPage(totalPages);
-    }
-  }, [page, totalPages]);
+  const page = Math.min(requestedPage, totalPages);
+  const changePage = (next: (current: number) => number) => {
+    setRequestedPage(next(page));
+  };
 
   if (!rows || rows.length === 0) {
     return (
@@ -57,7 +51,7 @@ export default function PaginatedTable({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
+            onClick={() => changePage((current) => Math.max(1, current - 1))}
             disabled={page <= 1}
             className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -68,7 +62,7 @@ export default function PaginatedTable({
           </span>
           <button
             type="button"
-            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+            onClick={() => changePage((current) => Math.min(totalPages, current + 1))}
             disabled={page >= totalPages}
             className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -117,4 +111,3 @@ function formatCellValue(value: unknown) {
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
-

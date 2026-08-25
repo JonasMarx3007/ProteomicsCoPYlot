@@ -10,7 +10,22 @@ set "DEV_CONFIG=%ROOT%\local\dev_ai.local.env"
 if not exist "%DEV_CONFIG%" set "DEV_CONFIG=%ROOT%\dev_ai.local.env"
 set "DEV20_ENDPOINT="
 set "VALIDATE_ONLY=0"
-if /I "%~1"=="--validate-only" set "VALIDATE_ONLY=1"
+set "SIGN_OUTPUTS=0"
+
+:parse_args
+if "%~1"=="" goto args_parsed
+if /I "%~1"=="--validate-only" (
+  set "VALIDATE_ONLY=1"
+) else if /I "%~1"=="--sign" (
+  set "SIGN_OUTPUTS=1"
+) else (
+  echo Error: unknown option "%~1". Supported options: --validate-only, --sign.
+  exit /b 2
+)
+shift
+goto parse_args
+
+:args_parsed
 
 if not exist "%BUILD_SCRIPT%" (
   echo Error: build_exe_windows.ps1 not found at "%BUILD_SCRIPT%".
@@ -31,56 +46,46 @@ if not defined DEV20_ENDPOINT (
   exit /b 1
 )
 
-if "%VALIDATE_ONLY%"=="1" (
-  echo Validation successful.
-  echo Using dev20 endpoint from dev_ai.local.env
-  exit /b 0
-)
+if "%VALIDATE_ONLY%"=="1" goto validate_only
+if "%SIGN_OUTPUTS%"=="1" call :validate_target Tool ProteomicsCoPYlot
+if errorlevel 1 exit /b 1
 
 echo.
 echo [1/6] Building ProteomicsCoPYlotAI.exe ...
 call :build_frontend analysis 1 "" ""
 if errorlevel 1 exit /b 1
-call :build_target Tool Skip
-if errorlevel 1 exit /b 1
-call :copy_output "%DIST_DIR%\ProteomicsCoPYlot.exe" "%DIST_DIR%\ProteomicsCoPYlotAI.exe"
+call :build_target Tool Skip ProteomicsCoPYlotAI
 if errorlevel 1 exit /b 1
 
 echo.
 echo [2/6] Building ProteomicsCoPYlotAIDev20.exe ...
 call :build_frontend analysis 1 "%DEV20_ENDPOINT%" "llama3.1:8b"
 if errorlevel 1 exit /b 1
-call :build_target Tool Skip
-if errorlevel 1 exit /b 1
-call :copy_output "%DIST_DIR%\ProteomicsCoPYlot.exe" "%DIST_DIR%\ProteomicsCoPYlotAIDev20.exe"
+call :build_target Tool Skip ProteomicsCoPYlotAIDev20
 if errorlevel 1 exit /b 1
 
 echo.
 echo [3/6] Building DataViewerAI.exe ...
 call :build_frontend viewer 1 "" ""
 if errorlevel 1 exit /b 1
-call :build_target Viewer Skip
-if errorlevel 1 exit /b 1
-call :copy_output "%DIST_DIR%\DataViewer.exe" "%DIST_DIR%\DataViewerAI.exe"
+call :build_target Viewer Skip DataViewerAI
 if errorlevel 1 exit /b 1
 
 echo.
 echo [4/6] Building DataViewerAIDev20.exe ...
 call :build_frontend viewer 1 "%DEV20_ENDPOINT%" "llama3.1:8b"
 if errorlevel 1 exit /b 1
-call :build_target Viewer Skip
-if errorlevel 1 exit /b 1
-call :copy_output "%DIST_DIR%\DataViewer.exe" "%DIST_DIR%\DataViewerAIDev20.exe"
+call :build_target Viewer Skip DataViewerAIDev20
 if errorlevel 1 exit /b 1
 
 echo.
 echo [5/6] Building standard ProteomicsCoPYlot.exe ...
-call :build_target Tool
+call :build_target Tool Build ProteomicsCoPYlot
 if errorlevel 1 exit /b 1
 
 echo.
 echo [6/6] Building standard DataViewer.exe ...
-call :build_target Viewer
+call :build_target Viewer Build DataViewer
 if errorlevel 1 exit /b 1
 
 echo.
@@ -102,16 +107,46 @@ for %%F in (
 
 exit /b 0
 
+:validate_only
+call :validate_target Tool ProteomicsCoPYlot
+if errorlevel 1 exit /b 1
+call :validate_target Tool ProteomicsCoPYlotAI
+if errorlevel 1 exit /b 1
+call :validate_target Tool ProteomicsCoPYlotAIDev20
+if errorlevel 1 exit /b 1
+call :validate_target Viewer DataViewer
+if errorlevel 1 exit /b 1
+call :validate_target Viewer DataViewerAI
+if errorlevel 1 exit /b 1
+call :validate_target Viewer DataViewerAIDev20
+if errorlevel 1 exit /b 1
+echo Validation successful. No executables were compiled.
+echo Using dev20 endpoint from dev_ai.local.env
+exit /b 0
+
 :build_target
 set "TARGET=%~1"
 set "MODE=%~2"
+set "OUTPUT_NAME=%~3"
+set "SIGN_ARG="
+if "%SIGN_OUTPUTS%"=="1" set "SIGN_ARG=-Sign"
 if /I "%MODE%"=="Skip" (
-  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET% -SkipFrontendBuild
+  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET% -ExecutableName "%OUTPUT_NAME%" -SkipFrontendBuild !SIGN_ARG!
 ) else (
-  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET%
+  powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %TARGET% -ExecutableName "%OUTPUT_NAME%" !SIGN_ARG!
 )
 if errorlevel 1 (
   echo Error: build_exe_windows.ps1 failed for target %TARGET%.
+  exit /b 1
+)
+exit /b 0
+
+:validate_target
+set "VALIDATE_SIGN_ARG="
+if "%SIGN_OUTPUTS%"=="1" set "VALIDATE_SIGN_ARG=-Sign"
+powershell -ExecutionPolicy Bypass -File "%BUILD_SCRIPT%" -Target %~1 -ExecutableName "%~2" -ValidateOnly !VALIDATE_SIGN_ARG!
+if errorlevel 1 (
+  echo Error: validation failed for %~2.exe.
   exit /b 1
 )
 exit /b 0
@@ -149,15 +184,3 @@ if errorlevel 1 (
 
 popd >nul
 endlocal & exit /b 0
-
-:copy_output
-if not exist "%~1" (
-  echo Error: source executable not found: %~1
-  exit /b 1
-)
-copy /Y "%~1" "%~2" >nul
-if errorlevel 1 (
-  echo Error: failed to copy "%~1" to "%~2".
-  exit /b 1
-)
-exit /b 0

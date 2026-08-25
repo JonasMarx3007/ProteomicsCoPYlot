@@ -3,7 +3,9 @@ import {
   buildPlotUrl,
   getPeptideOverview,
   getPeptideSequenceCoverage,
+  isAbortError,
 } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { saveQcReportSettings } from "../../lib/reportState";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -12,6 +14,7 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
   PeptideCoverageResponse,
   PeptideOverviewResponse,
@@ -30,45 +33,61 @@ const MISSING_PEPTIDE_DATASET_MESSAGE =
 
 export default function PeptideLevelPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
   const advancedPlotSignal = useAdvancedPlotSignal();
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("peptide.level.v1", {}),
+    []
+  );
+  const persistedRt = (persisted.rt as Record<string, unknown>) ?? {};
+  const persistedModification = (persisted.modification as Record<string, unknown>) ?? {};
+  const persistedMissedCleavage = (persisted.missedCleavage as Record<string, unknown>) ?? {};
+  const persistedCoverage = (persisted.coverage as Record<string, unknown>) ?? {};
   const [overview, setOverview] = useState<PeptideOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [rt, setRt] = useState({
-    type: "Normal",
-    method: "Hexbin Plot",
-    addLine: false,
-    header: true,
-    bins: 1000,
-    widthCm: 20,
-    heightCm: 15,
-    dpi: 100,
+    type: String(persistedRt.type ?? "Normal"),
+    method: String(persistedRt.method ?? "Hexbin Plot"),
+    addLine: Boolean(persistedRt.addLine ?? false),
+    header: Boolean(persistedRt.header ?? true),
+    bins: Number(persistedRt.bins ?? 1000),
+    randomSeed: Number(persistedRt.randomSeed ?? 69),
+    widthCm: Number(persistedRt.widthCm ?? 20),
+    heightCm: Number(persistedRt.heightCm ?? 15),
+    dpi: Number(persistedRt.dpi ?? 100),
   });
   const [modification, setModification] = useState({
-    includeId: false,
-    header: true,
-    legend: true,
-    widthCm: 25,
-    heightCm: 15,
-    dpi: 100,
+    includeId: Boolean(persistedModification.includeId ?? false),
+    header: Boolean(persistedModification.header ?? true),
+    legend: Boolean(persistedModification.legend ?? true),
+    widthCm: Number(persistedModification.widthCm ?? 25),
+    heightCm: Number(persistedModification.heightCm ?? 15),
+    dpi: Number(persistedModification.dpi ?? 100),
   });
   const [missedCleavage, setMissedCleavage] = useState({
-    includeId: false,
-    text: true,
-    textSize: 8,
-    header: true,
-    widthCm: 25,
-    heightCm: 15,
-    dpi: 100,
+    includeId: Boolean(persistedMissedCleavage.includeId ?? false),
+    text: Boolean(persistedMissedCleavage.text ?? true),
+    textSize: Number(persistedMissedCleavage.textSize ?? 8),
+    header: Boolean(persistedMissedCleavage.header ?? true),
+    // Determines whether K-P counts as a cleavage site: trypsin is blocked by
+    // proline, a trypsin/Lys-C mix is not. Must match the digest actually used.
+    protease: String(persistedMissedCleavage.protease ?? "trypsin"),
+    widthCm: Number(persistedMissedCleavage.widthCm ?? 25),
+    heightCm: Number(persistedMissedCleavage.heightCm ?? 15),
+    dpi: Number(persistedMissedCleavage.dpi ?? 100),
   });
   const [coverage, setCoverage] = useState({
-    species: "human" as PeptideSpecies,
-    protein: "",
-    chunkSize: 100,
+    species: (String(persistedCoverage.species ?? "human") === "mouse" ? "mouse" : "human") as PeptideSpecies,
+    protein: String(persistedCoverage.protein ?? ""),
+    chunkSize: Number(persistedCoverage.chunkSize ?? 100),
   });
   const [coverageResult, setCoverageResult] = useState<PeptideCoverageResponse | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
+
+  useEffect(() => {
+    writePersistedUiState("peptide.level.v1", { rt, modification, missedCleavage, coverage });
+  }, [rt, modification, missedCleavage, coverage]);
 
   useEffect(() => {
     if (!onContextModeChange) return;
@@ -80,6 +99,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           `addLine=${String(rt.addLine)}`,
           `header=${String(rt.header)}`,
           `bins=${String(rt.bins)}`,
+          `randomSeed=${String(rt.randomSeed)}`,
           `widthCm=${String(rt.widthCm)}`,
           `heightCm=${String(rt.heightCm)}`,
           `dpi=${String(rt.dpi)}`,
@@ -107,6 +127,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           `text=${String(missedCleavage.text)}`,
           `textSize=${String(missedCleavage.textSize)}`,
           `header=${String(missedCleavage.header)}`,
+          `protease=${missedCleavage.protease}`,
           `widthCm=${String(missedCleavage.widthCm)}`,
           `heightCm=${String(missedCleavage.heightCm)}`,
           `dpi=${String(missedCleavage.dpi)}`,
@@ -129,6 +150,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     rt.addLine,
     rt.header,
     rt.bins,
+    rt.randomSeed,
     rt.widthCm,
     rt.heightCm,
     rt.dpi,
@@ -142,6 +164,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     missedCleavage.text,
     missedCleavage.textSize,
     missedCleavage.header,
+    missedCleavage.protease,
     missedCleavage.widthCm,
     missedCleavage.heightCm,
     missedCleavage.dpi,
@@ -151,10 +174,14 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   ]);
 
   useEffect(() => {
-    refresh().catch((err) => {
-      setError(err instanceof Error ? err.message : "Failed to load peptide module");
-      setLoading(false);
+    const controller = new AbortController();
+    refresh(controller.signal).catch((err) => {
+      if (!isAbortError(err)) {
+        setError(err instanceof Error ? err.message : "Failed to load peptide module");
+        setLoading(false);
+      }
     });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -178,27 +205,31 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setCoverageLoading(true);
     setCoverageError(null);
 
-    getPeptideSequenceCoverage(coverage.species, coverage.protein, coverage.chunkSize)
+    getPeptideSequenceCoverage(
+      coverage.species,
+      coverage.protein,
+      coverage.chunkSize,
+      { signal: controller.signal }
+    )
       .then((response) => {
-        if (cancelled) return;
         setCoverageResult(response);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setCoverageResult(null);
         setCoverageError(err instanceof Error ? err.message : "Failed to calculate sequence coverage");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setCoverageLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [activeTab, coverage.chunkSize, coverage.protein, coverage.species, overview]);
 
@@ -219,6 +250,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   const rtInteractive = String(rt.type).trim().toLowerCase() === "interactive";
   const rtPlotUrl = useMemo(
     () => {
+      void advancedPlotSignal;
       const rtParams = rtInteractive
         ? { ...rt, _rtInteractiveV: rtInteractiveSessionNonce }
         : rt;
@@ -232,11 +264,17 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     [rt, rtInteractive, rtInteractiveSessionNonce, advancedPlotSignal]
   );
   const modificationPlotUrl = useMemo(
-    () => buildPlotUrl("/api/plots/peptide/modification.png", modification),
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl("/api/plots/peptide/modification.png", modification);
+    },
     [modification, advancedPlotSignal]
   );
   const missedCleavagePlotUrl = useMemo(
-    () => buildPlotUrl("/api/plots/peptide/missed-cleavage.png", missedCleavage),
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl("/api/plots/peptide/missed-cleavage.png", missedCleavage);
+    },
     [missedCleavage, advancedPlotSignal]
   );
 
@@ -245,13 +283,13 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     return `data:text/plain;charset=utf-8,${encodeURIComponent(coverageResult.sequenceText)}`;
   }, [coverageResult]);
 
-  async function refresh() {
+  async function refresh(signal?: AbortSignal) {
     try {
-      const nextOverview = await getPeptideOverview();
+      const nextOverview = await getPeptideOverview({ signal });
       setOverview(nextOverview);
       setError(null);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }
 
@@ -309,22 +347,28 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   onCommit={(value) => setRt({ ...rt, bins: Math.max(10, Math.round(value)) })}
                 />,
                 <CommittedNumberField
+                  key="randomSeed"
+                  label="Random Seed"
+                  value={rt.randomSeed}
+                  onCommit={(value) => setRt({ ...rt, randomSeed: Math.max(0, Math.round(value)) })}
+                />,
+                <CommittedNumberField
                   key="width"
                   label="Width (cm)"
                   value={rt.widthCm}
-                  onCommit={(value) => setRt({ ...rt, widthCm: Math.max(5, value) })}
+                  onCommit={(value) => setRt({ ...rt, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="height"
                   label="Height (cm)"
                   value={rt.heightCm}
-                  onCommit={(value) => setRt({ ...rt, heightCm: Math.max(5, value) })}
+                  onCommit={(value) => setRt({ ...rt, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="dpi"
                   label="DPI"
                   value={rt.dpi}
-                  onCommit={(value) => setRt({ ...rt, dpi: Math.max(72, Math.round(value)) })}
+                  onCommit={(value) => setRt({ ...rt, dpi: clampPlotDpi(value) })}
                 />,
               ]}
               toggles={[
@@ -353,19 +397,19 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   key="width"
                   label="Width (cm)"
                   value={modification.widthCm}
-                  onCommit={(value) => setModification({ ...modification, widthCm: Math.max(5, value) })}
+                  onCommit={(value) => setModification({ ...modification, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="height"
                   label="Height (cm)"
                   value={modification.heightCm}
-                  onCommit={(value) => setModification({ ...modification, heightCm: Math.max(5, value) })}
+                  onCommit={(value) => setModification({ ...modification, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="dpi"
                   label="DPI"
                   value={modification.dpi}
-                  onCommit={(value) => setModification({ ...modification, dpi: Math.max(72, Math.round(value)) })}
+                  onCommit={(value) => setModification({ ...modification, dpi: clampPlotDpi(value) })}
                 />,
               ]}
               toggles={[
@@ -389,6 +433,14 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           <SectionCard title="Missed Cleavage Plot Options">
             <OptionsLayout
               controls={[
+                <SelectField
+                  key="protease"
+                  label="Cleavage Rule"
+                  value={missedCleavage.protease}
+                  onChange={(value) => setMissedCleavage({ ...missedCleavage, protease: value })}
+                  options={["trypsin", "trypsin_lysc"]}
+                  labels={{ trypsin: "Trypsin", trypsin_lysc: "Trypsin / Lys-C" }}
+                />,
                 <CommittedNumberField
                   key="text-size"
                   label="Text Size"
@@ -399,19 +451,19 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   key="width"
                   label="Width (cm)"
                   value={missedCleavage.widthCm}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, widthCm: Math.max(5, value) })}
+                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="height"
                   label="Height (cm)"
                   value={missedCleavage.heightCm}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, heightCm: Math.max(5, value) })}
+                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
                 />,
                 <CommittedNumberField
                   key="dpi"
                   label="DPI"
                   value={missedCleavage.dpi}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, dpi: Math.max(72, Math.round(value)) })}
+                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, dpi: clampPlotDpi(value) })}
                 />,
               ]}
               toggles={[
@@ -672,12 +724,9 @@ function ImagePlotCard({
   renderMode?: "image" | "html";
   heightCm?: number;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const [errorState, setErrorState] = useState<{ url: string; message: string } | null>(null);
+  const error = errorState?.url === url ? errorState.message : null;
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
-
-  useEffect(() => {
-    setError(null);
-  }, [url]);
 
   const downloadUrl = withPlotDownloadFormat(url, downloadFormat);
   const downloadFilename = withPlotDownloadFilename(downloadName, downloadFormat);
@@ -690,13 +739,13 @@ function ImagePlotCard({
         try {
           const parsed = JSON.parse(text) as { detail?: string };
           if (parsed?.detail) {
-            setError(parsed.detail);
+            setErrorState({ url, message: parsed.detail });
             return;
           }
         } catch {}
       }
     } catch {}
-    setError("Failed to load plot image. Check backend logs for details.");
+    setErrorState({ url, message: "Failed to load plot image. Check backend logs for details." });
   }
 
   return (
@@ -740,7 +789,7 @@ function ImagePlotCard({
           src={url}
           alt={title}
           className="mt-4 w-full rounded-xl border border-slate-200"
-          onLoad={() => setError(null)}
+          onLoad={() => setErrorState(null)}
           onError={() => {
             handleError();
           }}
@@ -752,7 +801,7 @@ function ImagePlotCard({
           title={`${title} interactive`}
           className="mt-4 block w-full rounded-xl border border-slate-200"
           style={{ height: `max(${cmToIframeHeight(heightCm)}px, 78vh)` }}
-          onLoad={() => setError(null)}
+          onLoad={() => setErrorState(null)}
         />
       )}
       {error ? <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}

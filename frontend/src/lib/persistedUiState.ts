@@ -8,6 +8,14 @@ function storageAvailable(): boolean {
   }
 }
 
+function sessionStorageAvailable(): boolean {
+  try {
+    return typeof globalThis.sessionStorage !== "undefined";
+  } catch {
+    return false;
+  }
+}
+
 function fullKey(key: string): string {
   const normalized = String(key || "").trim();
   return normalized.startsWith(UI_STATE_PREFIX) ? normalized : `${UI_STATE_PREFIX}${normalized}`;
@@ -36,6 +44,27 @@ export function writePersistedUiState(key: string, value: unknown): void {
   }
 }
 
+export function readPersistedSessionUiState<T>(key: string, fallback: T): T {
+  if (!sessionStorageAvailable()) return fallback;
+  try {
+    const raw = globalThis.sessionStorage.getItem(fullKey(key));
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as T;
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writePersistedSessionUiState(key: string, value: unknown): void {
+  if (!sessionStorageAvailable()) return;
+  try {
+    globalThis.sessionStorage.setItem(fullKey(key), JSON.stringify(value));
+  } catch {
+    // ignore sessionStorage failures
+  }
+}
+
 export function clearPersistedUiState(key: string): void {
   if (!storageAvailable()) return;
   const storageKey = fullKey(key);
@@ -45,4 +74,3 @@ export function clearPersistedUiState(key: string): void {
     // ignore localStorage failures
   }
 }
-

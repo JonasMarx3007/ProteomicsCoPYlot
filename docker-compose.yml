@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        FRONTEND_BASE_PATH: "/tool/"
-        FRONTEND_API_BASE: "/tool"
+        FRONTEND_BASE_PATH: "/"
+        FRONTEND_API_BASE: ""
         FRONTEND_TOOL_ACCESS_AUTH: "1"
         FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     container_name: proteomics-copylot
@@ -21,9 +21,26 @@ services:
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
       COPYLOT_SESSION_COOKIE_NAME: "copylot_tool_session_id"
+      COPYLOT_TRUSTED_PROXY_IPS: "${COPYLOT_TRUSTED_PROXY_IPS:-}"
+      COPYLOT_HEAVY_MAX_CONCURRENCY: "${COPYLOT_HEAVY_MAX_CONCURRENCY:-2}"
+      COPYLOT_HEAVY_MAX_QUEUE: "${COPYLOT_HEAVY_MAX_QUEUE:-8}"
+      COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS: "${COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS:-20}"
+      COPYLOT_THREAD_WORKERS: "${COPYLOT_THREAD_WORKERS:-16}"
+      MPLCONFIGDIR: "/tmp/matplotlib"
+      XDG_CACHE_HOME: "/tmp/cache"
     volumes:
       - copylot_viewer_data:/app/viewer_data
       - ./local/tool_access.local.json:/app/local/tool_access.local.json:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=${COPYLOT_CONTAINER_TMPFS_SIZE:-2g}
+    mem_limit: "${COPYLOT_CONTAINER_MEMORY_LIMIT:-12g}"
+    cpus: "${COPYLOT_CONTAINER_CPUS:-4.0}"
 
 volumes:
   copylot_viewer_data:

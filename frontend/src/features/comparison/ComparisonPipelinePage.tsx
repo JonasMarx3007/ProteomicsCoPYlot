@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getComparisonOptions, getComparisonTable } from "../../lib/api";
+import { buildPlotUrl, getComparisonOptions, getComparisonTable, isAbortError } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -9,7 +10,12 @@ import {
 } from "../../lib/plotDownload";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
-import type { AnnotationKind, ComparisonOptionsResponse, ComparisonTab } from "../../lib/types";
+import type {
+  AnnotationKind,
+  ComparisonOptionsResponse,
+  ComparisonTab,
+  VisualizationDataSource,
+} from "../../lib/types";
 
 type Props = {
   activeTab: ComparisonTab;
@@ -45,6 +51,11 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       : "protein";
   });
   const [options, setOptions] = useState<ComparisonOptionsResponse | null>(null);
+  const [dataSource, setDataSource] = useState<VisualizationDataSource>(() => {
+    const value = String(persisted.dataSource ?? "log2").trim();
+    // "data" is the historical spelling for this control's default.
+    return value === "filtered" || value === "imputed" || value === "auto" ? value : "log2";
+  });
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
@@ -94,11 +105,12 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   useEffect(() => {
     writePersistedUiState("comparison.pipeline.v1", {
       kind,
+      dataSource,
       downloadFormat,
       pearson,
       venn,
     });
-  }, [kind, downloadFormat, pearson, venn]);
+  }, [kind, dataSource, downloadFormat, pearson, venn]);
 
   const hasKind = availableKinds.includes(kind);
 
@@ -120,28 +132,31 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    setOptions(null);
     setOptionsLoading(true);
     setOptionsError(null);
-    getComparisonOptions(kind)
+    getComparisonOptions(kind, dataSource, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setOptions(payload);
+        if (payload.dataSource !== dataSource) {
+          setDataSource(payload.dataSource);
+        }
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setOptions(null);
         setOptionsError(err instanceof Error ? err.message : "Failed to load comparison options");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setOptionsLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [hasKind, kind]);
+  }, [hasKind, kind, dataSource]);
 
   useEffect(() => {
     if (!options) return;
@@ -197,13 +212,15 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }, [venn]);
 
   const plotView = useMemo<PlotView>(() => {
-    if (!hasKind) return null;
+    void advancedPlotSignal;
+    if (!hasKind || options?.dataSource !== dataSource) return null;
 
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
       const params: Record<string, string | number | boolean> = {
         type: pearson.type,
         mode: pearson.mode,
+        dataSource,
         sample1: pearson.sample1,
         sample2: pearson.sample2,
         condition1: pearson.condition1,
@@ -237,6 +254,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (!vennReady) return null;
     const params: Record<string, string | number | boolean> = {
       mode: venn.mode,
+      dataSource,
       first: venn.first,
       second: venn.second,
       third: venn.third,
@@ -257,7 +275,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       renderMode: "image",
       url: buildPlotUrl(`/api/plots/comparison/${kind}/venn.png`, params),
     };
-  }, [activeTab, hasKind, kind, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce, advancedPlotSignal]);
+  }, [activeTab, hasKind, kind, dataSource, options?.dataSource, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce, advancedPlotSignal]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.renderMode !== "image") return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -268,11 +286,12 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }, [plotView, downloadFormat]);
 
   const tableRequest = useMemo<TableRequest>(() => {
-    if (!hasKind) return null;
+    if (!hasKind || options?.dataSource !== dataSource) return null;
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
       const params: Record<string, string | number | boolean> = {
         mode: pearson.mode,
+        dataSource,
         sample1: pearson.sample1,
         sample2: pearson.sample2,
         condition1: pearson.condition1,
@@ -288,6 +307,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (!vennReady) return null;
     const params: Record<string, string | number | boolean> = {
       mode: venn.mode,
+      dataSource,
       first: venn.first,
       second: venn.second,
       third: venn.third,
@@ -302,6 +322,8 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }, [
     activeTab,
     hasKind,
+    dataSource,
+    options?.dataSource,
     pearsonReady,
     pearson.mode,
     pearson.sample1,
@@ -331,6 +353,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       activeTab === "pearson"
         ? [
             `kind=${kind}`,
+            `dataSource=${dataSource}`,
             "tab=pearson",
             `type=${pearson.type}`,
             `mode=${pearson.mode}`,
@@ -343,6 +366,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
           ]
         : [
             `kind=${kind}`,
+            `dataSource=${dataSource}`,
             "tab=venn",
             `mode=${venn.mode}`,
             `first=${sanitize(venn.first)}`,
@@ -361,6 +385,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     activeTab,
     hasKind,
     kind,
+    dataSource,
     pearson.type,
     pearson.mode,
     pearson.sample1,
@@ -389,26 +414,25 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
-    getComparisonTable(kind, tableRequest.tab, tableRequest.params)
+    getComparisonTable(kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setTableRows(payload.rows ?? []);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setTableRows([]);
         setTableError(err instanceof Error ? err.message : "Failed to load comparison table");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setTableLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [hasKind, kind, tableRequest]);
 
@@ -444,24 +468,42 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Comparison Pipeline</h2>
-        <div className="mt-4 max-w-xs">
-          <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
-          <select
-            value={kindOptions.length === 0 ? "" : kind}
-            onChange={(event) => setKind(event.target.value as AnnotationKind)}
-            disabled={kindOptions.length === 0}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-          >
-            {kindOptions.length === 0 ? (
-              <option value="">No dataset available</option>
-            ) : (
-              kindOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))
-            )}
-          </select>
+        <div className="mt-4 grid max-w-2xl gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="mb-2 block font-medium text-slate-700">Dataset level</span>
+            <select
+              value={kindOptions.length === 0 ? "" : kind}
+              onChange={(event) => setKind(event.target.value as AnnotationKind)}
+              disabled={kindOptions.length === 0}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+            >
+              {kindOptions.length === 0 ? (
+                <option value="">No dataset available</option>
+              ) : (
+                kindOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-2 block font-medium text-slate-700">Data source</span>
+            <select
+              value={dataSource}
+              onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
+              disabled={!hasKind || optionsLoading}
+              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+            >
+              <option value="log2">Log2 data</option>
+              {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
+              {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
+            </select>
+            <span className="mt-2 block text-xs text-slate-500">
+              Log2 data is the complete matrix before filtering.
+            </span>
+          </label>
         </div>
       </section>
 
@@ -789,9 +831,9 @@ function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={onWidthChange} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={onHeightChange} />
-      <NumericField label="DPI" value={dpi} onChange={onDpiChange} step={1} />
+      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
+      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} step={1} />
     </div>
   );
 }
@@ -858,25 +900,22 @@ function NumericField({
   onChange: (value: number) => void;
   step?: number;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -887,7 +926,7 @@ function NumericField({
         lang="en-US"
         inputMode="decimal"
         step={step}
-        value={draft}
+        value={displayedValue}
         onChange={(event) => {
           const normalized = event.target.value.replace(",", ".");
           setDraft(normalized);

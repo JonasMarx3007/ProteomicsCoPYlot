@@ -103,7 +103,7 @@ function ExternalLinkButton({ href, children }: { href: string; children: string
 function PeptideCollapseTool() {
   const [inputFile, setInputFile] = useState<File | null>(null);
   const [cutoff, setCutoff] = useState(0);
-  const [collapseVersion, setCollapseVersion] = useState<"newest" | "legacy">("newest");
+  const [collapseVersion, setCollapseVersion] = useState<"fixed" | "newest" | "legacy">("fixed");
   const [downloadName, setDownloadName] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [running, setRunning] = useState(false);
@@ -196,9 +196,10 @@ function PeptideCollapseTool() {
             <span className="mb-2 block font-medium text-slate-700">Collapse version</span>
             <select
               value={collapseVersion}
-              onChange={(event) => setCollapseVersion(event.target.value as "newest" | "legacy")}
+              onChange={(event) => setCollapseVersion(event.target.value as "fixed" | "newest" | "legacy")}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
             >
+              <option value="fixed">Peptide collapse (Jonas)</option>
               <option value="newest">Newest (Yue Yang)</option>
               <option value="legacy">Legacy (Denis Oleynik)</option>
             </select>

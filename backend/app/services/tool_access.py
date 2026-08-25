@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import json
 import os
@@ -7,7 +9,11 @@ import secrets
 from pathlib import Path
 from threading import RLock
 
+from app.services.password_hashing import validate_password_hash, verify_password
 from app.services.session_context import get_session_id
+
+LOGGER = logging.getLogger(__name__)
+
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -65,7 +71,10 @@ def _load_access(project_root: Path | None = None) -> dict[str, object]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in {path}.") from exc
+        LOGGER.error("Invalid JSON in tool access file %s: %s", path, exc)
+        raise ValueError(
+            f"The tool access file '{path.name}' does not contain valid JSON."
+        ) from exc
     if not isinstance(data, dict):
         raise ValueError("Tool access file must contain a JSON object.")
     return data
@@ -76,6 +85,13 @@ def _password_hash(data: dict[str, object]) -> str:
     if raw is None:
         raise ValueError("Tool access file must define password_sha256.")
     return _normalize_sha256(str(raw))
+
+
+def _password_pbkdf2_hash(data: dict[str, object]) -> str:
+    raw = str(data.get("password_pbkdf2_sha256", "")).strip()
+    if raw:
+        validate_password_hash(raw)
+    return raw
 
 
 def _token_hashes(data: dict[str, object]) -> list[str]:
@@ -100,10 +116,50 @@ def tool_session_authenticated() -> bool:
         return get_session_id() in _SESSION_AUTH
 
 
+def _warn_about_legacy_credential(data: dict[str, object]) -> None:
+    """Make a weak credential form visible rather than silently accepted.
+
+    `password_sha256` stays supported for compatibility, so this only reports.
+    It has no salt and no key stretching, so a human-chosen password falls to a
+    precomputed table if the access file is ever read. The viewer portal already
+    warns about exactly this; tool access accepted it silently, so the same
+    deployment was told about one weak credential and not the other.
+
+    The credential is never logged.
+    """
+    if str(data.get("password_pbkdf2_sha256", "")).strip():
+        return
+    if not str(data.get("password_sha256", "")).strip():
+        return
+    LOGGER.warning(
+        "Tool access authenticates with an unsalted SHA-256 hash; it has no salt and no "
+        "key stretching. Prefer password_pbkdf2_sha256 for published deployments "
+        "(see docs/INSTALLATION.md for how to generate one)."
+    )
+
+
+def validate_tool_access_configuration() -> None:
+    data = _load_access()
+    pbkdf2_hash = _password_pbkdf2_hash(data)
+    _warn_about_legacy_credential(data)
+    if not pbkdf2_hash:
+        legacy_hash = _password_hash(data)
+        if not any(character != "0" for character in legacy_hash):
+            raise ValueError("Tool password hash still contains the example placeholder.")
+    for token_hash in _token_hashes(data):
+        if not any(character != "0" for character in token_hash):
+            raise ValueError("Tool access token still contains the example placeholder.")
+
+
 def authenticate_tool_password(password: str, *, project_root: Path | None = None) -> None:
     data = _load_access(project_root)
-    expected = _password_hash(data)
-    if not secrets.compare_digest(_sha256(str(password or "")), expected):
+    candidate = str(password or "")
+    pbkdf2_hash = _password_pbkdf2_hash(data)
+    matches = verify_password(candidate, pbkdf2_hash) if pbkdf2_hash else secrets.compare_digest(
+        _sha256(candidate),
+        _password_hash(data),
+    )
+    if not matches:
         raise ValueError("Invalid tool password.")
     with _SESSION_LOCK:
         _SESSION_AUTH.add(get_session_id())

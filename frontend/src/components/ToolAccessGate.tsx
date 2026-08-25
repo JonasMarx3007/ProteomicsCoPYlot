@@ -2,6 +2,7 @@ import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getToolAuthStatus, loginTool, loginToolLink, logoutTool } from "../lib/api";
+import { fragmentCredential, removeCredentialQuery } from "../lib/accessTokens";
 import { IS_VIEWER_MODE } from "../lib/appMode";
 import type { ToolAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
@@ -13,21 +14,17 @@ type Props = {
 
 type GatePhase = "checking" | "ready" | "error";
 
-const TOOL_ACCESS_AUTH_ENABLED = (() => {
-  const raw = String(import.meta.env.VITE_TOOL_ACCESS_AUTH ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-})();
-
 let toolResetOnLoadAttempted = false;
 
 function readToolToken(): string {
   try {
-    const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
-    const hashParams = new URLSearchParams(hash);
-    const hashToken = hashParams.get("tool")?.trim() || hashParams.get("toolToken")?.trim() || "";
-    if (hashToken) return hashToken;
-    const params = new URLSearchParams(window.location.search);
-    return params.get("tool")?.trim() || params.get("toolToken")?.trim() || "";
+    const names = ["tool", "toolToken"] as const;
+    const next = removeCredentialQuery(window.location.href, names);
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) {
+      window.history.replaceState(null, document.title, next);
+    }
+    return fragmentCredential(window.location.hash, names);
   } catch {
     return "";
   }
@@ -57,9 +54,10 @@ export default function ToolAccessGate({ children }: Props) {
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [linkToken] = useState(readToolToken);
 
   const refreshStatus = useCallback(async () => {
-    if (IS_VIEWER_MODE || !TOOL_ACCESS_AUTH_ENABLED) {
+    if (IS_VIEWER_MODE) {
       setStatus({ enabled: false, authenticated: true });
       setPhase("ready");
       return;
@@ -87,12 +85,16 @@ export default function ToolAccessGate({ children }: Props) {
   }, []);
 
   useEffect(() => {
-    const token = readToolToken();
-    if (!IS_VIEWER_MODE && TOOL_ACCESS_AUTH_ENABLED && token) {
+    refreshStatus().catch(() => {});
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (phase !== "ready" || !status?.enabled) return;
+    if (linkToken) {
       toolResetOnLoadAttempted = true;
       setPhase("checking");
       setStatusError(null);
-      loginToolLink(token)
+      loginToolLink(linkToken)
         .then(() => {
           clearToolTokenFromUrl();
           return refreshStatus();
@@ -103,13 +105,8 @@ export default function ToolAccessGate({ children }: Props) {
           setStatusError(error instanceof Error ? error.message : "Tool access link failed.");
           setPhase("error");
         });
-      return;
     }
-
-    refreshStatus().catch(() => {
-      // refreshStatus already updates visible state.
-    });
-  }, [refreshStatus]);
+  }, [linkToken, phase, refreshStatus, status?.enabled]);
 
   const requiresLogin = useMemo(() => {
     if (IS_VIEWER_MODE) return false;

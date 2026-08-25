@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field
 
 from app.schemas.annotation import AnnotationKind
 
-DataSource = Literal["filtered", "log2", "raw"]
+DataSource = Literal["filtered", "log2", "raw", "imputed"]
+# One vocabulary for every pipeline. "data" is the historical spelling and is
+# still accepted on the wire; it resolves to each path's own default, which is
+# why it is not a canonical value.
+VisualizationDataSource = Literal["data", "auto", "log2", "filtered", "imputed"]
 
 
 class HistogramBin(BaseModel):
@@ -93,8 +97,8 @@ class ImputationRunRequest(BaseModel):
     adjustStd: float = Field(default=0.3, ge=0.0)
     downShift: float = Field(default=1.8, ge=0.0)
     width: float = Field(default=0.3, ge=0.0)
-    seed: int = 1337
-    sampleWise: bool = False
+    seed: int = Field(default=1337, ge=0, le=2_147_483_647)
+    sampleWise: bool = True
 
 
 class ImputationResultResponse(BaseModel):

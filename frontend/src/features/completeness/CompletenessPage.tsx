@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getCompletenessTables, getQcPlotOptions } from "../../lib/api";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { buildPlotUrl, getCompletenessTables, getPeptideQuantityOptions, getQcPlotOptions, isAbortError } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -149,6 +150,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const [sampleOptions, setSampleOptions] = useState<string[]>([]);
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
   const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
+  const [peptideQuantityColumns, setPeptideQuantityColumns] = useState<string[]>([]);
+  const [peptideQuantityRequiresSelection, setPeptideQuantityRequiresSelection] = useState(false);
+  const [peptideQuantityError, setPeptideQuantityError] = useState<string | null>(null);
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -161,6 +165,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
 
   const [missingPlot, setMissingPlot] = useState({
+    quantityColumn: String(persistedMissing.quantityColumn ?? ""),
     header: Boolean(persistedMissing.header ?? true),
     text: Boolean(persistedMissing.text ?? true),
     binCount: Number(persistedMissing.binCount ?? 0),
@@ -225,7 +230,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     return options;
   }, [activeTab, kindOptions, datasets]);
 
-  async function loadTables() {
+  const loadTables = useCallback(async (signal?: AbortSignal) => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setTableData(null);
       setTableError("Please upload a protein, phospho, or phosphoprotein dataset first.");
@@ -234,18 +239,23 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     try {
       setTableLoading(true);
       setTableError(null);
-      const data = await getCompletenessTables(kind, {
-        includeId: tables.includeId,
-        outlierThreshold: tables.outlierThreshold,
-      });
+      const data = await getCompletenessTables(
+        kind,
+        {
+          includeId: tables.includeId,
+          outlierThreshold: tables.outlierThreshold,
+        },
+        { signal }
+      );
       setTableData(data);
     } catch (err) {
+      if (isAbortError(err)) return;
       setTableData(null);
       setTableError(err instanceof Error ? err.message : "Failed to load completeness tables");
     } finally {
-      setTableLoading(false);
+      if (!signal?.aborted) setTableLoading(false);
     }
-  }
+  }, [availableKinds, kind, tables.includeId, tables.outlierThreshold]);
 
   useEffect(() => {
     if (activeKindOptions.length === 0) {
@@ -258,29 +268,61 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   }, [activeKindOptions, kind]);
 
   useEffect(() => {
+    if ((kind !== "peptide" && kind !== "precursor") || !datasets?.peptide) {
+      setPeptideQuantityColumns([]);
+      setPeptideQuantityRequiresSelection(false);
+      setPeptideQuantityError(null);
+      return;
+    }
+    const controller = new AbortController();
+    getPeptideQuantityOptions({ signal: controller.signal })
+      .then((payload) => {
+        setPeptideQuantityColumns(payload.columns);
+        setPeptideQuantityRequiresSelection(payload.requiresSelection);
+        setPeptideQuantityError(
+          payload.columns.length === 0
+            ? "No supported peptide abundance column was found in this dataset."
+            : null
+        );
+        setMissingPlot((current) => {
+          if (current.quantityColumn && payload.columns.includes(current.quantityColumn)) return current;
+          return { ...current, quantityColumn: payload.defaultColumn ?? "" };
+        });
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        setPeptideQuantityColumns([]);
+        setPeptideQuantityRequiresSelection(false);
+        setPeptideQuantityError(
+          error instanceof Error ? error.message : "Failed to load peptide abundance columns"
+        );
+      });
+    return () => controller.abort();
+  }, [kind, datasets?.peptide]);
+
+  useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setSampleOptions([]);
       setSampleDisplayLabels({});
       setSampleDisplayLabelsWithId({});
       return;
     }
-    let cancelled = false;
-    getQcPlotOptions(kind)
+    const controller = new AbortController();
+    getQcPlotOptions(kind, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         const samples = Array.from(new Set((payload.samples ?? []).map((value) => value.trim()).filter(Boolean)));
         setSampleOptions(samples);
         setSampleDisplayLabels(payload.sampleLabels ?? {});
         setSampleDisplayLabelsWithId(payload.sampleLabelsWithId ?? {});
       })
-      .catch(() => {
-        if (cancelled) return;
+      .catch((error) => {
+        if (isAbortError(error)) return;
         setSampleOptions([]);
         setSampleDisplayLabels({});
         setSampleDisplayLabelsWithId({});
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [kind, availableKinds]);
 
@@ -302,11 +344,16 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   useEffect(() => {
     if (activeTab !== "tables") return;
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) return;
-    loadTables();
-  }, [activeTab, kind, tables.includeId, tables.outlierThreshold, availableKinds]);
+    const controller = new AbortController();
+    loadTables(controller.signal);
+    return () => controller.abort();
+  }, [activeTab, kind, availableKinds, loadTables]);
 
   const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
-  const activeAdvancedRenderSettings = advancedRenderByTab[activeTab] ?? {};
+  const activeAdvancedRenderSettings = useMemo(
+    () => advancedRenderByTab[activeTab] ?? {},
+    [activeTab, advancedRenderByTab]
+  );
   const activeSampleDisplayLabels = useMemo(() => {
     const rawLabels = Object.fromEntries(sampleOptions.map((sample) => [sample, sample]));
     if (activeTab === "heatmap") {
@@ -364,6 +411,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
 
   const plotView = useMemo(() => {
     if (activeTab === "missingPlot") {
+      if ((kind === "peptide" || kind === "precursor") && (!missingPlot.quantityColumn || peptideQuantityError)) {
+        return null;
+      }
       return {
         title: "Missing Value Plot",
         filename: `completeness_missing_plot_${kind}.png`,
@@ -384,7 +434,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
       };
     }
     return null;
-  }, [activeTab, kind, missingPlot, heatmap, activeAdvancedParam]);
+  }, [activeTab, kind, missingPlot, heatmap, activeAdvancedParam, peptideQuantityError]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView) return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -449,6 +499,16 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
+        {(kind === "peptide" || kind === "precursor") && peptideQuantityError ? (
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {peptideQuantityError}
+          </div>
+        ) : null}
+        {(kind === "peptide" || kind === "precursor") && peptideQuantityRequiresSelection && !missingPlot.quantityColumn ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Select which abundance column should be used before rendering this plot.
+          </div>
+        ) : null}
       </section>
       ) : null}
 
@@ -513,7 +573,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
             <h3 className="text-lg font-semibold text-slate-900">Missing Value Tables</h3>
             <button
               type="button"
-              onClick={loadTables}
+              onClick={() => void loadTables()}
               disabled={tableLoading}
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -611,6 +671,18 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
             <Checkbox key="text" label="Toggle Text" checked={missingPlot.text} onChange={(v) => setMissingPlot({ ...missingPlot, text: v })} />,
           ]}
           inputs={[
+            ...((kind === "peptide" || kind === "precursor")
+              ? [
+                  <SelectField
+                    key="quantity-column"
+                    label="Abundance Column"
+                    value={missingPlot.quantityColumn}
+                    onChange={(value) => setMissingPlot({ ...missingPlot, quantityColumn: value })}
+                    options={peptideQuantityColumns}
+                    placeholder={peptideQuantityRequiresSelection ? "Select abundance column" : undefined}
+                  />,
+                ]
+              : []),
             <NumericField key="bin" label="Bin missing values" value={missingPlot.binCount} onChange={(v) => setMissingPlot({ ...missingPlot, binCount: Math.max(0, Math.round(v)) })} />,
             <NumericField key="text-size" label="Text Size" value={missingPlot.textSize} onChange={(v) => setMissingPlot({ ...missingPlot, textSize: Math.max(6, Math.min(24, Math.round(v))) })} />,
             <ColorField key="color" label="Bar Color" value={missingPlot.color} onChange={(value) => setMissingPlot({ ...missingPlot, color: value })} />,
@@ -704,9 +776,9 @@ function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="DPI" value={dpi} onChange={onDpiChange} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={onHeightChange} />
-      <NumericField label="Width (cm)" value={widthCm} onChange={onWidthChange} />
+      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
+      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
     </div>
   );
 }
@@ -737,25 +809,22 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -765,7 +834,7 @@ function NumericField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         onChange={(e) => {
           const normalized = e.target.value.replace(",", ".");
           setDraft(normalized);
@@ -783,6 +852,38 @@ function NumericField({
         }}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       />
+    </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+      >
+        {placeholder ? <option value="">{placeholder}</option> : null}
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

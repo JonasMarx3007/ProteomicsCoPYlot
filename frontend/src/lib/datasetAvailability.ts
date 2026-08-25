@@ -40,6 +40,21 @@ function consumeSkipBrowserSessionResetOnceFlag(): boolean {
   return false;
 }
 
+function hasSkipBrowserSessionResetOnceFlag(): boolean {
+  try {
+    const raw = String(globalThis.sessionStorage?.getItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY) ?? "")
+      .trim()
+      .toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function shouldResetClientStateOnBrowserLoad(): boolean {
+  return BROWSER_SESSION_RESET_ENABLED && !hasSkipBrowserSessionResetOnceFlag();
+}
+
 export function markSkipBrowserSessionResetOnce(): void {
   try {
     globalThis.sessionStorage?.setItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY, "1");
@@ -132,7 +147,12 @@ export function useCurrentDatasetsSnapshot() {
   }, [refresh]);
 
   useEffect(() => {
-    return subscribeDatasetStateChanged(() => {
+    return subscribeDatasetStateChanged((snapshot) => {
+      if (snapshot) {
+        setDatasets(snapshot);
+        setError(null);
+        return;
+      }
       refresh(true).catch(() => {
         // keep previous snapshot if refresh fails transiently
       });

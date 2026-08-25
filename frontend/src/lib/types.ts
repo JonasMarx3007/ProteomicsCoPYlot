@@ -117,11 +117,39 @@ export type ConditionAssignment = {
   columns: string[];
 };
 
+export type SamplePairAssignment = {
+  condition1Sample: string;
+  condition2Sample: string;
+};
+
+export type PairingUpdateRequest = {
+  kind: AnnotationKind;
+  condition1: string;
+  condition2: string;
+  pairs: SamplePairAssignment[];
+};
+
+export type NormalizationMethod = "none" | "median" | "quantile" | "vsn";
+
+/**
+ * Which normalization methods this installation can run. VSN is delegated to
+ * Bioconductor `vsn` via Rscript rather than reimplemented, so it is only
+ * offered when R and the package are both present.
+ */
+export type NormalizationCapabilityResponse = {
+  methods: NormalizationMethod[];
+  vsnAvailable: boolean;
+  vsnUnavailableReason: string | null;
+  vsnPackageVersion: string | null;
+};
+
 export type AnnotationFilterConfig = {
   method: FilterMethod;
   minPresent: number;
   minPercentage: number;
   mode: FilterMode;
+  /** Applied globally to the log2 values before filtering; never per condition. */
+  normalization: NormalizationMethod;
 };
 
 export type AnnotationGenerateRequest = {
@@ -157,7 +185,7 @@ export type AnnotationImputationInfo = {
 };
 
 export type PhosprotAggregationMode =
-  | "sum_mean_impute"
+  | "robust_site_median"
   | "sum_propagate_na"
   | "sum_ignore_na"
   | "mean";
@@ -210,10 +238,17 @@ export type PeptideOverviewResponse = {
   rows: number;
   columns: number;
   columnNames: string[];
+  availableSamples: string[];
   availableProteins: string[];
   metadataLoaded: boolean;
   metadataFilename: string | null;
   warnings: string[];
+};
+
+export type PeptideQuantityOptionsResponse = {
+  columns: string[];
+  defaultColumn: string | null;
+  requiresSelection: boolean;
 };
 
 export type PeptideSpecies = "human" | "mouse";
@@ -227,7 +262,7 @@ export type PeptideCoverageResponse = {
   warnings: string[];
 };
 
-export type DataSource = "filtered" | "log2" | "raw";
+export type DataSource = "filtered" | "log2" | "raw" | "imputed";
 
 export type ImputationRunRequest = {
   kind: AnnotationKind;
@@ -357,6 +392,22 @@ export type BoxplotPoint = {
   max: number;
 };
 
+/**
+ * Replicate CV for one condition, summarised across features. CV is computed
+ * per feature across a condition's replicates on the linear intensity scale;
+ * it is deliberately per-condition rather than per-sample, because a single
+ * sample has no replicates to vary across.
+ */
+export type ConditionCvPoint = {
+  condition: string;
+  mean: number;
+  median: number;
+  q1: number;
+  q3: number;
+  lowerWhisker: number;
+  upperWhisker: number;
+};
+
 export type QcSummaryResponse = {
   kind: AnnotationKind;
   sourceUsed: DataSource;
@@ -364,8 +415,20 @@ export type QcSummaryResponse = {
   coverage: SampleMetricPoint[];
   intensityHistogram: HistogramBin[];
   boxplot: BoxplotPoint[];
-  cv: SampleMetricPoint[];
+  cv: ConditionCvPoint[];
   warnings: string[];
+};
+
+/**
+ * How many features the PCA projection is actually built from. Dimensionality
+ * reduction drops any feature with a missing value, so the projection can rest
+ * on a small, abundance-biased subset; this makes that visible.
+ */
+export type QcPcaFeatureSummary = {
+  featuresTotal: number;
+  featuresComplete: number;
+  featuresUsed: number;
+  featuresRequired: number;
 };
 
 export type QcPlotOptionsResponse = {
@@ -376,17 +439,33 @@ export type QcPlotOptionsResponse = {
   sampleLabelsWithId?: Record<string, string>;
 };
 
+export type PeptideMetadataGenerateRequest = {
+  conditions: ConditionAssignment[];
+};
+
 export type QcTableResponse = {
   rows: Record<string, unknown>[];
 };
 
 export type StatsIdentifier = "workflow" | "genes";
-export type StatsTestType = "unpaired" | "paired";
+/**
+ * Design and variance model in one field. "unpaired" and "paired" keep their
+ * original meaning (pooled Student's t), so previously saved requests and
+ * reports resolve to exactly the test they always did.
+ */
+export type StatsTestType =
+  | "unpaired"
+  | "unpaired_welch"
+  | "unpaired_moderated"
+  | "paired"
+  | "paired_moderated";
+export type SimulationTestType = "unpaired" | "unpaired_welch";
 export type AnovaSource = "anova" | "anova_cluster";
+export type AnovaPostHoc = "none" | "tukey";
 export type StatsTab =
   | "volcano"
   | "anova"
-  | "gsea"
+  | "ora"
   | "pathwayHeatmap"
   | "simulation";
 
@@ -401,6 +480,8 @@ export type StatisticalOptionsResponse = {
   sourceUsed: DataSource;
   imputedAvailable: boolean;
   availableConditions: string[];
+  samplesByCondition: Record<string, string[]>;
+  pairIdsBySample: Record<string, string>;
   availableIdentifiers: { key: StatsIdentifier; label: string }[];
   warnings: string[];
 };
@@ -437,7 +518,7 @@ export type VolcanoResultResponse = {
 
 export type EnrichmentRequest = {
   kind: AnnotationKind;
-  source: "volcano" | "volcano_control";
+  source: "volcano" | "volcano_control" | "anova";
   dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
@@ -447,10 +528,13 @@ export type EnrichmentRequest = {
   log2fcThreshold: number;
   testType: StatsTestType;
   useUncorrected: boolean;
+  selectedCluster?: number | null;
+  nClusters: number;
   adjPValueCutoff: number;
   topN: number;
   minTermSize: number;
   maxTermSize: number;
+  backgroundMode: "experiment" | "global";
 };
 
 export type EnrichmentTerm = {
@@ -468,23 +552,46 @@ export type EnrichmentTerm = {
 export type EnrichmentResultResponse = {
   kind: AnnotationKind;
   sourceUsed: DataSource;
+  selectedCluster: number | null;
+  clusterGenes: string[];
+  clusterTerms: EnrichmentTerm[];
   upGenes: string[];
   downGenes: string[];
   upTerms: EnrichmentTerm[];
   downTerms: EnrichmentTerm[];
+  backgroundMode: "experiment" | "global";
+  backgroundGenes: string[];
+  backgroundSize: number;
+  annotatedBackgroundSize: number;
+  organism: string;
+  correctionMethod: string;
+  upstreamCorrectionMethod: string;
+  databaseSha256: string;
+  testedTermCount: number;
   warnings: string[];
 };
 
 export type ListEnrichmentRequest = {
   genes: string[];
+  backgroundMode: "experiment" | "global";
+  backgroundGenes: string[];
   topN: number;
   minTermSize: number;
   maxTermSize: number;
+  adjPValueCutoff: number;
 };
 
 export type ListEnrichmentResultResponse = {
   genes: string[];
   terms: EnrichmentTerm[];
+  backgroundMode: "experiment" | "global";
+  backgroundGenes: string[];
+  backgroundSize: number;
+  annotatedBackgroundSize: number;
+  organism: string;
+  correctionMethod: string;
+  databaseSha256: string;
+  testedTermCount: number;
   warnings: string[];
 };
 
@@ -494,10 +601,15 @@ export type PathwayOptionsResponse = {
 
 export type SimulationRequest = {
   kind: AnnotationKind;
+  source: "volcano";
+  dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
+  identifier: StatsIdentifier;
   pValueThreshold: number;
   log2fcThreshold: number;
+  testType: SimulationTestType;
+  useUncorrected: boolean;
   varianceMultiplier: number;
   sampleSizeOverride: number;
 };
@@ -505,10 +617,21 @@ export type SimulationRequest = {
 export type SimulationResultResponse = {
   kind: AnnotationKind;
   sourceUsed: DataSource;
+  testType: SimulationTestType;
+  condition1: string;
+  condition2: string;
+  sampleSizeMode: "observed" | "override";
+  sampleSizeOverride: number;
+  effectiveSampleSizeCondition1Min: number;
+  effectiveSampleSizeCondition1Max: number;
+  effectiveSampleSizeCondition2Min: number;
+  effectiveSampleSizeCondition2Max: number;
+  labelColumn: string;
   totalRows: number;
   upregulatedCount: number;
   downregulatedCount: number;
   notSignificantCount: number;
+  rows?: Record<string, unknown>[];
   warnings: string[];
 };
 
@@ -561,9 +684,17 @@ export type SingleProteinOptionsResponse = {
   conditionCount: number;
   identifier: SingleProteinIdentifier;
   availableIdentifiers: { key: SingleProteinIdentifier; label: string }[];
+  dataSource: VisualizationDataSource;
+  filteredAvailable: boolean;
+  imputedAvailable: boolean;
 };
 
 export type SingleProteinIdentifier = "workflow" | "genes";
+// One vocabulary for every pipeline. "auto" takes the first available of
+// filtered, log2, raw; "log2" is the complete matrix before filtering. "data"
+// is the historical spelling, still accepted by the API, where it resolves to
+// each path's own default -- send a canonical value instead.
+export type VisualizationDataSource = "data" | "auto" | "log2" | "filtered" | "imputed";
 
 export type SingleProteinTableResponse = {
   rows: Record<string, unknown>[];
@@ -571,6 +702,8 @@ export type SingleProteinTableResponse = {
 
 export type PhosphoOptionsResponse = {
   conditions: string[];
+  samplesByCondition: Record<string, string[]>;
+  pairIdsBySample: Record<string, string>;
   features: string[];
   imputedAvailable: boolean;
 };
@@ -586,6 +719,9 @@ export type ComparisonOptionsResponse = {
   conditions: string[];
   sampleCount: number;
   conditionCount: number;
+  dataSource: VisualizationDataSource;
+  filteredAvailable: boolean;
+  imputedAvailable: boolean;
 };
 
 export type ComparisonTableResponse = {
@@ -634,7 +770,7 @@ export type PeptideCollapseRequest = {
   inputPath: string;
   outputPath: string | null;
   cutoff: number;
-  collapseVersion: "newest" | "legacy";
+  collapseVersion: "fixed" | "newest" | "legacy";
 };
 
 export type PeptideCollapseResponse = {
@@ -642,7 +778,7 @@ export type PeptideCollapseResponse = {
   inputPath: string;
   outputPath: string | null;
   cutoff: number;
-  collapseVersion: "newest" | "legacy";
+  collapseVersion: "fixed" | "newest" | "legacy";
   rows: number | null;
   columns: number | null;
   columnNames: string[];
@@ -771,6 +907,18 @@ export type OllamaChatRequest = {
   temperature?: number;
   maxTokens?: number;
   ollamaUrl?: string;
+  analysisContext?: string;
+};
+
+export type CloudAiConsentStatus = {
+  provider: ChatProvider;
+  providerLabel: string;
+  required: boolean;
+  granted: boolean;
+  disclosureVersion: string;
+  transmitted: string[];
+  excluded: string[];
+  notice: string;
 };
 
 export type OllamaChatResponse = {
@@ -818,7 +966,7 @@ export type AnovaRequest = {
   showDendrograms: boolean;
   showLegend: boolean;
   nClusters: number;
-  minClusterFraction: number;
+  postHoc: AnovaPostHoc;
 };
 
 export type AnovaResultResponse = {
@@ -831,6 +979,9 @@ export type AnovaResultResponse = {
   clusterCount: number | null;
   rows: Record<string, unknown>[];
   clusterRows: Record<string, unknown>[];
+  postHocMethod: string | null;
+  postHocRows: Record<string, unknown>[];
+  postHocSignificantCount: number;
   warnings: string[];
 };
 

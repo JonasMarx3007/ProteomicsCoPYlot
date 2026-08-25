@@ -10,6 +10,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+release/
 .vite/
 /package-lock.json
 
@@ -17,6 +18,39 @@ build/
 local/
 *.local.*
 *.log
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+!*.example.pem
+!*.example.key
+!*.example.p12
+!*.example.pfx
+/*.sql
+/*.sql.gz
+/*.dump
+/*.dump.gz
+/*.bak
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.db-journal
+*.db-shm
+*.db-wal
+!*.example.sqlite
+!*.example.sqlite3
+!*.example.db
 STRUCTURE_MAP*.md
 functions_maintanance.md
 functions_maintenance.md
@@ -24,7 +58,6 @@ functions_maintenance.md
 # Local agent state and ad-hoc automation
 .agents/
 scripts/
-tests/
 
 # Notebook and editor state
 .ipynb_checkpoints/

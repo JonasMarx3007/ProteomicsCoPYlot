@@ -3,28 +3,59 @@ from __future__ import annotations
 from typing import Any
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ChatRole = Literal["system", "user", "assistant"]
 ChatProvider = Literal["ollama", "openai", "anthropic", "gemini"]
 ModelContextTier = Literal["compact", "standard", "extended"]
+_CHAT_MESSAGE_MAX_CHARS = 32_000
+_CHAT_HISTORY_MESSAGE_MAX_CHARS = 256_000
+_CHAT_HISTORY_MAX_MESSAGES = 64
+_CHAT_REQUEST_MAX_CHARS = 1_000_000
 
 
 class ChatMessage(BaseModel):
     role: ChatRole
-    content: str = Field(default="", min_length=0)
+    content: str = Field(default="", min_length=0, max_length=_CHAT_HISTORY_MESSAGE_MAX_CHARS)
 
 
 class OllamaChatRequest(BaseModel):
-    message: str = Field(default="", min_length=1)
-    messages: list[ChatMessage] = Field(default_factory=list)
+    message: str = Field(default="", min_length=1, max_length=_CHAT_MESSAGE_MAX_CHARS)
+    messages: list[ChatMessage] = Field(default_factory=list, max_length=_CHAT_HISTORY_MAX_MESSAGES)
     provider: ChatProvider = "ollama"
-    model: str | None = Field(default=None, min_length=1)
+    model: str | None = Field(default=None, min_length=1, max_length=512)
     gpuEnabled: bool | None = None
-    apiKey: str | None = Field(default=None, min_length=1)
-    temperature: float | None = None
-    maxTokens: int | None = None
-    ollamaUrl: str | None = Field(default=None, min_length=1)
+    apiKey: str | None = Field(default=None, min_length=1, max_length=8192)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    maxTokens: int | None = Field(default=None, ge=1, le=131_072)
+    ollamaUrl: str | None = Field(default=None, min_length=1, max_length=2048)
+    analysisContext: str | None = Field(default=None, max_length=128_000)
+
+    @model_validator(mode="after")
+    def validate_total_text_size(self) -> "OllamaChatRequest":
+        total_chars = (
+            len(self.message)
+            + sum(len(item.content) for item in self.messages)
+            + len(self.analysisContext or "")
+        )
+        if total_chars > _CHAT_REQUEST_MAX_CHARS:
+            raise ValueError("Chat request exceeds the total text limit.")
+        return self
+
+
+class CloudAiConsentVersionRequest(BaseModel):
+    disclosureVersion: str = Field(default="", min_length=1, max_length=64)
+
+
+class CloudAiConsentStatusResponse(BaseModel):
+    provider: ChatProvider
+    providerLabel: str
+    required: bool
+    granted: bool
+    disclosureVersion: str
+    transmitted: list[str] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
+    notice: str
 
 
 class OllamaChatResponse(BaseModel):
@@ -63,8 +94,8 @@ class ModelCapabilityResponse(BaseModel):
 
 
 class OllamaModelManageRequest(BaseModel):
-    model: str = Field(default="", min_length=1)
-    endpoint: str | None = Field(default=None, min_length=1)
+    model: str = Field(default="", min_length=1, max_length=512)
+    endpoint: str | None = Field(default=None, min_length=1, max_length=2048)
 
 
 class OllamaModelManageResponse(BaseModel):
@@ -78,9 +109,9 @@ class OllamaModelManageResponse(BaseModel):
 
 
 class ModuleContextRequest(BaseModel):
-    moduleKey: str = Field(default="", min_length=1)
-    workflow: str | None = Field(default=None, min_length=1)
-    mode: str | None = Field(default=None, min_length=1)
+    moduleKey: str = Field(default="", min_length=1, max_length=512)
+    workflow: str | None = Field(default=None, min_length=1, max_length=4096)
+    mode: str | None = Field(default=None, min_length=1, max_length=16_384)
     contextTier: ModelContextTier | None = None
 
 

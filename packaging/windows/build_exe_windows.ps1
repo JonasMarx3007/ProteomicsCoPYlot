@@ -3,7 +3,11 @@ param(
   [ValidateSet("Tool", "Viewer")]
   [string]$Target,
   [string]$ViewerProject = "",
-  [switch]$SkipFrontendBuild
+  [switch]$SkipFrontendBuild,
+  [ValidatePattern('^[A-Za-z0-9_.-]+$')]
+  [string]$ExecutableName = "",
+  [switch]$Sign,
+  [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,8 +22,55 @@ $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $IconPath = Join-Path $FrontendDir "public\favicon.ico"
 $FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
 $SpecDir = Join-Path $RootDir "build\specs"
+$ViewerBundleRoot = Join-Path $RootDir "build\viewer_bundle"
 $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
 $ViewerProjectRegex = '^[A-Za-z0-9_.-]{1,128}$'
+$VersionInfoScript = Join-Path $PSScriptRoot "new_windows_version_info.ps1"
+$SigningScript = Join-Path $PSScriptRoot "sign_windows_executables.ps1"
+
+if (-not $ExecutableName) {
+  $ExecutableName = if ($Target -eq "Viewer") { "DataViewer" } else { "ProteomicsCoPYlot" }
+}
+
+$ProductName = if ($Target -eq "Viewer") {
+  "Proteomics CoPYlot Data Viewer"
+}
+else {
+  "Proteomics CoPYlot"
+}
+$FileDescription = switch ($ExecutableName) {
+  "ProteomicsCoPYlot" { "Proteomics CoPYlot" }
+  "ProteomicsCoPYlotAI" { "Proteomics CoPYlot (AI)" }
+  "ProteomicsCoPYlotAIDev20" { "Proteomics CoPYlot (AI Dev20)" }
+  "DataViewer" { "Proteomics CoPYlot Data Viewer" }
+  "DataViewerAI" { "Proteomics CoPYlot Data Viewer (AI)" }
+  "DataViewerAIDev20" { "Proteomics CoPYlot Data Viewer (AI Dev20)" }
+  default { "$ProductName Windows application" }
+}
+$VersionInfoPath = Join-Path $SpecDir "$ExecutableName.version_info.txt"
+
+if (-not (Test-Path -LiteralPath $VersionInfoScript -PathType Leaf)) {
+  throw "Windows version-info generator missing: $VersionInfoScript"
+}
+
+& $VersionInfoScript `
+  -OutputPath $VersionInfoPath `
+  -ExecutableName $ExecutableName `
+  -ProductName $ProductName `
+  -FileDescription $FileDescription
+
+if ($Sign) {
+  if (-not (Test-Path -LiteralPath $SigningScript -PathType Leaf)) {
+    throw "Windows signing helper missing: $SigningScript"
+  }
+  $machineStore = $env:COPYLOT_SIGNING_CERT_MACHINE_STORE -eq "1"
+  & $SigningScript -ValidateOnly -MachineCertificateStore:$machineStore
+}
+
+if ($ValidateOnly) {
+  Write-Host "Validation successful for $ExecutableName.exe. No executable was compiled."
+  return
+}
 
 function Assert-LastExitCode {
   param(
@@ -103,6 +154,7 @@ function Invoke-PyInstallerBuild {
     "--specpath", $SpecDir,
     "--icon", $IconPath,
     "--name", $Name,
+    "--version-file", $VersionInfoPath,
     "--paths", $BackendDir,
     "--hidden-import", "uvicorn.logging",
     "--hidden-import", "uvicorn.loops.auto",
@@ -147,27 +199,84 @@ function Resolve-ViewerProjectBundle {
     throw "Invalid -ViewerProject '$ProjectName'. Allowed characters: letters, numbers, dot, underscore, hyphen."
   }
 
-  $candidates = @(
-    (Join-Path $RootDir "viewer_data\local\$ProjectName"),
-    (Join-Path $RootDir "viewer_data\$ProjectName"),
-    (Join-Path $RootDir "viewer_data\projects\$ProjectName")
-  )
+  if ($ProjectName -in @("local", "projects")) {
+    throw "Private viewer project roots cannot be bundled."
+  }
 
-  foreach ($candidate in $candidates) {
-    if (-not (Test-Path $candidate -PathType Container)) {
-      continue
-    }
-    $localConfig = Join-Path $candidate "viewer_config.local.json"
-    $defaultConfig = Join-Path $candidate "viewer_config.json"
-    if ((Test-Path $localConfig -PathType Leaf) -or (Test-Path $defaultConfig -PathType Leaf)) {
-      return @{
-        Project = $ProjectName
-        SourceDir = $candidate
-      }
+  $sourceDir = Join-Path $RootDir "viewer_data\$ProjectName"
+  $configPath = Join-Path $sourceDir "viewer_config.json"
+  if (-not (Test-Path $configPath -PathType Leaf)) {
+    throw "Public viewer project '$ProjectName' not found or missing viewer_config.json."
+  }
+
+  $publicViewerRoot = (Resolve-Path -LiteralPath (Join-Path $RootDir "viewer_data")).Path
+  $resolvedSourceDir = (Resolve-Path -LiteralPath $sourceDir).Path
+  if ((Split-Path -Parent $resolvedSourceDir) -ne $publicViewerRoot) {
+    throw "Viewer project '$ProjectName' must be a direct child of viewer_data."
+  }
+  $sourceItem = Get-Item -LiteralPath $resolvedSourceDir
+  if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    throw "Viewer project '$ProjectName' cannot be a symlink or junction."
+  }
+
+  $prefix = "viewer_data/$ProjectName/"
+  $trackedFiles = @(& git -C $RootDir ls-files -- "$prefix*")
+  Assert-LastExitCode -Step "list tracked viewer project files"
+  if ($trackedFiles -notcontains "${prefix}viewer_config.json") {
+    throw "Viewer project '$ProjectName' is not a tracked public project."
+  }
+
+  $blockedNames = @(
+    ".env",
+    "tool_access.json",
+    "viewer_access.json",
+    "viewer_qr_access.json"
+  )
+  foreach ($relativePath in $trackedFiles) {
+    $projectRelative = $relativePath.Substring($prefix.Length)
+    $segments = @($projectRelative.ToLowerInvariant() -split "/")
+    $leaf = [System.IO.Path]::GetFileName($relativePath).ToLowerInvariant()
+    $extension = [System.IO.Path]::GetExtension($leaf).ToLowerInvariant()
+    if (
+      $segments -contains "local" -or
+      $segments -contains "projects" -or
+      $leaf -in $blockedNames -or
+      $leaf.StartsWith(".env.") -or
+      $leaf.Contains(".local.") -or
+      $leaf -match "(^|[._-])(credential|secret|password|token|access)([._-]|$)" -or
+      $extension -in @(".env", ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".sql", ".dump", ".db", ".sqlite", ".sqlite3")
+    ) {
+      throw "Tracked private configuration is not allowed in viewer project bundles: $relativePath"
     }
   }
 
-  throw "Viewer project '$ProjectName' not found or missing viewer_config.json under viewer_data."
+  $buildRoot = (Resolve-Path (Join-Path $RootDir "build")).Path
+  $bundleRootFull = [System.IO.Path]::GetFullPath($ViewerBundleRoot)
+  if (-not $bundleRootFull.StartsWith("$buildRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Invalid managed viewer bundle directory."
+  }
+  if (Test-Path $ViewerBundleRoot) {
+    Remove-Item -LiteralPath $ViewerBundleRoot -Recurse -Force
+  }
+
+  $stagedProject = Join-Path $ViewerBundleRoot $ProjectName
+  New-Item -ItemType Directory -Force -Path $stagedProject | Out-Null
+  foreach ($relativePath in $trackedFiles) {
+    $projectRelative = $relativePath.Substring($prefix.Length)
+    $sourcePath = Join-Path $RootDir ($relativePath -replace "/", "\")
+    $item = Get-Item -LiteralPath $sourcePath
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+      throw "Viewer project bundle entries must not be links: $relativePath"
+    }
+    $destination = Join-Path $stagedProject ($projectRelative -replace "/", "\")
+    New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $destination
+  }
+
+  return @{
+    Project = $ProjectName
+    SourceDir = $stagedProject
+  }
 }
 
 if ($ViewerProject -and $Target -ne "Viewer") {
@@ -175,8 +284,7 @@ if ($ViewerProject -and $Target -ne "Viewer") {
 }
 
 $viewerDataAddData = @(
-  "$(Join-Path $RootDir "viewer_config.json");.",
-  "$(Join-Path $RootDir "viewer_data");viewer_data"
+  "$(Join-Path $RootDir "viewer_config.json");."
 )
 if ($Target -eq "Viewer" -and $ViewerProject) {
   $viewerProjectBundle = Resolve-ViewerProjectBundle -ProjectName $ViewerProject
@@ -190,10 +298,10 @@ Push-Location $RootDir
 try {
   switch ($Target) {
     "Tool" {
-      Invoke-PyInstallerBuild -Name "ProteomicsCoPYlot" -EntryPoint "launch_tool.py" -ViewerDataAddData $viewerDataAddData
+      Invoke-PyInstallerBuild -Name $ExecutableName -EntryPoint "launch_tool.py" -ViewerDataAddData $viewerDataAddData
     }
     "Viewer" {
-      Invoke-PyInstallerBuild -Name "DataViewer" -EntryPoint "launch_viewer.py" -ViewerDataAddData $viewerDataAddData
+      Invoke-PyInstallerBuild -Name $ExecutableName -EntryPoint "launch_viewer.py" -ViewerDataAddData $viewerDataAddData
     }
   }
 }
@@ -201,11 +309,12 @@ finally {
   Pop-Location
 }
 
+$ExecutablePath = Join-Path $RootDir "dist\$ExecutableName.exe"
+
+if ($Sign) {
+  & $SigningScript -ExecutablePath $ExecutablePath -MachineCertificateStore:$machineStore
+}
+
 Write-Host ""
 Write-Host "Build completed."
-if ($Target -eq "Tool") {
-  Write-Host "Tool executable: $RootDir\dist\ProteomicsCoPYlot.exe"
-}
-if ($Target -eq "Viewer") {
-  Write-Host "Viewer executable: $RootDir\dist\DataViewer.exe"
-}
+Write-Host "$Target executable: $ExecutablePath"

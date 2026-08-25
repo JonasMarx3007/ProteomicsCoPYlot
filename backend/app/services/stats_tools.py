@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+
+import hashlib
 import io
 import os
 import sys
@@ -10,7 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
 from scipy.spatial.distance import pdist
-from scipy.stats import hypergeom, t
+from scipy.stats import hypergeom, studentized_range, t
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
@@ -19,7 +22,7 @@ from app.schemas.stats import (
     EnrichmentRequest,
     EnrichmentResultResponse,
     EnrichmentTerm,
-    GseaDirection,
+    OraDirection,
     HeatmapValueType,
     IdentifierOption,
     ListEnrichmentRequest,
@@ -35,16 +38,23 @@ from app.schemas.stats import (
     VolcanoRequest,
     VolcanoResultResponse,
 )
+from app.services.clustering_tools import require_complete_clustering_matrix
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame
 from app.services.functions import (
+    constant_within_group,
+    anova_posthoc_data,
     analysis_data_source,
     extract_sample_id as _extract_id_or_number,
     imputed_data_available,
+    paired_sample_columns,
+    paired_test_enabled,
+    paired_t_test,
+    resolve_test_type,
+    squeeze_variance,
 )
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
-
 
 def _get_plt():
     import matplotlib
@@ -145,6 +155,43 @@ def _bh_adjust(pvalues: np.ndarray) -> np.ndarray:
     return restored
 
 
+# A downloaded table is read without the UI that produced it, so it has to say
+# whether its p-values were corrected. The `adj_pval` column keeps its name for
+# compatibility -- the UI, the report and saved state all read it -- and this
+# column states what the value actually is.
+CORRECTION_BENJAMINI_HOCHBERG = "Benjamini-Hochberg"
+CORRECTION_NONE = "none (uncorrected)"
+
+
+def _correction_label(use_uncorrected: bool) -> str:
+    return CORRECTION_NONE if use_uncorrected else CORRECTION_BENJAMINI_HOCHBERG
+
+
+def _variance_and_count(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    counts = np.sum(np.isfinite(values), axis=1).astype(float)
+    variances = np.nanvar(values, axis=1, ddof=1)
+    return variances, counts
+
+
+def _satterthwaite(components: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+    """Standard error and effective degrees of freedom for a sum of group means.
+
+    Each component is (variance, n) for one independent group. Welch-Satterthwaite
+    is used rather than pooling because the control conditions in a
+    control-normalised comparison need not share the variance of the conditions
+    being compared.
+    """
+    ratios = [variance / count for variance, count in components]
+    se_squared = np.sum(ratios, axis=0)
+    denominator = np.sum(
+        [ratio**2 / np.maximum(count - 1.0, 1e-12) for ratio, (_, count) in zip(ratios, components)],
+        axis=0,
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dof = se_squared**2 / denominator
+    return np.sqrt(se_squared), dof
+
+
 def _safe_neg_log10(values: np.ndarray) -> np.ndarray:
     clipped = np.clip(values.astype(float), 1e-300, 1.0)
     return -np.log10(clipped)
@@ -153,7 +200,7 @@ def _safe_neg_log10(values: np.ndarray) -> np.ndarray:
 def _stats_source(
     kind: AnnotationKind,
     *,
-    data_source: VolcanoDataSource = "imputed",
+    data_source: VolcanoDataSource = "data",
 ) -> tuple[StatsSource, pd.DataFrame, pd.DataFrame, list[str]]:
     source_used, frame, metadata, warnings = analysis_data_source(
         kind,
@@ -177,7 +224,7 @@ def _workflow_label_candidates(kind: AnnotationKind) -> list[str]:
     if kind == "protein":
         return ["ProteinNames"]
     if kind == "phospho":
-        return ["PTM_Collapse_key"]
+        return ["PTM_Collapse_key", "UPD_seq"]
     return ["Phosphoprotein", "ProteinNames", "PTM_Collapse_key"]
 
 
@@ -194,6 +241,7 @@ def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[Ident
         workflow_label_map = {
             "ProteinNames": "Protein Names",
             "PTM_Collapse_key": "Phosphosite Names",
+            "UPD_seq": "Phosphosite Sequence",
             "Phosphoprotein": "Phosphoprotein Names",
         }
         options.append(
@@ -225,6 +273,21 @@ def _resolve_label_column(kind: AnnotationKind, identifier: StatsIdentifier, fra
 def statistical_options(kind: AnnotationKind) -> StatisticalOptionsResponse:
     source_used, frame, metadata, warnings = _stats_source(kind, data_source="data")
     conditions = sorted(metadata["condition"].dropna().astype(str).drop_duplicates().tolist())
+    samples_by_condition = {
+        condition: metadata.loc[
+            metadata["condition"].astype(str) == condition, "sample"
+        ].astype(str).tolist()
+        for condition in conditions
+    }
+    pair_ids_by_sample = {}
+    if "pair_id" in metadata.columns:
+        pair_ids_by_sample = {
+            str(sample): str(pair_id).strip()
+            for sample, pair_id in metadata[["sample", "pair_id"]].itertuples(
+                index=False, name=None
+            )
+            if pd.notna(pair_id) and str(pair_id).strip()
+        }
     identifiers = _identifier_options(kind, frame)
     if not identifiers:
         raise ValueError("No valid identifier columns are available for statistical analysis.")
@@ -233,12 +296,18 @@ def statistical_options(kind: AnnotationKind) -> StatisticalOptionsResponse:
         sourceUsed=source_used,
         imputedAvailable=_imputed_available(kind),
         availableConditions=conditions,
+        samplesByCondition=samples_by_condition,
+        pairIdsBySample=pair_ids_by_sample,
         availableIdentifiers=identifiers,
         warnings=warnings,
     )
 
 
 def _clean_feature_name(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+        return ""
     text = str(value or "").strip()
     if not text:
         return ""
@@ -246,6 +315,10 @@ def _clean_feature_name(value: object) -> str:
 
 
 def _gene_tokens(value: object) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
+    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+        return []
     text = str(value or "").strip()
     if not text:
         return []
@@ -269,17 +342,32 @@ def _volcano_dataframe(
     log2fc_threshold: float,
     test_type: str,
     use_uncorrected: bool,
-    data_source: VolcanoDataSource = "imputed",
+    data_source: VolcanoDataSource = "data",
     condition1_control: str | None = None,
     condition2_control: str | None = None,
+    frame_override: pd.DataFrame | None = None,
+    metadata_override: pd.DataFrame | None = None,
 ) -> tuple[StatsSource, str, pd.DataFrame, list[str]]:
-    source_used, frame, metadata, warnings = _stats_source(kind, data_source=data_source)
+    if frame_override is None and metadata_override is None:
+        source_used, frame, metadata, warnings = _stats_source(
+            kind, data_source=data_source
+        )
+    elif frame_override is not None and metadata_override is not None:
+        source_used = "filtered"
+        frame = frame_override.copy()
+        metadata = metadata_override.copy()
+        warnings = []
+    else:
+        raise ValueError("Volcano frame and metadata overrides must be provided together.")
     label_column = _resolve_label_column(kind, identifier, frame)
 
     cols1 = metadata.loc[metadata["condition"] == condition1, "sample"].astype(str).tolist()
     cols2 = metadata.loc[metadata["condition"] == condition2, "sample"].astype(str).tolist()
     if not cols1 or not cols2:
         raise ValueError("Selected conditions do not have any annotated samples.")
+    paired, variance = resolve_test_type(test_type)
+    if paired:
+        cols1, cols2 = paired_sample_columns(metadata, condition1, condition2)
 
     selected_columns = [label_column, *cols1, *cols2]
     if condition1_control and condition2_control:
@@ -297,6 +385,8 @@ def _volcano_dataframe(
         "Gene_group",
         "ProteinNames",
         "PTM_Collapse_key",
+        "UPD_seq",
+        "Protein_group",
         "Phosphoprotein",
         "site_num",
         "PTM_Collapse_keys",
@@ -304,25 +394,32 @@ def _volcano_dataframe(
         if extra in frame.columns and extra not in selected_columns:
             selected_columns.append(extra)
 
-    df = frame[[col for col in selected_columns if col in frame.columns]].replace(0, np.nan).copy()
+    df = frame[[col for col in selected_columns if col in frame.columns]].copy()
     arr_x = df[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
     arr_y = df[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
 
+    control_arrays: list[np.ndarray] = []
     if ctrl1_cols and ctrl2_cols:
         arr_ctrl1 = df[ctrl1_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
         arr_ctrl2 = df[ctrl2_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
         arr_x = arr_x - np.nanmean(arr_ctrl1, axis=1)[:, None]
         arr_y = arr_y - np.nanmean(arr_ctrl2, axis=1)[:, None]
+        control_arrays = [arr_ctrl1, arr_ctrl2]
 
     n1_real = np.sum(~np.isnan(arr_x), axis=1)
     n2_real = np.sum(~np.isnan(arr_y), axis=1)
     valid_mask = (n1_real >= 2) & (n2_real >= 2)
+    for control in control_arrays:
+        # A control variance cannot be estimated from a single value, and it is
+        # now part of the test statistic, so controls need replicates too.
+        valid_mask &= np.sum(np.isfinite(control), axis=1) >= 2
     if not np.any(valid_mask):
         raise ValueError("No rows have enough replicate values for the selected comparison.")
 
     df = df.loc[valid_mask].reset_index(drop=True)
     arr_x = arr_x[valid_mask]
     arr_y = arr_y[valid_mask]
+    control_arrays = [control[valid_mask] for control in control_arrays]
     n1 = n1_real[valid_mask].astype(float)
     n2 = n2_real[valid_mask].astype(float)
 
@@ -330,31 +427,84 @@ def _volcano_dataframe(
     mean2 = np.nanmean(arr_y, axis=1)
     log2fc = mean2 - mean1
 
-    paired = test_type == "paired"
     if paired:
-        if arr_x.shape[1] != arr_y.shape[1]:
-            raise ValueError("Paired tests require the same number of replicates in both conditions.")
         diffs = arr_y - arr_x
-        valid_pairs = np.sum(~np.isnan(diffs), axis=1) >= 2
+        valid_pairs = np.sum(np.isfinite(diffs), axis=1) >= 2
         if not np.any(valid_pairs):
             raise ValueError("No rows have enough paired values for the selected comparison.")
         df = df.loc[valid_pairs].reset_index(drop=True)
+        arr_x = arr_x[valid_pairs]
+        arr_y = arr_y[valid_pairs]
         diffs = diffs[valid_pairs]
-        log2fc = log2fc[valid_pairs]
-        n_diff = np.sum(~np.isnan(diffs), axis=1).astype(float)
-        mean_diff = np.nanmean(diffs, axis=1)
-        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(n_diff)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_stat = mean_diff / se_diff
-        pvals = 2.0 * t.sf(np.abs(t_stat), n_diff - 1.0)
+        control_arrays = [control[valid_pairs] for control in control_arrays]
+        mean_diff, n_diff, pvals = paired_t_test(diffs)
+        log2fc = mean_diff
+        if variance == "moderated":
+            # Shrink the variance of the within-pair differences across features.
+            var_diff = np.nanvar(diffs, axis=1, ddof=1)
+            residual_dof = n_diff - 1.0
+            posterior, _, df_prior = squeeze_variance(var_diff, residual_dof)
+            components = [(posterior, n_diff)]
+            components.extend(_variance_and_count(control) for control in control_arrays)
+            if control_arrays:
+                se, dof = _satterthwaite(components)
+            else:
+                se = np.sqrt(posterior / n_diff)
+                dof = residual_dof
+            dof = dof + (df_prior if np.isfinite(df_prior) else 1e6)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                pvals = 2.0 * t.sf(np.abs(log2fc / se), dof)
+        elif control_arrays:
+            # Subtracting the control means shifts each row by a constant, so the
+            # within-pair spread that paired_t_test sees is unchanged and the
+            # uncertainty of the two control means is missing from it entirely.
+            # Propagate it explicitly.
+            components = [(np.nanvar(diffs, axis=1, ddof=1), n_diff)]
+            components.extend(_variance_and_count(control) for control in control_arrays)
+            se, dof = _satterthwaite(components)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t_stat = log2fc / se
+            pvals = 2.0 * t.sf(np.abs(t_stat), dof)
     else:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
-        se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
+        if variance == "welch":
+            # Unequal variances: no pooling, Welch-Satterthwaite degrees of
+            # freedom. Controls simply add two more independent components.
+            components = [(var1, n1), (var2, n2)]
+            components.extend(_variance_and_count(control) for control in control_arrays)
+            se, dof = _satterthwaite(components)
+        elif variance == "moderated":
+            # Equal-variance model with the pooled variance shrunk toward a prior
+            # fitted across all features (limma's empirical Bayes). At n=3 a
+            # per-feature variance is a poor estimate; borrowing strength across
+            # features is what recovers usable power.
+            groups = [(var1, n1), (var2, n2)]
+            groups.extend(_variance_and_count(control) for control in control_arrays)
+            total_n = sum(count for _, count in groups)
+            residual_dof = total_n - float(len(groups))
+            pooled_var = sum(
+                (count - 1.0) * variance_values for variance_values, count in groups
+            ) / np.maximum(residual_dof, 1e-12)
+            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
+            scale = sum(1.0 / count for _, count in groups)
+            se = np.sqrt(posterior * scale)
+            dof = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
+        elif control_arrays:
+            # Same reasoning as the paired branch: the control-adjusted values
+            # keep their original within-group variance, so a two-group standard
+            # error omits the control means' contribution and understates the
+            # true uncertainty by sqrt(2) at equal group sizes.
+            components = [(var1, n1), (var2, n2)]
+            components.extend(_variance_and_count(control) for control in control_arrays)
+            se, dof = _satterthwaite(components)
+        else:
+            pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
+            se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
+            dof = n1 + n2 - 2.0
         with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = log2fc / se
-        pvals = 2.0 * t.sf(np.abs(t_stat), n1 + n2 - 2.0)
+        pvals = 2.0 * t.sf(np.abs(t_stat), dof)
 
     pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
     adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
@@ -367,8 +517,14 @@ def _volcano_dataframe(
     result["log2FC"] = log2fc
     result["pval"] = pvals
     result["adj_pval"] = adj_pvals
+    result["correction"] = _correction_label(use_uncorrected)
     result["neg_log10_adj_pval"] = _safe_neg_log10(adj_pvals if not use_uncorrected else pvals)
     result["significance"] = significance
+    # Marks rows whose significance comes from absent within-group variation
+    # rather than effect size. The p-value is unchanged and correct.
+    result["zero_variance"] = constant_within_group(arr_x) | constant_within_group(arr_y)
+    if paired:
+        result["n_pairs"] = n_diff.astype(int)
     return source_used, label_column, result, warnings
 
 
@@ -640,7 +796,7 @@ def _anova_dataframe(
         if extra in frame.columns and extra not in selected_columns:
             selected_columns.append(extra)
 
-    df = frame[[col for col in selected_columns if col in frame.columns]].replace(0, np.nan).copy()
+    df = frame[[col for col in selected_columns if col in frame.columns]].copy()
     df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
 
     valid = np.ones(len(df), dtype=bool)
@@ -668,7 +824,9 @@ def _anova_dataframe(
             row_groups = [group[i][~np.isnan(group[i])] for group in groups]
             f_stat[i], pvals[i] = stats.f_oneway(*row_groups)
 
-    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
+    # Do not coerce NaN to 1.0 here: f_oneway returns NaN when the test is
+    # undefined (zero within-group variance), and coercing first would make the
+    # isfinite filter below a no-op, keeping untestable rows in the BH pool.
     finite = np.isfinite(pvals)
     df = df.loc[finite].reset_index(drop=True)
     groups = [group[finite] for group in groups]
@@ -688,6 +846,7 @@ def _anova_dataframe(
     result["f_statistic"] = f_stat
     result["pval"] = pvals
     result["adj_pval"] = selected_pvals
+    result["correction"] = _correction_label(payload.useUncorrected)
     result["significance"] = np.where(
         selected_pvals < payload.pValueThreshold,
         "Significant",
@@ -697,7 +856,17 @@ def _anova_dataframe(
     for condition in means.columns:
         result[f"mean_{condition}"] = means[condition].to_numpy()
 
-    return source_used, label_column, result.sort_values("adj_pval").reset_index(drop=True), warnings
+    # Benjamini-Hochberg ties many features to the same adjusted p; raw p then
+    # the label keeps the order identical to both shipped packages.
+    sort_keys = ["adj_pval", "pval"]
+    if label_column in result.columns:
+        sort_keys.append(label_column)
+    return (
+        source_used,
+        label_column,
+        result.sort_values(sort_keys, kind="mergesort").reset_index(drop=True),
+        warnings,
+    )
 
 
 def _anova_cluster_dataframe(anova_df: pd.DataFrame, metadata: pd.DataFrame, payload: AnovaRequest) -> pd.DataFrame:
@@ -711,16 +880,16 @@ def _anova_cluster_dataframe(anova_df: pd.DataFrame, metadata: pd.DataFrame, pay
 
     cluster_df = anova_df[anova_df["adj_pval"] < payload.pValueThreshold].copy()
     if cluster_df.empty:
-        cluster_df = anova_df.copy()
-    if cluster_df.empty:
+        cluster_df.insert(1, "cluster", pd.Series(index=cluster_df.index, dtype="int64"))
         return cluster_df.reset_index(drop=True)
 
     matrix = cluster_df[sample_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    if matrix.shape[0] > 1:
+        require_complete_clustering_matrix(matrix, context="ANOVA")
     row_mean = np.nanmean(matrix, axis=1, keepdims=True)
     row_sd = np.nanstd(matrix, axis=1, keepdims=True)
     row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
     matrix = (matrix - row_mean) / row_sd
-    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
     if matrix.shape[0] <= 1:
         cluster_df.insert(1, "cluster", 1)
@@ -739,32 +908,6 @@ def _anova_cluster_dataframe(anova_df: pd.DataFrame, metadata: pd.DataFrame, pay
             cluster_map[cluster_key] = len(cluster_map) + 1
         relabeled.append(cluster_map[cluster_key])
 
-    relabeled_arr = np.asarray(relabeled, dtype=int)
-    if payload.minClusterFraction > 0:
-        min_cluster_size = int(np.ceil(len(relabeled_arr) * payload.minClusterFraction))
-        cluster_ids, cluster_counts = np.unique(relabeled_arr, return_counts=True)
-        count_map = dict(zip(cluster_ids, cluster_counts))
-        large_clusters = [
-            int(cluster_id)
-            for cluster_id in cluster_ids
-            if count_map[cluster_id] >= min_cluster_size
-        ]
-        if not large_clusters:
-            large_clusters = [int(max(cluster_ids, key=lambda cluster_id: count_map[cluster_id]))]
-        merged = relabeled_arr.copy()
-        for cluster_id in cluster_ids:
-            if count_map[cluster_id] >= min_cluster_size:
-                continue
-            target = min(large_clusters, key=lambda candidate: (abs(candidate - cluster_id), candidate < cluster_id))
-            merged[relabeled_arr == cluster_id] = target
-        cluster_map = {}
-        relabeled = []
-        for cluster_id in merged:
-            cluster_key = int(cluster_id)
-            if cluster_key not in cluster_map:
-                cluster_map[cluster_key] = len(cluster_map) + 1
-            relabeled.append(cluster_map[cluster_key])
-
     out = cluster_df.iloc[row_order].copy()
     if "cluster" in out.columns:
         out = out.drop(columns=["cluster"])
@@ -772,14 +915,53 @@ def _anova_cluster_dataframe(anova_df: pd.DataFrame, metadata: pd.DataFrame, pay
     return out.reset_index(drop=True)
 
 
+def _condition_columns(metadata: pd.DataFrame, frame: pd.DataFrame) -> dict[str, list[str]]:
+    metadata = metadata.copy()
+    metadata["sample"] = metadata["sample"].astype(str)
+    metadata["condition"] = metadata["condition"].astype(str)
+    conditions = metadata["condition"].dropna().drop_duplicates().tolist()
+    return {
+        condition: [
+            sample
+            for sample in metadata.loc[metadata["condition"] == condition, "sample"].tolist()
+            if sample in frame.columns
+        ]
+        for condition in conditions
+    }
+
+
 def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
     source_used, label_column, anova_df, warnings = _anova_dataframe(payload)
     cluster_df = pd.DataFrame()
     cluster_count: int | None = None
-    if payload.source == "anova_cluster":
+    post_hoc_df = pd.DataFrame()
+    metadata: pd.DataFrame | None = None
+
+    if payload.source == "anova_cluster" or payload.postHoc == "tukey":
         _, _, metadata, _ = _stats_source(payload.kind, data_source=payload.dataSource)
+
+    if payload.source == "anova_cluster":
         cluster_df = _anova_cluster_dataframe(anova_df, metadata, payload)
         cluster_count = int(cluster_df["cluster"].nunique()) if "cluster" in cluster_df.columns else 0
+        if cluster_df.empty:
+            warnings = [*warnings, "No rows passed the ANOVA threshold; clustering was not run."]
+
+    if payload.postHoc == "tukey":
+        condition_cols = _condition_columns(metadata, anova_df)
+        post_hoc_df = anova_posthoc_data(
+            anova_df,
+            metadata,
+            in_pval=payload.pValueThreshold,
+            label_col=label_column,
+        )
+        if len(condition_cols) < 3:
+            warnings = [
+                *warnings,
+                "Tukey HSD was not run: with two conditions the ANOVA and the single "
+                "pairwise comparison test the same thing.",
+            ]
+        elif post_hoc_df.empty:
+            warnings = [*warnings, "No rows passed the ANOVA threshold, so Tukey HSD was not run."]
 
     return AnovaResultResponse(
         kind=payload.kind,
@@ -791,6 +973,13 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
         clusterCount=cluster_count,
         rows=anova_df.where(pd.notna(anova_df), None).to_dict(orient="records"),
         clusterRows=cluster_df.where(pd.notna(cluster_df), None).to_dict(orient="records") if not cluster_df.empty else [],
+        postHocMethod="Tukey HSD" if payload.postHoc == "tukey" else None,
+        postHocRows=post_hoc_df.where(pd.notna(post_hoc_df), None).to_dict(orient="records")
+        if not post_hoc_df.empty
+        else [],
+        postHocSignificantCount=int((post_hoc_df["significance"] == "Significant").sum())
+        if not post_hoc_df.empty
+        else 0,
         warnings=warnings,
     )
 
@@ -824,12 +1013,6 @@ def _anova_heatmap_figure(
     plt = _get_plt()
     from matplotlib.patches import Patch
 
-    if plot_df.empty:
-        fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
-        ax.set_axis_off()
-        ax.set_title("ANOVA heatmap")
-        return fig, plt
-
     metadata = metadata.copy()
     metadata["sample"] = metadata["sample"].astype(str)
     metadata["condition"] = metadata["condition"].astype(str)
@@ -844,11 +1027,18 @@ def _anova_heatmap_figure(
         raise ValueError("No sample columns from metadata were found in the ANOVA table.")
 
     if not clustered:
-        filtered = plot_df[plot_df["adj_pval"] < p_value_threshold].copy()
-        if not filtered.empty:
-            plot_df = filtered
+        plot_df = plot_df[plot_df["adj_pval"] < p_value_threshold].copy()
+
+    if plot_df.empty:
+        fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
+        ax.set_axis_off()
+        ax.set_title("ANOVA heatmap")
+        ax.text(0.5, 0.5, "No rows passed the ANOVA threshold.", ha="center", va="center")
+        return fig, plt
 
     raw_matrix = plot_df[sample_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    if (not clustered and raw_matrix.shape[0] > 1) or raw_matrix.shape[1] > 1:
+        require_complete_clustering_matrix(raw_matrix, context="ANOVA heatmap")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     row_mean = np.nanmean(matrix, axis=1, keepdims=True)
@@ -856,7 +1046,7 @@ def _anova_heatmap_figure(
     row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
     matrix = (matrix - row_mean) / row_sd
     display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
-    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    cluster_matrix = matrix.copy()
     row_linkage = None
     col_linkage = None
 
@@ -1045,6 +1235,7 @@ def _db_candidates(filename: str) -> list[Path]:
         roots.append(Path(meipass))
     if getattr(sys, "frozen", False):
         roots.append(Path(sys.executable).resolve().parent)
+    roots.append(Path(sys.prefix))
     if local_appdata:
         roots.append(Path(local_appdata) / "proteomics-copylot")
     roots.extend([project_root, sibling_root])
@@ -1069,9 +1260,67 @@ def _go_db_candidates() -> list[Path]:
 def load_go_db() -> pd.DataFrame:
     for path in _go_db_candidates():
         if path.exists():
-            return pd.read_csv(path)
+            frame = pd.read_csv(path)
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            frame.attrs["database_sha256"] = digest.hexdigest()
+            return frame
     searched = ", ".join(str(path) for path in _go_db_candidates())
-    raise ValueError(f"Could not find all_go_terms_genes.csv. Checked: {searched}")
+    LOGGER.error("Gene Ontology database not found. Searched: %s", searched)
+    raise ValueError(
+        "Could not find the bundled Gene Ontology database (all_go_terms_genes.csv). "
+        "The searched locations are recorded in the server log."
+    )
+
+
+def _go_database_sha256() -> str:
+    db = load_go_db()
+    loaded_digest = str(db.attrs.get("database_sha256", "")).strip()
+    if loaded_digest:
+        return loaded_digest
+    canonical_csv = db.to_csv(index=False, lineterminator="\n").encode("utf-8")
+    return hashlib.sha256(canonical_csv).hexdigest()
+
+
+LOGGER = logging.getLogger(__name__)
+
+GO_DATABASE_ORGANISM = "Homo sapiens"
+
+
+@lru_cache(maxsize=1)
+def _annotated_gene_universe() -> frozenset[str]:
+    db = load_go_db()
+    universe: set[str] = set()
+    for genes_text in db["genes"]:
+        universe.update(
+            gene.strip() for gene in str(genes_text or "").split(";") if gene.strip()
+        )
+    return frozenset(universe)
+
+
+def _species_overlap_warning(genes: list[str]) -> str | None:
+    """Warn when the supplied gene symbols barely overlap the bundled GO universe.
+
+    The bundled Gene Ontology table is Homo sapiens only. Symbols from another
+    species still produce a syntactically valid result - almost everything simply
+    fails to map - so a low overlap is the practical signal that the wrong
+    organism was loaded.
+    """
+    cleaned = {str(gene).strip() for gene in genes if str(gene or "").strip()}
+    if len(cleaned) < 50:
+        return None
+    matched = len(cleaned & _annotated_gene_universe())
+    fraction = matched / len(cleaned)
+    if fraction >= 0.2:
+        return None
+    return (
+        f"Only {matched} of {len(cleaned)} gene symbols ({fraction:.0%}) are present in the "
+        f"bundled {GO_DATABASE_ORGANISM} Gene Ontology database. Enrichment assumes "
+        f"{GO_DATABASE_ORGANISM} symbols; if this data is from another organism the result "
+        "is not interpretable."
+    )
 
 
 def pathway_options() -> PathwayOptionsResponse:
@@ -1081,121 +1330,235 @@ def pathway_options() -> PathwayOptionsResponse:
 
 
 def _different_genes(
-    kind: AnnotationKind,
-    data_source: VolcanoDataSource,
-    condition1: str,
-    condition2: str,
-    p_value_threshold: float,
-    log2fc_threshold: float,
-    test_type: str,
-    use_uncorrected: bool,
-    condition1_control: str | None = None,
-    condition2_control: str | None = None,
-) -> tuple[StatsSource, list[str], list[str], list[str]]:
-    source_used, gene_column, df, warnings = _volcano_dataframe(
-        kind=kind,
-        condition1=condition1,
-        condition2=condition2,
+    payload: EnrichmentRequest,
+) -> tuple[StatsSource, list[str], list[str], list[str], list[str]]:
+    """Select ORA genes from the exact public Volcano result path.
+
+    Keeping ORA on ``run_volcano_control`` is intentional: changes to the
+    control correction, variance calculation, or significance classification
+    are then shared by the Control Volcano tab and ORA instead of being copied.
+    """
+    common = dict(
+        kind=payload.kind,
+        dataSource=payload.dataSource,
+        condition1=payload.condition1,
+        condition2=payload.condition2,
         identifier="genes",
-        p_value_threshold=p_value_threshold,
-        log2fc_threshold=log2fc_threshold,
-        test_type=test_type,
-        use_uncorrected=use_uncorrected,
-        data_source=data_source,
-        condition1_control=condition1_control,
-        condition2_control=condition2_control,
+        pValueThreshold=payload.pValueThreshold,
+        log2fcThreshold=payload.log2fcThreshold,
+        testType=payload.testType,
+        useUncorrected=payload.useUncorrected,
     )
+    if payload.source == "volcano_control":
+        if not payload.condition1Control or not payload.condition2Control:
+            raise ValueError("Volcano control source requires both control conditions.")
+        volcano_result = run_volcano_control(
+            VolcanoControlRequest(
+                **common,
+                condition1Control=payload.condition1Control,
+                condition2Control=payload.condition2Control,
+            )
+        )
+    else:
+        volcano_result = run_volcano(VolcanoRequest(**common))
+
+    source_used = volcano_result.sourceUsed
+    gene_column = volcano_result.labelColumn
+    df = pd.DataFrame(volcano_result.rows)
+    warnings = volcano_result.warnings
     if gene_column not in df.columns:
         raise ValueError("A gene label column is required for enrichment analysis.")
 
-    if kind == "phosprot" or gene_column == "Gene_group":
-        up_genes = [
-            token
-            for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
-            for token in _gene_tokens(value)
-        ]
-        down_genes = [
-            token
-            for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
-            for token in _gene_tokens(value)
-        ]
-    else:
-        up_genes = [
-            _clean_feature_name(value)
-            for value in df.loc[df["significance"] == "Upregulated", gene_column].tolist()
-        ]
-        down_genes = [
-            _clean_feature_name(value)
-            for value in df.loc[df["significance"] == "Downregulated", gene_column].tolist()
-        ]
-    up_genes = [gene for gene in up_genes if gene]
-    down_genes = [gene for gene in down_genes if gene]
-    return source_used, sorted(set(up_genes)), sorted(set(down_genes)), warnings
+    split_groups = payload.kind == "phosprot" or gene_column == "Gene_group"
+    up_genes = _genes_from_values(
+        df.loc[df["significance"] == "Upregulated", gene_column].tolist(),
+        split_groups=split_groups,
+    )
+    down_genes = _genes_from_values(
+        df.loc[df["significance"] == "Downregulated", gene_column].tolist(),
+        split_groups=split_groups,
+    )
+    tested_genes = _genes_from_values(df[gene_column].tolist(), split_groups=split_groups)
+    return source_used, up_genes, down_genes, tested_genes, warnings
+
+
+def _anova_cluster_genes(
+    payload: EnrichmentRequest,
+) -> tuple[StatsSource, list[str], list[str], list[str]]:
+    if payload.selectedCluster is None:
+        raise ValueError("Select an ANOVA protein cluster to run ORA.")
+
+    anova_payload = AnovaRequest(
+        kind=payload.kind,
+        source="anova_cluster",
+        dataSource=payload.dataSource,
+        identifier="genes",
+        pValueThreshold=payload.pValueThreshold,
+        useUncorrected=payload.useUncorrected,
+        nClusters=payload.nClusters,
+    )
+    source_used, gene_column, anova_df, warnings = _anova_dataframe(anova_payload)
+    _, _, metadata, _ = _stats_source(payload.kind, data_source=payload.dataSource)
+    cluster_df = _anova_cluster_dataframe(anova_df, metadata, anova_payload)
+    if cluster_df.empty:
+        raise ValueError("No significant ANOVA rows are available for clustering or ORA.")
+    if "cluster" not in cluster_df.columns:
+        raise ValueError("ANOVA clustering did not produce any protein clusters.")
+
+    available_clusters = sorted({int(value) for value in cluster_df["cluster"].dropna().tolist()})
+    selected_df = cluster_df.loc[cluster_df["cluster"] == payload.selectedCluster]
+    if selected_df.empty:
+        available_text = ", ".join(str(value) for value in available_clusters) or "none"
+        raise ValueError(
+            f"ANOVA cluster {payload.selectedCluster} was not found. "
+            f"Available clusters: {available_text}."
+        )
+    if gene_column not in selected_df.columns:
+        raise ValueError("A gene label column is required for enrichment analysis.")
+
+    split_groups = payload.kind == "phosprot" or gene_column == "Gene_group"
+    genes = _genes_from_values(
+        selected_df[gene_column].tolist(),
+        split_groups=split_groups,
+    )
+    tested_genes = _genes_from_values(
+        anova_df[gene_column].tolist(),
+        split_groups=split_groups,
+    )
+    return source_used, genes, tested_genes, warnings
 
 
 def _validate_enrichment_kind(kind: AnnotationKind) -> None:
     if kind == "phospho":
         raise ValueError(
-            "GSEA only supports Protein and Phosphoproteome levels. "
+            "ORA only supports Protein and Phosphoproteome levels. "
             "Phospho (site-level) is not supported."
         )
+
+
+def _genes_from_values(values: list[object], *, split_groups: bool) -> list[str]:
+    if split_groups:
+        return sorted(
+            {
+                gene
+                for value in values
+                for gene in _gene_tokens(value)
+                if gene
+            }
+        )
+    return sorted(
+        {
+            gene
+            for value in values
+            if (gene := _clean_feature_name(value))
+        }
+    )
+
+
+def _prepare_ora_universe(
+    background_genes: list[str] | None,
+    min_term_size: int,
+    max_term_size: int,
+) -> tuple[set[str], list[tuple[str, str, str, set[str]]]]:
+    records: list[tuple[str, str, str, set[str]]] = []
+    annotated_genes: set[str] = set()
+    db = load_go_db()
+    for ontology, term_id, description, genes_text in db[
+        ["ontology", "term", "description", "genes"]
+    ].itertuples(index=False, name=None):
+        term_genes = {
+            gene.strip()
+            for gene in str(genes_text or "").split(";")
+            if gene.strip()
+        }
+        annotated_genes.update(term_genes)
+        records.append(
+            (
+                str(ontology or ""),
+                str(term_id or ""),
+                str(description or ""),
+                term_genes,
+            )
+        )
+
+    if background_genes is None:
+        background = annotated_genes
+    else:
+        background = annotated_genes.intersection(
+            {
+                gene.strip()
+                for gene in background_genes
+                if gene and gene.strip()
+            }
+        )
+    if not background:
+        return set(), []
+
+    eligible_terms: list[tuple[str, str, str, set[str]]] = []
+    for ontology, term_id, description, term_genes in records:
+        effective_term_genes = background.intersection(term_genes)
+        if min_term_size <= len(effective_term_genes) <= max_term_size:
+            eligible_terms.append(
+                (ontology, term_id, description, effective_term_genes)
+            )
+    return background, eligible_terms
 
 
 def _enrichment_terms(
     gene_list: list[str],
     top_n: int,
-    min_term_size: int,
-    max_term_size: int,
-    adj_p_value_cutoff: float | None = None,
+    adj_p_value_cutoff: float | None,
+    background: set[str],
+    eligible_terms: list[tuple[str, str, str, set[str]]],
 ) -> list[EnrichmentTerm]:
-    genes = sorted({gene.strip() for gene in gene_list if gene and gene.strip()})
-    if not genes:
-        return []
-
-    db = load_go_db().copy()
-    db["gene_list"] = db["genes"].fillna("").astype(str).apply(
-        lambda value: sorted({g.strip() for g in value.split(";") if g.strip()})
-    )
-    background = sorted({gene for genes_in_term in db["gene_list"] for gene in genes_in_term})
-    if not background:
-        return []
-
-    query = sorted(set(genes).intersection(background))
-    if not query:
+    genes = {
+        gene.strip()
+        for gene in gene_list
+        if gene and gene.strip()
+    }
+    query = genes.intersection(background)
+    if not query or not eligible_terms:
         return []
 
     population_size = len(background)
     sample_size = len(query)
-    pvalues: list[float] = []
-    raw_rows: list[tuple[pd.Series, list[str], float]] = []
-
-    for _, row in db.iterrows():
-        term_genes = row["gene_list"]
-        term_size = len(term_genes)
-        if term_size < min_term_size or term_size > max_term_size:
-            continue
-        overlap = sorted(set(query).intersection(term_genes))
-        if not overlap:
-            continue
-        p_value = float(hypergeom.sf(len(overlap) - 1, population_size, term_size, sample_size))
-        pvalues.append(p_value)
-        raw_rows.append((row, overlap, p_value))
-
-    if not raw_rows:
+    # Only terms sharing at least one gene with the query are tested. A term with
+    # no overlap has p = 1 by construction and is never reported, so counting it
+    # in the BH denominator would penalise every reported term for a test that
+    # never ran. clusterProfiler draws the line in the same place.
+    tested = [
+        (term, overlap)
+        for term, overlap in (
+            (term, sorted(query.intersection(term[3]))) for term in eligible_terms
+        )
+        if overlap
+    ]
+    if not tested:
         return []
 
-    adj = _bh_adjust(np.asarray(pvalues, dtype=float))
+    term_sizes = np.asarray([len(term[3]) for term, _ in tested], dtype=int)
+    overlap_sizes = np.asarray([len(overlap) for _, overlap in tested], dtype=int)
+    pvalues = np.asarray(
+        hypergeom.sf(
+            overlap_sizes - 1,
+            population_size,
+            term_sizes,
+            sample_size,
+        ),
+        dtype=float,
+    )
+    adj = _bh_adjust(pvalues)
     terms: list[EnrichmentTerm] = []
-    for idx, (row, overlap, p_value) in enumerate(raw_rows):
-        term_genes = row["gene_list"]
+    for idx, ((ontology, term_id, description, term_genes), overlap) in enumerate(tested):
+        p_value = float(pvalues[idx])
         adj_p_value = float(adj[idx])
         if adj_p_value_cutoff is not None and adj_p_value > float(adj_p_value_cutoff):
             continue
         terms.append(
             EnrichmentTerm(
-                source=str(row.get("source", "")),
-                termId=str(row.get("id", "")),
-                name=str(row.get("description", "")),
+                source=ontology,
+                termId=term_id,
+                name=description,
                 termSize=len(term_genes),
                 intersectionSize=len(overlap),
                 hitPercent=(len(overlap) / max(1, len(term_genes))) * 100.0,
@@ -1209,9 +1572,55 @@ def _enrichment_terms(
     return terms[:top_n]
 
 
+def _background_for_mode(mode: str, tested_genes: list[str]) -> list[str] | None:
+    if mode == "global":
+        return None
+    if not tested_genes:
+        raise ValueError("No tested genes are available for the experiment-specific ORA background.")
+    return tested_genes
+
+
 def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
     _validate_enrichment_kind(payload.kind)
+    if payload.minTermSize > payload.maxTermSize:
+        raise ValueError("Minimum term size cannot be larger than maximum term size.")
+
     source_mode = str(payload.source).strip().lower()
+    if source_mode == "anova":
+        source_used, cluster_genes, tested_genes, warnings = _anova_cluster_genes(payload)
+        background = _background_for_mode(payload.backgroundMode, tested_genes)
+        effective_background, eligible_terms = _prepare_ora_universe(
+            background,
+            payload.minTermSize,
+            payload.maxTermSize,
+        )
+        cluster_terms = _enrichment_terms(
+            cluster_genes,
+            payload.topN,
+            payload.adjPValueCutoff,
+            effective_background,
+            eligible_terms,
+        )
+        species_warning = _species_overlap_warning(tested_genes)
+        if species_warning:
+            warnings = [*warnings, species_warning]
+        return EnrichmentResultResponse(
+            kind=payload.kind,
+            sourceUsed=source_used,
+            selectedCluster=payload.selectedCluster,
+            clusterGenes=cluster_genes,
+            clusterTerms=cluster_terms,
+            backgroundMode=payload.backgroundMode,
+            backgroundGenes=background or [],
+            backgroundSize=len(background) if background is not None else len(effective_background),
+            annotatedBackgroundSize=len(effective_background),
+            organism=GO_DATABASE_ORGANISM,
+            databaseSha256=_go_database_sha256(),
+            testedTermCount=len(eligible_terms),
+            upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
+            warnings=warnings,
+        )
+
     use_control = source_mode == "volcano_control"
     if use_control:
         if not payload.condition1Control or not payload.condition2Control:
@@ -1225,37 +1634,45 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         if len([value for value in unique_conditions if value]) < 4:
             raise ValueError("Volcano control source requires four different conditions.")
 
-    source_used, up_genes, down_genes, warnings = _different_genes(
-        kind=payload.kind,
-        data_source=payload.dataSource,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        test_type=payload.testType,
-        use_uncorrected=payload.useUncorrected,
-        condition1_control=payload.condition1Control if use_control else None,
-        condition2_control=payload.condition2Control if use_control else None,
+    source_used, up_genes, down_genes, tested_genes, warnings = _different_genes(payload)
+    background = _background_for_mode(payload.backgroundMode, tested_genes)
+    effective_background, eligible_terms = _prepare_ora_universe(
+        background,
+        payload.minTermSize,
+        payload.maxTermSize,
     )
+    up_terms = _enrichment_terms(
+        up_genes,
+        payload.topN,
+        payload.adjPValueCutoff,
+        effective_background,
+        eligible_terms,
+    )
+    down_terms = _enrichment_terms(
+        down_genes,
+        payload.topN,
+        payload.adjPValueCutoff,
+        effective_background,
+        eligible_terms,
+    )
+    species_warning = _species_overlap_warning(tested_genes)
+    if species_warning:
+        warnings = [*warnings, species_warning]
     return EnrichmentResultResponse(
         kind=payload.kind,
         sourceUsed=source_used,
         upGenes=up_genes,
         downGenes=down_genes,
-        upTerms=_enrichment_terms(
-            up_genes,
-            payload.topN,
-            payload.minTermSize,
-            payload.maxTermSize,
-            payload.adjPValueCutoff,
-        ),
-        downTerms=_enrichment_terms(
-            down_genes,
-            payload.topN,
-            payload.minTermSize,
-            payload.maxTermSize,
-            payload.adjPValueCutoff,
-        ),
+        upTerms=up_terms,
+        downTerms=down_terms,
+        backgroundMode=payload.backgroundMode,
+        backgroundGenes=background or [],
+        backgroundSize=len(background) if background is not None else len(effective_background),
+        annotatedBackgroundSize=len(effective_background),
+        organism=GO_DATABASE_ORGANISM,
+        upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
+        databaseSha256=_go_database_sha256(),
+        testedTermCount=len(eligible_terms),
         warnings=warnings,
     )
 
@@ -1265,29 +1682,81 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         raise ValueError("Minimum term size cannot be larger than maximum term size.")
 
     cleaned_genes = sorted({_clean_feature_name(gene) for gene in payload.genes if _clean_feature_name(gene)})
-    terms = _enrichment_terms(cleaned_genes, payload.topN, payload.minTermSize, payload.maxTermSize)
+    cleaned_background = sorted(
+        {
+            _clean_feature_name(gene)
+            for gene in payload.backgroundGenes
+            if _clean_feature_name(gene)
+        }
+    )
+    if payload.backgroundMode == "experiment" and not cleaned_background:
+        raise ValueError(
+            "Provide the tested-gene background for experiment-specific ORA, "
+            "or select all annotated genes (global)."
+        )
+    background = cleaned_background if payload.backgroundMode == "experiment" else None
+    if background is not None:
+        missing = sorted(set(cleaned_genes).difference(background))
+        if missing:
+            preview = ", ".join(missing[:10])
+            suffix = "" if len(missing) <= 10 else f" and {len(missing) - 10} more"
+            raise ValueError(
+                "Every query gene must be included in the experiment background. "
+                f"Missing: {preview}{suffix}."
+            )
+    effective_background, eligible_terms = _prepare_ora_universe(
+        background,
+        payload.minTermSize,
+        payload.maxTermSize,
+    )
+    terms = _enrichment_terms(
+        cleaned_genes,
+        payload.topN,
+        payload.adjPValueCutoff,
+        effective_background,
+        eligible_terms,
+    )
 
     warnings: list[str] = []
     if not cleaned_genes:
         warnings.append("No valid genes were provided in the input list.")
     elif not terms:
         warnings.append("No enrichment terms found for the provided gene list and parameters.")
+    species_warning = _species_overlap_warning(cleaned_background or cleaned_genes)
+    if species_warning:
+        warnings.append(species_warning)
 
     return ListEnrichmentResultResponse(
         genes=cleaned_genes,
         terms=terms,
+        backgroundMode=payload.backgroundMode,
+        backgroundGenes=background or [],
+        backgroundSize=len(background) if background is not None else len(effective_background),
+        annotatedBackgroundSize=len(effective_background),
+        organism=GO_DATABASE_ORGANISM,
+        databaseSha256=_go_database_sha256(),
+        testedTermCount=len(eligible_terms),
         warnings=warnings,
     )
 
 
-def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection, advanced: dict | None = None) -> bytes:
+def ora_plot_png(payload: EnrichmentRequest, direction: OraDirection, advanced: dict | None = None) -> bytes:
     plt = _get_plt()
     from matplotlib.colors import Normalize
 
     result = run_enrichment(payload)
-    terms = result.upTerms if direction == "up" else result.downTerms
+    if payload.source == "anova":
+        if direction != "cluster":
+            raise ValueError("ANOVA ORA plots require the cluster direction.")
+        terms = result.clusterTerms
+        direction_label = f"ANOVA Cluster {result.selectedCluster}"
+    else:
+        if direction == "cluster":
+            raise ValueError("Volcano ORA plots require the up or down direction.")
+        terms = result.upTerms if direction == "up" else result.downTerms
+        direction_label = "Upregulated" if direction == "up" else "Downregulated"
     if not terms:
-        raise ValueError(f"No {direction}regulated enrichment terms found for the selected parameters.")
+        raise ValueError(f"No {direction_label.lower()} enrichment terms found for the selected parameters.")
 
     frame = pd.DataFrame(
         {
@@ -1313,12 +1782,69 @@ def gsea_plot_png(payload: EnrichmentRequest, direction: GseaDirection, advanced
     ax.set_yticklabels(frame["name"])
     ax.invert_yaxis()
     ax.set_xlabel("Hits (%)")
-    ax.set_title(f"{'Up' if direction == 'up' else 'Down'}regulated Gene Set Enrichment")
+    background_label = (
+        "tested-gene background"
+        if result.backgroundMode == "experiment"
+        else "global annotated background"
+    )
+    ax.set_title(f"{direction_label} GO Enrichment (ORA)\n{background_label}")
     cbar = fig.colorbar(scatter, ax=ax, pad=0.15)
     cbar.set_label("-log10 adjusted p-value")
     _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=220)
+
+
+def _aggregate_pathway_gene_values(
+    frame: pd.DataFrame,
+    *,
+    gene_column: str,
+    sample_columns: list[str],
+    pathway_genes: list[str],
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Collapse mapped features to one row per pathway gene by sample median."""
+    value_frame = (
+        frame.loc[:, sample_columns]
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+    )
+
+    gene_positions: dict[str, list[int]] = {}
+    for position, gene_value in enumerate(frame[gene_column].tolist()):
+        # A repeated token within one annotation still represents one source
+        # feature and must not increase its contribution count.
+        row_tokens = {token.casefold() for token in _gene_tokens(gene_value)}
+        for token in row_tokens:
+            gene_positions.setdefault(token, []).append(position)
+
+    ordered_genes: list[str] = []
+    seen_genes: set[str] = set()
+    for gene_value in pathway_genes:
+        gene = str(gene_value).strip()
+        gene_key = gene.casefold()
+        if not gene or gene_key in seen_genes:
+            continue
+        seen_genes.add(gene_key)
+        ordered_genes.append(gene)
+
+    matrix_rows: list[pd.Series] = []
+    source_counts: list[int] = []
+    for gene in ordered_genes:
+        positions = gene_positions.get(gene.casefold(), [])
+        source_counts.append(len(positions))
+        if not positions:
+            matrix_rows.append(pd.Series(np.nan, index=sample_columns, dtype=float))
+            continue
+        matrix_rows.append(value_frame.iloc[positions].median(axis=0, skipna=True))
+
+    heatmap_data = pd.DataFrame(matrix_rows, index=ordered_genes, columns=sample_columns)
+    feature_counts = pd.Series(
+        source_counts,
+        index=ordered_genes,
+        dtype="int64",
+        name="source_feature_count",
+    )
+    return heatmap_data, feature_counts
 
 
 def pathway_heatmap_png(
@@ -1335,10 +1861,11 @@ def pathway_heatmap_png(
     width_cm: float,
     height_cm: float,
     dpi: int,
+    data_source: str = "data",
     advanced: dict | None = None,
 ) -> bytes:
     plt = _get_plt()
-    _, frame, metadata, _ = _stats_source(kind)
+    _, frame, metadata, _ = _stats_source(kind, data_source=data_source)
     gene_column = _first_available_column(frame, _gene_label_candidates(kind))
     if gene_column is None:
         raise ValueError("A gene label column is required for pathway heatmaps.")
@@ -1358,26 +1885,15 @@ def pathway_heatmap_png(
         raise ValueError("No samples match the selected conditions.")
 
     sample_columns = meta_filtered["sample"].astype(str).tolist()
-    value_frame = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
-
-    gene_to_row: dict[str, pd.Series] = {}
-    for idx, gene_value in frame[gene_column].items():
-        for token in _gene_tokens(gene_value):
-            gene_to_row.setdefault(token.lower(), value_frame.loc[idx])
-
-    matrix_rows: list[pd.Series] = []
-    matrix_index: list[str] = []
-    for gene in pathway_genes:
-        row = gene_to_row.get(gene.lower())
-        if row is None:
-            matrix_rows.append(pd.Series([np.nan] * len(sample_columns), index=sample_columns))
-        else:
-            matrix_rows.append(row)
-        matrix_index.append(gene)
-
-    heatmap_data = pd.DataFrame(matrix_rows, index=matrix_index, columns=sample_columns)
+    heatmap_data, source_feature_counts = _aggregate_pathway_gene_values(
+        frame,
+        gene_column=gene_column,
+        sample_columns=sample_columns,
+        pathway_genes=pathway_genes,
+    )
     if remove_empty:
         heatmap_data = heatmap_data.dropna(how="all")
+        source_feature_counts = source_feature_counts.loc[heatmap_data.index]
     if heatmap_data.empty:
         raise ValueError("No matching pathway genes were found in the current dataset.")
 
@@ -1393,6 +1909,17 @@ def pathway_heatmap_png(
         color_label = "Z-score"
     else:
         color_label = "log2 Intensity"
+
+    heatmap_data = heatmap_data.replace([np.inf, -np.inf], np.nan)
+    if value_type == "z":
+        heatmap_data = heatmap_data.dropna(how="all")
+    if heatmap_data.empty:
+        raise ValueError("No informative pathway rows remain after heatmap transformation.")
+
+    heatmap_data.index = [
+        f"{gene} (n={int(source_feature_counts.loc[gene])})"
+        for gene in heatmap_data.index
+    ]
 
     meta_filtered = meta_filtered.reset_index(drop=True)
     # Keep pathway heatmap sample labels aligned with the app-wide convention:
@@ -1415,11 +1942,15 @@ def pathway_heatmap_png(
     label_map = dict(zip(meta_filtered["sample"].astype(str), meta_filtered["display"]))
     heatmap_data = heatmap_data.rename(columns=label_map)
 
+    cluster_matrix = None
+    if (cluster_rows and heatmap_data.shape[0] > 1) or (cluster_cols and heatmap_data.shape[1] > 1):
+        cluster_matrix = require_complete_clustering_matrix(heatmap_data, context="pathway heatmap")
     if cluster_rows and heatmap_data.shape[0] > 1:
-        row_order = leaves_list(linkage(pdist(heatmap_data.fillna(0.0).to_numpy(dtype=float)), method="average"))
+        row_order = leaves_list(linkage(pdist(cluster_matrix), method="average"))
         heatmap_data = heatmap_data.iloc[row_order]
+        cluster_matrix = cluster_matrix[row_order]
     if cluster_cols and heatmap_data.shape[1] > 1:
-        col_order = leaves_list(linkage(pdist(heatmap_data.fillna(0.0).T.to_numpy(dtype=float)), method="average"))
+        col_order = leaves_list(linkage(pdist(cluster_matrix.T), method="average"))
         heatmap_data = heatmap_data.iloc[:, col_order]
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi)))
@@ -1429,7 +1960,10 @@ def pathway_heatmap_png(
     ax.set_xticklabels(list(heatmap_data.columns), rotation=90)
     ax.set_yticks(np.arange(heatmap_data.shape[0]))
     ax.set_yticklabels(list(heatmap_data.index) if header else [""] * heatmap_data.shape[0])
-    ax.set_title(f"{pathway} ({'Z-transformed' if value_type == 'z' else 'log2 Intensities'})")
+    ax.set_title(
+        f"{pathway} ({'Z-transformed' if value_type == 'z' else 'log2 Intensities'}; "
+        "median across mapped features)"
+    )
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label(color_label)
     _apply_advanced_axes(ax, advanced)
@@ -1437,125 +1971,169 @@ def pathway_heatmap_png(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def _simulation_dataframe(payload: SimulationRequest) -> tuple[StatsSource, pd.DataFrame, list[str]]:
-    source_used, frame, metadata, warnings = _stats_source(payload.kind)
-    label_column = _first_available_column(frame, _workflow_label_candidates(payload.kind))
-    if label_column is None:
-        raise ValueError("A workflow label column is required for simulation.")
+def _simulation_dataframe(
+    payload: SimulationRequest,
+) -> tuple[StatsSource, str, pd.DataFrame, list[str]]:
+    source_used, frame, metadata, warnings = _stats_source(
+        payload.kind,
+        data_source=payload.dataSource,
+    )
+    label_column = _resolve_label_column(payload.kind, payload.identifier, frame)
 
     cols1 = metadata.loc[metadata["condition"] == payload.condition1, "sample"].astype(str).tolist()
     cols2 = metadata.loc[metadata["condition"] == payload.condition2, "sample"].astype(str).tolist()
     if not cols1 or not cols2:
         raise ValueError("Selected conditions do not have any annotated samples.")
 
-    data_filtered = frame[[label_column, *cols1, *cols2]].replace(0, np.nan).copy()
-    x_data = data_filtered[cols1].apply(pd.to_numeric, errors="coerce")
-    y_data = data_filtered[cols2].apply(pd.to_numeric, errors="coerce")
-    n1_real = x_data.notna().sum(axis=1)
-    n2_real = y_data.notna().sum(axis=1)
+    selected_columns = [label_column, *cols1, *cols2]
+    for extra in (
+        "GeneNames",
+        "Gene_group",
+        "ProteinNames",
+        "PTM_Collapse_key",
+        "Phosphoprotein",
+        "site_num",
+        "PTM_Collapse_keys",
+    ):
+        if extra in frame.columns and extra not in selected_columns:
+            selected_columns.append(extra)
+
+    data_filtered = frame[
+        [column for column in selected_columns if column in frame.columns]
+    ].copy()
+    arr_x = data_filtered[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    arr_y = data_filtered[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    n1_real = np.sum(~np.isnan(arr_x), axis=1)
+    n2_real = np.sum(~np.isnan(arr_y), axis=1)
     valid_mask = (n1_real >= 2) & (n2_real >= 2)
     if not np.any(valid_mask):
         raise ValueError("No rows have enough replicate values for the selected simulation.")
 
-    x_data = x_data.loc[valid_mask]
-    y_data = y_data.loc[valid_mask]
     data_filtered = data_filtered.loc[valid_mask].reset_index(drop=True)
-    mean1 = x_data.mean(axis=1)
-    mean2 = y_data.mean(axis=1)
-    var1 = x_data.var(axis=1, ddof=1)
-    var2 = y_data.var(axis=1, ddof=1)
+    arr_x = arr_x[valid_mask]
+    arr_y = arr_y[valid_mask]
+    n1_real = n1_real[valid_mask].astype(float)
+    n2_real = n2_real[valid_mask].astype(float)
+    log2fc = np.nanmean(arr_y, axis=1) - np.nanmean(arr_x, axis=1)
 
-    if payload.sampleSizeOverride in (0, 1):
-        n1 = n1_real.loc[valid_mask].astype(float)
-        n2 = n2_real.loc[valid_mask].astype(float)
+    simulated_n1 = (
+        n1_real
+        if payload.sampleSizeOverride == 0
+        else np.full(len(n1_real), float(payload.sampleSizeOverride))
+    )
+    simulated_n2 = (
+        n2_real
+        if payload.sampleSizeOverride == 0
+        else np.full(len(n2_real), float(payload.sampleSizeOverride))
+    )
+    var1 = np.nanvar(arr_x, axis=1, ddof=1) * payload.varianceMultiplier
+    var2 = np.nanvar(arr_y, axis=1, ddof=1) * payload.varianceMultiplier
+    if payload.testType == "unpaired_welch":
+        se, degrees_freedom = _satterthwaite(
+            [(var1, simulated_n1), (var2, simulated_n2)]
+        )
     else:
-        n1 = pd.Series(float(payload.sampleSizeOverride), index=mean1.index)
-        n2 = pd.Series(float(payload.sampleSizeOverride), index=mean2.index)
+        pooled_var = (
+            (simulated_n1 - 1.0) * var1 + (simulated_n2 - 1.0) * var2
+        ) / (simulated_n1 + simulated_n2 - 2.0)
+        se = np.sqrt(pooled_var * (1.0 / simulated_n1 + 1.0 / simulated_n2))
+        degrees_freedom = simulated_n1 + simulated_n2 - 2.0
 
-    pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
-    pooled_var = pooled_var * payload.varianceMultiplier
-    se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
-    log2fc = mean2 - mean1
     with np.errstate(divide="ignore", invalid="ignore"):
         t_stat = log2fc / se
-    pvals_array = np.asarray(2.0 * t.sf(np.abs(t_stat), n1 + n2 - 2.0), dtype=float)
-    pvals_array = np.nan_to_num(pvals_array, nan=1.0, posinf=1.0, neginf=1.0)
-    adj_pvals = _bh_adjust(pvals_array)
+    pvals = np.asarray(2.0 * t.sf(np.abs(t_stat), degrees_freedom), dtype=float)
+    zero_se = se == 0
+    pvals[zero_se & (log2fc == 0)] = 1.0
+    pvals[zero_se & (log2fc != 0)] = 0.0
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
+    selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
-    log2fc_array = log2fc.to_numpy(dtype=float)
-    significance[(adj_pvals < payload.pValueThreshold) & (log2fc_array > payload.log2fcThreshold)] = "Upregulated"
-    significance[(adj_pvals < payload.pValueThreshold) & (log2fc_array < -payload.log2fcThreshold)] = "Downregulated"
+    significance[
+        (selected_pvals < payload.pValueThreshold)
+        & (log2fc > payload.log2fcThreshold)
+    ] = "Upregulated"
+    significance[
+        (selected_pvals < payload.pValueThreshold)
+        & (log2fc < -payload.log2fcThreshold)
+    ] = "Downregulated"
 
-    result = pd.DataFrame(
-        {
-            "Feature": data_filtered[label_column].astype(str).tolist(),
-            "log2FC": log2fc_array,
-            "pval": pvals_array,
-            "adj_pval": adj_pvals,
-            "significance": significance,
-        }
-    )
-    result["neg_log10_adj_pval"] = _safe_neg_log10(result["adj_pval"].to_numpy(dtype=float))
-    return source_used, result, warnings
+    result = data_filtered.copy()
+    result["log2FC"] = log2fc
+    result["pval"] = pvals
+    result["adj_pval"] = selected_pvals
+    result["correction"] = _correction_label(payload.useUncorrected)
+    result["test_type"] = payload.testType
+    result["observed_n_condition1"] = n1_real.astype(int)
+    result["observed_n_condition2"] = n2_real.astype(int)
+    result["effective_n_condition1"] = simulated_n1.astype(int)
+    result["effective_n_condition2"] = simulated_n2.astype(int)
+    result["neg_log10_adj_pval"] = _safe_neg_log10(selected_pvals)
+    result["significance"] = significance
+    return source_used, label_column, result, warnings
 
 
 def run_simulation(payload: SimulationRequest) -> SimulationResultResponse:
-    source_used, frame, warnings = _simulation_dataframe(payload)
+    source_used, label_column, frame, warnings = _simulation_dataframe(payload)
+    effective_n1 = frame["effective_n_condition1"].astype(int)
+    effective_n2 = frame["effective_n_condition2"].astype(int)
     return SimulationResultResponse(
         kind=payload.kind,
         sourceUsed=source_used,
+        testType=payload.testType,
+        condition1=payload.condition1,
+        condition2=payload.condition2,
+        sampleSizeMode="observed" if payload.sampleSizeOverride == 0 else "override",
+        sampleSizeOverride=payload.sampleSizeOverride,
+        effectiveSampleSizeCondition1Min=int(effective_n1.min()),
+        effectiveSampleSizeCondition1Max=int(effective_n1.max()),
+        effectiveSampleSizeCondition2Min=int(effective_n2.min()),
+        effectiveSampleSizeCondition2Max=int(effective_n2.max()),
+        labelColumn=label_column,
         totalRows=int(len(frame)),
         upregulatedCount=int((frame["significance"] == "Upregulated").sum()),
         downregulatedCount=int((frame["significance"] == "Downregulated").sum()),
         notSignificantCount=int((frame["significance"] == "Not significant").sum()),
+        rows=frame.where(pd.notna(frame), None).to_dict(orient="records"),
         warnings=warnings,
     )
 
 
 def simulation_html(payload: SimulationRequest, advanced: dict | None = None) -> str:
-    go = _get_plotly()
-    _, frame, _ = _simulation_dataframe(payload)
-    color_mapping = {
-        "Downregulated": "#2563eb",
-        "Not significant": "#94a3b8",
-        "Upregulated": "#dc2626",
-    }
-    fig = go.Figure()
-    for significance, color in color_mapping.items():
-        subset = frame[frame["significance"] == significance]
-        if subset.empty:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=subset["log2FC"],
-                y=subset["neg_log10_adj_pval"],
-                mode="markers",
-                marker=dict(color=color, size=6),
-                name=significance,
-                text=subset["Feature"],
-                hovertemplate="%{text}<br>log2FC=%{x:.3f}<br>-log10 adj p=%{y:.3f}<extra></extra>",
-            )
-        )
-    y_line = float(-np.log10(max(payload.pValueThreshold, 1e-300)))
-    max_y = max(y_line, float(frame["neg_log10_adj_pval"].max()) if not frame.empty else y_line)
-    fig.add_shape(type="line", x0=payload.log2fcThreshold, x1=payload.log2fcThreshold, y0=0, y1=max_y, line=dict(color="black", dash="dash"))
-    fig.add_shape(type="line", x0=-payload.log2fcThreshold, x1=-payload.log2fcThreshold, y0=0, y1=max_y, line=dict(color="black", dash="dash"))
-    fig.add_shape(
-        type="line",
-        x0=float(frame["log2FC"].min()) if not frame.empty else -payload.log2fcThreshold,
-        x1=float(frame["log2FC"].max()) if not frame.empty else payload.log2fcThreshold,
-        y0=y_line,
-        y1=y_line,
-        line=dict(color="black", dash="dash"),
+    _, label_column, frame, _ = _simulation_dataframe(payload)
+    fig = _volcano_figure(
+        frame,
+        label_column=label_column,
+        condition1=payload.condition1,
+        condition2=payload.condition2,
+        p_value_threshold=payload.pValueThreshold,
+        log2fc_threshold=payload.log2fcThreshold,
+        use_uncorrected=payload.useUncorrected,
+        highlight_terms=[],
     )
-    fig.update_layout(
-        title=f"{payload.condition1} vs {payload.condition2}",
-        xaxis_title=f"log2 fold change ({payload.condition2} - {payload.condition1})",
-        yaxis_title="-log10 adj. p-value",
-        hovermode="closest",
-        margin=dict(l=40, r=20, t=50, b=40),
+    effective_n1 = frame["effective_n_condition1"].astype(int)
+    effective_n2 = frame["effective_n_condition2"].astype(int)
+
+    def _range_label(values: pd.Series) -> str:
+        minimum = int(values.min())
+        maximum = int(values.max())
+        return str(minimum) if minimum == maximum else f"{minimum}-{maximum}"
+
+    mode_label = "observed" if payload.sampleSizeOverride == 0 else "fixed override"
+    effective_n_label = (
+        f"Simulation effective n: {payload.condition1}={_range_label(effective_n1)}, "
+        f"{payload.condition2}={_range_label(effective_n2)} ({mode_label})"
     )
+    fig.add_annotation(
+        text=effective_n_label,
+        x=0.5,
+        y=1.08,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font={"size": 12},
+    )
+    fig.update_layout(margin={"l": 40, "r": 20, "t": 80, "b": 40})
     fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
@@ -1573,7 +2151,7 @@ apply_cached_wrappers(
         "pathway_options",
         "run_enrichment",
         "run_enrichment_from_list",
-        "gsea_plot_png",
+        "ora_plot_png",
         "pathway_heatmap_png",
         "run_simulation",
         "simulation_html",

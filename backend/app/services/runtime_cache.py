@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import sys
 from collections import OrderedDict
 from copy import deepcopy
@@ -11,6 +12,8 @@ from app.services.session_context import get_session_id
 
 T = TypeVar("T")
 
+LOGGER = logging.getLogger(__name__)
+
 _LOCK = RLock()
 _CACHE_VERSION = 0
 _CACHE: "OrderedDict[tuple[Any, ...], Any]" = OrderedDict()
@@ -18,7 +21,19 @@ _MAX_ENTRIES = 128
 _MAX_ENTRY_BYTES = 12 * 1024 * 1024
 
 
+class UnfreezableArgument(TypeError):
+    """Raised when a value cannot be turned into a lossless cache key."""
+
+
 def _freeze(value: Any) -> Any:
+    """Build a cache key fragment that distinguishes values exactly.
+
+    Anything this cannot represent losslessly must raise rather than fall back
+    to repr(). repr() truncates: a DataFrame differing only in the middle
+    prints identically, so two different inputs would collide on one key and
+    the second caller would silently receive the first caller's result. An
+    unhashable argument is a reason to skip the cache, never to guess.
+    """
     if isinstance(value, (str, int, float, bool, type(None), bytes)):
         return value
     if isinstance(value, dict):
@@ -33,7 +48,33 @@ def _freeze(value: Any) -> Any:
         return _freeze(value.model_dump())
     if hasattr(value, "dict") and callable(value.dict):
         return _freeze(value.dict())
-    return repr(value)
+    raise UnfreezableArgument(
+        f"{type(value).__name__} cannot be represented exactly in a cache key"
+    )
+
+
+_IMMUTABLE_TYPES = (str, bytes, int, float, bool, type(None), frozenset)
+
+
+def _copy_for_caller(value: Any) -> Any:
+    """Return a value the caller may safely mutate, as cheaply as correctness allows.
+
+    A blanket deepcopy is not affordable here: on an 8000-feature volcano
+    response it costs ~123 ms against ~130 ms to recompute, which would leave the
+    cache saving about 5% of the work it exists to save. Most cached values do
+    not need copying at all -- rendered plots are bytes and HTML is str, both
+    immutable -- and DataFrames copy in well under a millisecond. Only the
+    nested response models are genuinely expensive, and those pay the cost
+    because a shared one can be corrupted for every later caller.
+    """
+    if isinstance(value, _IMMUTABLE_TYPES):
+        return value
+    if isinstance(value, tuple) and all(isinstance(item, _IMMUTABLE_TYPES) for item in value):
+        return value
+    copy_method = getattr(value, "copy", None)
+    if callable(copy_method) and type(value).__module__.startswith("pandas"):
+        return copy_method(deep=True)
+    return deepcopy(value)
 
 
 def _estimate_size_bytes(value: Any) -> int:
@@ -50,6 +91,16 @@ def _estimate_size_bytes(value: Any) -> int:
             return int(usage)
         except Exception:
             pass
+    # Pydantic responses carry their payload in nested fields (for example
+    # VolcanoResultResponse.rows), which sys.getsizeof does not see - it reports
+    # only the shallow object. Serialize instead so the entry cap actually applies.
+    for dump in ("model_dump_json", "json"):
+        dumper = getattr(value, dump, None)
+        if callable(dumper):
+            try:
+                return len(dumper().encode("utf-8", errors="ignore"))
+            except Exception:
+                pass
     try:
         return int(sys.getsizeof(value))
     except Exception:
@@ -70,31 +121,34 @@ def runtime_cache_version() -> int:
         return _CACHE_VERSION
 
 
-def runtime_cache_info() -> dict[str, int]:
-    with _LOCK:
-        return {
-            "version": _CACHE_VERSION,
-            "entries": len(_CACHE),
-            "maxEntries": _MAX_ENTRIES,
-            "maxEntryBytes": _MAX_ENTRY_BYTES,
-        }
-
-
 def cached_call(
     namespace: str,
     key_data: Any,
     factory: Callable[[], T],
     *,
-    copy_result: bool = False,
+    copy_result: bool = True,
 ) -> T:
+    """Return a cached result, computing it if absent.
+
+    `copy_result` defaults to True: callers receive their own copy, so mutating
+    a returned object cannot corrupt the entry for everyone who asks later.
+    Pass False only for values that are never mutated downstream, and accept
+    that the caller then shares the cached object.
+    """
     version = runtime_cache_version()
-    key = (namespace, version, get_session_id(), _freeze(key_data))
+    try:
+        key = (namespace, version, get_session_id(), _freeze(key_data))
+    except UnfreezableArgument:
+        # No exact key is possible, so a cache hit could serve the wrong result.
+        # Recomputing is slower and correct; guessing is faster and wrong.
+        LOGGER.debug("Skipping cache for %s: arguments cannot be keyed exactly", namespace)
+        return factory()
 
     with _LOCK:
         cached = _CACHE.get(key)
         if cached is not None:
             _CACHE.move_to_end(key)
-            return deepcopy(cached) if copy_result else cached
+            return _copy_for_caller(cached) if copy_result else cached
 
     result = factory()
     result_size = _estimate_size_bytes(result)
@@ -108,14 +162,14 @@ def cached_call(
             while len(_CACHE) > _MAX_ENTRIES:
                 _CACHE.popitem(last=False)
 
-    return deepcopy(result) if copy_result else result
+    return _copy_for_caller(result) if copy_result else result
 
 
 def cached_function(
     func: Callable[..., T],
     *,
     namespace: str | None = None,
-    copy_result: bool = False,
+    copy_result: bool = True,
 ) -> Callable[..., T]:
     if getattr(func, "_copylot_cached_wrapper", False):
         return func
@@ -154,7 +208,7 @@ def apply_cached_wrappers(
     namespace: dict[str, Any],
     names: list[str],
     *,
-    copy_result: bool = False,
+    copy_result: bool = True,
 ) -> None:
     for name in names:
         func = namespace.get(name)

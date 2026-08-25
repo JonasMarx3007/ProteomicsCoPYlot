@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import io
 import os
 import re
@@ -14,6 +16,9 @@ from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import IdTranslationRequest, IdTranslationResponse
 from app.services.dataset_store import get_current_dataset
 from app.services.dataset_store import save_table_dataset
+
+LOGGER = logging.getLogger(__name__)
+
 
 UNIPROT_ALL_ACCESSIONS = "UniProt All Accessions"
 VIRTUAL_COL_UNIPROT_ALL = "__uniprot_all_accessions__"
@@ -116,7 +121,11 @@ def resolve_bionamesdb_path() -> Path:
         if candidate.exists():
             return candidate
     searched = ", ".join(str(path) for path in _bionamesdb_candidates())
-    raise ValueError(f"Could not find BioNamesDB.txt. Checked: {searched}")
+    LOGGER.error("BioNamesDB.txt not found. Searched: %s", searched)
+    raise ValueError(
+        "Could not find the bundled identifier database (BioNamesDB.txt). "
+        "The searched locations are recorded in the server log."
+    )
 
 
 @lru_cache(maxsize=1)

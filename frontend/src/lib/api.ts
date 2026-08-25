@@ -1,6 +1,7 @@
 import type {
   ChatProvider,
   ChatMessage,
+  CloudAiConsentStatus,
   AnnotationGenerateRequest,
   AnovaRequest,
   AnovaResultResponse,
@@ -29,6 +30,7 @@ import type {
   ImputationRunRequest,
   MetadataUploadResponse,
   MetadataAnnotationKind,
+  PairingUpdateRequest,
   PathwayOptionsResponse,
   PeptideCollapseRequest,
   PeptideCollapseResponse,
@@ -36,15 +38,19 @@ import type {
   PhosphoTableResponse,
   PeptideCoverageResponse,
   PeptideMetadataResponse,
+  PeptideMetadataGenerateRequest,
   PeptideOverviewResponse,
+  PeptideQuantityOptionsResponse,
   PeptidePathResponse,
   PeptideSpecies,
   QcSummaryResponse,
   PhosprotAggregationMode,
   PhosprotAggregationSource,
+  NormalizationCapabilityResponse,
   RRuntimeStatusResponse,
   SingleProteinOptionsResponse,
   SingleProteinTableResponse,
+  QcPcaFeatureSummary,
   QcPlotOptionsResponse,
   QcTableResponse,
   RestoreImportResponse,
@@ -65,6 +71,7 @@ import type {
   OllamaModelsResponse,
   OllamaChatResponse,
   SummaryTablesResponse,
+  VisualizationDataSource,
   VolcanoControlRequest,
   VolcanoResultResponse,
   VolcanoRequest,
@@ -72,9 +79,30 @@ import type {
 import { getActiveAdvancedPlotSettingsJson } from "./appSettings";
 import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
+import { normalizePlotSizeParams } from "./plotLimits";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 let DATASET_SCOPE_NONCE = 0;
+
+export type ApiRequestOptions = {
+  signal?: AbortSignal;
+};
+
+export class CloudAiConsentRequiredError extends Error {
+  status: CloudAiConsentStatus;
+
+  constructor(status: CloudAiConsentStatus) {
+    super(`Cloud AI consent is required for ${status.providerLabel}.`);
+    this.name = "CloudAiConsentRequiredError";
+    this.status = status;
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
 
 function bumpDatasetScopeNonce() {
   DATASET_SCOPE_NONCE += 1;
@@ -145,6 +173,31 @@ export async function getRRuntimeStatus(refresh = false): Promise<RRuntimeStatus
     );
   }
   return data as RRuntimeStatusResponse;
+}
+
+export async function getNormalizationCapability(
+  refresh = false
+): Promise<NormalizationCapabilityResponse> {
+  const suffix = refresh ? "?refresh=1" : "";
+  const response = await fetch(`${API_BASE}/api/runtime/normalization${suffix}`, {
+    cache: refresh ? "no-store" : "default",
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to detect normalization capabilities"
+    );
+  }
+  const payload = data as Partial<NormalizationCapabilityResponse>;
+  return {
+    methods: Array.isArray(payload.methods)
+      ? (payload.methods as NormalizationCapabilityResponse["methods"])
+      : ["none", "median", "quantile"],
+    vsnAvailable: Boolean(payload.vsnAvailable),
+    vsnUnavailableReason: payload.vsnUnavailableReason ?? null,
+    vsnPackageVersion: payload.vsnPackageVersion ?? null,
+  };
 }
 
 export async function loginViewerQr(token: string): Promise<ViewerAuthLoginResponse> {
@@ -322,14 +375,15 @@ function resolveDownloadFilename(response: Response, fallback: string): string {
 }
 
 export async function downloadRestoreState(
-  uiState: Record<string, unknown>
+  uiState: Record<string, unknown>,
+  options: { portable?: boolean } = {}
 ): Promise<{ blob: Blob; filename: string }> {
   const response = await fetch(`${API_BASE}/api/restore/export`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ uiState }),
+    body: JSON.stringify({ uiState, portable: options.portable ?? false }),
   });
   if (!response.ok) {
     const data = await parseJson(response);
@@ -460,8 +514,10 @@ export async function uploadPeptideFile(file: File, packageName?: string): Promi
   return data as PeptidePathResponse;
 }
 
-export async function getCurrentDatasets(): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/current`);
+export async function getCurrentDatasets(
+  requestOptions: ApiRequestOptions = {}
+): Promise<CurrentDatasetsResponse> {
+  const response = await fetch(`${API_BASE}/api/datasets/current`, { signal: requestOptions.signal });
   const data = await parseJson(response);
 
   if (!response.ok) {
@@ -523,7 +579,7 @@ export async function createDatasetPackage(packageName: string): Promise<Current
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
@@ -548,7 +604,7 @@ export async function renameDatasetPackage(
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
@@ -571,7 +627,7 @@ export async function setActiveDatasetPackage(packageName: string): Promise<Curr
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
@@ -595,7 +651,7 @@ export async function createMetadataProfile(
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
@@ -620,7 +676,7 @@ export async function renameMetadataProfile(
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
@@ -644,12 +700,14 @@ export async function setActiveMetadataProfile(
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
+  emitDatasetStateChanged(payload);
   return payload;
 }
 
-export async function getPeptideOverview(): Promise<PeptideOverviewResponse> {
-  const response = await fetch(`${API_BASE}/api/peptide/overview`);
+export async function getPeptideOverview(
+  requestOptions: ApiRequestOptions = {}
+): Promise<PeptideOverviewResponse> {
+  const response = await fetch(`${API_BASE}/api/peptide/overview`, { signal: requestOptions.signal });
   const data = await parseJson(response);
 
   if (!response.ok) {
@@ -717,10 +775,12 @@ export async function clearCurrentPeptideMetadata(): Promise<void> {
 export async function getPeptideSequenceCoverage(
   species: PeptideSpecies,
   protein: string,
-  chunkSize: number
+  chunkSize: number,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<PeptideCoverageResponse> {
   const response = await fetch(
-    buildPlotUrl("/api/peptide/sequence-coverage", { species, protein, chunkSize })
+    buildPlotUrl("/api/peptide/sequence-coverage", { species, protein, chunkSize }),
+    { signal: requestOptions.signal }
   );
   const data = await parseJson(response);
 
@@ -756,6 +816,26 @@ export async function generateAnnotation(
   return data as AnnotationResultResponse;
 }
 
+export async function generatePeptideMetadata(
+  payload: PeptideMetadataGenerateRequest
+): Promise<PeptideMetadataResponse> {
+  const response = await fetch(`${API_BASE}/api/peptide/metadata/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to generate peptide metadata"
+    );
+  }
+
+  return data as PeptideMetadataResponse;
+}
+
 export async function detectAnnotationLog2Scale(
   payload: Log2DetectionRequest
 ): Promise<Log2DetectionResponse> {
@@ -777,9 +857,12 @@ export async function detectAnnotationLog2Scale(
 }
 
 export async function getCurrentAnnotation(
-  kind: AnnotationKind
+  kind: AnnotationKind,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<AnnotationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}`);
+  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
 
   if (!response.ok) {
@@ -838,6 +921,44 @@ export async function downloadCurrentAnnotationMetadataData(
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, `${kind}_metadata_full.csv`);
   return { blob, filename };
+}
+
+export async function updateAnnotationPairing(
+  payload: PairingUpdateRequest
+): Promise<AnnotationResultResponse> {
+  const response = await fetch(`${API_BASE}/api/annotations/pairing`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to save sample pairing"
+    );
+  }
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged();
+  return data as AnnotationResultResponse;
+}
+
+export function pairingIsReady(
+  condition1: string,
+  condition2: string,
+  samplesByCondition: Record<string, string[]>,
+  pairIdsBySample: Record<string, string>
+) {
+  if (!condition1 || !condition2 || condition1 === condition2) return false;
+  const leftSamples = samplesByCondition[condition1] ?? [];
+  const rightSamples = samplesByCondition[condition2] ?? [];
+  const leftIds = leftSamples.map((sample) => pairIdsBySample[sample] ?? "").filter(Boolean);
+  const rightIds = rightSamples.map((sample) => pairIdsBySample[sample] ?? "").filter(Boolean);
+  if (new Set(leftIds).size !== leftIds.length || new Set(rightIds).size !== rightIds.length) {
+    return false;
+  }
+  const rightIdSet = new Set(rightIds);
+  return leftIds.filter((pairId) => rightIdSet.has(pairId)).length >= 2;
 }
 
 export async function uploadAnnotationMetadata(
@@ -904,7 +1025,8 @@ export async function clearUploadedAnnotationMetadata(
 }
 
 export async function runImputation(
-  payload: ImputationRunRequest
+  payload: ImputationRunRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<ImputationResultResponse> {
   const response = await fetch(`${API_BASE}/api/data-tools/imputation/run`, {
     method: "POST",
@@ -912,6 +1034,7 @@ export async function runImputation(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -946,9 +1069,12 @@ export async function downloadImputationCsv(
 }
 
 export async function getDistributionSummary(
-  kind: AnnotationKind
+  kind: AnnotationKind,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<DistributionSummaryResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/distribution/${kind}`);
+  const response = await fetch(`${API_BASE}/api/data-tools/distribution/${kind}`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1048,9 +1174,12 @@ export async function uploadPhosprot(
 }
 
 export async function getConditionPalette(
-  kind: AnnotationKind
+  kind: AnnotationKind,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<ConditionPaletteResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`);
+  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1084,9 +1213,12 @@ export async function setConditionPalette(
 
 export async function getCompletenessTables(
   kind: AnnotationKind,
-  params?: Record<string, string | number | boolean>
+  params?: Record<string, string | number | boolean>,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<CompletenessTablesResponse> {
-  const response = await fetch(buildPlotUrl(`/api/data-tools/completeness/${kind}/tables`, params));
+  const response = await fetch(buildPlotUrl(`/api/data-tools/completeness/${kind}/tables`, params), {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1109,8 +1241,13 @@ export async function getQcSummary(kind: AnnotationKind): Promise<QcSummaryRespo
   return data as QcSummaryResponse;
 }
 
-export async function getQcPlotOptions(kind: AnnotationKind): Promise<QcPlotOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/options`);
+export async function getQcPlotOptions(
+  kind: AnnotationKind,
+  requestOptions: ApiRequestOptions = {}
+): Promise<QcPlotOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/options`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1128,17 +1265,65 @@ export async function getQcPlotOptions(kind: AnnotationKind): Promise<QcPlotOpti
   };
 }
 
+export async function getPeptideQuantityOptions(
+  requestOptions: ApiRequestOptions = {}
+): Promise<PeptideQuantityOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/peptide/quantity-options`, {
+    signal: requestOptions.signal,
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load peptide abundance columns"
+    );
+  }
+  const payload = data as Partial<PeptideQuantityOptionsResponse>;
+  return {
+    columns: Array.isArray(payload.columns) ? payload.columns : [],
+    defaultColumn: typeof payload.defaultColumn === "string" ? payload.defaultColumn : null,
+    requiresSelection: Boolean(payload.requiresSelection),
+  };
+}
+
+export async function getQcPcaFeatures(
+  kind: AnnotationKind,
+  dataSource: string,
+  plotDim: string,
+  requestOptions: ApiRequestOptions = {}
+): Promise<QcPcaFeatureSummary> {
+  const query = new URLSearchParams({ dataSource, plotDim });
+  const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/pca-features?${query.toString()}`, {
+    signal: requestOptions.signal,
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load PCA feature summary"
+    );
+  }
+  const payload = data as Partial<QcPcaFeatureSummary>;
+  return {
+    featuresTotal: Number(payload.featuresTotal ?? 0),
+    featuresComplete: Number(payload.featuresComplete ?? 0),
+    featuresUsed: Number(payload.featuresUsed ?? 0),
+    featuresRequired: Number(payload.featuresRequired ?? 2),
+  };
+}
+
 export async function getQcTable(
   kind: AnnotationKind,
   tab: "coverage" | "boxplot" | "cv",
-  params?: Record<string, string | number | boolean>
+  params?: Record<string, string | number | boolean>,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<QcTableResponse> {
   let path = `/api/plots/qc/${kind}/${tab}-table`;
   if (tab === "coverage") path = `/api/plots/qc/${kind}/coverage-table`;
   if (tab === "boxplot") path = `/api/plots/qc/${kind}/boxplot-table`;
   if (tab === "cv") path = `/api/plots/qc/${kind}/cv-table`;
 
-  const response = await fetch(buildPlotUrl(path, params));
+  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1150,9 +1335,12 @@ export async function getQcTable(
 }
 
 export async function getStatisticalOptions(
-  kind: AnnotationKind
+  kind: AnnotationKind,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<StatisticalOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/options/${kind}`);
+  const response = await fetch(`${API_BASE}/api/stats/options/${kind}`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1168,6 +1356,14 @@ export async function getStatisticalOptions(
     availableConditions: Array.isArray(payloadRaw.availableConditions)
       ? payloadRaw.availableConditions
       : [],
+    samplesByCondition:
+      payloadRaw.samplesByCondition && typeof payloadRaw.samplesByCondition === "object"
+        ? payloadRaw.samplesByCondition
+        : {},
+    pairIdsBySample:
+      payloadRaw.pairIdsBySample && typeof payloadRaw.pairIdsBySample === "object"
+        ? payloadRaw.pairIdsBySample
+        : {},
     availableIdentifiers: Array.isArray(payloadRaw.availableIdentifiers)
       ? payloadRaw.availableIdentifiers
       : [],
@@ -1176,7 +1372,8 @@ export async function getStatisticalOptions(
 }
 
 export async function runVolcanoAnalysis(
-  payload: VolcanoRequest
+  payload: VolcanoRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<VolcanoResultResponse> {
   const response = await fetch(`${API_BASE}/api/stats/volcano/run`, {
     method: "POST",
@@ -1184,6 +1381,7 @@ export async function runVolcanoAnalysis(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1196,7 +1394,8 @@ export async function runVolcanoAnalysis(
 }
 
 export async function runVolcanoControlAnalysis(
-  payload: VolcanoControlRequest
+  payload: VolcanoControlRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<VolcanoResultResponse> {
   const response = await fetch(`${API_BASE}/api/stats/volcano-control/run`, {
     method: "POST",
@@ -1204,6 +1403,7 @@ export async function runVolcanoControlAnalysis(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1216,7 +1416,8 @@ export async function runVolcanoControlAnalysis(
 }
 
 export async function runAnovaAnalysis(
-  payload: AnovaRequest
+  payload: AnovaRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<AnovaResultResponse> {
   const response = await fetch(`${API_BASE}/api/stats/anova/run`, {
     method: "POST",
@@ -1224,6 +1425,7 @@ export async function runAnovaAnalysis(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1236,14 +1438,16 @@ export async function runAnovaAnalysis(
 }
 
 export async function runEnrichmentAnalysis(
-  payload: EnrichmentRequest
+  payload: EnrichmentRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<EnrichmentResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/gsea/run`, {
+  const response = await fetch(`${API_BASE}/api/stats/ora/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1256,14 +1460,16 @@ export async function runEnrichmentAnalysis(
 }
 
 export async function runListEnrichmentAnalysis(
-  payload: ListEnrichmentRequest
+  payload: ListEnrichmentRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<ListEnrichmentResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/gsea/list/run`, {
+  const response = await fetch(`${API_BASE}/api/stats/ora/list/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1276,7 +1482,8 @@ export async function runListEnrichmentAnalysis(
 }
 
 export async function runAnalysisVolcanoData(
-  payload: AnalysisVolcanoRequest
+  payload: AnalysisVolcanoRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<AnalysisVolcanoResponse> {
   const response = await fetch(`${API_BASE}/api/analysis/volcano/data`, {
     method: "POST",
@@ -1284,6 +1491,7 @@ export async function runAnalysisVolcanoData(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1393,6 +1601,7 @@ export async function streamChatMessage(
     temperature?: number;
     maxTokens?: number;
     ollamaUrl?: string;
+    analysisContext?: string;
   },
   onChunk: (chunk: string) => void
 ): Promise<{ provider: ChatProvider; model: string; content: string }> {
@@ -1412,17 +1621,31 @@ export async function streamChatMessage(
       temperature: payload.temperature,
       maxTokens: payload.maxTokens,
       ollamaUrl: payload.ollamaUrl,
+      analysisContext: payload.analysisContext,
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
+    let parsed: unknown = null;
     try {
-      const parsed = JSON.parse(text) as { detail?: string };
-      throw new Error(parsed?.detail || "Failed to run chat stream");
+      parsed = JSON.parse(text);
     } catch {
-      throw new Error(text || "Failed to run chat stream");
+      parsed = null;
     }
+    const detail =
+      parsed && typeof parsed === "object" && "detail" in parsed
+        ? (parsed as { detail?: unknown }).detail
+        : null;
+    if (
+      response.status === 428 &&
+      detail &&
+      typeof detail === "object" &&
+      (detail as { code?: unknown }).code === "cloud_ai_consent_required"
+    ) {
+      throw new CloudAiConsentRequiredError(normalizeCloudAiConsentStatus(detail));
+    }
+    throw new Error(typeof detail === "string" ? detail : text || "Failed to run chat stream");
   }
 
   const resolvedProvider = (response.headers.get("X-Chat-Provider")?.trim() ||
@@ -1461,6 +1684,73 @@ export async function streamChatMessage(
   }
 
   return { provider: resolvedProvider, model, content };
+}
+
+function normalizeCloudAiConsentStatus(value: unknown): CloudAiConsentStatus {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const provider: ChatProvider =
+    raw.provider === "openai" || raw.provider === "anthropic" || raw.provider === "gemini"
+      ? raw.provider
+      : "ollama";
+  return {
+    provider,
+    providerLabel: String(raw.providerLabel ?? provider),
+    required: Boolean(raw.required),
+    granted: Boolean(raw.granted),
+    disclosureVersion: String(raw.disclosureVersion ?? ""),
+    transmitted: Array.isArray(raw.transmitted) ? raw.transmitted.map(String) : [],
+    excluded: Array.isArray(raw.excluded) ? raw.excluded.map(String) : [],
+    notice: String(raw.notice ?? ""),
+  };
+}
+
+export async function getCloudAiConsentStatus(provider: ChatProvider): Promise<CloudAiConsentStatus> {
+  const response = await fetch(`${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}`);
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to load cloud AI consent status"
+    );
+  }
+  return normalizeCloudAiConsentStatus(data);
+}
+
+export async function grantCloudAiConsent(
+  provider: ChatProvider,
+  disclosureVersion: string
+): Promise<CloudAiConsentStatus> {
+  const response = await fetch(
+    `${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}/grant`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disclosureVersion }),
+    }
+  );
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to confirm cloud AI consent"
+    );
+  }
+  return normalizeCloudAiConsentStatus(data);
+}
+
+export async function revokeCloudAiConsent(provider: ChatProvider): Promise<CloudAiConsentStatus> {
+  const response = await fetch(
+    `${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}/revoke`,
+    { method: "POST" }
+  );
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to revoke cloud AI consent"
+    );
+  }
+  return normalizeCloudAiConsentStatus(data);
 }
 
 export async function getAiModuleContext(
@@ -1614,8 +1904,12 @@ export async function removeOllamaModel(model: string, endpoint?: string): Promi
   };
 }
 
-export async function getPathwayOptions(): Promise<PathwayOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/pathways`);
+export async function getPathwayOptions(
+  requestOptions: ApiRequestOptions = {}
+): Promise<PathwayOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/stats/pathways`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1627,7 +1921,8 @@ export async function getPathwayOptions(): Promise<PathwayOptionsResponse> {
 }
 
 export async function runSimulationAnalysis(
-  payload: SimulationRequest
+  payload: SimulationRequest,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<SimulationResultResponse> {
   const response = await fetch(`${API_BASE}/api/stats/simulation/run`, {
     method: "POST",
@@ -1635,6 +1930,7 @@ export async function runSimulationAnalysis(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal: requestOptions.signal,
   });
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1649,10 +1945,13 @@ export async function runSimulationAnalysis(
 export async function getSingleProteinOptions(
   kind: AnnotationKind,
   tab: "boxplot" | "lineplot" | "heatmap",
-  identifier: "workflow" | "genes" = "workflow"
+  identifier: "workflow" | "genes" = "workflow",
+  dataSource: VisualizationDataSource = "log2",
+  requestOptions: ApiRequestOptions = {}
 ): Promise<SingleProteinOptionsResponse> {
   const response = await fetch(
-    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab, identifier })
+    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab, identifier, dataSource }),
+    { signal: requestOptions.signal }
   );
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1667,10 +1966,12 @@ export async function getSingleProteinOptions(
 export async function getSingleProteinTable(
   kind: AnnotationKind,
   tab: "boxplot" | "lineplot" | "heatmap",
-  params?: Record<string, string | number | boolean>
+  params?: Record<string, string | number | boolean>,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<SingleProteinTableResponse> {
   const response = await fetch(
-    buildPlotUrl(`/api/plots/single-protein/${kind}/${tab}-table`, params)
+    buildPlotUrl(`/api/plots/single-protein/${kind}/${tab}-table`, params),
+    { signal: requestOptions.signal }
   );
   const data = await parseJson(response);
   if (!response.ok) {
@@ -1682,8 +1983,12 @@ export async function getSingleProteinTable(
   return data as SingleProteinTableResponse;
 }
 
-export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/plots/phospho/options`);
+export async function getPhosphoOptions(
+  requestOptions: ApiRequestOptions = {}
+): Promise<PhosphoOptionsResponse> {
+  const response = await fetch(`${API_BASE}/api/plots/phospho/options`, {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1697,6 +2002,14 @@ export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
     conditions: Array.isArray(payloadRaw.conditions)
       ? payloadRaw.conditions.map((value) => String(value))
       : [],
+    samplesByCondition:
+      payloadRaw.samplesByCondition && typeof payloadRaw.samplesByCondition === "object"
+        ? payloadRaw.samplesByCondition
+        : {},
+    pairIdsBySample:
+      payloadRaw.pairIdsBySample && typeof payloadRaw.pairIdsBySample === "object"
+        ? payloadRaw.pairIdsBySample
+        : {},
     features: Array.isArray(payloadRaw.features)
       ? payloadRaw.features.map((value) => String(value))
       : [],
@@ -1706,7 +2019,8 @@ export async function getPhosphoOptions(): Promise<PhosphoOptionsResponse> {
 
 export async function getPhosphoTable(
   tab: "phosphositePlot" | "coverage" | "ksea" | "distribution" | "sty" | "phosprotRegulation",
-  params?: Record<string, string | number | boolean>
+  params?: Record<string, string | number | boolean>,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<PhosphoTableResponse> {
   let path = "/api/plots/phospho/phosphosite-plot-table";
   if (tab === "coverage") path = "/api/plots/phospho/coverage-table";
@@ -1715,7 +2029,7 @@ export async function getPhosphoTable(
   if (tab === "sty") path = "/api/plots/phospho/sty-table";
   if (tab === "phosprotRegulation") path = "/api/plots/phospho/phosprot-regulation-table";
 
-  const response = await fetch(buildPlotUrl(path, params));
+  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1763,9 +2077,13 @@ export async function renderKseaVolcanoFromFiles(payload: {
 }
 
 export async function getComparisonOptions(
-  kind: AnnotationKind
+  kind: AnnotationKind,
+  dataSource: VisualizationDataSource = "log2",
+  requestOptions: ApiRequestOptions = {}
 ): Promise<ComparisonOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/plots/comparison/${kind}/options`);
+  const response = await fetch(buildPlotUrl(`/api/plots/comparison/${kind}/options`, { dataSource }), {
+    signal: requestOptions.signal,
+  });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1779,14 +2097,15 @@ export async function getComparisonOptions(
 export async function getComparisonTable(
   kind: AnnotationKind,
   tab: "pearson" | "venn",
-  params?: Record<string, string | number | boolean>
+  params?: Record<string, string | number | boolean>,
+  requestOptions: ApiRequestOptions = {}
 ): Promise<ComparisonTableResponse> {
   const path =
     tab === "pearson"
       ? `/api/plots/comparison/${kind}/pearson-table`
       : `/api/plots/comparison/${kind}/venn-table`;
 
-  const response = await fetch(buildPlotUrl(path, params));
+  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
   const data = await parseJson(response);
   if (!response.ok) {
     throw new Error(
@@ -1927,7 +2246,11 @@ export function buildPlotUrl(path: string, params?: Record<string, string | numb
   const base = `${API_BASE}${path}`;
   const query = new URLSearchParams();
   if (params) {
-    Object.entries(params).forEach(([key, value]) => {
+    const normalizedParams =
+      path.startsWith("/api/plots/") || path.startsWith("/api/analysis/")
+        ? normalizePlotSizeParams(params)
+        : params;
+    Object.entries(normalizedParams).forEach(([key, value]) => {
       query.set(key, String(value));
     });
   }

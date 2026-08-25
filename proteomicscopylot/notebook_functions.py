@@ -1,6 +1,8 @@
 import os
+import warnings
 import re
 import sys
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -19,7 +21,7 @@ from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 from scipy.stats import gaussian_kde, pearsonr
 from scipy.stats import t
-from scipy.stats import ttest_ind, ttest_rel
+from scipy.stats import ttest_ind
 from sklearn.decomposition import PCA
 
 _SAMPLE_DOTTED_SUFFIX = re.compile(
@@ -42,7 +44,10 @@ _SAMPLE_TEXT_SUFFIX = re.compile(
     r"(?:Quantity|Abundance|Ratio))$",
     re.IGNORECASE,
 )
-_SAMPLE_ACQUISITION_SUFFIX = re.compile(r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$", re.IGNORECASE)
+_SAMPLE_ACQUISITION_SUFFIX = re.compile(
+    r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$",
+    re.IGNORECASE,
+)
 _SAMPLE_NUMBER = re.compile(r"\d+")
 
 try:
@@ -63,11 +68,6 @@ except ModuleNotFoundError:
         adjusted[order] = np.clip(adjusted_ranked, 0, 1)
         reject = adjusted <= alpha
         return reject, adjusted, None, None
-
-try:
-    from gprofiler import GProfiler
-except ModuleNotFoundError:
-    GProfiler = None
 
 try:
     from Bio import SeqIO
@@ -109,10 +109,25 @@ def extract_number(s):
 
 
 def number_to_str(value):
-    if isinstance(value, (int, float)):
-        return str(value)
-    else:
+    """Render a number the same way in every pipeline.
+
+    Both packages used to delegate to the language's own conversion, and those
+    disagree: R's `as.character` drops a trailing `.0` and switches to scientific
+    notation past a width threshold, Python's `str` does neither, so `1.0` and
+    `1000000.0` came out as different text from the two products. The contract is
+    now explicit -- whole numbers carry no decimal point, and nothing below 1e15
+    is rendered in scientific notation.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
         return ""
+    number = float(value)
+    if math.isnan(number):
+        return "NaN"
+    if math.isinf(number):
+        return "Inf" if number > 0 else "-Inf"
+    if number == int(number) and abs(number) < 1e15:
+        return str(int(number))
+    return f"{number:.10g}"
 
 
 def make_columns_unique(df):
@@ -215,27 +230,230 @@ def read_data(file):
     return df
 
 
-def extract_sample_id(value):
-    original = str(value).strip()
-    sample = re.split(r"[\\/]", original)[-1]
+def strip_sample_measurement_suffix(value):
+    sample = re.split(r"[\\/]", str(value).strip())[-1]
     previous = None
     while sample != previous:
         previous = sample
         sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
         sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
-    sample = _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
-    numbers = _SAMPLE_NUMBER.findall(sample)
+    return _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
+
+
+def extract_sample_id(value):
+    original = str(value).strip()
+    numbers = _SAMPLE_NUMBER.findall(strip_sample_measurement_suffix(original))
     return numbers[-1] if numbers else original
+
+
+def paired_sample_columns(meta, condition1, condition2):
+    if str(condition1) == str(condition2):
+        raise ValueError("Paired tests require two different conditions.")
+    if "pair_id" not in meta.columns:
+        raise ValueError(
+            "Paired tests require a 'pair_id' metadata column with one stable subject "
+            "identifier per sample."
+        )
+    duplicate_samples = (
+        meta.loc[meta["sample"].astype(str).duplicated(keep=False), "sample"]
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+    if duplicate_samples:
+        raise ValueError(
+            "Paired tests require each sample to appear once in metadata. "
+            f"Duplicates: {', '.join(duplicate_samples)}."
+        )
+
+    def samples_by_id(condition):
+        rows = meta.loc[
+            meta["condition"].astype(str) == str(condition),
+            ["sample", "pair_id"],
+        ].copy()
+        if rows.empty:
+            raise ValueError(f"Condition '{condition}' does not have any annotated samples.")
+
+        rows["sample"] = rows["sample"].astype(str)
+        rows["pair_id"] = (
+            rows["pair_id"].where(rows["pair_id"].notna(), "").astype(str).str.strip()
+        )
+        rows = rows.loc[rows["pair_id"] != ""]
+
+        grouped = {}
+        for sample, pair_id in rows.itertuples(index=False, name=None):
+            grouped.setdefault(pair_id, []).append(sample)
+
+        duplicates = {key: values for key, values in grouped.items() if len(values) > 1}
+        if duplicates:
+            details = "; ".join(
+                f"{key}: {', '.join(values)}" for key, values in sorted(duplicates.items())
+            )
+            raise ValueError(
+                f"Paired tests require unique pair IDs within condition '{condition}'. "
+                f"Duplicates: {details}."
+            )
+        return {key: values[0] for key, values in grouped.items()}
+
+    left = samples_by_id(condition1)
+    right = samples_by_id(condition2)
+    pair_ids = [pair_id for pair_id in left if pair_id in right]
+    if len(pair_ids) < 2:
+        raise ValueError("Paired tests require at least two matched pair IDs.")
+    return [left[key] for key in pair_ids], [right[key] for key in pair_ids]
+
+
+def paired_test_enabled(value):
+    mode = str(value).strip().lower()
+    if mode not in {"paired", "unpaired"}:
+        raise ValueError("paired must be 'Paired' or 'Unpaired'.")
+    return mode == "paired"
+
+
+# Which residues are cleaved after, and whether a following proline blocks it.
+#   trypsin       K and R, both proline-blocked (K-P and R-P are not cut).
+#   trypsin_lysc  K and R, but the Lys-C component is not proline-inhibited, so
+#                 K-P is cleaved. R is cut by trypsin only, so R-P stays blocked.
+_PROTEASE_PROLINE_BLOCKED = {
+    "trypsin": {"K": True, "R": True},
+    "trypsin_lysc": {"K": False, "R": True},
+}
+
+PROTEASE_LABELS = {
+    "trypsin": "Trypsin",
+    "trypsin_lysc": "Trypsin / Lys-C",
+}
+
+
+def normalize_protease(value="trypsin"):
+    key = str(value or "trypsin").strip().lower().replace("-", "_").replace("/", "_")
+    key = key.replace("__", "_")
+    if key in {"trypsin_lysc", "trypsin_lys_c", "trypsinlysc"}:
+        return "trypsin_lysc"
+    if key == "trypsin":
+        return "trypsin"
+    raise ValueError("Protease must be 'trypsin' or 'trypsin_lysc'.")
+
+
+def count_missed_cleavages(sequence, protease="trypsin"):
+    """Count internal missed cleavage sites in a peptide sequence.
+
+    A missed cleavage is a cleavable residue that is neither the C-terminal
+    residue -- that one is the expected cut site, not a missed one -- nor
+    blocked by a following proline. Proline blocking is protease dependent.
+    """
+    rules = _PROTEASE_PROLINE_BLOCKED[normalize_protease(protease)]
+
+    def _count(value):
+        residues = str(value or "").strip().upper()
+        total = 0
+        for index in range(len(residues) - 1):
+            proline_blocked = rules.get(residues[index])
+            if proline_blocked is None:
+                continue
+            if proline_blocked and residues[index + 1] == "P":
+                continue
+            total += 1
+        return total
+
+    # A column of sequences must give a count per sequence, as the R package
+    # does. Passing one used to stringify the whole container and count the
+    # residues in its repr -- brackets and quotes included -- so a list of two
+    # peptides returned a single meaningless number instead of two counts.
+    if isinstance(sequence, (str, bytes)) or sequence is None:
+        return _count(sequence)
+    if hasattr(sequence, "__iter__"):
+        return [_count(item) for item in sequence]
+    return _count(sequence)
+
+
+def _guarded_t_statistic(effect, standard_error):
+    """Divide effect by SE without warnings while retaining zero-SE semantics."""
+    effect_values, se_values = np.broadcast_arrays(
+        np.asarray(effect, dtype=float),
+        np.asarray(standard_error, dtype=float),
+    )
+    statistic = np.full(effect_values.shape, np.nan, dtype=float)
+    nonzero_se = np.isfinite(se_values) & (se_values != 0)
+    np.divide(effect_values, se_values, out=statistic, where=nonzero_se)
+
+    zero_se = np.isfinite(se_values) & (se_values == 0) & np.isfinite(effect_values)
+    statistic[zero_se & (effect_values > 0)] = np.inf
+    statistic[zero_se & (effect_values < 0)] = -np.inf
+    return statistic
+
+
+def paired_t_test(differences):
+    differences = np.asarray(differences, dtype=float)
+    finite = np.isfinite(differences)
+    n_pairs = finite.sum(axis=1).astype(float)
+    clean = np.where(finite, differences, np.nan)
+    mean_diff = np.nanmean(clean, axis=1)
+    variance = np.nanvar(clean, axis=1, ddof=1)
+    se = np.sqrt(variance / n_pairs)
+    t_statistic = _guarded_t_statistic(mean_diff, se)
+    pvalues = 2.0 * t.sf(np.abs(t_statistic), n_pairs - 1.0)
+    constant = variance == 0
+    pvalues[constant & (mean_diff == 0)] = 1.0
+    pvalues[constant & (mean_diff != 0)] = 0.0
+    pvalues = np.nan_to_num(pvalues, nan=1.0, posinf=1.0, neginf=1.0)
+    return mean_diff, n_pairs, np.asarray(pvalues, dtype=float)
+
+
+def negative_log10(values):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return -np.log10(values)
 
 
 def extract_id_or_number(x):
     return extract_sample_id(x)
 
 
+def _raw_zero_to_nan(data: pd.DataFrame, sample_columns) -> pd.DataFrame:
+    """Convert raw non-detections without touching transformed/annotation zeros."""
+    output = data.copy()
+    present = [column for column in map(str, sample_columns) if column in output.columns]
+    if present:
+        output[present] = (
+            output[present]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf, 0], np.nan)
+        )
+    return output
+
+
+def _prepare_intensity_data(
+    data: pd.DataFrame,
+    sample_columns,
+    data_scale: str = "log2",
+) -> pd.DataFrame:
+    """Apply the shared missingness contract to an intensity matrix.
+
+    Zero is a valid measured value on the log2 scale (linear abundance 1), but
+    represents a non-detection in linear/raw quantities. Non-numeric and
+    non-finite sample values are missing under either scale. Annotation columns
+    are copied unchanged.
+    """
+    scale = str(data_scale).strip().lower()
+    if scale not in {"log2", "linear"}:
+        raise ValueError("data_scale must be 'log2' or 'linear'.")
+
+    output = data.copy()
+    present = [column for column in map(str, sample_columns) if column in output.columns]
+    if present:
+        output[present] = (
+            output[present]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+        )
+        if scale == "linear":
+            output[present] = output[present].replace(0, np.nan)
+    return output
+
+
 def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     annotated_columns = meta['sample'].tolist()
-    data_filtered = data[annotated_columns].copy()
-    data_filtered.replace(0, np.nan, inplace=True)
+    data_filtered = _raw_zero_to_nan(data[annotated_columns], annotated_columns)
     log2_data = np.log2(data_filtered)
 
     remaining_columns = [col for col in data.columns if col not in annotated_columns]
@@ -255,7 +473,65 @@ def inverse_log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     return combined_data
 
 
+def _validate_filter_thresholds(num, method, percentage):
+    """Reject a threshold that is not a meaningful quantity.
+
+    A filter that keeps nothing is a legitimate answer to a strict request, so
+    only impossible values are refused: a percentage outside 0-100, or a negative
+    count. Those cannot describe any completeness requirement, and used to pass
+    silently -- a negative count returned the whole matrix unfiltered.
+    """
+    if method == "percentage":
+        try:
+            value = float(percentage)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Minimum completeness percentage must be a number, got {percentage!r}."
+            ) from None
+        if not 0.0 <= value <= 100.0:
+            raise ValueError(
+                f"Minimum completeness percentage must be between 0 and 100, got {value:g}."
+            )
+        return
+
+    try:
+        value = int(num)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Minimum valid values must be a whole number, got {num!r}."
+        ) from None
+    if value < 0:
+        raise ValueError(f"Minimum valid values must be zero or greater, got {value}.")
+
+
+def _validate_meta_samples(meta):
+    """Refuse metadata that names a sample more than once.
+
+    A sample listed twice is counted twice by every group-wise mean and variance,
+    which roughly halves the standard error while leaving the fold change
+    untouched -- so nothing looks wrong and only the p-values move, downward. On
+    the bundled example a single duplicated condition takes the median p-value to
+    about a tenth of its correct value. The web app rejects this at upload; the
+    notebook packages take a hand-built frame, which is exactly where the slip
+    happens.
+    """
+    if not isinstance(meta, pd.DataFrame) or "sample" not in meta.columns:
+        return meta
+    samples = meta["sample"].astype(str).str.strip()
+    repeated = samples[samples.duplicated(keep=False)].drop_duplicates().tolist()
+    if repeated:
+        raise ValueError(
+            f"Metadata lists {len(repeated)} sample(s) more than once: "
+            f"{', '.join(repeated[:10])}"
+            f"{', and more' if len(repeated) > 10 else ''}. "
+            "Each sample must appear exactly once; a repeated sample is counted "
+            "twice and deflates every p-value."
+        )
+    return meta
+
+
 def filter_data(data, meta, num, filterops="per group", method="at_least_n", percentage=70):
+    _validate_meta_samples(meta)
     meta = meta.copy()
     meta['id'] = meta['sample'].apply(extract_id_or_number)
 
@@ -265,6 +541,15 @@ def filter_data(data, meta, num, filterops="per group", method="at_least_n", per
     filterops = str(filterops).strip().lower().replace("_", " ")
     if method not in {"at_least_n", "percentage"}:
         raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
+    # An unrecognised scope used to fall through to the `any` branch, silently
+    # applying the most permissive filter of the three: a misspelling retained
+    # features present in only one condition, which is what `per_group` exists
+    # to exclude.
+    if filterops not in {"per group", "in at least one group", "overall"}:
+        raise ValueError(
+            "Filter scope must be 'per_group', 'in_at_least_one_group' or 'overall'."
+        )
+    _validate_filter_thresholds(num, method, percentage)
 
     if filterops == "overall":
         valid = data_filtered.notna().sum(axis=1)
@@ -287,7 +572,19 @@ def filter_data(data, meta, num, filterops="per group", method="at_least_n", per
     return data.loc[rows_to_keep]
 
 
-def transform_phosprot(data: pd.DataFrame, meta: pd.DataFrame, mode: str = "sum_mean_impute"):
+def transform_phosprot(
+    data: pd.DataFrame,
+    meta: pd.DataFrame,
+    mode: str = "robust_site_median",
+    data_scale: str = "linear",
+):
+    """Collapse phosphosites to one phosphoprotein value per sample.
+
+    ``robust_site_median`` works on log2 values after centring every site by its
+    across-sample median and requires at least 50% of the fixed eligible sites.
+    Other modes aggregate original-scale intensities. ``data_scale`` describes
+    the supplied sample columns and may be ``"linear"`` or ``"log2"``.
+    """
     required_cols = [
         "UPD_seq",
         "PTM_localization",
@@ -303,10 +600,21 @@ def transform_phosprot(data: pd.DataFrame, meta: pd.DataFrame, mode: str = "sum_
     if not {"condition", "sample"}.issubset(meta.columns):
         raise ValueError("`meta` must contain columns: 'condition', 'sample'")
 
-    sample_cols = list(meta["sample"])
+    sample_cols = [str(value) for value in meta["sample"].tolist()]
+    if not sample_cols:
+        raise ValueError("`meta` must contain at least one sample")
+    duplicate_samples = sorted({sample for sample in sample_cols if sample_cols.count(sample) > 1})
+    if duplicate_samples:
+        raise ValueError(f"`meta.sample` contains duplicate names: {duplicate_samples}")
     missing_samples = [s for s in sample_cols if s not in data.columns]
     if missing_samples:
         raise ValueError(f"`meta.sample` contains names not found in data: {missing_samples}")
+
+    resolved_scale = str(data_scale).strip().lower()
+    if resolved_scale not in {"linear", "log2"}:
+        raise ValueError("data_scale must be 'linear' or 'log2'.")
+    data = data.copy()
+    data["Protein_group"] = data["Protein_group"].astype(str)
 
     gene_map = data.groupby("Protein_group")["Gene_group"].nunique()
     bad = gene_map[gene_map > 1]
@@ -329,75 +637,127 @@ def transform_phosprot(data: pd.DataFrame, meta: pd.DataFrame, mode: str = "sum_
 
     def sum_ignore_nan(series: pd.Series):
         vals = pd.to_numeric(series, errors="coerce")
-        return vals.fillna(0).sum()
+        return vals.sum(min_count=1)
 
     def mean(series: pd.Series):
         vals = pd.to_numeric(series, errors="coerce")
         return vals.mean()
 
-    if mode == "sum_mean_impute":
-        df = data.copy()
-
-        intensity_cols = sample_cols
-
-        for cond in meta["condition"].unique():
-            cond_samples = meta.loc[meta["condition"] == cond, "sample"]
-            cond_samples = [s for s in cond_samples if s in intensity_cols]
-
-            if len(cond_samples) > 0:
-                mean_vals = df[cond_samples].mean()
-                df[cond_samples] = df[cond_samples].fillna(mean_vals)
-
-        data = df
-        summarizer = lambda s: pd.to_numeric(s, errors="coerce").sum()
-
-    elif mode == "sum_propagate_na":
-        summarizer = sum_propagate_nan
-    elif mode == "sum_ignore_na":
-        summarizer = sum_ignore_nan
-    elif mode == "mean":
-        summarizer = mean
+    if resolved_scale == "log2":
+        log2_source = data.copy()
+        log2_source[sample_cols] = log2_source[sample_cols].apply(pd.to_numeric, errors="coerce")
+        linear_source = inverse_log2_transform_data(log2_source, meta)
     else:
-        raise ValueError("mode must be 'sum_mean_impute', 'sum_propagate_na', 'sum_ignore_na', or 'mean'")
+        linear_source = _raw_zero_to_nan(data, sample_cols)
+        log2_source = log2_transform_data(linear_source, meta)
+    for source_frame in (log2_source, linear_source):
+        source_frame[sample_cols] = (
+            source_frame[sample_cols]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+        )
 
-    agg_dict = {
+    numeric = log2_source[sample_cols].apply(pd.to_numeric, errors="coerce")
+    eligible_mask = numeric.notna().any(axis=1)
+    eligible_log2 = log2_source.loc[eligible_mask].copy()
+    groups = data["Protein_group"].astype(str)
+    group_order = groups.drop_duplicates().tolist()
+    total = groups.value_counts(sort=False).reindex(group_order, fill_value=0).astype(int)
+    eligible_groups = groups.loc[eligible_mask]
+    eligible_count = eligible_groups.value_counts(sort=False).reindex(group_order, fill_value=0).astype(int)
+    observed = (
+        numeric.loc[eligible_mask]
+        .notna()
+        .astype(int)
+        .assign(Protein_group=eligible_groups.to_numpy())
+        .groupby("Protein_group", sort=False)[sample_cols]
+        .sum()
+        .reindex(group_order, fill_value=0)
+        .astype(int)
+    )
+    fractions = observed.div(eligible_count.replace(0, np.nan).astype(float), axis=0)
+
+    annotation_agg = {
         "Gene_group": "first",
         "PTM_Collapse_key": collapse,
         "PTM_localization": arrange_elements,
         "UPD_seq": collapse,
-        **{col: summarizer for col in sample_cols}
     }
+    annotations = data.groupby("Protein_group", as_index=False).agg(annotation_agg)
 
-    data_phosprot = data.groupby("Protein_group", as_index=False).agg(agg_dict)
+    if mode == "robust_site_median":
+        eligible_numeric = eligible_log2[sample_cols].apply(pd.to_numeric, errors="coerce")
+        centred = eligible_numeric.sub(eligible_numeric.median(axis=1, skipna=True), axis=0)
+        centred["Protein_group"] = eligible_log2["Protein_group"].astype(str).to_numpy()
+        values = centred.groupby("Protein_group", sort=False)[sample_cols].median().reindex(group_order)
+        required = eligible_count.apply(lambda count: max(1, int(math.ceil(float(count) * 0.5))))
+        for sample in sample_cols:
+            values.loc[observed[sample] < required, sample] = np.nan
+        values = values.reset_index()
+    else:
+        eligible_index = eligible_log2.index
+        source = linear_source.loc[eligible_index].copy()
+        if mode == "sum_propagate_na":
+            summarizer = sum_propagate_nan
+        elif mode == "sum_ignore_na":
+            summarizer = sum_ignore_nan
+        elif mode == "mean":
+            summarizer = mean
+        else:
+            raise ValueError(
+                "mode must be 'robust_site_median', 'sum_propagate_na', "
+                "'sum_ignore_na', or 'mean'"
+            )
+        values = source.groupby("Protein_group", as_index=False).agg(
+            {column: summarizer for column in sample_cols}
+        )
 
-    site_counts = data.groupby("Protein_group").size().reset_index(name="site_num")
-    data_phosprot = data_phosprot.merge(site_counts, on="Protein_group", how="left")
+    diagnostics = pd.DataFrame({
+        "Protein_group": group_order,
+        "site_num": total.to_numpy(),
+        "site_num_eligible": eligible_count.to_numpy(),
+        "site_observed_min": observed.min(axis=1).to_numpy(dtype=int),
+        "site_observed_mean": observed.mean(axis=1).to_numpy(dtype=float),
+        "site_coverage_min": fractions.min(axis=1).to_numpy(dtype=float),
+        "site_coverage_mean": fractions.mean(axis=1).to_numpy(dtype=float),
+    })
+    complete = observed.eq(eligible_count, axis=0)
+    complete.loc[eligible_count == 0, :] = False
+    diagnostics["site_complete_samples"] = complete.sum(axis=1).to_numpy(dtype=int)
+    for sample in sample_cols:
+        diagnostics[f"site_observed__{sample}"] = observed[sample].to_numpy(dtype=int)
+        diagnostics[f"site_coverage__{sample}"] = fractions[sample].to_numpy(dtype=float)
+
+    data_phosprot = annotations.merge(values, on="Protein_group", how="left")
+    data_phosprot = data_phosprot.merge(diagnostics, on="Protein_group", how="left")
 
     data_phosprot = data_phosprot.rename(columns={
         "PTM_Collapse_key": "PTM_Collapse_keys",
         "Protein_group": "Phosphoprotein"
     })
 
-    cols = data_phosprot.columns.tolist()
-    cols.remove("site_num")
-    insert_pos = cols.index("Gene_group") + 1
-    cols.insert(insert_pos, "site_num")
-    data_phosprot = data_phosprot[cols]
+    diagnostic_cols = [
+        column for column in data_phosprot.columns
+        if column.startswith("site_") and column not in {"site_num", "site_num_eligible"}
+    ]
+    ordered = [
+        "Phosphoprotein", "Gene_group", "site_num", "site_num_eligible",
+        "PTM_Collapse_keys", "PTM_localization", "UPD_seq", *sample_cols,
+        *diagnostic_cols,
+    ]
+    return data_phosprot[[column for column in ordered if column in data_phosprot.columns]]
 
-    return data_phosprot
 
-
-def qqnorm_plot(data, meta):
+def qqnorm_plot(data, meta, seed=187):
     sample_columns = meta['sample'].tolist()
-    data_values = data[sample_columns].replace(0, np.nan)
+    data_values = data[sample_columns].apply(pd.to_numeric, errors="coerce")
 
     values_vector = data_values.values.flatten()
-    values_vector = values_vector[~np.isnan(values_vector)]
-    values_vector = values_vector[values_vector > 0]
+    values_vector = values_vector[np.isfinite(values_vector)]
 
     if len(values_vector) > 100_000:
-        np.random.seed(187)
-        values_vector = np.random.choice(values_vector, 100_000, replace=False)
+        rng = np.random.default_rng(seed)
+        values_vector = rng.choice(values_vector, 100_000, replace=False)
 
     fig, ax = plt.subplots()
     stats.probplot(values_vector, plot=ax)
@@ -406,14 +766,29 @@ def qqnorm_plot(data, meta):
     ax.set_ylabel("Sample Quantiles")
     return fig
 
-def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, ret=0, sample_wise=False, seed=69, method="quantile", down_shift=1.8, width=0.3):
+def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, ret=0, sample_wise=True, seed=1337, method="quantile", down_shift=1.8, width=0.3):
+    """Impute missing values with a downshifted normal draw.
+
+    Pass **log2 transformed** data. The model draws from a normal centred near
+    the low quantile of the observed distribution, which is only sensible where
+    intensities are roughly Gaussian. On linear intensities the draw width is
+    set by the high-abundance tail and roughly half the draws come out negative,
+    which then become NaN as soon as anything log2 transforms them.
+
+    If you need linear values for another workflow, impute first and
+    inverse-transform afterwards -- not the other way round.
+
+    Reference: the downshifted-normal model and its defaults follow Perseus (Tyanova et
+    al. 2016, doi:10.1038/nmeth.3901).
+    """
+    _validate_meta_samples(meta)
     method = str(method).strip().lower()
     if method == "normal":
         method = "quantile"
     if method not in {"quantile", "numerical"}:
         raise ValueError("Imputation method must be 'quantile' or 'numerical'.")
-    np.random.seed(seed)
-    data = data.replace(0, np.nan).copy()
+    rng = np.random.default_rng(seed)
+    data = data.copy()
     annotated_columns = meta["sample"].tolist()
     data_filtered = data[annotated_columns]
     combined_data = data_filtered.values.flatten()
@@ -462,8 +837,11 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
                     draw_sd = col_sd * width
                 else:
                     center = np.nanquantile(col_vals, q)
-                    draw_sd = col_sd
-                data_filtered.loc[col_vals.isna(), col] = np.random.normal(center, draw_sd, num_na)
+                    # adj_std must scale the draw here exactly as it does in the
+                    # global branch below; without it the setting is inert in
+                    # sample-wise mode and the spread is always the full SD.
+                    draw_sd = col_sd * adj_std
+                data_filtered.loc[col_vals.isna(), col] = rng.normal(center, draw_sd, num_na)
     else:
         if method == "numerical":
             center = mean_val - down_shift * sd_val
@@ -475,7 +853,7 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
             col_vals = data_filtered[col]
             num_na = col_vals.isna().sum()
             if num_na > 0:
-                data_filtered.loc[col_vals.isna(), col] = np.random.normal(center, draw_sd, num_na)
+                data_filtered.loc[col_vals.isna(), col] = rng.normal(center, draw_sd, num_na)
 
     imputed_data = data_filtered[missing_value_mask]
     non_imputed_data = data_filtered[~missing_value_mask]
@@ -500,8 +878,9 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
 
 #QC FUNCTIONS
 def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=None,
-                  width=20, height=10, dpi=300, text=False, text_size=9):
-    data = data.replace(0, np.nan)
+                  width=20, height=10, dpi=300, text=False, text_size=9,
+                  data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     conditions = meta['condition'].unique()
     meta['sample'] = meta['sample'].astype(str)
     meta['id'] = meta['sample'].apply(extract_id_or_number)
@@ -609,8 +988,8 @@ def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=Non
 
 
 def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, height=10, dpi=300, text=False,
-                          text_size=9):
-    data = data.replace(0, np.nan)
+                          text_size=9, seed=69, data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
     meta["sample"] = meta["sample"].astype(str)
     meta["id"] = meta["sample"].str.extract(r'(\d+|[A-Za-z]+)', expand=False)
@@ -662,7 +1041,7 @@ def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, h
         edgecolor="black"
     )
 
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     for i, cond in enumerate(conditions):
         cond_values = sample_summary.loc[sample_summary["condition"] == cond, "Value"].values
         jitter = rng.uniform(-0.2, 0.2, size=len(cond_values))
@@ -1033,7 +1412,29 @@ def boxplot_int_single(
 
 
 def cov_plot(data, meta, outliers=False, header=True, legend=True, plot_colors=None,
-             width_cm=20, height_cm=10, dpi=100, text=False, text_size=9):
+             width_cm=20, height_cm=10, dpi=100, text=False, text_size=9,
+             data_scale=None):
+    """Plot per-condition coefficients of variation for linear intensities.
+
+    ``CV = sd / mean`` is not defined on log2-transformed intensities.  Require
+    callers to state the scale explicitly so a log2 matrix cannot silently
+    produce a plausible-looking but scientifically invalid plot.
+    """
+    if data_scale is None:
+        raise ValueError(
+            "cov_plot requires data_scale='linear'; coefficient of variation "
+            "is not meaningful on log2-transformed intensities."
+        )
+    normalized_scale = str(data_scale).strip().lower()
+    if normalized_scale != "linear":
+        if normalized_scale == "log2":
+            raise ValueError(
+                "cov_plot requires linear intensities; inverse-transform log2 "
+                "data before plotting and pass data_scale='linear'."
+            )
+        raise ValueError("data_scale must be 'linear' for cov_plot.")
+
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), normalized_scale)
     conditions = meta['condition'].unique()
     valid_conditions = []
     cv_data = []
@@ -1135,16 +1536,68 @@ def minimum_enclosing_ellipse(points, tol=1e-3):
     return center, axes, angle
 
 
+def _prepare_pca_matrix(data, meta, *, plot_3d=False):
+    annotated_columns = meta['sample'].astype(str).tolist()
+    missing_columns = [column for column in annotated_columns if column not in data.columns]
+    if missing_columns:
+        raise ValueError(f"PCA sample columns are missing from data: {', '.join(missing_columns)}")
+
+    n_components = 3 if plot_3d else 2
+    numeric = data[annotated_columns].apply(pd.to_numeric, errors='coerce')
+    numeric = numeric.replace([np.inf, -np.inf], np.nan)
+    complete = numeric.dropna()
+    if complete.shape[0] < n_components:
+        raise ValueError(
+            "PCA cannot be computed because only "
+            f"{complete.shape[0]} of {numeric.shape[0]} features are complete across all samples; "
+            "the missingness is too high. Impute the data before calling the PCA function."
+        )
+
+    transposed_expr = complete.T
+    transposed_expr = transposed_expr.loc[:, transposed_expr.var(axis=0) > 0]
+    if transposed_expr.shape[0] < n_components:
+        raise ValueError(f"PCA needs at least {n_components} samples for this projection.")
+    if transposed_expr.shape[1] < n_components:
+        raise ValueError(
+            f"PCA needs at least {n_components} complete, non-constant features; "
+            f"only {transposed_expr.shape[1]} remain after filtering."
+        )
+    return transposed_expr, n_components
+
+
+def resolve_feature_scaling(scaling="auto", method="PCA"):
+    """How features are weighted before a projection.
+
+    ``centered`` subtracts each feature's mean across samples and stops there,
+    so a feature contributes in proportion to its variance. ``unit_variance``
+    also divides by the standard deviation, giving every feature equal weight.
+
+    ``auto`` keeps each method's established default: PCA on the centred matrix,
+    UMAP and t-SNE on unit-variance features because both read distances and are
+    sensitive to feature scale. The two answer different questions, so a run that
+    mixes them without saying which was used is not reproducible.
+    """
+    requested = str(scaling or "auto").strip().lower()
+    if requested in {"centered", "centred"}:
+        return "centered"
+    if requested in {"unit_variance", "scaled"}:
+        return "unit_variance"
+    if requested != "auto":
+        raise ValueError(
+            "Unsupported scaling. Choose 'auto', 'centered', or 'unit_variance'."
+        )
+    return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
+
+
 def pca_plot(data, meta, header=True, legend=True, dot_size=3,
              width_cm=20, height_cm=10, dpi=100, plot_colors=None,
-             plot_3d=False, add_ellipses=False):
+             plot_3d=False, add_ellipses=False, scaling="auto"):
     meta['condition'] = pd.Categorical(meta['condition'], categories=meta['condition'].unique(), ordered=True)
-    annotated_columns = meta['sample'].tolist()
-    data_filtered = data[annotated_columns].dropna()
-    transposed_expr = data_filtered.T
-    zero_variance_columns = transposed_expr.var(axis=0) == 0
-    transposed_expr = transposed_expr.loc[:, ~zero_variance_columns]
-    n_components = 3 if plot_3d else 2
+    transposed_expr, n_components = _prepare_pca_matrix(data, meta, plot_3d=plot_3d)
+    if resolve_feature_scaling(scaling, method="PCA") == "unit_variance":
+        centred = transposed_expr - transposed_expr.mean(axis=0)
+        deviation = centred.std(axis=0, ddof=0).replace(0.0, 1.0)
+        transposed_expr = centred / deviation
     pca = PCA(n_components=n_components)
     pca_result = pca.fit_transform(transposed_expr)
     explained_variance = pca.explained_variance_ratio_ * 100
@@ -1203,11 +1656,7 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
     import plotly.graph_objects as go
     if plot_colors is None:
         plot_colors = px.colors.qualitative.Plotly
-    annotated_columns = meta["sample"].tolist()
-    data_filtered = data.loc[:, annotated_columns].dropna()
-    transposed_expr = data_filtered.T
-    transposed_expr = transposed_expr.loc[:, transposed_expr.var(axis=0) > 0]
-    n_components = 3 if plot_3d else 2
+    transposed_expr, n_components = _prepare_pca_matrix(data, meta, plot_3d=plot_3d)
     pca = PCA(n_components=n_components)
     pca_result = pca.fit_transform(transposed_expr)
     explained_variance = pca.explained_variance_ratio_ * 100
@@ -1274,9 +1723,22 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
     return fig
 
 
+def abundance_axis_label(workflow, centered=False):
+    """Y-axis label for the abundance plot.
+
+    ``robust_site_median`` phosphoprotein aggregation centres every site on its
+    own across-sample median, so those values carry a ratio to that median
+    rather than an intensity. Every other phosprot mode, and both other
+    workflows, hold real abundances.
+    """
+    if centered:
+        return f"log10 {workflow} Ratio to Site Median"
+    return f"log10 {workflow} Intensity"
+
+
 def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20, height_cm=10, dpi=300,
-                   legend=True, header=True):
-    data = data.replace(0, np.nan)
+                   legend=True, header=True, data_scale="log2", centered=False):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     unique_conditions = meta['condition'].unique()
 
     if plot_colors is not None:
@@ -1334,7 +1796,7 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
         ax.scatter(subset['Rank'], subset['log10Intensity'], label=cond, color=color, s=5)
 
     ax.set_xlabel(f"{workflow} Rank")
-    ax.set_ylabel(f"log10 {workflow} Intensity")
+    ax.set_ylabel(abundance_axis_label(workflow, centered))
 
     if header:
         ax.set_title(f"Abundance plot - {workflow}")
@@ -1352,9 +1814,10 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
     return fig
 
 
-def interactive_abundance_plot(data, meta, condition, workflow="Protein", search=None, max_ptms=5):
-    data = data.replace(0, np.nan)
+def interactive_abundance_plot(data, meta, condition, workflow="Protein", search=None, max_ptms=5,
+                               data_scale="log2", centered=False):
     annotated_columns = meta.loc[meta["condition"] == condition, "sample"].tolist()
+    data = _prepare_intensity_data(data, annotated_columns, data_scale)
 
     if workflow == "Protein":
         feature_col = "ProteinNames"
@@ -1427,14 +1890,16 @@ def interactive_abundance_plot(data, meta, condition, workflow="Protein", search
     fig.update_traces(marker=dict(size=6), textposition="top center")
     fig.update_layout(
         xaxis_title=f"{workflow} Rank",
-        yaxis_title=f"log10 {workflow} Intensity",
+        yaxis_title=abundance_axis_label(workflow, centered),
         showlegend=False
     )
 
     return fig
 
 
-def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, height=8, dpi=100):
+def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, height=8, dpi=100,
+              data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
     meta['sample'] = meta['sample'].astype(str)
     meta['id'] = meta['sample'].apply(extract_id_or_number)
@@ -1505,19 +1970,77 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
 
 
 #STATISTIC FUNCTIONS
-def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
-                   workflow="Protein", paired="Unpaired", uncorrected=False):
+def _variance_and_count(values):
+    """Per-row variance and observed count for one independent group.
+
+    A group with one observation has no defined variance; numpy warns and
+    returns NaN, which propagates to a NaN standard error and then to p = 1.
+    That is the safe direction, so the expected warning is silenced rather than
+    surfaced to the notebook user.
+    """
+    counts = np.sum(np.isfinite(values), axis=1).astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        variances = np.nanvar(values, axis=1, ddof=1)
+    return variances, counts
+
+
+def _satterthwaite(components):
+    """Standard error and effective degrees of freedom for a sum of group means.
+
+    Each component is (variance, n) for one independent group.
+    """
+    ratios = [variance / count for variance, count in components]
+    se_squared = np.sum(ratios, axis=0)
+    denominator = np.sum(
+        [ratio**2 / np.maximum(count - 1.0, 1e-12) for ratio, (_, count) in zip(ratios, components)],
+        axis=0,
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dof = se_squared**2 / denominator
+    return np.sqrt(se_squared), dof
+
+
+def _resolve_volcano_label_column(data, workflow, label_column=None):
+    """Resolve the displayed/tested feature without duplicating Volcano math."""
+    if label_column is not None:
+        label_column = str(label_column)
+        if label_column not in data.columns:
+            raise ValueError(f"label_column '{label_column}' was not found in data.")
+        return label_column
     if workflow == "Protein":
-        label_col = "ProteinNames"
-    elif workflow == "Phosphosite":
-        label_col = "PTM_Collapse_key"
-    elif workflow == "Phosphoprotein":
-        label_col = "Phosphoprotein"
+        return "ProteinNames"
+    if workflow == "Phosphosite":
+        return "PTM_Collapse_key"
+    if workflow == "Phosphoprotein":
+        return "Phosphoprotein"
+    raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
+
+
+def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
+                   workflow="Protein", paired="Unpaired", uncorrected=False,
+                   test_type=None, label_column=None):
+    """Differential abundance between two conditions.
+
+    `test_type` selects the design and variance model together: "unpaired",
+    "unpaired_welch", "unpaired_moderated", "paired" or "paired_moderated". When
+    it is omitted the older `paired` argument is used, so existing calls keep
+    their behaviour.
+    """
+    _validate_meta_samples(meta)
+    if test_type is None:
+        is_paired = paired_test_enabled(paired)
+        variance = "pooled"
     else:
-        raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
+        is_paired, variance = resolve_test_type(test_type)
+    label_col = _resolve_volcano_label_column(data, workflow, label_column)
 
     annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
     annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
+    if is_paired:
+        annotated_columns1, annotated_columns2 = paired_sample_columns(
+            meta, condition1, condition2
+        )
     cols_to_use = [label_col] + annotated_columns1 + annotated_columns2
 
     if workflow == "Phosphoprotein":
@@ -1528,7 +2051,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
 
-    df = data[cols_to_use].replace(0, np.nan).copy()
+    df = data[cols_to_use].copy()
     arr_x = df[annotated_columns1].to_numpy(dtype=float)
     arr_y = df[annotated_columns2].to_numpy(dtype=float)
 
@@ -1546,22 +2069,56 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     mean2 = np.nanmean(arr_y, axis=1)
     log2fc = mean2 - mean1
 
-    if paired == "Unpaired":
+    if not is_paired:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
-        se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-        t_stat = log2fc / se
-        dfree = n1 + n2 - 2
+        if variance == "welch":
+            # Unequal variances: no pooling, Welch-Satterthwaite degrees of freedom.
+            se, dfree = _satterthwaite([(var1, n1), (var2, n2)])
+        elif variance == "moderated":
+            # Equal-variance model with the pooled variance shrunk toward a prior
+            # fitted across all features (limma's empirical Bayes). At n=3 a
+            # per-feature variance is a poor estimate; borrowing strength across
+            # features is what recovers usable power.
+            residual_dof = (n1 + n2) - 2.0
+            pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / np.maximum(residual_dof, 1e-12)
+            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
+            se = np.sqrt(posterior * (1.0 / n1 + 1.0 / n2))
+            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
+        else:
+            pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
+            se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
+            dfree = n1 + n2 - 2
+        t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
     else:
         diffs = arr_y - arr_x
-        min_len = np.minimum(n1, n2)
-        mean_diff = np.nanmean(diffs, axis=1)
-        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(min_len)
-        t_stat = mean_diff / se_diff
-        pvals = 2 * t.sf(np.abs(t_stat), min_len - 1)
+        valid_paired = np.sum(np.isfinite(diffs), axis=1) >= 2
+        if not np.any(valid_paired):
+            raise ValueError("No rows have enough paired values for the selected comparison.")
+        df = df.loc[valid_paired]
+        arr_x = arr_x[valid_paired]
+        arr_y = arr_y[valid_paired]
+        diffs = diffs[valid_paired]
+        if variance == "moderated":
+            counts = np.sum(np.isfinite(diffs), axis=1).astype(float)
+            mean_diff = np.nanmean(diffs, axis=1)
+            var_diff = np.nanvar(diffs, axis=1, ddof=1)
+            residual_dof = counts - 1.0
+            posterior, _, df_prior = squeeze_variance(var_diff, residual_dof)
+            se = np.sqrt(posterior / counts)
+            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
+            t_stat = _guarded_t_statistic(mean_diff, se)
+            pvals = 2 * t.sf(np.abs(t_stat), dfree)
+            n_diff = counts
+        else:
+            mean_diff, n_diff, pvals = paired_t_test(diffs)
+        log2fc = mean_diff
 
+    # statsmodels' BH propagates NaN to *every* entry, so a single undefined
+    # p-value (a constant row) would silently blank all adjusted p-values and
+    # make everything read "Not significant". Coerce first, matching the backend.
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
     adj_pvals = pvals if uncorrected else multipletests(pvals, method='fdr_bh')[1]
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
@@ -1574,7 +2131,10 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         "pval": pvals,
         "adj_pval": adj_pvals,
         "significance": significance,
-        "neg_log10_adj_pval": -np.log10(adj_pvals)
+        "neg_log10_adj_pval": negative_log10(adj_pvals),
+        # Marks rows whose significance comes from absent within-group variation
+        # rather than effect size. The p-value is unchanged and correct.
+        "zero_variance": constant_within_group(arr_x) | constant_within_group(arr_y),
     }
 
     if workflow == "Phosphoprotein":
@@ -1582,20 +2142,27 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
             result["site_num"] = df["site_num"].values
         if "PTM_Collapse_keys" in df.columns:
             result["PTM_Collapse_keys"] = df["PTM_Collapse_keys"].values
+    if is_paired:
+        result["n_pairs"] = n_diff.astype(int)
 
     return pd.DataFrame(result)
 
 
 def volcano_data_f_control(data, meta, condition1, condition2, condition1_control, condition2_control,
-    in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=False):
-    if workflow == "Protein":
-        label_col = "ProteinNames"
-    elif workflow == "Phosphosite":
-        label_col = "PTM_Collapse_key"
-    elif workflow == "Phosphoprotein":
-        label_col = "Phosphoprotein"
+    in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=False,
+    test_type=None, label_column=None):
+    """Control-adjusted differential abundance using the web application's tests.
+
+    `test_type` accepts the same five modes as :func:`volcano_data_f`. When it
+    is omitted, the legacy `paired` argument remains authoritative.
+    """
+    _validate_meta_samples(meta)
+    if test_type is None:
+        is_paired = paired_test_enabled(paired)
+        variance = "pooled"
     else:
-        raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
+        is_paired, variance = resolve_test_type(test_type)
+    label_col = _resolve_volcano_label_column(data, workflow, label_column)
 
     c1_cols = meta.loc[meta["condition"] == condition1, "sample"].tolist()
     c2_cols = meta.loc[meta["condition"] == condition2, "sample"].tolist()
@@ -1606,8 +2173,16 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         raise ValueError("No samples found for condition1 and/or condition2 in meta.")
     if not c1_ctrl_cols or not c2_ctrl_cols:
         raise ValueError("No samples found for condition1_control and/or condition2_control in meta.")
+    if is_paired:
+        c1_cols, c2_cols = paired_sample_columns(meta, condition1, condition2)
 
-    cols_to_use = [label_col] + c1_cols + c2_cols + c1_ctrl_cols + c2_ctrl_cols
+    # Deduplicated: using one condition as both controls (a common design) would
+    # otherwise select the same columns twice, and df[c1_ctrl_cols] would then
+    # return each control column twice -- halving the group's apparent variance
+    # and doubling its n, both of which shrink the standard error.
+    cols_to_use = list(dict.fromkeys(
+        [label_col] + c1_cols + c2_cols + c1_ctrl_cols + c2_ctrl_cols
+    ))
 
     if workflow == "Phosphoprotein":
         extra_cols = []
@@ -1617,8 +2192,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
 
-    df = data[cols_to_use].replace(0, np.nan).copy()
-
+    df = data[cols_to_use].copy()
     arr_c1 = df[c1_cols].to_numpy(dtype=float)
     arr_c2 = df[c2_cols].to_numpy(dtype=float)
     arr_c1_ctrl = df[c1_ctrl_cols].to_numpy(dtype=float)
@@ -1633,6 +2207,11 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     n1_real = np.sum(~np.isnan(arr_x), axis=1)
     n2_real = np.sum(~np.isnan(arr_y), axis=1)
     valid_mask = (n1_real >= 2) & (n2_real >= 2)
+    valid_mask &= np.sum(np.isfinite(arr_c1_ctrl), axis=1) >= 2
+    valid_mask &= np.sum(np.isfinite(arr_c2_ctrl), axis=1) >= 2
+
+    if not np.any(valid_mask):
+        raise ValueError("No rows have enough replicate values for the selected comparison.")
 
     df = df.loc[valid_mask]
     arr_x = arr_x[valid_mask]
@@ -1644,35 +2223,69 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     mean2 = np.nanmean(arr_y, axis=1)
     log2fc = mean2 - mean1
 
-    if paired == "Unpaired":
+    # Subtracting each control mean shifts a row by a constant, which leaves the
+    # test groups' own variance untouched -- so a two-group standard error omits
+    # the uncertainty of the control means entirely and understates the true
+    # uncertainty. On a complete null that produced a 12.75% false-positive rate
+    # against a nominal 5%. The control groups are propagated as additional
+    # independent components instead.
+    control_arrays = [arr_c1_ctrl[valid_mask], arr_c2_ctrl[valid_mask]]
+
+    if not is_paired:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
-        se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-        t_stat = log2fc / se
-        dfree = n1 + n2 - 2
+        groups = [(var1, n1), (var2, n2)]
+        groups.extend(_variance_and_count(control) for control in control_arrays)
+        if variance == "moderated":
+            total_n = sum(count for _, count in groups)
+            residual_dof = total_n - float(len(groups))
+            pooled_var = sum(
+                (count - 1.0) * variance_values
+                for variance_values, count in groups
+            ) / np.maximum(residual_dof, 1e-12)
+            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
+            se = np.sqrt(posterior * sum(1.0 / count for _, count in groups))
+            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
+        else:
+            # With controls, pooled and Welch both propagate four independent
+            # group means with a Satterthwaite approximation, matching the web.
+            se, dfree = _satterthwaite(groups)
+        t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
     else:
-        if arr_x.shape[1] != arr_y.shape[1]:
-            raise ValueError(
-                "paired != 'Unpaired' requires same number of samples in condition1 and condition2 "
-                "(and matching order)."
-            )
         diffs = arr_y - arr_x
-        n_diff = np.sum(~np.isnan(diffs), axis=1)
+        n_diff = np.sum(np.isfinite(diffs), axis=1)
         valid_paired = n_diff >= 2
 
-        if not np.all(valid_paired):
-            df = df.loc[valid_paired]
-            diffs = diffs[valid_paired]
-            log2fc = log2fc[valid_paired]
-            n_diff = n_diff[valid_paired]
+        if not np.any(valid_paired):
+            raise ValueError("No rows have enough paired values for the selected comparison.")
+        df = df.loc[valid_paired]
+        arr_x = arr_x[valid_paired]
+        arr_y = arr_y[valid_paired]
+        diffs = diffs[valid_paired]
+        control_arrays = [control[valid_paired] for control in control_arrays]
+        mean_diff, n_diff, _ = paired_t_test(diffs)
+        log2fc = mean_diff
+        # Same reasoning: the within-pair spread paired_t_test sees is unchanged
+        # by the control subtraction, so propagate the control means explicitly.
+        difference_variance = np.nanvar(diffs, axis=1, ddof=1)
+        if variance == "moderated":
+            residual_dof = n_diff.astype(float) - 1.0
+            difference_variance, _, df_prior = squeeze_variance(
+                difference_variance, residual_dof
+            )
+        else:
+            df_prior = 0.0
+        components = [(difference_variance, n_diff.astype(float))]
+        components.extend(_variance_and_count(control) for control in control_arrays)
+        se, dfree = _satterthwaite(components)
+        if variance == "moderated":
+            dfree = dfree + (df_prior if np.isfinite(df_prior) else 1e6)
+        t_stat = _guarded_t_statistic(log2fc, se)
+        pvals = 2 * t.sf(np.abs(t_stat), dfree)
 
-        mean_diff = np.nanmean(diffs, axis=1)
-        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(n_diff)
-        t_stat = mean_diff / se_diff
-        pvals = 2 * t.sf(np.abs(t_stat), n_diff - 1)
-
+    # See the note above: NaN would otherwise blank every adjusted p-value.
+    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
     adj_pvals = pvals if uncorrected else multipletests(pvals, method="fdr_bh")[1]
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
@@ -1685,7 +2298,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         "pval": pvals,
         "adj_pval": adj_pvals,
         "significance": significance,
-        "neg_log10_adj_pval": -np.log10(adj_pvals),
+        "neg_log10_adj_pval": negative_log10(adj_pvals),
     }
 
     if workflow == "Phosphoprotein":
@@ -1693,6 +2306,8 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
             result["site_num"] = df["site_num"].values
         if "PTM_Collapse_keys" in df.columns:
             result["PTM_Collapse_keys"] = df["PTM_Collapse_keys"].values
+    if is_paired:
+        result["n_pairs"] = n_diff.astype(int)
 
     return pd.DataFrame(result)
 
@@ -1853,6 +2468,7 @@ def volcano_plot_h(volcano_df, condition1, condition2,
 
 
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
+    _validate_meta_samples(meta)
     if workflow == "Protein":
         label_col = "ProteinNames"
     elif workflow == "Phosphosite":
@@ -1879,14 +2495,18 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     cols_to_use = [label_col] + sample_cols
 
     if workflow == "Phosphoprotein":
-        extra_cols = []
+        extra_cols = [
+            column
+            for column in ("Gene_group", "GeneNames")
+            if column in data.columns
+        ][:1]
         if "site_num" in data.columns:
             extra_cols.append("site_num")
         if "PTM_Collapse_keys" in data.columns:
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
 
-    df = data[cols_to_use].replace(0, np.nan).copy()
+    df = data[cols_to_use].copy()
     df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
 
     valid = np.ones(len(df), dtype=bool)
@@ -1899,7 +2519,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     df = df.loc[valid].copy()
     groups = [group[valid] for group in groups]
     if df.empty:
-        return df.reset_index(drop=True)
+        raise ValueError("No rows have enough replicate values for ANOVA.")
 
     try:
         f_stat, pvals = stats.f_oneway(*groups, axis=1, nan_policy="omit")
@@ -1931,10 +2551,18 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     for condition in means.columns:
         out[f"mean_{condition}"] = means[condition].to_numpy()
 
-    return out.sort_values("adj_pval").reset_index(drop=True)
+    # Benjamini-Hochberg ties many features to the same adjusted p, so sorting on
+    # it alone leaves the order within those groups to whichever sort the
+    # language happens to use -- the R package returned a different one. Raw p
+    # then the label makes the order identical across all three pipelines.
+    try:
+        sort_keys = ["adj_pval", "pval", _auto_label_col(out)]
+    except ValueError:
+        sort_keys = ["adj_pval", "pval"]
+    return out.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
 
 
-def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster", min_cluster_fraction=0.05):
+def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster"):
     from scipy.cluster.hierarchy import fcluster
 
     if n_clusters < 1:
@@ -1946,18 +2574,21 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
 
     if only_significant and "adj_pval" in anova_df.columns:
         cluster_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
-        if cluster_df.empty:
-            cluster_df = anova_df.copy()
     else:
         cluster_df = anova_df.copy()
 
+    if cluster_df.empty:
+        cluster_df.insert(1, cluster_col, pd.Series(index=cluster_df.index, dtype="int64"))
+        return cluster_df.reset_index(drop=True)
+
     matrix = cluster_df[sample_cols].to_numpy(dtype=float)
+    if matrix.shape[0] > 1:
+        _require_complete_clustering_matrix(matrix, context="ANOVA")
     if z_score:
         row_mean = np.nanmean(matrix, axis=1, keepdims=True)
         row_sd = np.nanstd(matrix, axis=1, keepdims=True)
         row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
         matrix = (matrix - row_mean) / row_sd
-    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
     if matrix.shape[0] <= 1:
         cluster_df[cluster_col] = 1
@@ -1975,33 +2606,425 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
             cluster_map[cluster_id] = len(cluster_map) + 1
         relabeled_clusters.append(cluster_map[cluster_id])
 
-    relabeled_clusters = np.asarray(relabeled_clusters, dtype=int)
-    if min_cluster_fraction and min_cluster_fraction > 0:
-        min_cluster_size = int(np.ceil(len(relabeled_clusters) * min_cluster_fraction))
-        cluster_ids, cluster_counts = np.unique(relabeled_clusters, return_counts=True)
-        count_map = dict(zip(cluster_ids, cluster_counts))
-        large_clusters = [cluster_id for cluster_id in cluster_ids if count_map[cluster_id] >= min_cluster_size]
-        if len(large_clusters) == 0:
-            large_clusters = [max(cluster_ids, key=lambda cluster_id: count_map[cluster_id])]
-        merged_clusters = relabeled_clusters.copy()
-        for cluster_id in cluster_ids:
-            if count_map[cluster_id] >= min_cluster_size:
-                continue
-            target_cluster = min(large_clusters, key=lambda target: (abs(target - cluster_id), target < cluster_id))
-            merged_clusters[relabeled_clusters == cluster_id] = target_cluster
-        cluster_map = {}
-        relabeled_clusters = []
-        for cluster_id in merged_clusters:
-            if cluster_id not in cluster_map:
-                cluster_map[cluster_id] = len(cluster_map) + 1
-            relabeled_clusters.append(cluster_map[cluster_id])
-
     cluster_df = cluster_df.iloc[row_order].copy()
     if cluster_col in cluster_df.columns:
         cluster_df = cluster_df.drop(columns=[cluster_col])
     cluster_df.insert(1, cluster_col, relabeled_clusters)
     return cluster_df.reset_index(drop=True)
 
+
+
+
+_TEST_TYPES = {
+    "unpaired": (False, "pooled"),
+    "unpaired_welch": (False, "welch"),
+    "unpaired_moderated": (False, "moderated"),
+    "paired": (True, "pooled"),
+    "paired_moderated": (True, "moderated"),
+}
+
+
+def resolve_test_type(value):
+    """Return (is_paired, variance_model) for a test_type string."""
+    mode = str(value).strip().lower()
+    if mode not in _TEST_TYPES:
+        raise ValueError("test_type must be one of: " + ", ".join(sorted(_TEST_TYPES)) + ".")
+    return _TEST_TYPES[mode]
+
+
+def variance_model(value):
+    return resolve_test_type(value)[1]
+
+
+def trigamma_inverse(values):
+    """Invert the trigamma function by Newton iteration (limma::trigammaInverse).
+
+    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+    """
+    from scipy.special import polygamma
+
+    x = np.asarray(values, dtype=float)
+    y = np.empty_like(x)
+    big, small = x > 1e7, x < 1e-6
+    y[big] = 1.0 / np.sqrt(x[big])
+    y[small] = 1.0 / x[small]
+    middle = ~(big | small)
+    if np.any(middle):
+        current = 0.5 + 1.0 / x[middle]
+        for _ in range(50):
+            tri = polygamma(1, current)
+            step = tri * (1.0 - tri / x[middle]) / polygamma(2, current)
+            current = current + step
+            if np.max(-step / current) < 1e-8:
+                break
+        y[middle] = current
+    return y
+
+
+def fit_variance_prior(variances, dof):
+    """Method-of-moments scaled inverse chi-square prior (limma::fitFDist).
+
+    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+    """
+    from scipy.special import digamma, polygamma
+
+    variances = np.asarray(variances, dtype=float)
+    dof = np.asarray(dof, dtype=float)
+    usable = np.isfinite(variances) & np.isfinite(dof) & (variances > 0) & (dof > 0)
+    if int(usable.sum()) < 2:
+        fallback = float(np.nanmean(variances[usable])) if usable.any() else 1.0
+        return fallback, float("inf")
+    observed, degrees = variances[usable], dof[usable]
+    transformed = np.log(observed) - digamma(degrees / 2.0) + np.log(degrees / 2.0)
+    count = transformed.size
+    mean_t = float(np.mean(transformed))
+    excess = float(np.sum((transformed - mean_t) ** 2) / (count - 1)) - float(
+        np.mean(polygamma(1, degrees / 2.0))
+    )
+    if excess > 0:
+        df_prior = float(2.0 * trigamma_inverse(np.array([excess]))[0])
+        var_prior = float(np.exp(mean_t + digamma(df_prior / 2.0) - np.log(df_prior / 2.0)))
+    else:
+        # No excess variability between features: the prior carries all the
+        # weight and every feature gets the same variance.
+        df_prior = float("inf")
+        var_prior = float(np.exp(mean_t))
+    return var_prior, df_prior
+
+
+def squeeze_variance(variances, dof):
+    """Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
+
+    This is what makes a moderated t-test worth having at proteomics group sizes:
+    a per-feature variance from n=3 is a poor estimate, and borrowing strength
+    across features stabilises it. Returns (posterior variances, prior variance,
+    prior degrees of freedom).
+
+    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+    """
+    var_prior, df_prior = fit_variance_prior(variances, dof)
+    variances = np.asarray(variances, dtype=float)
+    dof = np.asarray(dof, dtype=float)
+    if not np.isfinite(df_prior):
+        posterior = np.full_like(variances, var_prior, dtype=float)
+    else:
+        posterior = (dof * variances + df_prior * var_prior) / (dof + df_prior)
+    return posterior, var_prior, df_prior
+
+
+def median_center(values):
+    """Shift each sample so all samples share a common median.
+
+    Operates on log2 values, where a multiplicative loading difference is an
+    additive offset. Samples are re-centred on the grand median rather than on
+    zero so the result stays on a recognisable intensity scale; that choice is a
+    constant shift and does not affect any fold change.
+    """
+    medians = values.median(axis=0, skipna=True)
+    grand_median = float(np.nanmedian(medians.to_numpy(dtype=float)))
+    return values.sub(medians, axis=1).add(grand_median)
+
+
+def quantile_normalize(values):
+    """Force every sample onto a common intensity distribution.
+
+    Missing values are neither imputed nor allowed to shift a sample's ranks:
+    each sample's observed values are mapped onto their own quantile positions,
+    and the shared reference distribution is read off at those positions. This
+    matches limma::normalizeQuantiles, which interpolates rather than dropping
+    incomplete rows.
+    """
+    numeric = values.apply(pd.to_numeric, errors="coerce")
+    row_count = int(numeric.shape[0])
+    if row_count == 0:
+        return numeric
+
+    # Grid spans the full row count, as limma does, so columns with different
+    # numbers of observed values still land on a common reference curve.
+    grid = np.linspace(0.0, 1.0, row_count)
+    curves = []
+    for column in numeric.columns:
+        observed = np.sort(numeric[column].dropna().to_numpy(dtype=float))
+        if observed.size == 0:
+            continue
+        positions = np.linspace(0.0, 1.0, observed.size) if observed.size > 1 else np.zeros(1)
+        curves.append(np.interp(grid, positions, observed))
+    if not curves:
+        return numeric
+    reference = np.mean(np.vstack(curves), axis=0)
+
+    out = numeric.copy()
+    for column in numeric.columns:
+        mask = numeric[column].notna().to_numpy()
+        observed = numeric[column].to_numpy(dtype=float)[mask]
+        if observed.size == 0:
+            continue
+        ranks = stats.rankdata(observed, method="average")
+        positions = (ranks - 1.0) / (observed.size - 1.0) if observed.size > 1 else np.zeros(1)
+        out.loc[mask, column] = np.interp(positions, grid, reference)
+    return out
+
+
+def _normalization_sample_columns(data, meta):
+    """Resolve the columns to normalize from a metadata frame or a column list.
+
+    Every other public function here takes a metadata frame as its second
+    argument, so `normalize_data(data, meta, ...)` is the call people actually
+    write. That used to resolve to no columns and return the input unchanged,
+    which is indistinguishable from a successful normalization: the caller gets a
+    frame back and every downstream figure is computed on unnormalized data.
+    """
+    if isinstance(meta, pd.DataFrame):
+        if "sample" not in meta.columns:
+            raise ValueError(
+                "Metadata must contain a 'sample' column naming the columns to normalize."
+            )
+        requested = [str(value) for value in meta["sample"].tolist()]
+    elif isinstance(meta, pd.Series):
+        requested = [str(value) for value in meta.tolist()]
+    else:
+        requested = [str(value) for value in meta]
+
+    columns = {str(column) for column in data.columns}
+    present = [column for column in requested if column in columns]
+    missing = [column for column in requested if column not in columns]
+    if not present:
+        raise ValueError(
+            "None of the requested sample columns are in the data, so nothing would "
+            f"be normalized. Requested: {', '.join(requested[:6]) or '(nothing)'}. "
+            "Pass the metadata frame or the list of sample column names."
+        )
+    if missing:
+        raise ValueError(
+            f"{len(missing)} requested sample column(s) are not in the data: "
+            f"{', '.join(missing[:6])}. Normalizing only the rest would silently "
+            "change the reference distribution."
+        )
+    return present
+
+
+def normalize_data(data, meta, method="none", linear_source=None):
+    """Apply a global normalization to the sample columns of a log2 matrix.
+
+    Always global. Normalising within conditions would remove exactly the
+    differences the downstream tests are looking for.
+
+    VSN is delegated to Bioconductor rather than reimplemented: a Python port
+    matched the reference on well-conditioned data but diverged by up to 2.2 log2
+    units on wide-dynamic-range input, because vsn's profile likelihood is flat
+    and multimodal. It is available in the R package and the web app; from this
+    package, use one of those.
+
+    References: quantile normalization follows limma::normalizeQuantiles (Ritchie et al.
+    2015, doi:10.1093/nar/gkv007); VSN is delegated to the Bioconductor vsn package
+    (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
+    """
+    resolved = str(method or "none").strip().lower()
+    if resolved in {"", "none"}:
+        return data
+    present = _normalization_sample_columns(data, meta)
+
+    numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    if resolved == "median":
+        normalized = median_center(numeric)
+    elif resolved == "quantile":
+        normalized = quantile_normalize(numeric)
+    elif resolved == "vsn":
+        raise ValueError(
+            "VSN is not available in the notebook package because it delegates to "
+            "Bioconductor vsn. Use the R package or the web app, or choose "
+            "'median' or 'quantile'."
+        )
+    else:
+        raise ValueError("method must be one of: none, median, quantile, vsn.")
+
+    out = data.copy()
+    out[present] = normalized
+    return out
+
+
+def sample_id_map(names):
+    """Map extracted id -> name, refusing to guess when two names share an id.
+
+    The id is only the *last* number in a name, so a run set following the common
+    date_cellline_condition_replicate convention collapses every condition onto
+    the same handful of ids: 20240110_HeLa_ctrl_01.raw and
+    20240110_HeLa_treat_01.raw are both "01". Resolving that by first-wins drops
+    one whole condition, and renaming data columns to the id produces duplicate
+    column labels that later select silently as the wrong sample.
+    """
+    mapping = {}
+    collisions = {}
+    for name in names:
+        text = str(name)
+        sample_id = extract_sample_id(text)
+        if sample_id in mapping and mapping[sample_id] != text:
+            collisions.setdefault(sample_id, [mapping[sample_id]]).append(text)
+            continue
+        mapping[sample_id] = text
+    if collisions:
+        detail = "; ".join(
+            "{} both reduce to '{}'".format(
+                " and ".join(repr(item) for item in sorted(items)), key
+            )
+            for key, items in sorted(collisions.items())
+        )
+        raise ValueError(
+            "Sample names cannot be matched by number because they are ambiguous: "
+            + detail
+            + ". Sample matching falls back to the last number in a name, so names "
+            "that differ only before that number are indistinguishable. Either use "
+            "sample names in the annotation that match the run names exactly, or "
+            "rename the runs so the trailing number is unique."
+        )
+    return mapping
+
+def constant_within_group(values):
+    """True per row where every observed replicate in the group holds one value.
+
+    Such a row has no measured within-group variation, so the standard error
+    collapses and the t-statistic explodes: a fold change of 0.05 can reach
+    p = 2e-54 and outrank every genuine effect at the top of a volcano. The
+    p-value itself is correct and matches `scipy.stats.ttest_ind`; what the flag
+    marks is that the significance comes from absent variation rather than
+    effect size. Values reported at a detection floor, rounded exports and
+    imputation filling one value across replicates all produce it.
+
+    Tested with min == max rather than variance == 0, which is exact regardless
+    of floating-point representation: 14.05 repeated three times has a variance
+    of 4.7e-30, not 0, so a zero test would miss it.
+    """
+    numeric = np.asarray(values, dtype=float)
+    observed = np.isfinite(numeric)
+    counts = observed.sum(axis=1)
+    masked = np.where(observed, numeric, np.nan)
+    with warnings.catch_warnings():
+        # A row with nothing observed is an all-NaN slice; numpy warns and
+        # returns NaN, and the count check below already excludes it.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        low = np.nanmin(masked, axis=1)
+        high = np.nanmax(masked, axis=1)
+    return (counts > 0) & (low == high)
+
+
+def condition_mean(data, columns, min_present=1):
+    """Mean across a condition's replicates, blanked where too few were observed.
+
+    `mean(axis=1)` skips missing values silently, so a condition mean resting on
+    one replicate is plotted and correlated at the same weight as a fully
+    observed one. Measured on 2000 features with 30% poor coverage, the
+    single-replicate means were off by 0.28 log2 on average and 1.21 at worst
+    against the same features' fully observed means.
+
+    `min_present` is the smallest number of observations a mean may rest on. The
+    default of 1 reports every mean, which is the long-standing behaviour and keeps
+    previously generated results reproducible. Pass 2 or more to require that a
+    mean rest on enough replicates to carry spread information.
+
+    Returns (means, counts) so the caller can report how many features were
+    excluded rather than dropping them silently.
+    """
+    numeric = data[list(columns)].apply(pd.to_numeric, errors="coerce")
+    counts = numeric.notna().sum(axis=1)
+    means = numeric.mean(axis=1)
+    return means.where(counts >= int(min_present)), counts
+
+
+def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None):
+    """Tukey HSD for every condition pair, following a one-way ANOVA.
+
+    A significant omnibus F says only that some condition differs; this supplies the
+    pairwise comparisons. Gated on the ANOVA result the way Perseus does it: the BH
+    adjustment on the ANOVA controls error across features, and Tukey controls the
+    family-wise rate across the condition pairs within each feature.
+
+    Tukey-Kramer is used throughout, so unequal group sizes arising from missing
+    values are handled correctly. Returns one row per feature and condition pair;
+    an empty frame when fewer than three conditions are present, because with two
+    the omnibus F and the single pairwise comparison test the same hypothesis.
+    """
+    if label_col is None:
+        label_col = _auto_label_col(anova_df)
+
+    conditions = meta["condition"].dropna().astype(str).unique().tolist()
+    condition_cols = {}
+    for condition in conditions:
+        cols = [
+            col
+            for col in meta.loc[meta["condition"].astype(str) == condition, "sample"].astype(str).tolist()
+            if col in anova_df.columns
+        ]
+        if cols:
+            condition_cols[condition] = cols
+    if len(condition_cols) < 3:
+        return pd.DataFrame()
+
+    if only_significant and "adj_pval" in anova_df.columns:
+        posthoc_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
+    else:
+        posthoc_df = anova_df.copy()
+    if posthoc_df.empty:
+        return pd.DataFrame()
+
+    groups = {
+        condition: posthoc_df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        for condition, cols in condition_cols.items()
+    }
+    counts = {condition: np.sum(~np.isnan(group), axis=1).astype(float) for condition, group in groups.items()}
+    means = {condition: np.nanmean(group, axis=1) for condition, group in groups.items()}
+
+    # Pooled within-group variance across every condition, as the ANOVA itself uses.
+    sum_squares = np.zeros(len(posthoc_df), dtype=float)
+    for condition, group in groups.items():
+        variance = np.nanvar(group, axis=1, ddof=1)
+        sum_squares += np.where(counts[condition] > 1, (counts[condition] - 1) * np.nan_to_num(variance), 0.0)
+    total_n = np.sum([counts[condition] for condition in condition_cols], axis=0)
+    df_resid = total_n - len(condition_cols)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mse = np.where(df_resid > 0, sum_squares / df_resid, np.nan)
+
+    labels = posthoc_df[label_col].astype(str).to_numpy()
+    anova_adj = (
+        posthoc_df["adj_pval"].to_numpy(dtype=float)
+        if "adj_pval" in posthoc_df.columns
+        else np.full(len(posthoc_df), np.nan)
+    )
+    names = list(condition_cols.keys())
+    frames = []
+    for first in range(len(names)):
+        for second in range(first + 1, len(names)):
+            left, right = names[first], names[second]
+            n_left, n_right = counts[left], counts[right]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                standard_error = np.sqrt(mse / 2.0 * (1.0 / n_left + 1.0 / n_right))
+                difference = means[right] - means[left]
+                q_statistic = np.abs(difference) / standard_error
+            pvals = stats.studentized_range.sf(q_statistic, len(names), df_resid)
+            pvals = np.where(np.isfinite(q_statistic) & (df_resid > 0), pvals, np.nan)
+            usable = np.isfinite(pvals) & (n_left >= 2) & (n_right >= 2)
+            if not np.any(usable):
+                continue
+            frames.append(pd.DataFrame({
+                label_col: labels[usable],
+                "comparison": f"{right} vs {left}",
+                "group1": left,
+                "group2": right,
+                "log2FC": difference[usable],
+                "n_group1": n_left[usable].astype(int),
+                "n_group2": n_right[usable].astype(int),
+                "q_statistic": q_statistic[usable],
+                "tukey_pval": pvals[usable],
+                "significance": np.where(pvals[usable] < in_pval, "Significant", "Not significant"),
+                "anova_adj_pval": anova_adj[usable],
+            }))
+
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(["tukey_pval", label_col, "comparison"]).reset_index(drop=True)
 
 def _auto_label_col(frame: pd.DataFrame) -> str:
     if "Phosphoprotein" in frame.columns:
@@ -2058,9 +3081,15 @@ def anova_plot(
 
     plot_df = anova_df[anova_df["adj_pval"] < in_pval].copy() if "adj_pval" in anova_df.columns else anova_df.copy()
     if plot_df.empty:
-        plot_df = anova_df.copy()
+        fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
+        ax.set_axis_off()
+        ax.set_title("ANOVA heatmap")
+        ax.text(0.5, 0.5, "No rows passed the ANOVA threshold.", ha="center", va="center")
+        return fig
 
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+    if (cluster_rows and raw_matrix.shape[0] > 1) or (cluster_samples and raw_matrix.shape[1] > 1):
+        _require_complete_clustering_matrix(raw_matrix, context="ANOVA heatmap")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -2080,7 +3109,7 @@ def anova_plot(
 
     display_mask = missing_mask | ~np.isfinite(matrix)
     display_matrix = np.ma.array(matrix, mask=display_mask)
-    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    cluster_matrix = matrix.copy()
     row_linkage = None
     col_linkage = None
 
@@ -2203,6 +3232,8 @@ def anova_plot_cluster(
 
     plot_df = anova_cluster_df.copy()
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+    if cluster_samples and raw_matrix.shape[1] > 1:
+        _require_complete_clustering_matrix(raw_matrix, context="ANOVA cluster heatmap")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -2221,7 +3252,7 @@ def anova_plot_cluster(
         vmin = vmax = None
 
     display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
-    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    cluster_matrix = matrix.copy()
     col_linkage = None
     if cluster_samples and matrix.shape[1] > 1:
         col_linkage = linkage(cluster_matrix.T, method=cluster_method, metric=cluster_metric)
@@ -2292,122 +3323,356 @@ def anova_plot_cluster(
     return fig
 
 
-gp = GProfiler(return_dataframe=True) if GProfiler is not None else None
+def _is_phosphoprotein_workflow(workflow):
+    workflow_key = "".join(character for character in str(workflow).lower() if character.isalnum())
+    return workflow_key in {"phosprot", "phosphoprotein", "phosphoproteome"}
+
+
+def _different_genes_column(data, workflow):
+    prefer_group = _is_phosphoprotein_workflow(workflow)
+    candidates = ["Gene_group", "GeneNames"] if prefer_group else ["GeneNames"]
+    for column in candidates:
+        if column in data.columns:
+            return column, prefer_group
+    raise ValueError("different_genes requires GeneNames or Gene_group.")
+
+
+def _different_gene_tokens(values, split_groups):
+    genes = set()
+    for value in values:
+        if value is None or pd.isna(value):
+            continue
+        if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+            continue
+        text = str(value).strip()
+        tokens = text.split(";") if split_groups else text.split(";", 1)[:1]
+        genes.update(token.strip() for token in tokens if token.strip())
+    return sorted(genes)
+
+
+def _different_genes_from_volcano(volcano_data, key_col, split_groups):
+    """Format the exact Volcano classifications for ORA input."""
+    required = {key_col, "significance"}
+    missing = required.difference(volcano_data.columns)
+    if missing:
+        raise ValueError(
+            "Volcano output is missing required ORA columns: " + ", ".join(sorted(missing))
+        )
+    return {
+        "Upregulated": _different_gene_tokens(
+            volcano_data.loc[volcano_data["significance"] == "Upregulated", key_col],
+            split_groups,
+        ),
+        "Downregulated": _different_gene_tokens(
+            volcano_data.loc[volcano_data["significance"] == "Downregulated", key_col],
+            split_groups,
+        ),
+        "Background": _different_gene_tokens(volcano_data[key_col], split_groups),
+    }
+
 
 def different_genes(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
-                    workflow="Gene", paired="Unpaired", uncorrected=False):
-    annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
-    annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
+                    workflow="Gene", paired="Unpaired", uncorrected=False, test_type=None):
+    """Select normal-Volcano gene clusters and tested background for ORA.
 
-    key_col = 'GeneNames'
-
-    cols_to_use = [key_col] + annotated_columns1 + annotated_columns2
-    data_filtered = data[cols_to_use].copy()
-    threshold = len(annotated_columns1) + len(annotated_columns2) - 2
-    data_filtered = data_filtered[data_filtered.iloc[:, 1:].isna().sum(axis=1) < threshold]
-
-    log2fc_list = []
-    pvals_list = []
-
-    for idx, row in data_filtered.iterrows():
-        values1 = row[annotated_columns1].dropna().astype(float)
-        values2 = row[annotated_columns2].dropna().astype(float)
-
-        if paired == "Unpaired":
-            if len(values1) < 2 or len(values2) < 2:
-                log2fc_list.append(np.nan)
-                pvals_list.append(np.nan)
-                continue
-            log2fc_list.append(values2.mean() - values1.mean())
-            pvals_list.append(ttest_ind(values2, values1, equal_var=True).pvalue)
-
-        elif paired == "Paired":
-            paired_values = pd.concat([values1, values2], axis=1).dropna()
-            if paired_values.shape[0] < 1:
-                log2fc_list.append(np.nan)
-                pvals_list.append(np.nan)
-                continue
-            log2fc_list.append(paired_values.iloc[:, 1].mean() - paired_values.iloc[:, 0].mean())
-            if paired_values.shape[0] < 2:
-                pvals_list.append(np.nan)
-            else:
-                pvals_list.append(ttest_rel(paired_values.iloc[:, 1], paired_values.iloc[:, 0]).pvalue)
-
-    mask = ~np.isnan(pvals_list)
-    log2fc_array = np.array(log2fc_list)[mask]
-    pvals_array = np.array(pvals_list)[mask]
-    data_filtered = data_filtered.iloc[mask, :]
-
-    if uncorrected:
-        adj_pvals = pvals_array
-    else:
-        adj_pvals = multipletests(pvals_array, method='fdr_bh')[1]
-
-    result_data = pd.DataFrame({
-        'Gene': data_filtered[key_col],
-        'log2FC': log2fc_array,
-        'pval': pvals_array,
-        'adj_pval': adj_pvals
-    })
-
-    up_genes = result_data.loc[
-        (result_data['adj_pval'] < in_pval) & (result_data['log2FC'] > in_log2fc), 'Gene'
-    ].apply(lambda x: x.split(";")[0]).tolist()
-
-    down_genes = result_data.loc[
-        (result_data['adj_pval'] < in_pval) & (result_data['log2FC'] < -in_log2fc), 'Gene'
-    ].apply(lambda x: x.split(";")[0]).tolist()
-
-    return {'Upregulated': up_genes, 'Downregulated': down_genes}
-
-
-def enrichment_analysis(gene_list, top_n=10, min_num=20, max_num=300):
-    gene_list = [g for g in gene_list if g]
-    if not gene_list:
-        return None
-
-    res = gp.profile(
-        organism='hsapiens',
-        query=gene_list,
-        sources=['GO:BP', 'GO:CC', 'GO:MF'],
-        user_threshold=0.05,
-        significance_threshold_method='g_SCS'
+    The statistics and significance labels come directly from
+    :func:`volcano_data_f`. Omitting ``test_type`` preserves the legacy
+    ``paired`` argument; otherwise all five public Volcano modes are supported.
+    """
+    key_col, split_groups = _different_genes_column(data, workflow)
+    volcano_data = volcano_data_f(
+        data,
+        meta,
+        condition1,
+        condition2,
+        in_pval=in_pval,
+        in_log2fc=in_log2fc,
+        workflow=workflow,
+        paired=paired,
+        uncorrected=uncorrected,
+        test_type=test_type,
+        label_column=key_col,
     )
+    return _different_genes_from_volcano(volcano_data, key_col, split_groups)
 
+
+def different_genes_control(
+    data,
+    meta,
+    condition1,
+    condition2,
+    condition1_control,
+    condition2_control,
+    in_pval=0.05,
+    in_log2fc=1,
+    workflow="Gene",
+    paired="Unpaired",
+    uncorrected=False,
+    test_type=None,
+):
+    """Select corrected Control-Volcano clusters and background for ORA."""
+    key_col, split_groups = _different_genes_column(data, workflow)
+    volcano_data = volcano_data_f_control(
+        data,
+        meta,
+        condition1,
+        condition2,
+        condition1_control,
+        condition2_control,
+        in_pval=in_pval,
+        in_log2fc=in_log2fc,
+        workflow=workflow,
+        paired=paired,
+        uncorrected=uncorrected,
+        test_type=test_type,
+        label_column=key_col,
+    )
+    return _different_genes_from_volcano(volcano_data, key_col, split_groups)
+
+
+ENRICHMENT_COLUMNS = [
+    "source",
+    "term_id",
+    "term_name",
+    "term_size",
+    "intersection_size",
+    "p_value",
+    "adj_p_value",
+]
+
+
+def _empty_enrichment_frame():
+    """An empty enrichment table with the documented columns."""
+    return pd.DataFrame({column: pd.Series(dtype="object") for column in ENRICHMENT_COLUMNS})
+
+
+def enrichment_data(
+    gene_list,
+    top_n=10,
+    min_num=20,
+    max_num=300,
+    background=None,
+    background_mode="experiment",
+    adj_p_value_cutoff=0.05,
+    workflow="Protein",
+):
+    """The over-representation table behind `enrichment_analysis`.
+
+    Split out so the numbers can be read, exported and compared across the three
+    pipelines. `enrichment_analysis` draws exactly this frame, so the figure and
+    the table cannot drift apart.
+
+    Returns an empty frame rather than None when nothing passes, so callers can
+    treat the result as a table unconditionally.
+    """
+    split_groups = _is_phosphoprotein_workflow(workflow)
+    genes = _different_gene_tokens(gene_list, split_groups)
+    if not genes:
+        return _empty_enrichment_frame()
+    if background_mode not in {"experiment", "global"}:
+        raise ValueError("background_mode must be 'experiment' or 'global'.")
+    if min_num > max_num:
+        raise ValueError("min_num cannot be larger than max_num.")
+
+    db = load_go_db().copy()
+    db["gene_list"] = db["genes"].fillna("").astype(str).apply(
+        lambda value: sorted({gene.strip() for gene in value.split(";") if gene.strip()})
+    )
+    annotated = {gene for term_genes in db["gene_list"] for gene in term_genes}
+    if background_mode == "experiment":
+        if background is None:
+            raise ValueError(
+                "Provide the tested-gene background, or set background_mode='global'."
+            )
+        submitted_background = set(_different_gene_tokens(background, split_groups))
+        missing = sorted(set(genes).difference(submitted_background))
+        if missing:
+            raise ValueError(
+                "Every query gene must be included in the experiment background. "
+                f"Missing: {', '.join(missing[:10])}."
+            )
+        effective_background = submitted_background.intersection(annotated)
+    else:
+        effective_background = annotated
+    if not effective_background:
+        return _empty_enrichment_frame()
+
+    query = set(genes).intersection(effective_background)
+    if not query:
+        return _empty_enrichment_frame()
+    population_size = len(effective_background)
+    sample_size = len(query)
+    rows = []
+    overlaps = []
+    term_sizes = []
+    for _, row in db.iterrows():
+        term_genes = effective_background.intersection(row["gene_list"])
+        term_size = len(term_genes)
+        if term_size < min_num or term_size > max_num:
+            continue
+        overlap = sorted(query.intersection(term_genes))
+        # A term sharing no gene with the query has p = 1 by construction and is
+        # never reported, so it is not a test. Counting it in the Benjamini-
+        # Hochberg denominator inflated every reported adjusted p -- by 3.4x on a
+        # 4000-gene background -- and made the packages disagree with the web
+        # app, which corrects over tested terms only.
+        if not overlap:
+            continue
+        overlaps.append(len(overlap))
+        term_sizes.append(term_size)
+        rows.append(
+            {
+                "source": str(row.get("ontology", "")),
+                "term_id": str(row.get("term", "")),
+                "term_name": str(row.get("description", "")),
+                "term_size": term_size,
+                "intersection_size": len(overlap),
+            }
+        )
+    if not rows:
+        return _empty_enrichment_frame()
+
+    p_values = np.asarray(
+        stats.hypergeom.sf(
+            np.asarray(overlaps) - 1,
+            population_size,
+            np.asarray(term_sizes),
+            sample_size,
+        ),
+        dtype=float,
+    )
+    adjusted = multipletests(np.asarray(p_values), method="fdr_bh")[1]
+    res = pd.DataFrame(rows)
+    res["p_value"] = p_values
+    res["adj_p_value"] = adjusted
+    # `intersection_size > 0` holds for every row now; only the cutoff remains.
+    res = res[res["adj_p_value"] <= adj_p_value_cutoff].copy()
+    if res.empty:
+        return _empty_enrichment_frame()
+    res = res.sort_values(["adj_p_value", "p_value"]).head(top_n)
+    return res.reset_index(drop=True)
+
+
+def enrichment_analysis(
+    gene_list,
+    top_n=10,
+    min_num=20,
+    max_num=300,
+    background=None,
+    background_mode="experiment",
+    adj_p_value_cutoff=0.05,
+    workflow="Protein",
+):
+    """Dot plot of the table returned by `enrichment_data`."""
+    res = enrichment_data(
+        gene_list,
+        top_n=top_n,
+        min_num=min_num,
+        max_num=max_num,
+        background=background,
+        background_mode=background_mode,
+        adj_p_value_cutoff=adj_p_value_cutoff,
+        workflow=workflow,
+    )
     if res.empty:
         return None
-
-    res = res[(res['term_size'] >= min_num) & (res['term_size'] <= max_num)].copy()
-    res = res.sort_values('p_value').head(top_n)
+    background_label = (
+        "Background: tested genes" if background_mode == "experiment" else "Background: whole genome"
+    )
 
     fig, ax = plt.subplots(figsize=(8, 6))
     scatter = ax.scatter(
         x=res['intersection_size'] / res['term_size'] * 100,
-        y=res['name'],
+        y=res['term_name'],
         s=res['intersection_size']*10,
-        c=-np.log10(res['p_value']),
+        c=-np.log10(res['adj_p_value'].clip(lower=np.finfo(float).tiny)),
         cmap='RdBu_r'
     )
 
     ax.set_xlabel('Hits (%)')
     ax.set_ylabel('GO Term')
-    ax.set_title('Gene Set Enrichment Analysis')
+    background_label = (
+        "tested-gene background"
+        if background_mode == "experiment"
+        else "global annotated background"
+    )
+    ax.set_title(f"GO Enrichment (ORA)\n{background_label}")
 
     cbar = fig.colorbar(scatter, ax=ax, pad=0.15)
-    cbar.set_label('-log10(p-value)')
+    cbar.set_label('-log10 adjusted p-value')
 
     plt.tight_layout()
     return fig
 
 
 def load_go_db():
+    filename = "all_go_terms_genes.csv"
+    candidates = []
+    configured = os.getenv("COPYLOT_GO_DB", "").strip()
+    if configured:
+        candidates.append(configured)
     if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.abspath(".")
+        candidates.append(os.path.join(sys._MEIPASS, "data", "db", filename))
+    candidates.extend([
+        os.path.join(os.path.dirname(__file__), "data", filename),
+        os.path.join(os.path.abspath("."), "data", "db", filename),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "db", filename),
+    ])
+    for db_file in candidates:
+        if os.path.isfile(db_file):
+            return pd.read_csv(db_file)
+    raise FileNotFoundError(
+        "Could not find all_go_terms_genes.csv. Checked: " + ", ".join(candidates)
+    )
 
-    db_file = os.path.join(base_path, "data", "db", "all_go_terms_genes.csv")
-    return pd.read_csv(db_file)
+
+def _aggregate_pathway_gene_values(data, gene_column, sample_columns, pathway_genes):
+    value_frame = (
+        data.reindex(columns=sample_columns)
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    gene_positions = {}
+    for position, gene_value in enumerate(data[gene_column].tolist()):
+        if gene_value is None or pd.isna(gene_value):
+            tokens = set()
+        else:
+            tokens = {
+                token.strip().casefold()
+                for token in str(gene_value).split(";")
+                if token.strip()
+            }
+        for token in tokens:
+            gene_positions.setdefault(token, []).append(position)
+
+    ordered_genes = []
+    seen_genes = set()
+    for gene_value in pathway_genes:
+        gene = str(gene_value).strip()
+        gene_key = gene.casefold()
+        if not gene or gene_key in seen_genes:
+            continue
+        seen_genes.add(gene_key)
+        ordered_genes.append(gene)
+
+    rows = []
+    counts = []
+    for gene in ordered_genes:
+        positions = gene_positions.get(gene.casefold(), [])
+        counts.append(len(positions))
+        if positions:
+            rows.append(value_frame.iloc[positions].median(axis=0, skipna=True))
+        else:
+            rows.append(pd.Series(np.nan, index=sample_columns, dtype=float))
+
+    heatmap_data = pd.DataFrame(rows, index=ordered_genes, columns=sample_columns)
+    source_counts = pd.Series(
+        counts,
+        index=ordered_genes,
+        dtype="int64",
+        name="source_feature_count",
+    )
+    return heatmap_data, source_counts
 
 
 def proteins_in_pathway(
@@ -2426,10 +3691,8 @@ def proteins_in_pathway(
 
     genes_str = pathway_row['genes'].values[0]
     genes = [g.strip() for g in genes_str.split(';') if g.strip()]
-    genes_lower = [g.lower() for g in genes]
 
     data = data.copy()
-    data['GeneNames_lower'] = data['GeneNames'].str.lower()
 
     if conditions is not None:
         meta_filtered = meta[meta['condition'].isin(conditions)].copy()
@@ -2455,20 +3718,16 @@ def proteins_in_pathway(
     rename_dict = dict(zip(meta_filtered['sample'], meta_filtered['new_sample']))
     sample_cols = list(meta_filtered['sample'])
 
-    heatmap_data = pd.DataFrame(np.nan, index=genes, columns=sample_cols)
-
-    available_data = data[data['GeneNames_lower'].isin(genes_lower)]
-
-    if not available_data.empty:
-        for gene, gene_l in zip(genes, genes_lower):
-            row = available_data[available_data['GeneNames_lower'] == gene_l]
-            if not row.empty:
-                for col in sample_cols:
-                    if col in row.columns:
-                        heatmap_data.at[gene, col] = row[col].values[0]
+    heatmap_data, source_feature_counts = _aggregate_pathway_gene_values(
+        data,
+        gene_column="GeneNames",
+        sample_columns=sample_cols,
+        pathway_genes=genes,
+    )
 
     if remove_empty:
         heatmap_data = heatmap_data.dropna(how="all")
+        source_feature_counts = source_feature_counts.loc[heatmap_data.index]
 
     if heatmap_data.empty:
         raise ValueError("No matching gene data available for the selected pathway.")
@@ -2489,17 +3748,33 @@ def proteins_in_pathway(
     else:
         raise ValueError("value_type must be 'z' or 'log2'")
 
+    heatmap_data = heatmap_data.replace([np.inf, -np.inf], np.nan)
+    if value_type == "z":
+        heatmap_data = heatmap_data.dropna(how="all")
+        source_feature_counts = source_feature_counts.loc[heatmap_data.index]
+    if heatmap_data.empty:
+        raise ValueError("No informative pathway rows remain after heatmap transformation.")
+
+    heatmap_data.index = [
+        f"{gene} (n={int(source_feature_counts.loc[gene])})"
+        for gene in heatmap_data.index
+    ]
+
     heatmap_data = heatmap_data.rename(columns=rename_dict)
     ordered_labels = list(meta_filtered['new_sample'])
     heatmap_data = heatmap_data[ordered_labels]
 
+    cluster_matrix = None
+    if (cluster_rows and heatmap_data.shape[0] > 1) or (cluster_cols and heatmap_data.shape[1] > 1):
+        cluster_matrix = _require_complete_clustering_matrix(heatmap_data, context="pathway heatmap")
     if cluster_rows and heatmap_data.shape[0] > 1:
-        row_linkage = linkage(heatmap_data.fillna(0), method='average', metric='euclidean')
+        row_linkage = linkage(cluster_matrix, method='average', metric='euclidean')
         row_order = leaves_list(row_linkage)
         heatmap_data = heatmap_data.iloc[row_order]
+        cluster_matrix = cluster_matrix[row_order]
 
     if cluster_cols and heatmap_data.shape[1] > 1:
-        col_linkage = linkage(heatmap_data.T.fillna(0), method='average', metric='euclidean')
+        col_linkage = linkage(cluster_matrix.T, method='average', metric='euclidean')
         col_order = leaves_list(col_linkage)
         heatmap_data = heatmap_data.iloc[:, col_order]
 
@@ -2521,7 +3796,7 @@ def proteins_in_pathway(
 
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     title_suffix = "Z-transformed" if value_type == "z" else "log2 Intensities"
-    ax.set_title(f"{pathway} ({title_suffix})", fontsize=14)
+    ax.set_title(f"{pathway} ({title_suffix}; median across mapped features)", fontsize=14)
     ax.set_xlabel("Sample")
     ax.set_ylabel("Protein / Gene" if header else "")
     fig.tight_layout()
@@ -2556,7 +3831,7 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
     pooled_var *= mod_var
     se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-    t_stat = (mean2 - mean1) / se
+    t_stat = _guarded_t_statistic(mean2 - mean1, se)
     df = n1 + n2 - 2
     pvals = 2 * t.sf(np.abs(t_stat), df)
     adj_pvals = multipletests(pvals, method='fdr_bh')[1]
@@ -2598,23 +3873,6 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     return fig
 
 
-def convert_to_centered(seq: str) -> str | None:
-    match = re.search(r"\*", seq)
-    if not match:
-        return None
-    star_index = match.start()
-    if star_index == 0:
-        return None
-    mod_residue = seq[star_index - 1].upper()
-    clean_seq = seq[:star_index - 1] + mod_residue + seq[star_index + 1:]
-    mod_pos = star_index - 1
-    left = clean_seq[:mod_pos]
-    right = clean_seq[mod_pos + 1:]
-    left_tail = left[-6:] if len(left) >= 6 else "_" * (6 - len(left)) + left
-    right_tail = right[:6] if len(right) >= 6 else right + "_" * (6 - len(right))
-    return f"_{left_tail}{mod_residue}{right_tail}_"
-
-
 def convert_to_centered(seq: str) -> str:
     if not isinstance(seq, str):
         return seq
@@ -2634,63 +3892,149 @@ def convert_to_centered(seq: str) -> str:
     return f"_{left_tail}{mod_residue}{right_tail}_"
 
 
+def _ksea_format_volcano(volcano_df):
+    result = volcano_df.rename(columns={"PTM_Collapse_key": "UPD_seq"}).copy()
+    result["UPD_seq"] = [convert_to_centered(value) for value in result["UPD_seq"]]
+    columns = ["UPD_seq", "log2FC", "pval", "adj_pval", "significance"]
+    if "n_pairs" in result.columns:
+        columns.append("n_pairs")
+    columns.append("neg_log10_adj_pval")
+    return result[columns]
+
+
 def ksea_data_f(data, meta, condition1, condition2,
                 in_pval=0.05, in_log2fc=1,
-                paired="Unpaired", uncorrected=False):
-    label_col = "UPD_seq"
+                paired="Unpaired", uncorrected=False, test_type=None):
+    """Prepare standard Volcano results for KSEA, matching the web pipeline."""
+    _validate_meta_samples(meta)
+    if "UPD_seq" not in data.columns:
+        raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
+    working = data.copy()
+    working["PTM_Collapse_key"] = working["UPD_seq"]
+    volcano_df = volcano_data_f(
+        working, meta, condition1, condition2,
+        in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
+        paired=paired, uncorrected=uncorrected, test_type=test_type,
+    )
+    return _ksea_format_volcano(volcano_df)
 
-    annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
-    annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
-    cols_to_use = [label_col] + annotated_columns1 + annotated_columns2
 
-    df = data[cols_to_use].replace(0, np.nan).copy()
-    arr_x = df[annotated_columns1].to_numpy(dtype=float)
-    arr_y = df[annotated_columns2].to_numpy(dtype=float)
+def ksea_data_f_control(data, meta, condition1, condition2,
+                        condition1_control, condition2_control,
+                        in_pval=0.05, in_log2fc=1,
+                        paired="Unpaired", uncorrected=False, test_type=None):
+    """Prepare corrected Control Volcano results for KSEA."""
+    _validate_meta_samples(meta)
+    if "UPD_seq" not in data.columns:
+        raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
+    working = data.copy()
+    working["PTM_Collapse_key"] = working["UPD_seq"]
+    volcano_df = volcano_data_f_control(
+        working, meta, condition1, condition2,
+        condition1_control, condition2_control,
+        in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
+        paired=paired, uncorrected=uncorrected, test_type=test_type,
+    )
+    return _ksea_format_volcano(volcano_df)
 
-    n1_real = np.sum(~np.isnan(arr_x), axis=1)
-    n2_real = np.sum(~np.isnan(arr_y), axis=1)
-    valid_mask = (n1_real >= 2) & (n2_real >= 2)
 
-    df = df.loc[valid_mask]
-    arr_x = arr_x[valid_mask]
-    arr_y = arr_y[valid_mask]
-    n1 = n1_real[valid_mask]
-    n2 = n2_real[valid_mask]
+def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
+                        condition1: str, condition2: str,
+                        in_pval: float = 0.05, in_log2fc: float = 1,
+                        paired: str = "Unpaired", uncorrected: bool = False,
+                        max_hover_sites: int = 20,
+                        show_phosphosites: bool = True,
+                        test_type=None):
+    """The per-protein table behind `phosprot_regulation`.
 
-    mean1 = np.nanmean(arr_x, axis=1)
-    mean2 = np.nanmean(arr_y, axis=1)
-    log2fc = mean2 - mean1
+    Split out so the numbers can be read, exported and compared across the
+    three pipelines; `phosprot_regulation` plots exactly this frame, so the
+    figure and the table cannot drift apart. `x` is the cumulative log2FC of
+    significant up-sites, `y` the absolute cumulative log2FC of significant
+    down-sites, and proteins with no significant site are absent.
+    """
+    _validate_meta_samples(meta)
+    """Collapse significant phosphosite Volcano results by phosphoprotein."""
+    label_col = "PTM_Collapse_key"
+    required = {label_col, "Protein_group"}
+    missing = sorted(required.difference(data.columns))
+    if missing:
+        raise ValueError("Phosphosite data is missing required columns: " + ", ".join(missing))
 
-    if paired == "Unpaired":
-        var1 = np.nanvar(arr_x, axis=1, ddof=1)
-        var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
-        se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-        t_stat = log2fc / se
-        dfree = n1 + n2 - 2
-        pvals = 2 * t.sf(np.abs(t_stat), dfree)
-    else:
-        diffs = arr_y - arr_x
-        min_len = np.minimum(n1, n2)
-        mean_diff = np.nanmean(diffs, axis=1)
-        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(min_len)
-        t_stat = mean_diff / se_diff
-        pvals = 2 * t.sf(np.abs(t_stat), min_len - 1)
-
-    adj_pvals = pvals if uncorrected else multipletests(pvals, method='fdr_bh')[1]
-
-    significance = np.full(len(log2fc), "Not significant", dtype=object)
-    significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
-    significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
-
-    return pd.DataFrame({
-        "UPD_seq": [convert_to_centered(x) for x in df[label_col].values],
-        "log2FC": log2fc,
-        "pval": pvals,
-        "adj_pval": adj_pvals,
-        "significance": significance,
-        "neg_log10_adj_pval": -np.log10(adj_pvals)
+    # A unique temporary label prevents duplicate site names from creating a
+    # many-to-many merge after the shared Volcano calculation.
+    row_keys = pd.Series(np.arange(len(data)), index=data.index).astype(str)
+    mapping = pd.DataFrame({
+        "__copylot_row_key": row_keys.to_numpy(),
+        "Protein_group": data["Protein_group"].to_numpy(),
+        "__copylot_site": data[label_col].to_numpy(),
     })
+    working = data.copy()
+    working[label_col] = row_keys
+    volcano_df = volcano_data_f(
+        working, meta, condition1, condition2,
+        in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
+        paired=paired, uncorrected=uncorrected, test_type=test_type,
+    ).rename(columns={label_col: "__copylot_row_key"})
+    volcano_df = volcano_df.merge(mapping, on="__copylot_row_key", validate="one_to_one")
+    volcano_df = volcano_df.rename(columns={"__copylot_site": label_col})
+
+    collapsed_results = []
+
+    for prot, group in volcano_df.groupby("Protein_group"):
+        down = group.loc[group["significance"] == "Downregulated"]
+        up = group.loc[group["significance"] == "Upregulated"]
+        if down.empty and up.empty:
+            continue
+
+        down_sites = down[label_col].astype(str).tolist()
+        up_sites = up[label_col].astype(str).tolist()
+        down_effects = [
+            f"{site} ({effect:.4g})"
+            for site, effect in zip(down_sites, down["log2FC"].astype(float), strict=True)
+        ]
+        up_effects = [
+            f"{site} ({effect:+.4g})"
+            for site, effect in zip(up_sites, up["log2FC"].astype(float), strict=True)
+        ]
+        down_sum = float(-down["log2FC"].astype(float).sum())
+        up_sum = float(up["log2FC"].astype(float).sum())
+
+        def truncate_items(items):
+            if len(items) > max_hover_sites:
+                return ";".join(items[:max_hover_sites]) + f";... (+{len(items) - max_hover_sites} more)"
+            return ";".join(items)
+
+        collapsed_results.append({
+            "Protein_group": prot,
+            "Downregulated_sites": truncate_items(down_sites) if show_phosphosites else "",
+            "Upregulated_sites": truncate_items(up_sites) if show_phosphosites else "",
+            "Downregulated_site_effects": truncate_items(down_effects) if show_phosphosites else "",
+            "Upregulated_site_effects": truncate_items(up_effects) if show_phosphosites else "",
+            "Downregulated_count": len(down_sites),
+            "Upregulated_count": len(up_sites),
+            "Downregulated_log2FC_sum": down_sum,
+            "Upregulated_log2FC_sum": up_sum
+        })
+
+    collapsed_df = pd.DataFrame(
+        collapsed_results,
+        columns=[
+            "Protein_group",
+            "Downregulated_sites",
+            "Upregulated_sites",
+            "Downregulated_site_effects",
+            "Upregulated_site_effects",
+            "Downregulated_count",
+            "Upregulated_count",
+            "Downregulated_log2FC_sum",
+            "Upregulated_log2FC_sum",
+        ],
+    )
+    collapsed_df["x"] = collapsed_df["Upregulated_log2FC_sum"]
+    collapsed_df["y"] = collapsed_df["Downregulated_log2FC_sum"]
+    collapsed_df["color_val"] = collapsed_df["x"] - collapsed_df["y"]
+    return collapsed_df
 
 
 def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
@@ -2698,92 +4042,15 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
                         in_pval: float = 0.05, in_log2fc: float = 1,
                         paired: str = "Unpaired", uncorrected: bool = False,
                         max_hover_sites: int = 20,
-                        show_phosphosites: bool = True):
-    label_col = "PTM_Collapse_key"
-    annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
-    annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
-
-    df = data[[label_col, "Protein_group"] + annotated_columns1 + annotated_columns2].replace(0, np.nan).copy()
-    arr_x = df[annotated_columns1].to_numpy(dtype=float)
-    arr_y = df[annotated_columns2].to_numpy(dtype=float)
-
-    n1_real = np.sum(~np.isnan(arr_x), axis=1)
-    n2_real = np.sum(~np.isnan(arr_y), axis=1)
-    valid_mask = (n1_real >= 2) & (n2_real >= 2)
-
-    df = df.loc[valid_mask]
-    arr_x = arr_x[valid_mask]
-    arr_y = arr_y[valid_mask]
-    n1 = n1_real[valid_mask]
-    n2 = n2_real[valid_mask]
-
-    mean1 = np.nanmean(arr_x, axis=1)
-    mean2 = np.nanmean(arr_y, axis=1)
-    log2fc = mean2 - mean1
-
-    if paired == "Unpaired":
-        var1 = np.nanvar(arr_x, axis=1, ddof=1)
-        var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
-        se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-        t_stat = log2fc / se
-        dfree = n1 + n2 - 2
-        pvals = 2 * t.sf(np.abs(t_stat), dfree)
-    else:
-        diffs = arr_y - arr_x
-        min_len = np.minimum(n1, n2)
-        mean_diff = np.nanmean(diffs, axis=1)
-        se_diff = np.nanstd(diffs, axis=1, ddof=1) / np.sqrt(min_len)
-        t_stat = mean_diff / se_diff
-        pvals = 2 * t.sf(np.abs(t_stat), min_len - 1)
-
-    adj_pvals = pvals if uncorrected else multipletests(pvals, method='fdr_bh')[1]
-
-    significance = np.full(len(log2fc), "Not significant", dtype=object)
-    significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
-    significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
-
-    volcano_df = pd.DataFrame({
-        "Protein_group": df["Protein_group"].values,
-        label_col: df[label_col].values,
-        "log2FC": log2fc,
-        "pval": pvals,
-        "adj_pval": adj_pvals,
-        "significance": significance
-    })
-
-    collapsed_results = []
-    all_samples = annotated_columns1 + annotated_columns2
-
-    for prot, group in volcano_df.groupby("Protein_group"):
-        down_mask = group["log2FC"] < 0
-        up_mask = group["log2FC"] > 0
-        down_sites = group.loc[down_mask, label_col].astype(str).tolist()
-        up_sites = group.loc[up_mask, label_col].astype(str).tolist()
-        down_vals = data.loc[data[label_col].isin(down_sites), all_samples].fillna(0) if down_sites else pd.DataFrame()
-        up_vals = data.loc[data[label_col].isin(up_sites), all_samples].fillna(0) if up_sites else pd.DataFrame()
-        down_sum = np.log2(down_vals.sum(axis=1).sum()) if not down_vals.empty and down_vals.sum().sum() > 0 else 0
-        up_sum = np.log2(up_vals.sum(axis=1).sum()) if not up_vals.empty and up_vals.sum().sum() > 0 else 0
-
-        def truncate_sites(sites):
-            if len(sites) > max_hover_sites:
-                return ";".join(sites[:max_hover_sites]) + f";... (+{len(sites) - max_hover_sites} more)"
-            return ";".join(sites)
-
-        collapsed_results.append({
-            "Protein_group": prot,
-            "Downregulated_sites": truncate_sites(down_sites) if show_phosphosites else "",
-            "Upregulated_sites": truncate_sites(up_sites) if show_phosphosites else "",
-            "Downregulated_count": len(down_sites),
-            "Upregulated_count": len(up_sites),
-            "Downregulated_sum": down_sum,
-            "Upregulated_sum": up_sum
-        })
-
-    collapsed_df = pd.DataFrame(collapsed_results)
-    collapsed_df["x"] = collapsed_df["Upregulated_sum"].abs()
-    collapsed_df["y"] = collapsed_df["Downregulated_sum"].abs()
-    collapsed_df["color_val"] = collapsed_df["x"] - collapsed_df["y"]
+                        show_phosphosites: bool = True,
+                        test_type=None):
+    """Scatter of the table returned by `phosprot_regulation_data`."""
+    collapsed_df = phosprot_regulation_data(
+        data, meta, condition1, condition2,
+        in_pval=in_pval, in_log2fc=in_log2fc, paired=paired,
+        uncorrected=uncorrected, max_hover_sites=max_hover_sites,
+        show_phosphosites=show_phosphosites, test_type=test_type,
+    )
 
     fig = px.scatter(
         collapsed_df,
@@ -2793,31 +4060,41 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
             "Protein_group": True,
             "Upregulated_count": True,
             "Downregulated_count": True,
-            "Upregulated_sites": True,
-            "Downregulated_sites": True
+            "Upregulated_site_effects": True,
+            "Downregulated_site_effects": True
         },
         color="color_val",
         color_continuous_scale=[(0, "blue"), (0.5, "grey"), (1, "red")],
         labels={
-            "x": "Absolute Upregulated Sum (log2)",
-            "y": "Absolute Downregulated Sum (log2)"
+            "x": "Cumulative Significant Up-Site log2FC",
+            "y": "Cumulative Significant Down-Site |log2FC|"
         },
         opacity=0.7
     )
 
     fig.update_traces(marker=dict(size=8, line=dict(width=0.5, color='DarkSlateGrey')), text=None)
+    if collapsed_df.empty:
+        fig.add_annotation(
+            text="No phosphosites pass the selected significance and fold-change thresholds",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+        )
 
-    fig.update_layout(title="Protein-level Phosphosite Regulation",
-                      xaxis_title="Absolute Upregulated Sum (log2)",
-                      yaxis_title="Absolute Downregulated Sum (log2)",
+    fig.update_layout(title="Cumulative Significant Phosphosite Regulation by Protein",
+                      xaxis_title="Cumulative Significant Up-Site log2FC",
+                      yaxis_title="Cumulative Significant Down-Site |log2FC|",
                       template="plotly_white",
-                      coloraxis_colorbar=dict(title="Up - Down"))
+                      coloraxis_colorbar=dict(title="Up score - Down score"))
 
     return fig
 
 
 #PEPTIDE
-def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=1000, header=True, width=8, height=6, dpi=100):
+
+def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=1000, header=True, width=8, height=6, dpi=100, seed=69):
     data = read_data(data_path)
 
     x = data['Predicted.RT']
@@ -2827,7 +4104,7 @@ def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=100
 
     if method == "Scatter Plot":
         if len(data) > 100000:
-            data = data.sample(n=100000, random_state=69)
+            data = data.sample(n=100000, random_state=int(seed))
         ax.scatter(data['Predicted.RT'], data['RT'], alpha=0.2, s=1)
     elif method == "Density Plot":
         from matplotlib.colors import LogNorm
@@ -2889,19 +4166,33 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
     data_filtered = data2_wide[["Modified.Sequence"] + annotated_cols].copy()
 
     def get_mod_count(df, pattern):
-        df_mod = df[df["Modified.Sequence"].str.contains(pattern, na=False)].copy()
-        for col in df_mod.columns[1:]:
-            df_mod[col] = df_mod[col].notna().astype(int)
-        return df_mod.iloc[:, 1:].sum(axis=0)
+        df_mod = df[df["Modified.Sequence"].str.contains(pattern, case=False, na=False)].copy()
+        quantities = (
+            df_mod.iloc[:, 1:]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf, 0], np.nan)
+        )
+        return quantities.notna().sum(axis=0)
 
-    col_carb = get_mod_count(data_filtered, "UniMod:4|Carbamidomethyl")
-    col_oxi  = get_mod_count(data_filtered, "UniMod:35|Oxidation")
-    col_ace  = get_mod_count(data_filtered, "UniMod:1|Acetyl")
+    # UniMod ids must not match longer ids by prefix: "UniMod:4" would otherwise
+    # also count UniMod:40-49 and UniMod:4xx.
+    col_carb = get_mod_count(
+        data_filtered,
+        r"UniMod:4(?!\d)|(?<![A-Za-z])Carbamidomethyl(?:ation)?(?![A-Za-z])",
+    )
+    col_oxi = get_mod_count(
+        data_filtered,
+        r"UniMod:35(?!\d)|(?<![A-Za-z])Oxidation(?![A-Za-z])",
+    )
+    col_ace = get_mod_count(
+        data_filtered,
+        r"UniMod:1(?!\d)|(?<![A-Za-z])Acetyl(?:ation)?(?![A-Za-z])",
+    )
 
     plot_data = pd.DataFrame({
         "Sample": list(col_carb.index) * 3,
         "Count": list(col_carb.values) + list(col_oxi.values) + list(col_ace.values),
-        "Modification": (["Carbamylation"] * len(col_carb)) +
+        "Modification": (["Carbamidomethylation"] * len(col_carb)) +
                         (["Oxidation"] * len(col_oxi)) +
                         (["Acetylation"] * len(col_ace))
     })
@@ -2911,12 +4202,12 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
     plot_data = plot_data.sort_values("Sample")
 
     mod_colors = {
-        "Carbamylation": "blue",
+        "Carbamidomethylation": "blue",
         "Oxidation": "red",
         "Acetylation": "green"
     }
 
-    found_mods = [m for m in ["Carbamylation", "Oxidation", "Acetylation"] if m in plot_data["Modification"].unique()]
+    found_mods = [m for m in ["Carbamidomethylation", "Oxidation", "Acetylation"] if m in plot_data["Modification"].unique()]
 
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     x = np.arange(len(ordered_new_samples))
@@ -2943,7 +4234,13 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
 
 
 def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, header=True,
-                         width=10, height=6, dpi=100):
+                         protease="trypsin", width=10, height=6, dpi=100):
+    """Missed cleavages per sample.
+
+    ``protease`` selects the cleavage rule and must match the digest actually
+    used: 'trypsin' (K-P and R-P both uncleaved) or 'trypsin_lysc' (the Lys-C
+    component cleaves K-P; R-P stays blocked).
+    """
 
     data2 = sanitize_dataframe(read_data(data2_path)).copy()
     meta = meta.copy()
@@ -2985,10 +4282,8 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     annotated_cols = [c for c in meta["new_sample"] if c in df_wide.columns]
     data_filtered = df_wide[[seq_col] + annotated_cols]
 
-    def count_all_RK(sequence):
-        return max(0, sequence.count("R") + sequence.count("K") - 1)
-
-    rk_counts = [count_all_RK(seq) for seq in data_filtered[seq_col]]
+    resolved_protease = normalize_protease(protease)
+    rk_counts = [count_missed_cleavages(seq, resolved_protease) for seq in data_filtered[seq_col]]
     for col in data_filtered.columns[1:]:
         data_filtered[col] = np.where(data_filtered[col].notna(), rk_counts, np.nan)
 
@@ -3019,7 +4314,7 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
 
     if header:
-        ax.set_title("Missed cleavages per sample")
+        ax.set_title(f"Missed cleavages per sample ({PROTEASE_LABELS[resolved_protease]})")
 
     ax.set_xticks(range(len(samples_order)))
     ax.set_xticklabels(samples_order, rotation=90)
@@ -3038,7 +4333,9 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
 def calculate_coverage(data_path, db, protein):
     data = read_data(data_path).copy()
 
-    peptides = data[data["ProteinNames"].str.contains(rf"\b{re.escape(protein)}\b", regex=True)][
+    # na=False: a missing ProteinNames yields NA from str.contains, and masking with
+    # a non-boolean array raises on object dtype (the pandas < 3 default).
+    peptides = data[data["ProteinNames"].str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)][
         "Stripped.Sequence"].unique()
 
     try:
@@ -3060,7 +4357,8 @@ def calculate_coverage(data_path, db, protein):
 
 
 def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size: int = 30) -> str:
-    data = data[data['ProteinNames'].str.contains(rf"\b{re.escape(protein)}\b", regex=True)]
+    # na=False for the same reason as in calculate_coverage above.
+    data = data[data['ProteinNames'].str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)]
     found_seq = data['Stripped.Sequence'].unique()
 
     try:
@@ -3131,6 +4429,12 @@ def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size:
 
 
 def fasta_to_dataframe(fasta_path):
+    if SeqIO is None:
+        raise ModuleNotFoundError(
+            "fasta_to_dataframe requires biopython. "
+            "Install ProteomicsCoPYlot with: pip install 'proteomicscopylot[bio]'"
+        )
+
     records = list(SeqIO.parse(fasta_path, "fasta"))
     data = {"full_header": [rec.id for rec in records], "V1": [str(rec.seq) for rec in records]}
     df = pd.DataFrame(data)
@@ -3178,18 +4482,30 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
     else:
         raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
 
-    data_melted = data_melted.merge(meta[["new_sample", "condition"]],
-                                    left_on="Sample", right_on="new_sample", how="left").dropna()
-
     ordered_samples = []
     for cond in conditions:
         ordered_samples.extend(meta.loc[meta["condition"] == cond, "new_sample"].tolist())
 
-    sample_to_x = {s: i for i, s in enumerate(ordered_samples)}
-    data_melted["x"] = data_melted["Sample"].map(sample_to_x)
-
     if workflow == "Protein":
         data_melted[key_col] = data_melted[key_col].apply(lambda x: x.split(";")[0])
+
+    data_melted["Value"] = pd.to_numeric(data_melted["Value"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
+    data_melted = (
+        data_melted.groupby([key_col, "Sample"], as_index=False, sort=False)["Value"]
+        .median()
+    )
+    data_melted = data_melted.merge(
+        meta[["new_sample", "condition"]],
+        left_on="Sample",
+        right_on="new_sample",
+        how="left",
+    ).dropna(subset=["Value", "condition"])
+
+    sample_to_x = {s: i for i, s in enumerate(ordered_samples)}
+    data_melted["x"] = data_melted["Sample"].map(sample_to_x)
+    data_melted = data_melted[data_melted["x"].notna()].copy()
 
     if plot_colors is None:
         plot_colors = plt.cm.tab10.colors
@@ -3220,7 +4536,7 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
 
 
 def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, header=True, legend=True,
-                       plot_colors=None, width=8, height=6, dpi=100):
+                       plot_colors=None, width=8, height=6, dpi=100, seed=69):
     meta = meta.copy()
     data = data.copy()
     data = data[data.index == protein]
@@ -3246,10 +4562,11 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
 
     for condition in meta["condition"].unique():
         cols = meta.loc[meta["condition"] == condition, "new_sample"]
-        if len(cols) < 3:
-            continue
-        vals = data_filtered[cols].values.flatten()
-        vals = vals[~pd.isna(vals)]
+        numeric = data_filtered[cols].apply(pd.to_numeric, errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        vals = numeric.median(axis=0, skipna=True).to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
         if len(vals) == 0:
             continue
         intensities.append(vals)
@@ -3259,32 +4576,49 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
 
     if not intensities:
         fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-        ax.text(0.5, 0.5, "No conditions with ≥3 samples", ha="center", va="center")
+        ax.text(0.5, 0.5, "No measured values in the selected conditions", ha="center", va="center")
         ax.axis("off")
         return fig
 
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-    bplots = ax.boxplot(intensities, patch_artist=True, showfliers=outliers)
-    for patch, color in zip(bplots['boxes'], colors):
-        patch.set_facecolor(color)
+    box_positions = [i for i, values in enumerate(intensities, start=1) if len(values) >= 3]
+    if box_positions:
+        bplots = ax.boxplot(
+            [intensities[i - 1] for i in box_positions],
+            positions=box_positions,
+            patch_artist=True,
+            showfliers=outliers,
+        )
+        for patch, position in zip(bplots['boxes'], box_positions):
+            patch.set_facecolor(colors[position - 1])
 
-    if dots:
-        for i, (vals, cond) in enumerate(zip(intensities, plotted_conditions), start=1):
+    rng = np.random.default_rng(seed)
+    for i, (vals, cond) in enumerate(zip(intensities, plotted_conditions), start=1):
+        if len(vals) < 3:
+            visible_values = vals
+        elif dots:
             q1, q3 = np.percentile(vals, [25, 75])
             iqr = q3 - q1
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr
-            non_outliers = vals[(vals >= lower) & (vals <= upper)]
-            x_jitter = np.random.normal(i, 0.05, size=len(non_outliers))
-            ax.scatter(x_jitter, non_outliers, color=condition_colors[cond], alpha=0.7, s=15, zorder=3)
+            visible_values = vals[(vals >= lower) & (vals <= upper)]
+        else:
+            continue
+        x_jitter = rng.normal(i, 0.05, size=len(visible_values))
+        ax.scatter(x_jitter, visible_values, color=condition_colors[cond], alpha=0.8, s=20, zorder=3)
 
     ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, rotation=45, ha='right')
+    ax.set_xticklabels(
+        [f"{label}\n(n={len(values)})" for label, values in zip(labels, intensities)],
+        rotation=45,
+        ha='right',
+    )
     ax.set_xlabel("Condition")
     ax.set_ylabel("log2 Intensity")
     if header:
         display_protein = protein.split(";")[0]
-        ax.set_title(f"Measured {display_protein} intensity values (log2)")
+        suffix = f"\none median per sample across {len(data)} matching source row(s)" if len(data) > 1 else ""
+        ax.set_title(f"Measured {display_protein} intensity values (log2){suffix}")
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_colors[c], lw=4) for c in plotted_conditions]
         ax.legend(handles, plotted_conditions, bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -3357,13 +4691,22 @@ def phossite_on_prot_regulation(
     else:
         raise ValueError("value_type must be 'log2' or 'z'")
 
+    heatmap_data = heatmap_data.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    heatmap_data = heatmap_data.dropna(how="all")
+    if heatmap_data.empty:
+        raise ValueError("No informative phosphosite rows remain after heatmap transformation.")
+
+    cluster_matrix = None
+    if (cluster_rows and heatmap_data.shape[0] > 1) or (cluster_cols and heatmap_data.shape[1] > 1):
+        cluster_matrix = _require_complete_clustering_matrix(heatmap_data, context="phosphosite heatmap")
     if cluster_rows and heatmap_data.shape[0] > 1:
-        row_linkage = linkage(heatmap_data.fillna(0), method='average', metric='euclidean')
+        row_linkage = linkage(cluster_matrix, method='average', metric='euclidean')
         row_order = leaves_list(row_linkage)
         heatmap_data = heatmap_data.iloc[row_order]
+        cluster_matrix = cluster_matrix[row_order]
 
     if cluster_cols and heatmap_data.shape[1] > 1:
-        col_linkage = linkage(heatmap_data.T.fillna(0), method='average', metric='euclidean')
+        col_linkage = linkage(cluster_matrix.T, method='average', metric='euclidean')
         col_order = leaves_list(col_linkage)
         heatmap_data = heatmap_data.iloc[:, col_order]
 
@@ -3494,7 +4837,7 @@ def sty_plot(data):
 def phossite_coverage_plot_summary(
     data, meta, header=True, legend=True,
     width=20, height=10, dpi=300,
-    color_classI="blue", color_notclassI="orange"
+    color_classI="blue", color_notclassI="orange", seed=69
 ):
     meta = meta.copy()
     meta["sample"] = meta["sample"].astype(str)
@@ -3542,11 +4885,12 @@ def phossite_coverage_plot_summary(
     bars1 = ax.bar(locs - width_bar/2, classI_means, width=width_bar, yerr=classI_sd, capsize=3, color=color_classI, label="Class I")
     bars2 = ax.bar(locs + width_bar/2, notclassI_means, width=width_bar, yerr=notclassI_sd, capsize=3, color=color_notclassI, label="Not Class I")
 
+    rng = np.random.default_rng(seed)
     for i, condition in enumerate(conditions):
         y_classI = plot_data[(plot_data["condition"] == condition) & (plot_data["PTM_localization"] == "Class I")]["count"].values
         y_notclassI = plot_data[(plot_data["condition"] == condition) & (plot_data["PTM_localization"] == "Not Class I")]["count"].values
-        ax.scatter(np.random.normal(i - width_bar/2, 0.05, len(y_classI)), y_classI, color='black', alpha=0.7)
-        ax.scatter(np.random.normal(i + width_bar/2, 0.05, len(y_notclassI)), y_notclassI, color='black', alpha=0.7)
+        ax.scatter(rng.normal(i - width_bar/2, 0.05, len(y_classI)), y_classI, color='black', alpha=0.7)
+        ax.scatter(rng.normal(i + width_bar/2, 0.05, len(y_notclassI)), y_notclassI, color='black', alpha=0.7)
 
     ax.set_xticks(locs)
     ax.set_xticklabels(conditions, rotation=45, ha='right')
@@ -3684,7 +5028,8 @@ def kinase_tree_data_pval(data_st, data_tnc):
     if not required_cols.issubset(df.columns):
         raise ValueError("Input must contain 'Gene Name' and 'Adjusted p-value' columns")
     df = df[["Gene Name", "Adjusted p-value"]].copy()
-    df["-log10(adj_pval)"] = -np.log10(df["Adjusted p-value"].replace(0, np.nan))
+    adjusted = pd.to_numeric(df["Adjusted p-value"], errors="coerce")
+    df["-log10(adj_pval)"] = -np.log10(adjusted.clip(lower=1e-300))
     return df[["Gene Name", "-log10(adj_pval)"]]
 
 
@@ -3751,13 +5096,17 @@ def correlation_xy_intensity_single(data, sample1, sample2, alias1=None, alias2=
     return fig
 
 
-def correlation_xy_intensity(data, meta, condition1, condition2, alias1=None, alias2=None, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=True):
+def correlation_xy_intensity(data, meta, condition1, condition2, alias1=None, alias2=None, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=True, min_present=1):
     s1 = meta.loc[meta['condition']==condition1,'sample'].astype(str).tolist()
     s2 = meta.loc[meta['condition']==condition2,'sample'].astype(str).tolist()
     if not s1 or not s2: raise ValueError("One or both conditions have no associated samples.")
-    mean1, mean2 = data[s1].mean(axis=1), data[s2].mean(axis=1)
+    # min_present=1 (the default) reports every mean. Raise it to drop means that
+    # rest on fewer replicates than that, which would otherwise be plotted at the
+    # same weight as a fully observed one.
+    mean1, _ = condition_mean(data, s1, min_present=min_present)
+    mean2, _ = condition_mean(data, s2, min_present=min_present)
     valid_data = pd.concat([mean1, mean2], axis=1).dropna()
-    if valid_data.empty: raise ValueError("No overlapping proteins with intensity in both conditions.")
+    if valid_data.empty: raise ValueError("No overlapping proteins with intensity in both conditions after the minimum-replicate filter.")
     x, y = valid_data.iloc[:,0].values, valid_data.iloc[:,1].values
     r, p_val = pearsonr(x, y)
     label1, label2 = alias1.strip() if alias1 else condition1, alias2.strip() if alias2 else condition2
@@ -3772,12 +5121,14 @@ def correlation_xy_intensity(data, meta, condition1, condition2, alias1=None, al
     return fig
 
 
-def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True):
-    p1 = set(data.index[(data[sample1].notna()) & (data[sample1] != 0)])
-    p2 = set(data.index[(data[sample2].notna()) & (data[sample2] != 0)])
+def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True, data_scale="log2"):
+    samples = [sample1, sample2] + ([sample3] if sample3 is not None else [])
+    data = _prepare_intensity_data(data, samples, data_scale)
+    p1 = set(data.index[data[sample1].notna()])
+    p2 = set(data.index[data[sample2].notna()])
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     if sample3:
-        p3 = set(data.index[(data[sample3].notna()) & (data[sample3] != 0)])
+        p3 = set(data.index[data[sample3].notna()])
         kwargs = {"set_colors": colors} if colors is not None else {}
         venn3([p1, p2, p3], set_labels=labels or [sample1, sample2, sample3], ax=ax, **kwargs)
     else:
@@ -3788,15 +5139,16 @@ def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7,
     return fig
 
 
-def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True):
+def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True, data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     s1 = meta.loc[meta['condition']==condition1,'sample'].tolist()
     s2 = meta.loc[meta['condition']==condition2,'sample'].tolist()
-    p1 = set(data.index[(data[s1].notna() & (data[s1]!=0)).any(axis=1)])
-    p2 = set(data.index[(data[s2].notna() & (data[s2]!=0)).any(axis=1)])
+    p1 = set(data.index[data[s1].notna().any(axis=1)])
+    p2 = set(data.index[data[s2].notna().any(axis=1)])
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     if condition3:
         s3 = meta.loc[meta['condition']==condition3,'sample'].tolist()
-        p3 = set(data.index[(data[s3].notna() & (data[s3]!=0)).any(axis=1)])
+        p3 = set(data.index[data[s3].notna().any(axis=1)])
         kwargs = {"set_colors": colors} if colors is not None else {}
         venn3([p1, p2, p3], set_labels=labels or [condition1, condition2, condition3], ax=ax, **kwargs)
     else:
@@ -3809,10 +5161,9 @@ def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, 
 
 #DATA COMPLETENESS
 def missing_value_plot(data, meta, bin=0, header=True, text=True, text_size=3.88,
-                       width=7.87, height=3.94, dpi=300, color='blue'):
-    annotated_columns = meta['sample']
-    data_filtered = data[annotated_columns].copy()
-    data_filtered = data_filtered.replace(0, np.nan)
+                       width=7.87, height=3.94, dpi=300, color='blue', data_scale="log2"):
+    annotated_columns = meta['sample'].tolist()
+    data_filtered = _prepare_intensity_data(data, annotated_columns, data_scale)[annotated_columns]
     na_count = data_filtered.isna().sum(axis=1)
 
     if bin > 0:
@@ -3867,7 +5218,10 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
         index='File.Name',
         columns='Precursor.Id',
         values='Precursor.Quantity',
-        aggfunc='first'
+        # 'max' matches missing_value_plot_pep above. 'first' depended on input
+        # row order, and _raw_zero_to_nan runs immediately after, so which
+        # duplicate won decided whether a precursor read as detected.
+        aggfunc='max'
     )
 
     df_wide = df_wide.T
@@ -3876,6 +5230,7 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
 
     annotated_columns = meta['sample'].tolist()
     data_filtered = df_wide.loc[:, df_wide.columns.isin(annotated_columns)]
+    data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.isna().sum(axis=1)
 
@@ -3930,6 +5285,7 @@ def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
     meta['sample'] = meta['sample'].map(lambda x: extract_id_or_number(x))
     annotated_columns = meta['sample'].tolist()
     data_filtered = df_wide.loc[:, df_wide.columns.isin(annotated_columns)]
+    data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.isna().sum(axis=1)
 
@@ -3964,8 +5320,9 @@ def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
     return fig
 
 
-def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10, dpi=300):
-    data = data.replace(0, np.nan)
+def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10, dpi=300,
+                          data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
 
     meta = meta.copy()
     meta['sample'] = meta['sample'].astype(str)
@@ -3998,8 +5355,8 @@ def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10,
     return fig
 
 
-def missing_protein_table(data, meta, id=True):
-    data = data.replace(0, np.nan)
+def missing_protein_table(data, meta, id=True, data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
     meta['sample'] = meta['sample'].astype(str)
     meta['id'] = meta['sample'].apply(extract_id_or_number)
@@ -4028,8 +5385,8 @@ def missing_protein_table(data, meta, id=True):
     return summary
 
 
-def missing_sample_table(data, meta, id=True):
-    data = data.replace(0, np.nan)
+def missing_sample_table(data, meta, id=True, data_scale="log2"):
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
     meta['sample'] = meta['sample'].astype(str)
     meta['id'] = meta['sample'].apply(extract_id_or_number)
@@ -4061,10 +5418,32 @@ def missing_value_outlier(df, thld=50):
     outliers = df[df['%_missing_values'] > thld]['Sample'].tolist()
     return outliers
 
-def all_miss_val(data, meta):
-    data = data.replace(0, np.nan)
-    data = data[meta['sample'].tolist()]
+def all_miss_val(data, meta, data_scale="log2"):
+    samples = meta['sample'].tolist()
+    data = _prepare_intensity_data(data, samples, data_scale)[samples]
     total_values = data.size
     missing_values = data.isna().sum().sum()
     percent_missing = (missing_values / total_values) * 100
     return round(percent_missing, 2)
+
+def _require_complete_clustering_matrix(matrix, context="heatmap"):
+    """Reject hidden zero/mean replacement before hierarchical clustering."""
+    if isinstance(matrix, pd.DataFrame):
+        numeric = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    else:
+        numeric = np.asarray(matrix, dtype=float)
+    if numeric.ndim != 2:
+        raise ValueError("Clustering requires a two-dimensional matrix.")
+    finite = np.isfinite(numeric)
+    if finite.all():
+        return numeric
+    rows, columns = numeric.shape
+    complete_rows = int(finite.all(axis=1).sum()) if rows else 0
+    missing_values = int((~finite).sum())
+    raise ValueError(
+        f"{context.capitalize()} clustering cannot be computed because the selected matrix "
+        f"contains {missing_values} missing or non-finite value(s); only {complete_rows} of "
+        f"{rows} features are complete across all {columns} samples. Impute the matrix before "
+        "calling this function, or disable row and column clustering. The data was not "
+        "changed automatically."
+    )

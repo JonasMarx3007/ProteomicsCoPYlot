@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import os
 import time
 from collections import deque
@@ -22,6 +24,10 @@ from app.services.viewer_portal import (
     viewer_portal_enabled,
     viewer_session_auth,
 )
+from app.services.request_security import client_address
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/viewer/auth", tags=["viewer-auth"])
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -45,12 +51,7 @@ def _rate_limit_enabled() -> bool:
 
 
 def _client_key(request: Request) -> str:
-    forwarded = str(request.headers.get("x-forwarded-for", "")).split(",", 1)[0].strip()
-    if forwarded:
-        return forwarded
-    if request.client is not None and request.client.host:
-        return request.client.host
-    return "unknown"
+    return client_address(request)
 
 
 def _enforce_login_rate_limit(request: Request, *, bucket: str) -> None:
@@ -62,16 +63,22 @@ def _enforce_login_rate_limit(request: Request, *, bucket: str) -> None:
     cutoff = now - window_seconds
     key = (_client_key(request), bucket)
     with _RATE_LIMIT_LOCK:
+        stale_keys: list[tuple[str, str]] = []
+        for existing_key, existing_attempts in _RATE_LIMIT_ATTEMPTS.items():
+            while existing_attempts and existing_attempts[0] < cutoff:
+                existing_attempts.popleft()
+            if not existing_attempts:
+                stale_keys.append(existing_key)
+        for stale_key in stale_keys:
+            _RATE_LIMIT_ATTEMPTS.pop(stale_key, None)
         attempts = _RATE_LIMIT_ATTEMPTS.setdefault(key, deque())
-        while attempts and attempts[0] < cutoff:
-            attempts.popleft()
         if len(attempts) >= limit:
             raise HTTPException(status_code=429, detail="Too many login attempts. Please wait and try again.")
         attempts.append(now)
 
 
 @router.get("/status", response_model=ViewerAuthStatusResponse)
-async def viewer_auth_status_route() -> ViewerAuthStatusResponse:
+def viewer_auth_status_route() -> ViewerAuthStatusResponse:
     enabled = viewer_portal_enabled()
     if not enabled:
         return ViewerAuthStatusResponse(enabled=False, authenticated=False)
@@ -84,13 +91,15 @@ async def viewer_auth_status_route() -> ViewerAuthStatusResponse:
         refreshed = ensure_viewer_session_bootstrapped(force_reload=False)
     except FileNotFoundError as exc:
         clear_viewer_session_auth(reset_data=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:
-        clear_viewer_session_auth(reset_data=True)
+        LOGGER.exception("Viewer access configuration is unavailable")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to initialize viewer project session: {exc}",
+            detail="Viewer access configuration is unavailable. Contact the administrator.",
         ) from exc
+    except Exception as exc:
+        clear_viewer_session_auth(reset_data=True)
+        LOGGER.exception("Failed to initialize viewer project session")
+        raise HTTPException(status_code=500, detail="Failed to initialize viewer project session.") from exc
 
     return ViewerAuthStatusResponse(
         enabled=True,
@@ -101,7 +110,7 @@ async def viewer_auth_status_route() -> ViewerAuthStatusResponse:
 
 
 @router.post("/login", response_model=ViewerAuthLoginResponse)
-async def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequest) -> ViewerAuthLoginResponse:
+def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequest) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="password")
@@ -111,12 +120,14 @@ async def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequ
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:
+        LOGGER.exception("Viewer access configuration is unavailable")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to authenticate viewer session: {exc}",
+            detail="Viewer access configuration is unavailable. Contact the administrator.",
         ) from exc
+    except Exception as exc:
+        LOGGER.exception("Failed to authenticate viewer session")
+        raise HTTPException(status_code=500, detail="Failed to authenticate viewer session.") from exc
 
     return ViewerAuthLoginResponse(
         ok=True,
@@ -126,7 +137,7 @@ async def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequ
 
 
 @router.post("/qr-login", response_model=ViewerAuthLoginResponse)
-async def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLoginRequest) -> ViewerAuthLoginResponse:
+def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLoginRequest) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="qr")
@@ -136,12 +147,14 @@ async def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLogi
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:
+        LOGGER.exception("Viewer access configuration is unavailable")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to authenticate viewer QR session: {exc}",
+            detail="Viewer access configuration is unavailable. Contact the administrator.",
         ) from exc
+    except Exception as exc:
+        LOGGER.exception("Failed to authenticate viewer QR session")
+        raise HTTPException(status_code=500, detail="Failed to authenticate viewer QR session.") from exc
 
     return ViewerAuthLoginResponse(
         ok=True,
@@ -151,6 +164,6 @@ async def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLogi
 
 
 @router.post("/logout", response_model=ViewerAuthLogoutResponse)
-async def viewer_auth_logout_route() -> ViewerAuthLogoutResponse:
+def viewer_auth_logout_route() -> ViewerAuthLogoutResponse:
     clear_viewer_session_auth(reset_data=True)
     return ViewerAuthLogoutResponse(ok=True)

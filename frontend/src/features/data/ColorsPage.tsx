@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getConditionPalette,
   getQcPlotOptions,
+  isAbortError,
   setConditionPalette,
 } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
@@ -32,49 +33,32 @@ function fallbackColor(index: number): string {
 
 export default function ColorsPage() {
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [preferredKind, setKind] = useState<AnnotationKind>("protein");
+  const kind = availableKinds.includes(preferredKind) ? preferredKind : availableKinds[0] ?? preferredKind;
   const [conditions, setConditions] = useState<string[]>([]);
   const [colors, setColors] = useState<ColorMap>({});
-  const [copyTargetKind, setCopyTargetKind] = useState<AnnotationKind>("phospho");
-  const [loading, setLoading] = useState(false);
+  const [preferredCopyTargetKind, setCopyTargetKind] = useState<AnnotationKind>("phospho");
+  const [loadedKind, setLoadedKind] = useState<AnnotationKind | null>(null);
+  const loading = availableKinds.includes(kind) && loadedKind !== kind;
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (availableKinds.length === 0) return;
-    if (!availableKinds.includes(kind)) {
-      setKind(availableKinds[0]);
-    }
-  }, [availableKinds, kind]);
+  const otherKinds = availableKinds.filter((value) => value !== kind);
+  const copyTargetKind = otherKinds.includes(preferredCopyTargetKind)
+    ? preferredCopyTargetKind
+    : otherKinds[0] ?? preferredCopyTargetKind;
 
   useEffect(() => {
-    const others = availableKinds.filter((value) => value !== kind);
-    if (others.length === 0) return;
-    if (!others.includes(copyTargetKind)) {
-      setCopyTargetKind(others[0]);
-    }
-  }, [availableKinds, kind, copyTargetKind]);
+    if (!availableKinds.includes(kind)) return;
 
-  useEffect(() => {
-    if (!availableKinds.includes(kind)) {
-      setConditions([]);
-      setColors({});
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    getQcPlotOptions(kind)
+    const controller = new AbortController();
+    getQcPlotOptions(kind, { signal: controller.signal })
       .then(async (payload) => {
-        if (cancelled) return;
         const unique = Array.from(
           new Set(payload.conditions.map((value) => value.trim()).filter(Boolean))
         );
         setConditions(unique);
-        const saved = await getConditionPalette(kind);
-        if (cancelled) return;
+        const saved = await getConditionPalette(kind, { signal: controller.signal });
         const merged: ColorMap = {};
         unique.forEach((condition, index) => {
           const savedColor = saved.palette[condition];
@@ -83,9 +67,10 @@ export default function ColorsPage() {
             : fallbackColor(index);
         });
         setColors(merged);
+        setError(null);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setConditions([]);
         setColors({});
         setError(
@@ -95,12 +80,12 @@ export default function ColorsPage() {
         );
       })
       .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
+        if (controller.signal.aborted) return;
+        setLoadedKind(kind);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [kind, availableKinds]);
 

@@ -15,6 +15,7 @@ from app.services.annotation_store import reset_all_annotations
 from app.services.condition_palette_store import reset_condition_palettes
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
+from app.services.password_hashing import validate_password_hash, verify_password
 from app.services.peptide_metadata_store import clear_peptide_metadata
 from app.services.session_context import get_session_id, session_isolation_enabled
 from app.services.viewer_bootstrap import (
@@ -25,7 +26,11 @@ from app.services.viewer_bootstrap import (
 
 LOGGER = logging.getLogger(__name__)
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
-_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+# Must contain at least one character that is not a dot: the name is used as a
+# single path segment, so a name of "." or ".." would resolve outside its own
+# project directory. Names come from admin-controlled config today, but the
+# containment should not depend on that staying true.
+_PROJECT_NAME_RE = re.compile(r"^(?=.*[^.])[A-Za-z0-9_.-]{1,128}$")
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,7 @@ class ViewerAccessEntry:
     project_label: str
     password: str
     password_sha256: str
+    password_pbkdf2_sha256: str
 
 
 @dataclass(frozen=True)
@@ -142,15 +148,20 @@ def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
     project_label = str(raw.get("label", project)).strip() or project
     password = str(raw.get("password", ""))
     password_sha256 = _normalize_sha256(str(raw.get("password_sha256", "")))
-    if not password and not password_sha256:
+    password_pbkdf2_sha256 = str(raw.get("password_pbkdf2_sha256", "")).strip()
+    if password_pbkdf2_sha256:
+        validate_password_hash(password_pbkdf2_sha256)
+    if not password and not password_sha256 and not password_pbkdf2_sha256:
         raise ValueError(
-            f"Viewer access entry #{index} must define either password or password_sha256."
+            f"Viewer access entry #{index} must define password, password_sha256, "
+            "or password_pbkdf2_sha256."
         )
     return ViewerAccessEntry(
         project=project,
         project_label=project_label,
         password=password,
         password_sha256=password_sha256,
+        password_pbkdf2_sha256=password_pbkdf2_sha256,
     )
 
 
@@ -202,6 +213,7 @@ def _parse_access_entries(raw: Any) -> list[ViewerAccessEntry]:
                         project_label=label or _normalize_project_name(project),
                         password=str(password),
                         password_sha256=password_sha256,
+                        password_pbkdf2_sha256="",
                     )
                 )
             return entries
@@ -273,6 +285,8 @@ def _load_qr_access_entries(project_root: Path) -> list[ViewerQrAccessEntry]:
 
 
 def _password_matches(raw_password: str, entry: ViewerAccessEntry) -> bool:
+    if entry.password_pbkdf2_sha256 and verify_password(raw_password, entry.password_pbkdf2_sha256):
+        return True
     if entry.password and secrets.compare_digest(raw_password, entry.password):
         return True
     if entry.password_sha256:
@@ -280,6 +294,57 @@ def _password_matches(raw_password: str, entry: ViewerAccessEntry) -> bool:
         if secrets.compare_digest(digest, entry.password_sha256):
             return True
     return False
+
+
+def _warn_about_legacy_credential(entry: ViewerAccessEntry) -> None:
+    """Make a weak credential form visible rather than silently accepted.
+
+    `password` and `password_sha256` remain supported -- docs/INSTALLATION.md
+    promises they stay compatible -- so this only reports. Plaintext is readable
+    by anyone who can open the file; unsalted SHA-256 has no salt and no
+    iterations, so a human-chosen password falls to a precomputed table. The
+    project name is logged, never the credential.
+    """
+    if entry.password_pbkdf2_sha256:
+        return
+    if entry.password:
+        form, reason = "a plaintext password", "it is readable by anyone who can open the file"
+    elif entry.password_sha256:
+        form, reason = "an unsalted SHA-256 hash", "it has no salt and no key stretching"
+    else:
+        return
+    LOGGER.warning(
+        "Viewer project '%s' authenticates with %s; %s. Prefer password_pbkdf2_sha256 "
+        "for published deployments (see docs/INSTALLATION.md for how to generate one).",
+        entry.project,
+        form,
+        reason,
+    )
+
+
+def validate_viewer_portal_configuration() -> None:
+    root = Path(__file__).resolve().parents[3]
+    entries = _load_access_entries(root)
+    if not entries:
+        raise ValueError("Viewer portal has no configured password credentials.")
+    for entry in entries:
+        if (
+            entry.password_sha256
+            and not entry.password
+            and not entry.password_pbkdf2_sha256
+            and not any(character != "0" for character in entry.password_sha256)
+        ):
+            raise ValueError("Viewer password hash still contains the example placeholder.")
+        if resolve_viewer_project_config(entry.project) is None:
+            raise ValueError(f"Viewer project '{entry.project}' has no viewer_config.json.")
+        _warn_about_legacy_credential(entry)
+
+    qr_entries = _load_qr_access_entries(root)
+    for entry in qr_entries:
+        if not any(character != "0" for character in entry.token_sha256):
+            raise ValueError("Viewer QR token still contains the example placeholder.")
+        if resolve_viewer_project_config(entry.project) is None:
+            raise ValueError(f"Viewer project '{entry.project}' has no viewer_config.json.")
 
 
 def _reset_current_session_data() -> None:

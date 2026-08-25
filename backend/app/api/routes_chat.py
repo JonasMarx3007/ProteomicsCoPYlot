@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas.chat import (
     ChatProvider,
+    CloudAiConsentStatusResponse,
+    CloudAiConsentVersionRequest,
     ModelCapabilityResponse,
     ModuleContextRequest,
     ModuleContextResponse,
@@ -27,12 +31,42 @@ from app.services.chat_tools import (
     ollama_models,
     ollama_remove_model,
 )
+from app.services.cloud_ai_consent import (
+    CloudAiConsentRequired,
+    cloud_ai_consent_status,
+    grant_cloud_ai_consent,
+    revoke_cloud_ai_consent,
+)
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+@router.get("/cloud-consent/{provider}", response_model=CloudAiConsentStatusResponse)
+def cloud_ai_consent_status_route(provider: ChatProvider) -> CloudAiConsentStatusResponse:
+    return cloud_ai_consent_status(provider)
+
+
+@router.post("/cloud-consent/{provider}/grant", response_model=CloudAiConsentStatusResponse)
+def cloud_ai_consent_grant_route(
+    provider: ChatProvider,
+    payload: CloudAiConsentVersionRequest,
+) -> CloudAiConsentStatusResponse:
+    try:
+        return grant_cloud_ai_consent(provider, payload.disclosureVersion)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/cloud-consent/{provider}/revoke", response_model=CloudAiConsentStatusResponse)
+def cloud_ai_consent_revoke_route(provider: ChatProvider) -> CloudAiConsentStatusResponse:
+    return revoke_cloud_ai_consent(provider)
+
+
 @router.post("/ollama", response_model=OllamaChatResponse)
-async def ollama_chat_route(payload: OllamaChatRequest) -> OllamaChatResponse:
+def ollama_chat_route(payload: OllamaChatRequest) -> OllamaChatResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
@@ -40,11 +74,12 @@ async def ollama_chat_route(payload: OllamaChatRequest) -> OllamaChatResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to generate chat response: {exc}") from exc
+        LOGGER.exception("Failed to generate chat response")
+        raise HTTPException(status_code=500, detail="Failed to generate chat response.") from exc
 
 
 @router.post("/ollama-stream")
-async def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
+def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
@@ -52,7 +87,8 @@ async def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingRespo
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start chat stream: {exc}") from exc
+        LOGGER.exception("Failed to start chat stream")
+        raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
     return StreamingResponse(
         chunk_stream,
         media_type="text/plain; charset=utf-8",
@@ -64,15 +100,18 @@ async def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingRespo
 
 
 @router.post("/stream")
-async def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
+def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
         provider, model, chunk_stream = chat_stream(payload)
+    except CloudAiConsentRequired as exc:
+        raise HTTPException(status_code=428, detail=exc.detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start chat stream: {exc}") from exc
+        LOGGER.exception("Failed to start chat stream")
+        raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
     return StreamingResponse(
         chunk_stream,
         media_type="text/plain; charset=utf-8",
@@ -85,7 +124,7 @@ async def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
 
 
 @router.post("/module-context", response_model=ModuleContextResponse)
-async def module_context_route(payload: ModuleContextRequest) -> ModuleContextResponse:
+def module_context_route(payload: ModuleContextRequest) -> ModuleContextResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
@@ -98,11 +137,12 @@ async def module_context_route(payload: ModuleContextRequest) -> ModuleContextRe
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to build module context: {exc}") from exc
+        LOGGER.exception("Failed to build module context")
+        raise HTTPException(status_code=500, detail="Failed to build module context.") from exc
 
 
 @router.get("/model-capability", response_model=ModelCapabilityResponse)
-async def model_capability_route(
+def model_capability_route(
     model: str = Query(min_length=1),
     provider: ChatProvider = Query(default="ollama"),
     endpoint: str | None = Query(default=None),
@@ -114,31 +154,34 @@ async def model_capability_route(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to inspect model capabilities: {exc}") from exc
+        LOGGER.exception("Failed to inspect model capabilities")
+        raise HTTPException(status_code=500, detail="Failed to inspect model capabilities.") from exc
 
 
 @router.get("/gpu-status", response_model=OllamaGpuStatusResponse)
-async def ollama_gpu_status_route(endpoint: str | None = Query(default=None)) -> OllamaGpuStatusResponse:
+def ollama_gpu_status_route(endpoint: str | None = Query(default=None)) -> OllamaGpuStatusResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
         return ollama_gpu_status(endpoint_override=endpoint)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to detect GPU status: {exc}") from exc
+        LOGGER.exception("Failed to detect GPU status")
+        raise HTTPException(status_code=500, detail="Failed to detect GPU status.") from exc
 
 
 @router.get("/models", response_model=OllamaModelsResponse)
-async def ollama_models_route(endpoint: str | None = Query(default=None)) -> OllamaModelsResponse:
+def ollama_models_route(endpoint: str | None = Query(default=None)) -> OllamaModelsResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
         return ollama_models(endpoint_override=endpoint)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load Ollama models: {exc}") from exc
+        LOGGER.exception("Failed to load Ollama models")
+        raise HTTPException(status_code=500, detail="Failed to load Ollama models.") from exc
 
 
 @router.post("/models/install", response_model=OllamaModelManageResponse)
-async def ollama_models_install_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
+def ollama_models_install_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
@@ -146,11 +189,12 @@ async def ollama_models_install_route(payload: OllamaModelManageRequest) -> Olla
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to install Ollama model: {exc}") from exc
+        LOGGER.exception("Failed to install Ollama model")
+        raise HTTPException(status_code=500, detail="Failed to install Ollama model.") from exc
 
 
 @router.post("/models/remove", response_model=OllamaModelManageResponse)
-async def ollama_models_remove_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
+def ollama_models_remove_route(payload: OllamaModelManageRequest) -> OllamaModelManageResponse:
     if not ai_mode_enabled():
         raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
     try:
@@ -158,4 +202,5 @@ async def ollama_models_remove_route(payload: OllamaModelManageRequest) -> Ollam
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to remove Ollama model: {exc}") from exc
+        LOGGER.exception("Failed to remove Ollama model")
+        raise HTTPException(status_code=500, detail="Failed to remove Ollama model.") from exc

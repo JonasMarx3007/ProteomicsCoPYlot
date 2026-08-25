@@ -46,7 +46,7 @@ export default function IdTranslatorPage() {
     if (datasets?.phospho) options.push({ value: "phospho", label: "Phospho" });
     return options;
   }, [datasets]);
-  const columns = activeDataset?.columnNames ?? [];
+  const columns = useMemo(() => activeDataset?.columnNames ?? [], [activeDataset]);
   const databaseOptions = result?.availableDatabases ?? DEFAULT_DATABASES;
 
   useEffect(() => {

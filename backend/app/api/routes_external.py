@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import shutil
 import tempfile
 from pathlib import Path
@@ -12,28 +14,37 @@ from starlette.background import BackgroundTask
 
 from app.schemas.external import PeptideCollapseRequest, PeptideCollapseResponse
 from app.services.external_tools import run_peptide_collapse
+from app.services.upload_limits import ensure_upload_size
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/external", tags=["external"])
 
 
 @router.post("/peptide-collapse/run", response_model=PeptideCollapseResponse)
-async def run_peptide_collapse_route(payload: PeptideCollapseRequest) -> PeptideCollapseResponse:
+def run_peptide_collapse_route(payload: PeptideCollapseRequest) -> PeptideCollapseResponse:
     try:
         return run_peptide_collapse(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Peptide collapse failed: {e}") from e
+        LOGGER.exception("Peptide collapse failed")
+        raise HTTPException(status_code=500, detail="Peptide collapse failed.") from e
 
 
 @router.post("/peptide-collapse/upload")
-async def upload_peptide_collapse_route(
+def upload_peptide_collapse_route(
     file: UploadFile = File(...),
     cutoff: float = Form(0.0),
     collapseVersion: Literal["newest", "legacy"] = Form("newest"),
 ) -> FileResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Peptide dataset")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
     if cutoff < 0 or cutoff > 1:
         raise HTTPException(status_code=400, detail="Localization cutoff must be between 0 and 1.")
 
@@ -67,4 +78,5 @@ async def upload_peptide_collapse_route(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Peptide collapse failed: {e}") from e
+        LOGGER.exception("Peptide collapse failed")
+        raise HTTPException(status_code=500, detail="Peptide collapse failed.") from e

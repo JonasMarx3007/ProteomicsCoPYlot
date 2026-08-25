@@ -9,6 +9,7 @@ RestoreDatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
 
 class RestoreExportRequest(BaseModel):
     uiState: dict[str, Any] | None = None
+    portable: bool = False
 
 
 class RestoreMissingFile(BaseModel):
@@ -26,4 +27,3 @@ class RestoreImportResponse(BaseModel):
     missingFiles: list[RestoreMissingFile]
     restoredDatasets: list[str]
     restoredAnnotations: list[str]
-

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import io
 
 from fastapi import APIRouter, HTTPException
@@ -27,21 +29,25 @@ from app.services.data_tools import (
 )
 from app.services.functions import completeness_tables
 
+LOGGER = logging.getLogger(__name__)
+
+
 router = APIRouter(prefix="/api/data-tools", tags=["data-tools"])
 
 
 @router.post("/imputation/run", response_model=ImputationResultResponse)
-async def run_imputation_route(payload: ImputationRunRequest) -> ImputationResultResponse:
+def run_imputation_route(payload: ImputationRunRequest) -> ImputationResultResponse:
     try:
         return run_imputation(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Imputation failed: {e}") from e
+        LOGGER.exception("Imputation failed")
+        raise HTTPException(status_code=500, detail="Imputation failed.") from e
 
 
 @router.post("/imputation/download")
-async def download_imputation_route(payload: ImputationRunRequest) -> StreamingResponse:
+def download_imputation_route(payload: ImputationRunRequest) -> StreamingResponse:
     try:
         frame = imputed_dataframe(payload)
         csv_bytes = frame.to_csv(index=False).encode("utf-8")
@@ -64,11 +70,12 @@ async def download_imputation_route(payload: ImputationRunRequest) -> StreamingR
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Imputation download failed: {e}") from e
+        LOGGER.exception("Imputation download failed")
+        raise HTTPException(status_code=500, detail="Imputation download failed.") from e
 
 
 @router.get("/distribution/{kind}", response_model=DistributionSummaryResponse)
-async def distribution_route(
+def distribution_route(
     kind: AnnotationKind,
 ) -> DistributionSummaryResponse:
     try:
@@ -76,11 +83,12 @@ async def distribution_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Distribution analysis failed: {e}") from e
+        LOGGER.exception("Distribution analysis failed")
+        raise HTTPException(status_code=500, detail="Distribution analysis failed.") from e
 
 
 @router.get("/completeness/{kind}/tables", response_model=CompletenessTablesResponse)
-async def completeness_tables_route(
+def completeness_tables_route(
     kind: AnnotationKind,
     outlierThreshold: float = 50.0,
     includeId: bool = True,
@@ -94,21 +102,23 @@ async def completeness_tables_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Completeness analysis failed: {e}") from e
+        LOGGER.exception("Completeness analysis failed")
+        raise HTTPException(status_code=500, detail="Completeness analysis failed.") from e
 
 
 @router.post("/id-translation/run", response_model=IdTranslationResponse)
-async def id_translation_route(payload: IdTranslationRequest) -> IdTranslationResponse:
+def id_translation_route(payload: IdTranslationRequest) -> IdTranslationResponse:
     try:
         return run_id_translation(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ID translation failed: {e}") from e
+        LOGGER.exception("ID translation failed")
+        raise HTTPException(status_code=500, detail="ID translation failed.") from e
 
 
 @router.post("/id-translation/download")
-async def download_id_translation_route(payload: IdTranslationRequest) -> StreamingResponse:
+def download_id_translation_route(payload: IdTranslationRequest) -> StreamingResponse:
     try:
         filename, content, media_type = export_id_translation(payload)
         buffer = io.BytesIO(content)
@@ -120,21 +130,23 @@ async def download_id_translation_route(payload: IdTranslationRequest) -> Stream
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ID translation download failed: {e}") from e
+        LOGGER.exception("ID translation download failed")
+        raise HTTPException(status_code=500, detail="ID translation download failed.") from e
 
 
 @router.get("/condition-colors/{kind}", response_model=ConditionPaletteResponse)
-async def get_condition_colors_route(kind: AnnotationKind) -> ConditionPaletteResponse:
+def get_condition_colors_route(kind: AnnotationKind) -> ConditionPaletteResponse:
     try:
         return get_condition_palette_config(kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load condition colors: {e}") from e
+        LOGGER.exception("Failed to load condition colors")
+        raise HTTPException(status_code=500, detail="Failed to load condition colors.") from e
 
 
 @router.post("/condition-colors/{kind}", response_model=ConditionPaletteResponse)
-async def set_condition_colors_route(
+def set_condition_colors_route(
     kind: AnnotationKind,
     payload: ConditionPaletteUpdateRequest,
 ) -> ConditionPaletteResponse:
@@ -143,4 +155,5 @@ async def set_condition_colors_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save condition colors: {e}") from e
+        LOGGER.exception("Failed to save condition colors")
+        raise HTTPException(status_code=500, detail="Failed to save condition colors.") from e

@@ -194,16 +194,23 @@ def get_all_current_datasets(*, package_name: str | None = None):
     return state.copy()
 
 
-def clear_dataset(kind: DatasetKind, *, package_name: str | None = None) -> None:
-    resolved_package = _normalize_package_name(package_name)
-    state = _package_state(resolved_package)
-    state[kind] = None
-    invalidate_runtime_cache(f"dataset:{resolved_package}:{kind}:cleared")
-
-
 def reset_all_datasets(*, all_sessions: bool = False) -> None:
     if all_sessions:
         _DATASET_SESSIONS.clear()
     else:
-        _DATASET_SESSIONS[get_session_id()] = _new_session_state()
+        _DATASET_SESSIONS.pop(get_session_id(), None)
     invalidate_runtime_cache("dataset:reset-all")
+
+
+def snapshot_dataset_session_state() -> _DatasetSessionState | None:
+    """Detach-safe reference used before the session entry is atomically replaced."""
+    return _DATASET_SESSIONS.get(get_session_id())
+
+
+def restore_dataset_session_state(snapshot: _DatasetSessionState | None) -> None:
+    session_id = get_session_id()
+    if snapshot is None:
+        _DATASET_SESSIONS.pop(session_id, None)
+    else:
+        _DATASET_SESSIONS[session_id] = snapshot
+    invalidate_runtime_cache("dataset:transaction-restored")

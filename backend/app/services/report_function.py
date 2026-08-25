@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import json
 import html
 import os
@@ -48,7 +49,9 @@ from app.services.table_functions import (
     qc_cv_table,
 )
 
-VERSION = "Proteomics CoPYlot V1.0.0"
+LOGGER = logging.getLogger(__name__)
+
+VERSION = "Proteomics CoPYlot V1.0.1"
 
 def _report_comment_candidates() -> list[Path]:
     here = Path(__file__).resolve()
@@ -85,12 +88,15 @@ def _load_general_comments() -> dict[str, list[str]]:
         try:
             payload = json.loads(candidate.read_text(encoding="utf-8"))
         except Exception as exc:
+            LOGGER.error("Failed to parse %s: %s", candidate, exc)
             raise ValueError(
-                f"Failed to parse report_general_comments.json at {candidate}: {exc}"
+                "Failed to parse report_general_comments.json. "
+                "The file location and parse error are recorded in the server log."
             ) from exc
         if not isinstance(payload, dict):
+            LOGGER.error("Report comments file is not a JSON object: %s", candidate)
             raise ValueError(
-                f"Report comments file must contain a JSON object: {candidate}"
+                "report_general_comments.json must contain a JSON object."
             )
         normalized: dict[str, list[str]] = {}
         for key, value in payload.items():
@@ -105,8 +111,10 @@ def _load_general_comments() -> dict[str, list[str]]:
         return normalized
 
     searched = ", ".join(str(path) for path in _report_comment_candidates())
+    LOGGER.error("report_general_comments.json not found. Searched: %s", searched)
     raise ValueError(
-        f"Could not find report_general_comments.json. Checked: {searched}"
+        "Could not find report_general_comments.json. "
+        "The searched locations are recorded in the server log."
     )
 
 
@@ -179,7 +187,7 @@ def _safe_png(
         warnings.append(f"{fallback_title}: {exc}")
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            f"Could not render plot: {html.escape(str(exc))}"
+            "Could not render this plot. See the report warnings for details."
             "</div>"
         )
 
@@ -197,7 +205,7 @@ def _safe_plotly(
         warnings.append(f"{fallback_title}: {exc}")
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            f"Could not render interactive plot: {html.escape(str(exc))}"
+            "Could not render this interactive plot. See the report warnings for details."
             "</div>"
         )
 
@@ -215,7 +223,7 @@ def _safe_table_html(
         warnings.append(f"{fallback_title}: {exc}")
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            f"Could not render summary table: {html.escape(str(exc))}"
+            "Could not render this summary table. See the report warnings for details."
             "</div>"
         )
     if frame.empty:
@@ -398,6 +406,8 @@ def _imputation_settings_html(
     adjust_std = "n/a"
     down_shift = "n/a"
     width = "n/a"
+    seed = "n/a"
+    sample_wise = False
     imputation_mode = "none"
     annotation = get_annotation(kind)
     imputation = getattr(annotation, "imputation", None) if annotation is not None else None
@@ -408,6 +418,8 @@ def _imputation_settings_html(
             adjust_std = _format_imputation_value(getattr(imputation, "adjustStd", None))
             down_shift = _format_imputation_value(getattr(imputation, "downShift", None))
             width = _format_imputation_value(getattr(imputation, "width", None))
+            seed = _format_imputation_value(getattr(imputation, "seed", None), digits=0)
+            sample_wise = bool(getattr(imputation, "sampleWise", False))
     if imputation_mode == "none":
         return ""
 
@@ -434,7 +446,58 @@ def _imputation_settings_html(
             )
         ]
 
+    rendered.append(
+        f"The random draw used seed {seed} with "
+        f"{'sample-wise' if sample_wise else 'dataset-wide'} parameters; the generator was local to this analysis."
+    )
+
     return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in rendered)
+
+
+_NORMALIZATION_REPORT_LABELS = {
+    "none": "No normalization was applied.",
+    "median": "Samples were median-centred on the log2 values before filtering.",
+    "quantile": (
+        "Samples were quantile-normalized on the log2 values before filtering "
+        "(limma::normalizeQuantiles; Ritchie et al. 2015, doi:10.1093/nar/gkv007)."
+    ),
+    "vsn": (
+        "Variance-stabilizing normalization (VSN, Bioconductor vsn; Huber et al. 2002, "
+        "doi:10.1093/bioinformatics/18.suppl_1.S96) was applied before filtering, "
+        "replacing the plain log2 transform."
+    ),
+}
+
+# A volcano plot is uninterpretable without the test that produced it. These
+# labels name the design and the variance model, since the plot itself looks
+# identical whichever was used.
+_TEST_TYPE_REPORT_LABELS = {
+    "unpaired": "unpaired two-sample t-test (pooled variance)",
+    "unpaired_welch": "unpaired two-sample t-test (Welch, unequal variance)",
+    "unpaired_moderated": "unpaired moderated t-test (empirical Bayes variance shrinkage; Smyth 2004, doi:10.2202/1544-6115.1027)",
+    "paired": "paired t-test (pooled variance)",
+    "paired_moderated": "paired moderated t-test (empirical Bayes variance shrinkage; Smyth 2004, doi:10.2202/1544-6115.1027)",
+}
+
+
+def _volcano_statistics_html(entry: SummaryVolcanoEntry) -> str:
+    """State the test, thresholds and correction alongside every volcano."""
+    test_type = str(getattr(entry, "testType", "unpaired")).strip().lower()
+    test_label = _TEST_TYPE_REPORT_LABELS.get(test_type, test_type)
+    uncorrected = bool(getattr(entry, "useUncorrected", False))
+    correction = (
+        "uncorrected p-values (no multiple-testing correction)"
+        if uncorrected
+        else "Benjamini-Hochberg adjusted p-values (Benjamini & Hochberg 1995, "
+             "doi:10.1111/j.2517-6161.1995.tb02031.x)"
+    )
+    threshold_name = "p" if uncorrected else "adjusted p"
+    description = (
+        f"{test_label}; significance at {threshold_name} < "
+        f"{entry.pValueThreshold:g} and |log2 fold change| > {entry.log2fcThreshold:g}; "
+        f"{correction}."
+    )
+    return f"<p><strong>Statistics:</strong> {html.escape(description)}</p>"
 
 
 def _volcano_block_html(
@@ -451,6 +514,7 @@ def _volcano_block_html(
             f"<h3>Comparison {index}: {html.escape(entry.condition1)} vs {html.escape(entry.condition2)}</h3>"
         )
         parts.append(f"<p><strong>Data source:</strong> {html.escape(source_label)}</p>")
+        parts.append(_volcano_statistics_html(entry))
         parts.append(
             _safe_plotly(
                 renderer=lambda entry=entry, kind=kind: volcano_html(
@@ -539,6 +603,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             f" Filtered data contains {len(annotation.filtered_data)} out of "
             f"{len(annotation.source_data)} source rows."
         )
+        # Normalization is applied to the log2 matrix before filtering, so it
+        # belongs with the filtering description. Without it a median-centred,
+        # quantile-normalised or VSN-normalised analysis is indistinguishable
+        # from an unnormalised one in the report.
+        normalization = str(getattr(filter_config, "normalization", "none")).strip().lower()
+        description += f" {_NORMALIZATION_REPORT_LABELS.get(normalization, f'Normalization: {normalization}.')}"
         filter_paragraphs[kind] = (
             f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
         )
@@ -694,6 +764,9 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     add_line=_to_bool(peptide_rt.get("addLine"), False),
                     bins=_to_int(peptide_rt.get("bins"), 1000, minimum=10, maximum=2000),
                     header=_to_bool(peptide_rt.get("header"), True),
+                    sampling_seed=_to_int(
+                        peptide_rt.get("randomSeed"), 69, minimum=0, maximum=2_147_483_647
+                    ),
                     width_cm=_to_float(peptide_rt.get("widthCm"), 20.0, minimum=5.0, maximum=60.0),
                     height_cm=_to_float(peptide_rt.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
                     dpi=_to_int(peptide_rt.get("dpi"), 100, minimum=72, maximum=1200),
@@ -779,6 +852,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         summary=_to_bool(protein_coverage.get("summary"), False),
                         text=_to_bool(protein_coverage.get("text"), False),
                         text_size=_to_int(protein_coverage.get("textSize"), 9, minimum=6, maximum=24),
+                        random_seed=_to_int(
+                            protein_coverage.get("randomSeed"),
+                            187,
+                            minimum=0,
+                            maximum=2_147_483_647,
+                        ),
                         width_cm=_to_float(protein_coverage.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_coverage.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(protein_coverage.get("dpi"), 300, minimum=72, maximum=1200),
@@ -1116,7 +1195,16 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_key="Coverage(Number)Phos",
             content_html=(
                 _safe_png(
-                    renderer=lambda: phospho_coverage_png(mode="Normal", advanced=phospho_coverage_advanced),
+                    renderer=lambda: phospho_coverage_png(
+                        mode="Normal",
+                        random_seed=_to_int(
+                            phospho_coverage.get("randomSeed"),
+                            69,
+                            minimum=0,
+                            maximum=2_147_483_647,
+                        ),
+                        advanced=phospho_coverage_advanced,
+                    ),
                     fallback_title="Phospho Coverage Number Plot",
                     warnings=warnings,
                 )
@@ -1140,7 +1228,16 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Coverage(Quality)Phos",
             content_html=_safe_png(
-                renderer=lambda: phospho_coverage_png(mode="Summary", advanced=phospho_coverage_advanced),
+                renderer=lambda: phospho_coverage_png(
+                    mode="Summary",
+                    random_seed=_to_int(
+                        phospho_coverage.get("randomSeed"),
+                        69,
+                        minimum=0,
+                        maximum=2_147_483_647,
+                    ),
+                    advanced=phospho_coverage_advanced,
+                ),
                 fallback_title="Phospho Coverage Quality Plot",
                 warnings=warnings,
             ),

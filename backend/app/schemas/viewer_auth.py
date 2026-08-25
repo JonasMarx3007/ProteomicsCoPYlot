@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ViewerAuthStatusResponse(BaseModel):
@@ -11,11 +11,11 @@ class ViewerAuthStatusResponse(BaseModel):
 
 
 class ViewerAuthLoginRequest(BaseModel):
-    password: str
+    password: str = Field(min_length=1, max_length=4096)
 
 
 class ViewerAuthQrLoginRequest(BaseModel):
-    token: str
+    token: str = Field(min_length=1, max_length=4096)
 
 
 class ViewerAuthLoginResponse(BaseModel):

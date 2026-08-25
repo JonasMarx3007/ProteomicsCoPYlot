@@ -6,7 +6,11 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import extract_sample_id as _extract_id_or_number, inverse_log2_transform_data
+from app.services.functions import (
+    extract_sample_id as _extract_id_or_number,
+    inverse_log2_transform_data,
+    raw_zero_to_nan,
+)
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -45,9 +49,14 @@ def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
 def _coverage_frame(kind: AnnotationKind) -> pd.DataFrame:
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
-    if annotation is not None and not annotation.source_data.empty:
-        return annotation.source_data.copy()
-    return raw
+    frame = (
+        annotation.source_data.copy()
+        if annotation is not None and not annotation.source_data.empty
+        else raw
+    )
+    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
+        return frame
+    return raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
 
 
 def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
@@ -57,7 +66,9 @@ def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
         return annotation.log2_data.copy()
     if annotation is not None and not annotation.filtered_data.empty:
         return annotation.filtered_data.copy()
-    return raw
+    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
+        return raw
+    return raw_zero_to_nan(raw, _get_sample_columns(kind, raw))
 
 
 def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
@@ -65,16 +76,19 @@ def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
     annotation = get_annotation(kind)
     if annotation is None:
         return raw
-    sample_columns = [c for c in annotation.metadata["sample"].tolist() if c in annotation.log2_data.columns]
-    if not sample_columns:
+    if bool(getattr(annotation, "is_log2_transformed", False)):
+        transformed = annotation.log2_data if not annotation.log2_data.empty else raw
+        sample_columns = [
+            c for c in annotation.metadata["sample"].tolist() if c in transformed.columns
+        ]
+        if sample_columns:
+            return inverse_log2_transform_data(transformed, sample_columns)
         return raw
-    if annotation.is_log2_transformed:
-        return inverse_log2_transform_data(annotation.log2_data, sample_columns)
     return annotation.source_data.copy()
 
 
 def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
-    data = data.replace(0, np.nan).copy()
+    data = data.copy()
     meta = _grouped_meta_order(meta.copy())
     meta["sample"] = meta["sample"].astype(str)
     meta["new_sample"] = meta.groupby("condition").cumcount() + 1
@@ -125,7 +139,7 @@ def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = Fal
 
 
 def prepare_coverage_summary_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
-    data = data.replace(0, np.nan).copy()
+    data = data.copy()
     meta = _grouped_meta_order(meta.copy())
     meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
@@ -313,8 +327,9 @@ def qc_boxplot_table(kind: AnnotationKind, mode: str = "Mean") -> pd.DataFrame:
 
 
 def qc_cv_table(kind: AnnotationKind) -> pd.DataFrame:
-    frame = _original_scale_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
+    frame = raw_zero_to_nan(frame, sample_columns)
     meta = _metadata_for_kind(kind, frame, sample_columns)
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     return prepare_cov_df(numeric, meta)

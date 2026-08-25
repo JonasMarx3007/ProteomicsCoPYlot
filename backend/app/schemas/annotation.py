@@ -8,9 +8,10 @@ AnnotationKind = Literal["protein", "phospho", "phosprot"]
 MetadataAnnotationKind = Literal["protein", "phospho"]
 FilterMethod = Literal["at_least_n", "percentage"]
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
+NormalizationMethod = Literal["none", "median", "quantile", "vsn"]
 MetadataSource = Literal["manual", "auto", "uploaded", "shared_phospho"]
 PhosprotAggregationMode = Literal[
-    "sum_mean_impute",
+    "robust_site_median",
     "sum_propagate_na",
     "sum_ignore_na",
     "mean",
@@ -23,11 +24,32 @@ class ConditionAssignment(BaseModel):
     columns: list[str] = Field(default_factory=list)
 
 
+class SamplePairAssignment(BaseModel):
+    condition1Sample: str = Field(min_length=1)
+    condition2Sample: str = Field(min_length=1)
+
+
+class PairingUpdateRequest(BaseModel):
+    kind: AnnotationKind
+    condition1: str = Field(min_length=1)
+    condition2: str = Field(min_length=1)
+    pairs: list[SamplePairAssignment] = Field(min_length=2)
+
+
 class AnnotationFilterConfig(BaseModel):
     method: FilterMethod = "at_least_n"
     minPresent: int = Field(default=0, ge=0)
     minPercentage: float = Field(default=70.0, ge=0.0, le=100.0)
     mode: FilterMode = "per_group"
+    # Applied to protein/phosphosite log2 matrices before filtering. Always
+    # global, never per condition. Phosphoprotein annotations are forced to
+    # "none" because their upstream phosphosite matrix was already normalized.
+    normalization: NormalizationMethod = "none"
+
+
+def phosprot_filter_config(config: AnnotationFilterConfig) -> AnnotationFilterConfig:
+    """Retain inherited filtering while preventing post-collapse normalization."""
+    return config.model_copy(update={"normalization": "none"})
 
 
 class AnnotationGenerateRequest(BaseModel):
@@ -55,7 +77,7 @@ class AnnotationImputationInfo(BaseModel):
     adjustStd: float | None = None
     downShift: float | None = None
     width: float | None = None
-    seed: int | None = None
+    seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
     sampleWise: bool | None = None
     sampleCount: int | None = None
     missingBefore: int | None = None
@@ -95,5 +117,6 @@ class MetadataUploadResponse(BaseModel):
 
 
 class PhosprotAggregateRequest(BaseModel):
-    mode: PhosprotAggregationMode = "sum_mean_impute"
+    # Must match the UI default in frontend/src/features/metadata/AnnotationPage.tsx.
+    mode: PhosprotAggregationMode = "robust_site_median"
     source: PhosprotAggregationSource = "non_imputed"

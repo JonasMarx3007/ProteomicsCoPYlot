@@ -24,7 +24,7 @@ _MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
     "completeness.heatmap": ["completeness_missing_value_heatmap"],
     "completeness.tables": ["completeness_missing_value_tables"],
     "stats.volcano": ["stats_volcano_plot"],
-    "stats.gsea": ["stats_gsea_plot"],
+    "stats.ora": ["stats_ora_plot"],
     "stats.pathwayHeatmap": ["stats_pathway_heatmap_plot"],
     "singleProtein.boxplot": ["single_protein_boxplot"],
     "singleProtein.lineplot": ["single_protein_lineplot"],
@@ -166,14 +166,6 @@ def _readable_context_line(line: str) -> str:
     if not fields:
         return f"{label}."
     return f"{label}: {'; '.join(fields)}."
-
-
-def _readable_context_text(text: str) -> list[str]:
-    return [
-        readable
-        for readable in (_readable_context_line(line) for line in str(text or "").splitlines())
-        if readable
-    ]
 
 
 def _normalize_workflow_hint(workflow_hint: str | None) -> str | None:

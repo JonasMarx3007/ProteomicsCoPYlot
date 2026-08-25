@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
@@ -7,15 +10,17 @@ from app.schemas.annotation import (
     AnnotationFilterConfig,
     PhosprotAggregationMode,
     PhosprotAggregationSource,
+    phosprot_filter_config,
 )
 from app.services.annotation_store import get_annotation, save_annotation
 from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
+    analysis_data_source,
     filter_data,
-    impute_values_with_diagnostics,
     inverse_log2_transform_data,
     log2_transform_data,
+    raw_zero_to_nan,
     use_existing_log2_data,
 )
 
@@ -26,6 +31,8 @@ _REQUIRED_PHOSPHO_COLUMNS = [
     "Gene_group",
     "PTM_Collapse_key",
 ]
+
+ROBUST_SITE_MIN_FRACTION = 0.5
 
 
 def _collapse_strings(series: pd.Series) -> str:
@@ -45,7 +52,7 @@ def _sum_propagate_nan(series: pd.Series) -> float:
 
 def _sum_ignore_nan(series: pd.Series) -> float:
     values = pd.to_numeric(series, errors="coerce")
-    return float(values.fillna(0).sum())
+    return float(values.sum(min_count=1))
 
 
 def _mean(series: pd.Series) -> float:
@@ -53,21 +60,92 @@ def _mean(series: pd.Series) -> float:
     return float(values.mean())
 
 
-def _replace_zero_sums_with_nan(frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    out = frame.copy()
-    for column in sample_columns:
-        if column not in out.columns:
-            continue
-        values = pd.to_numeric(out[column], errors="coerce")
-        out[column] = values.mask(np.isclose(values.fillna(np.nan), 0.0), np.nan)
-    return out
+def _clean_numeric_sample_columns(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+) -> pd.DataFrame:
+    """Copy a phosphosite frame and retain only finite numeric sample values.
+
+    Annotation columns and measured zeroes are preserved. Non-numeric values,
+    positive/negative infinity, and existing missing values become ``NaN``.
+    Keeping this boundary shared prevents aggregation and coverage diagnostics
+    from silently using different definitions of an observed phosphosite.
+    """
+    cleaned = data.copy()
+    cleaned[sample_columns] = (
+        cleaned[sample_columns]
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    return cleaned
+
+
+def _site_diagnostics(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.DataFrame]:
+    """Return fixed eligible sites plus explicit per-sample coverage diagnostics."""
+    numeric = _clean_numeric_sample_columns(data, sample_columns)[sample_columns]
+    eligible_mask = numeric.notna().any(axis=1)
+    eligible = data.loc[eligible_mask].copy()
+    groups = data["Protein_group"].astype(str)
+    group_order = groups.drop_duplicates().tolist()
+
+    total = groups.value_counts(sort=False).reindex(group_order, fill_value=0).astype(int)
+    eligible_groups = groups.loc[eligible_mask]
+    eligible_count = (
+        eligible_groups.value_counts(sort=False).reindex(group_order, fill_value=0).astype(int)
+    )
+    observed = (
+        numeric.loc[eligible_mask]
+        .notna()
+        .astype(int)
+        .assign(Protein_group=eligible_groups.to_numpy())
+        .groupby("Protein_group", sort=False)[sample_columns]
+        .sum()
+        .reindex(group_order, fill_value=0)
+        .astype(int)
+    )
+
+    diagnostics = pd.DataFrame(
+        {
+            "Protein_group": group_order,
+            "site_num": total.to_numpy(),
+            "site_num_eligible": eligible_count.to_numpy(),
+        }
+    )
+    denominator = eligible_count.replace(0, np.nan).astype(float)
+    fractions = observed.div(denominator, axis=0)
+    diagnostics["site_observed_min"] = observed.min(axis=1).to_numpy(dtype=int)
+    diagnostics["site_observed_mean"] = observed.mean(axis=1).to_numpy(dtype=float)
+    diagnostics["site_coverage_min"] = fractions.min(axis=1).to_numpy(dtype=float)
+    diagnostics["site_coverage_mean"] = fractions.mean(axis=1).to_numpy(dtype=float)
+    complete = observed.eq(eligible_count, axis=0)
+    complete.loc[eligible_count == 0, :] = False
+    diagnostics["site_complete_samples"] = complete.sum(axis=1).to_numpy(dtype=int)
+    for sample in sample_columns:
+        diagnostics[f"site_observed__{sample}"] = observed[sample].to_numpy(dtype=int)
+        diagnostics[f"site_coverage__{sample}"] = fractions[sample].to_numpy(dtype=float)
+    return diagnostics, eligible_count, eligible, observed
 
 
 def transform_phosprot(
     data: pd.DataFrame,
     metadata: pd.DataFrame,
-    mode: PhosprotAggregationMode = "sum_mean_impute",
+    mode: PhosprotAggregationMode = "robust_site_median",
+    data_scale: Literal["linear", "log2"] = "linear",
+    coverage_data: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Collapse phosphosites to one phosphoprotein value per sample.
+
+    ``robust_site_median`` centres every site across samples on log2 scale and
+    takes the within-protein median when at least half of the fixed eligible
+    site set is observed. The other modes aggregate original-scale values.
+    ``data_scale`` states the supplied measurement scale so callers never rely
+    on magnitude-based scale guessing. ``coverage_data`` may supply the aligned
+    pre-imputation matrix so diagnostics and coverage thresholds describe real
+    observations rather than filled values.
+    """
     missing = [column for column in _REQUIRED_PHOSPHO_COLUMNS if column not in data.columns]
     if missing:
         raise ValueError(f"Missing required columns in phospho dataset: {missing}")
@@ -76,11 +154,39 @@ def transform_phosprot(
         raise ValueError("Phospho metadata must contain 'sample' and 'condition' columns.")
 
     sample_columns = [str(value) for value in metadata["sample"].tolist()]
+    if not sample_columns:
+        raise ValueError("Phospho metadata must contain at least one sample.")
+    duplicate_samples = sorted(
+        {sample for sample in sample_columns if sample_columns.count(sample) > 1}
+    )
+    if duplicate_samples:
+        raise ValueError(f"Phospho metadata contains duplicate samples: {duplicate_samples}")
     missing_samples = [sample for sample in sample_columns if sample not in data.columns]
     if missing_samples:
         raise ValueError(
             f"Phospho metadata contains sample columns not present in phospho data: {missing_samples}"
         )
+
+    resolved_scale = str(data_scale).strip().lower()
+    if resolved_scale not in {"linear", "log2"}:
+        raise ValueError("data_scale must be 'linear' or 'log2'.")
+
+    data = data.copy()
+    data["Protein_group"] = data["Protein_group"].astype(str)
+    if coverage_data is not None:
+        coverage_data = coverage_data.copy()
+        if not coverage_data.index.equals(data.index):
+            raise ValueError("coverage_data must have exactly the same row index as data.")
+        missing_coverage = [
+            column
+            for column in ["Protein_group", *sample_columns]
+            if column not in coverage_data.columns
+        ]
+        if missing_coverage:
+            raise ValueError(f"coverage_data is missing required columns: {missing_coverage}")
+        coverage_data["Protein_group"] = coverage_data["Protein_group"].astype(str)
+        if not coverage_data["Protein_group"].equals(data["Protein_group"]):
+            raise ValueError("coverage_data Protein_group values must align exactly with data.")
 
     gene_map = data.groupby("Protein_group")["Gene_group"].nunique(dropna=True)
     invalid = gene_map[gene_map > 1]
@@ -90,48 +196,86 @@ def transform_phosprot(
             f"Violations: {list(invalid.index)}"
         )
 
-    if mode == "sum_mean_impute":
-        frame = data.copy()
-        for condition in metadata["condition"].dropna().astype(str).unique().tolist():
-            condition_samples = metadata.loc[
-                metadata["condition"].astype(str) == condition, "sample"
-            ].astype(str).tolist()
-            condition_samples = [sample for sample in condition_samples if sample in sample_columns]
-            if not condition_samples:
-                continue
-            means = frame[condition_samples].apply(pd.to_numeric, errors="coerce").mean()
-            frame[condition_samples] = frame[condition_samples].apply(
-                pd.to_numeric, errors="coerce"
-            ).fillna(means)
-        source = frame
-        summarizer = lambda values: pd.to_numeric(values, errors="coerce").sum()
-    elif mode == "sum_propagate_na":
-        source = data
-        summarizer = _sum_propagate_nan
-    elif mode == "sum_ignore_na":
-        source = data
-        summarizer = _sum_ignore_nan
-    elif mode == "mean":
-        source = data
-        summarizer = _mean
+    if resolved_scale == "log2":
+        log2_source = _clean_numeric_sample_columns(
+            use_existing_log2_data(data, sample_columns),
+            sample_columns,
+        )
+        linear_source = _clean_numeric_sample_columns(
+            inverse_log2_transform_data(log2_source, sample_columns),
+            sample_columns,
+        )
     else:
-        raise ValueError(
-            "mode must be one of: sum_mean_impute, sum_propagate_na, sum_ignore_na, mean."
+        linear_source = _clean_numeric_sample_columns(
+            raw_zero_to_nan(data, sample_columns),
+            sample_columns,
+        )
+        log2_source = _clean_numeric_sample_columns(
+            log2_transform_data(linear_source, sample_columns),
+            sample_columns,
         )
 
-    aggregation = {
+    if coverage_data is None:
+        diagnostic_source = log2_source
+    elif resolved_scale == "log2":
+        diagnostic_source = use_existing_log2_data(coverage_data, sample_columns)
+    else:
+        diagnostic_source = log2_transform_data(
+            raw_zero_to_nan(coverage_data, sample_columns),
+            sample_columns,
+        )
+    diagnostic_source = _clean_numeric_sample_columns(diagnostic_source, sample_columns)
+    diagnostics, eligible_count, eligible_coverage, observed = _site_diagnostics(
+        diagnostic_source,
+        sample_columns,
+    )
+    eligible_index = eligible_coverage.index
+    eligible_log2 = log2_source.loc[eligible_index].copy()
+
+    annotation_aggregation = {
         "Gene_group": "first",
         "PTM_Collapse_key": _collapse_strings,
         "PTM_localization": _concat_strings,
         "UPD_seq": _collapse_strings,
-        **{column: summarizer for column in sample_columns},
     }
-    phosprot = source.groupby("Protein_group", as_index=False).agg(aggregation)
-    if mode in {"sum_mean_impute", "sum_propagate_na", "sum_ignore_na"}:
-        phosprot = _replace_zero_sums_with_nan(phosprot, sample_columns)
+    annotations = data.groupby("Protein_group", as_index=False).agg(annotation_aggregation)
 
-    site_counts = source.groupby("Protein_group").size().reset_index(name="site_num")
-    phosprot = phosprot.merge(site_counts, on="Protein_group", how="left")
+    if mode == "robust_site_median":
+        numeric = eligible_log2[sample_columns].apply(pd.to_numeric, errors="coerce")
+        site_centres = numeric.median(axis=1, skipna=True)
+        centred = numeric.sub(site_centres, axis=0)
+        centred["Protein_group"] = eligible_log2["Protein_group"].astype(str).to_numpy()
+        values = (
+            centred.groupby("Protein_group", sort=False)[sample_columns]
+            .median()
+            .reindex(diagnostics["Protein_group"].astype(str).tolist())
+        )
+        observed = observed.reindex(values.index, fill_value=0)
+        required = eligible_count.reindex(values.index, fill_value=0).apply(
+            lambda count: max(1, int(math.ceil(float(count) * ROBUST_SITE_MIN_FRACTION)))
+        )
+        for sample in sample_columns:
+            values.loc[observed[sample] < required, sample] = np.nan
+        values = values.reset_index()
+    else:
+        source = linear_source.loc[eligible_index].copy()
+        if mode == "sum_propagate_na":
+            summarizer = _sum_propagate_nan
+        elif mode == "sum_ignore_na":
+            summarizer = _sum_ignore_nan
+        elif mode == "mean":
+            summarizer = _mean
+        else:
+            raise ValueError(
+                "mode must be one of: robust_site_median, sum_propagate_na, "
+                "sum_ignore_na, mean."
+            )
+        values = source.groupby("Protein_group", as_index=False).agg(
+            {column: summarizer for column in sample_columns}
+        )
+
+    phosprot = annotations.merge(values, on="Protein_group", how="left")
+    phosprot = phosprot.merge(diagnostics, on="Protein_group", how="left")
     phosprot = phosprot.rename(
         columns={
             "PTM_Collapse_key": "PTM_Collapse_keys",
@@ -139,11 +283,23 @@ def transform_phosprot(
         }
     )
 
-    columns = phosprot.columns.tolist()
-    columns.remove("site_num")
-    insert_position = columns.index("Gene_group") + 1
-    columns.insert(insert_position, "site_num")
-    return phosprot[columns]
+    diagnostic_columns = [
+        column
+        for column in phosprot.columns
+        if column.startswith("site_") and column not in {"site_num", "site_num_eligible"}
+    ]
+    ordered = [
+        "Phosphoprotein",
+        "Gene_group",
+        "site_num",
+        "site_num_eligible",
+        "PTM_Collapse_keys",
+        "PTM_localization",
+        "UPD_seq",
+        *sample_columns,
+        *diagnostic_columns,
+    ]
+    return phosprot[[column for column in ordered if column in phosprot.columns]]
 
 
 def _shared_phospho_annotation():
@@ -163,6 +319,8 @@ def _store_phosprot_annotation(
     frame: pd.DataFrame,
     is_log2_transformed: bool | None,
     warning_prefix: str,
+    upstream_normalization: str | None = None,
+    aggregation: str | None = None,
 ) -> object:
     phospho_annotation = _shared_phospho_annotation()
     metadata = phospho_annotation.metadata.copy()
@@ -179,12 +337,16 @@ def _store_phosprot_annotation(
         is_log2_transformed,
     )
 
+    inherited_filter_config = _shared_filter_config(phospho_annotation)
+    # Phosphoprotein values are either collapsed from an already-normalized
+    # phosphosite matrix or uploaded on their intended analysis scale. Never
+    # normalize them again after collapse.
+    filter_config = phosprot_filter_config(inherited_filter_config)
     if resolved_log2:
         log2_data = use_existing_log2_data(frame, sample_columns)
     else:
         log2_data = log2_transform_data(frame, sample_columns)
 
-    filter_config = _shared_filter_config(phospho_annotation)
     filtered_data = filter_data(
         log2_data,
         metadata,
@@ -199,6 +361,17 @@ def _store_phosprot_annotation(
     ]
     if log2_warning:
         warnings.append(log2_warning)
+    if upstream_normalization is None:
+        warnings.append(
+            "No phosphoprotein-level normalization was applied. The uploaded "
+            "phosphoprotein values were retained on their supplied normalization scale."
+        )
+    else:
+        normalization = str(upstream_normalization or "none").strip().lower()
+        warnings.append(
+            f"Phosphosite-level normalization was '{normalization}' before collapse. "
+            "No phosphoprotein-level normalization was applied after collapse."
+        )
     return save_annotation(
         kind="phosprot",
         source_data=frame,
@@ -211,73 +384,8 @@ def _store_phosprot_annotation(
         auto_detected=False,
         warnings=warnings,
         log2_auto_detected=log2_auto_detected,
+        phosprot_aggregation=aggregation,
     )
-
-
-def _impute_phospho_source(
-    source: pd.DataFrame,
-    *,
-    sample_columns: list[str],
-    phospho_annotation,
-) -> tuple[pd.DataFrame, str]:
-    imputation = getattr(phospho_annotation, "imputation", None)
-    if imputation is None or str(getattr(imputation, "mode", "none")) == "none":
-        raise ValueError(
-            "Imputed phospho source is available only after phospho imputation has been run or configured."
-        )
-
-    q_value = 0.01
-    adjust_std = 0.3
-    seed = 1337
-    sample_wise = False
-    config_label = "default settings"
-    q_value = (
-        float(imputation.qValue)
-        if getattr(imputation, "qValue", None) is not None
-        else q_value
-    )
-    adjust_std = (
-        float(imputation.adjustStd)
-        if getattr(imputation, "adjustStd", None) is not None
-        else adjust_std
-    )
-    seed = (
-        int(imputation.seed)
-        if getattr(imputation, "seed", None) is not None
-        else seed
-    )
-    sample_wise = (
-        bool(imputation.sampleWise)
-        if getattr(imputation, "sampleWise", None) is not None
-        else sample_wise
-    )
-    method = str(getattr(imputation, "mode", "quantile")).strip().lower()
-    if method not in {"quantile", "numerical"}:
-        method = "quantile"
-    down_shift = (
-        float(imputation.downShift)
-        if getattr(imputation, "downShift", None) is not None
-        else 1.8
-    )
-    width = (
-        float(imputation.width)
-        if getattr(imputation, "width", None) is not None
-        else 0.3
-    )
-    config_label = f"stored {method} imputation settings"
-
-    diagnostics = impute_values_with_diagnostics(
-        data=source,
-        sample_columns=sample_columns,
-        q=q_value,
-        adj_std=adjust_std,
-        seed=seed,
-        sample_wise=sample_wise,
-        method=method,
-        down_shift=down_shift,
-        width=width,
-    )
-    return diagnostics.imputed_data, config_label
 
 
 def aggregate_from_phospho(
@@ -285,34 +393,91 @@ def aggregate_from_phospho(
     source: PhosprotAggregationSource = "non_imputed",
 ) -> object:
     phospho_annotation = _shared_phospho_annotation()
-    source_data = phospho_annotation.source_data.copy()
     sample_columns = phospho_annotation.metadata["sample"].astype(str).tolist()
-
-    if phospho_annotation.is_log2_transformed:
-        source_data = inverse_log2_transform_data(source_data, sample_columns)
-
-    source_label = "non-imputed phospho data"
-    if source == "imputed":
-        source_data, imputation_label = _impute_phospho_source(
-            source_data,
-            sample_columns=sample_columns,
-            phospho_annotation=phospho_annotation,
+    filtered_source = getattr(phospho_annotation, "filtered_data", None)
+    if filtered_source is not None and not filtered_source.empty:
+        log2_source = filtered_source.copy()
+        source_label = "normalized, filtered, non-imputed phospho data"
+    else:
+        log2_source = phospho_annotation.log2_data.copy()
+        source_label = "normalized, non-imputed phospho data"
+    missing_samples = [sample for sample in sample_columns if sample not in log2_source.columns]
+    if missing_samples:
+        raise ValueError(
+            "Normalized phospho annotation is missing sample columns required for "
+            f"phosphoprotein aggregation: {missing_samples}"
         )
-        source_label = f"imputed phospho data ({imputation_label})"
+    upstream_normalization = _shared_filter_config(phospho_annotation).normalization
 
-    phosprot = transform_phosprot(source_data, phospho_annotation.metadata, mode=mode)
+    coverage_source = log2_source.copy()
+    if source == "imputed":
+        _, log2_source, _, _ = analysis_data_source(
+            "phospho",
+            data_source="imputed",
+        )
+        source_label = "stored, verified imputed phospho data"
+
+    phosprot = transform_phosprot(
+        log2_source,
+        phospho_annotation.metadata,
+        mode=mode,
+        data_scale="log2",
+        coverage_data=coverage_source,
+    )
+    result_is_log2 = mode == "robust_site_median"
+
+    # Aggregated values are log2 transformed downstream, where a non-positive
+    # value becomes NaN with only a RuntimeWarning that no user ever sees. Make
+    # it explicit and counted instead of silent.
+    non_positive_warning = ""
+    aggregated_columns = [column for column in sample_columns if column in phosprot.columns]
+    if aggregated_columns and not result_is_log2:
+        numeric = phosprot[aggregated_columns].apply(pd.to_numeric, errors="coerce")
+        non_positive = int((numeric <= 0).sum().sum())
+        if non_positive:
+            for column in aggregated_columns:
+                values = pd.to_numeric(phosprot[column], errors="coerce")
+                phosprot[column] = values.mask(values <= 0)
+            non_positive_warning = (
+                f" {non_positive} aggregated value(s) were not positive and were set to"
+                " missing because they cannot be log2 transformed. This points at a scale or"
+                " imputation problem in the phosphosite input rather than at the aggregation."
+            )
+
     save_table_dataset(
         filename=f"phosprot_aggregated_{source}_{mode}.csv",
         kind="phosprot",
         frame=phosprot,
     )
+    method_note = ""
+    if mode == "robust_site_median":
+        method_note = (
+            " Sites were centred by their across-sample median on log2 scale, then"
+            " collapsed by the within-protein median. A sample value requires at least"
+            f" {ROBUST_SITE_MIN_FRACTION:.0%} of the fixed eligible site set."
+        )
+    elif mode in {"sum_ignore_na", "mean"}:
+        method_note = (
+            f" Aggregation mode '{mode}' is sensitive to phosphosite coverage: protein values"
+            " can change when the observed site set changes. Inspect the exported"
+            " site_observed and site_coverage columns before interpreting results."
+        )
+    elif mode == "sum_propagate_na":
+        method_note = (
+            " A fixed eligible site set was used; a sample value is missing whenever any"
+            " eligible site is missing. Per-sample observed-site coverage is included in"
+            " the output."
+        )
     return _store_phosprot_annotation(
         frame=phosprot,
-        is_log2_transformed=False,
+        is_log2_transformed=result_is_log2,
         warning_prefix=(
             "Phosphoprotein dataset was aggregated from "
             f"{source_label} using aggregation mode '{mode}'."
+            f"{non_positive_warning}{method_note}"
         ),
+        upstream_normalization=upstream_normalization,
+        aggregation=str(mode),
     )
 
 
@@ -333,4 +498,5 @@ def upload_phosprot(
         frame=frame,
         is_log2_transformed=is_log2_transformed,
         warning_prefix=warning_prefix,
+        aggregation="uploaded",
     )

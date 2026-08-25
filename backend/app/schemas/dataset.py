@@ -3,6 +3,13 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
+CompletenessDatasetKind = Literal[
+    "protein",
+    "phospho",
+    "phosprot",
+    "peptide",
+    "precursor",
+]
 TableDatasetKind = Literal["protein", "phospho", "phosprot"]
 
 

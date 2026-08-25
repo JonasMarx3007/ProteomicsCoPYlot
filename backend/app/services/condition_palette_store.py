@@ -117,5 +117,19 @@ def reset_condition_palettes(*, all_sessions: bool = False) -> None:
     if all_sessions:
         _PALETTE_SESSIONS.clear()
     else:
-        _PALETTE_SESSIONS[get_session_id()] = _empty_palette_state()
+        _PALETTE_SESSIONS.pop(get_session_id(), None)
     invalidate_runtime_cache("palette:reset-all")
+
+
+def snapshot_condition_palette_session_state():
+    """Detach-safe reference used before the session entry is atomically replaced."""
+    return _PALETTE_SESSIONS.get(get_session_id())
+
+
+def restore_condition_palette_session_state(snapshot) -> None:
+    session_id = get_session_id()
+    if snapshot is None:
+        _PALETTE_SESSIONS.pop(session_id, None)
+    else:
+        _PALETTE_SESSIONS[session_id] = snapshot
+    invalidate_runtime_cache("palette:transaction-restored")

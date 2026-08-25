@@ -1,9 +1,13 @@
 import os
 import sys
 import io
+import ipaddress
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from anyio import to_thread
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -33,17 +37,45 @@ from app.services.session_context import (
     session_isolation_enabled,
     set_session_id,
 )
-from app.services.tool_access import tool_access_enabled, tool_session_authenticated
+from app.services.session_cleanup import expire_idle_session, touch_and_cleanup_sessions
+from app.services.session_operation_gate import session_operation_scope
+from app.services.temp_cleanup import cleanup_managed_temp_files
+from app.services.request_security import client_address
+from app.services.tool_access import (
+    tool_access_enabled,
+    tool_session_authenticated,
+    validate_tool_access_configuration,
+)
 from app.services.viewer_bootstrap import (
     bootstrap_current_viewer_session,
     bootstrap_viewer_mode_if_enabled,
     viewer_mode_enabled,
 )
+
 from app.services.viewer_portal import (
     ensure_viewer_session_bootstrapped,
+    validate_viewer_portal_configuration,
     viewer_portal_enabled,
     viewer_session_authenticated,
 )
+from app.services.workload_manager import (
+    HeavyWorkloadBusyError,
+    heavy_workload_scope,
+    is_heavy_request,
+    sync_thread_worker_limit,
+)
+from app.services.plot_limits import PlotSizeValidationError, validate_plot_request
+
+LOGGER = logging.getLogger(__name__)
+_DEFAULT_PLOT_CONVERSION_MAX_BYTES = 128 * 1024 * 1024
+
+
+def _plot_conversion_max_bytes() -> int:
+    raw = str(os.getenv("COPYLOT_PLOT_CONVERSION_MAX_BYTES", "")).strip()
+    try:
+        return max(1, int(raw)) if raw else _DEFAULT_PLOT_CONVERSION_MAX_BYTES
+    except ValueError:
+        return _DEFAULT_PLOT_CONVERSION_MAX_BYTES
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -51,14 +83,164 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 _AUTH_PROTECTED_RUNTIME = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED") or _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED")
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    configuration_error = _authentication_configuration_error()
+    if configuration_error:
+        raise RuntimeError(configuration_error)
+    cleanup_managed_temp_files()
+    to_thread.current_default_thread_limiter().total_tokens = sync_thread_worker_limit()
+    bootstrap_viewer_mode_if_enabled()
+    yield
+
+
 app = FastAPI(
     title="Proteomics CoPYlot API",
     docs_url=None if _AUTH_PROTECTED_RUNTIME else "/docs",
     redoc_url=None if _AUTH_PROTECTED_RUNTIME else "/redoc",
     openapi_url=None if _AUTH_PROTECTED_RUNTIME else "/openapi.json",
+    lifespan=_lifespan,
 )
 
 _SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf"}
+_VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
+    ("POST", "/api/datasets/upload"),
+    ("POST", "/api/datasets/table-path"),
+    ("POST", "/api/datasets/peptide-path"),
+    ("POST", "/api/datasets/peptide-file"),
+    ("POST", "/api/datasets/packages/create"),
+    ("POST", "/api/datasets/packages/rename"),
+    ("POST", "/api/datasets/metadata/profiles/create"),
+    ("POST", "/api/datasets/metadata/profiles/rename"),
+    ("POST", "/api/annotations/metadata/upload"),
+    ("POST", "/api/annotations/generate"),
+    ("PUT", "/api/annotations/pairing"),
+    ("POST", "/api/annotations/phosprot/aggregate"),
+    ("POST", "/api/annotations/phosprot/upload"),
+    ("POST", "/api/peptide/metadata/upload"),
+    ("POST", "/api/peptide/metadata/generate"),
+    ("POST", "/api/data-tools/imputation/run"),
+    ("POST", "/api/restore/import"),
+    ("POST", "/api/chat/models/install"),
+    ("POST", "/api/chat/models/remove"),
+}
+_VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("DELETE", "/api/annotations/"),
+    ("DELETE", "/api/peptide/metadata/"),
+    ("POST", "/api/external/"),
+)
+_REMOTE_LOCAL_PATH_EXACT: set[tuple[str, str]] = {
+    ("POST", "/api/datasets/table-path"),
+    ("POST", "/api/datasets/peptide-path"),
+    ("POST", "/api/external/peptide-collapse/run"),
+    ("POST", "/api/restore/import"),
+}
+
+
+def _authentication_configuration_error(*, validate_credentials: bool = True) -> str | None:
+    tool_auth = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED")
+    viewer_auth = _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED")
+    if tool_auth and viewer_auth:
+        return "Tool access and viewer portal authentication cannot be enabled in the same process."
+    if (tool_auth or viewer_auth) and not session_isolation_enabled():
+        return (
+            "Password-protected deployments require COPYLOT_SESSION_ISOLATION=1. "
+            "The API is unavailable until the deployment is configured safely."
+        )
+    if viewer_auth and not viewer_mode_enabled():
+        return (
+            "COPYLOT_VIEWER_PORTAL_ENABLED=1 requires COPYLOT_VIEWER_MODE=1. "
+            "The API is unavailable until the deployment is configured safely."
+        )
+    if validate_credentials:
+        try:
+            if tool_auth:
+                validate_tool_access_configuration()
+            elif viewer_auth:
+                validate_viewer_portal_configuration()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            return f"Invalid authentication configuration: {exc}"
+    return None
+
+
+def _auth_route(path: str) -> bool:
+    return (
+        path == "/api/tool/auth"
+        or path.startswith("/api/tool/auth/")
+        or path == "/api/viewer/auth"
+        or path.startswith("/api/viewer/auth/")
+    )
+
+
+def _viewer_request_denied(request: Request) -> bool:
+    method = request.method.upper()
+    path = request.url.path
+    if (method, path) in _VIEWER_DENIED_EXACT:
+        return True
+    return any(
+        method == denied_method and path.startswith(prefix)
+        for denied_method, prefix in _VIEWER_DENIED_PREFIXES
+    )
+
+
+def _remote_local_path_request_denied(request: Request) -> bool:
+    operation = (request.method.upper(), request.url.path)
+    if operation not in _REMOTE_LOCAL_PATH_EXACT:
+        return False
+
+    address_text = client_address(request).strip()
+    try:
+        address = ipaddress.ip_address(address_text)
+    except ValueError:
+        # ASGI normally supplies an IP address. An unknown/non-IP peer is not
+        # safe evidence that the caller is local, so fail closed.
+        is_loopback = False
+    else:
+        if address.version == 6 and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        is_loopback = bool(address.is_loopback)
+
+    # A remote caller may never select paths on the server, even when the main
+    # API is intentionally exposed or an old deployment still sets the legacy
+    # local-path override.
+    if not is_loopback:
+        return True
+
+    # Preserve the existing protected-mode default for local callers. An admin
+    # may opt local authenticated sessions back in, but the override above can
+    # never make these operations remotely accessible.
+    if not tool_access_enabled() or _truthy_env("COPYLOT_ALLOW_LOCAL_PATH_APIS"):
+        return False
+    return True
+
+
+def _request_policy_response(request: Request) -> JSONResponse | None:
+    path = request.url.path
+    if (
+        not path.startswith("/api/")
+        or path == "/api/health"
+        or _auth_route(path)
+    ):
+        return None
+    if viewer_mode_enabled() and _viewer_request_denied(request):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "This operation is disabled in read-only viewer mode."},
+        )
+    if _remote_local_path_request_denied(request):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "Server-local path operations are unavailable to remote clients and are "
+                    "disabled by default in password-protected mode. Use a file-upload "
+                    "endpoint instead."
+                )
+            },
+        )
+    return None
 
 
 def _convert_png_bytes(content: bytes, target_format: str) -> tuple[bytes, str]:
@@ -137,10 +319,97 @@ app.add_middleware(
 )
 
 
+_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "testserver"}
+
+
+def allowed_hosts() -> set[str]:
+    """Host header values this server will answer to.
+
+    Set COPYLOT_ALLOWED_HOSTS (comma separated) when serving under a real
+    hostname; the entry may include a port or omit it.
+    """
+    extra = str(os.getenv("COPYLOT_ALLOWED_HOSTS", "")).strip()
+    hosts = set(_DEFAULT_ALLOWED_HOSTS)
+    for item in extra.split(","):
+        cleaned = item.strip().lower()
+        if cleaned:
+            hosts.add(cleaned)
+    return hosts
+
+
+def _host_is_allowed(header: str) -> bool:
+    host = str(header or "").strip().lower()
+    if not host:
+        # A missing Host header cannot be attributed to a rebound name, and
+        # HTTP/1.0 clients omit it legitimately.
+        return True
+    allowed = allowed_hosts()
+    if host in allowed:
+        return True
+    # Strip the port, taking care not to split an unbracketed IPv6 literal.
+    if host.startswith("["):
+        bare = host.split("]", 1)[0] + "]"
+    elif host.count(":") == 1:
+        bare = host.rsplit(":", 1)[0]
+    else:
+        bare = host
+    return bare in allowed
+
+
+@app.middleware("http")
+async def host_allowlist_middleware(request: Request, call_next):
+    """Refuse requests carrying an unrecognised Host header.
+
+    The loopback peer check cannot see a DNS-rebinding attack: the victim's own
+    browser makes the request, so it genuinely originates from 127.0.0.1 and the
+    request is same-origin, which also makes CORS irrelevant. The attacker's
+    hostname is the one thing that survives rebinding, so it is what gets checked.
+    """
+    if not _host_is_allowed(request.headers.get("host", "")):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Request rejected: unrecognised Host header."},
+        )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def session_scope_middleware(request: Request, call_next):
+    configuration_error = _authentication_configuration_error(validate_credentials=False)
+    if configuration_error:
+        return JSONResponse(status_code=503, content={"detail": configuration_error})
+
     if not session_isolation_enabled():
-        return await call_next(request)
+        cookie_name = session_cookie_name()
+        header_name = session_header_name()
+        raw_cookie = str(request.cookies.get(cookie_name, "")).strip()
+        raw_header = str(request.headers.get(header_name, "")).strip()
+        resolved = normalize_session_id(raw_cookie or raw_header or new_session_id())
+        should_set_cookie = raw_cookie != resolved
+        token = set_session_id(resolved)
+        try:
+            policy_response = _request_policy_response(request)
+            if policy_response is not None:
+                response = policy_response
+            else:
+                exclusive = request.url.path in {
+                    "/api/restore/import",
+                    "/api/restore/browser-session-reset",
+                }
+                async with session_operation_scope("global", exclusive=exclusive):
+                    response = await call_next(request)
+        finally:
+            reset_session_id(token)
+        if should_set_cookie:
+            response.set_cookie(
+                key=cookie_name,
+                value=resolved,
+                httponly=True,
+                secure=session_cookie_secure(),
+                samesite="lax",
+                path="/",
+            )
+        return response
 
     cookie_name = session_cookie_name()
     header_name = session_header_name()
@@ -152,11 +421,15 @@ async def session_scope_middleware(request: Request, call_next):
     token = set_session_id(resolved)
     try:
         path = request.url.path
+        protected_auth = tool_access_enabled() or viewer_portal_enabled()
+        if protected_auth:
+            expire_idle_session(resolved)
+        else:
+            touch_and_cleanup_sessions(resolved)
         if (
             path.startswith("/api/")
             and path != "/api/health"
-            and not path.startswith("/api/tool/auth")
-            and not path.startswith("/api/viewer/auth")
+            and not _auth_route(path)
         ):
             if tool_access_enabled():
                 if not tool_session_authenticated():
@@ -173,29 +446,45 @@ async def session_scope_middleware(request: Request, call_next):
                 try:
                     ensure_viewer_session_bootstrapped(force_reload=False)
                 except FileNotFoundError as exc:
+                    LOGGER.exception("Viewer project configuration was not found")
                     return JSONResponse(
                         status_code=500,
-                        content={"detail": str(exc)},
+                        content={"detail": "Viewer project configuration is unavailable."},
                     )
                 except Exception as exc:
+                    LOGGER.exception("Failed to initialize viewer project")
                     return JSONResponse(
                         status_code=500,
-                        content={"detail": f"Failed to initialize viewer project: {exc}"},
+                        content={"detail": "Failed to initialize viewer project."},
                     )
             elif viewer_mode_enabled():
                 try:
                     bootstrap_current_viewer_session(force_reload=False)
                 except FileNotFoundError as exc:
+                    LOGGER.exception("Viewer configuration was not found")
                     return JSONResponse(
                         status_code=500,
-                        content={"detail": str(exc)},
+                        content={"detail": "Viewer configuration is unavailable."},
                     )
                 except Exception as exc:
+                    LOGGER.exception("Failed to initialize viewer session")
                     return JSONResponse(
                         status_code=500,
-                        content={"detail": f"Failed to initialize viewer session: {exc}"},
+                        content={"detail": "Failed to initialize viewer session."},
                     )
-        response = await call_next(request)
+            policy_response = _request_policy_response(request)
+            if policy_response is not None:
+                return policy_response
+        exclusive = path in {
+            "/api/restore/import",
+            "/api/restore/browser-session-reset",
+        }
+        async with session_operation_scope(resolved, exclusive=exclusive):
+            response = await call_next(request)
+        if protected_auth and (
+            tool_session_authenticated() or viewer_session_authenticated()
+        ):
+            touch_and_cleanup_sessions(resolved)
     finally:
         reset_session_id(token)
 
@@ -208,6 +497,53 @@ async def session_scope_middleware(request: Request, call_next):
             samesite="lax",
             path="/",
         )
+    return response
+
+
+@app.middleware("http")
+async def heavy_workload_middleware(request: Request, call_next):
+    try:
+        validate_plot_request(request)
+    except PlotSizeValidationError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    if not is_heavy_request(request.method, request.url.path):
+        return await call_next(request)
+    if session_isolation_enabled():
+        raw_session = request.cookies.get(session_cookie_name()) or request.headers.get(
+            session_header_name()
+        )
+        if raw_session:
+            workload_session = normalize_session_id(raw_session)
+        else:
+            # The session middleware is inside this admission middleware, so a
+            # first request has no cookie yet. Group only those bootstrap calls
+            # by client address; subsequent requests use their issued session.
+            client_host = request.client.host if request.client else "unknown"
+            workload_session = f"bootstrap:{client_host}"
+    else:
+        workload_session = "global"
+    try:
+        async with heavy_workload_scope(workload_session):
+            return await call_next(request)
+    except HeavyWorkloadBusyError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc)},
+            headers={"Retry-After": "2"},
+        )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )
+    if _auth_route(request.url.path):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -234,22 +570,34 @@ async def plot_download_format_middleware(request: Request, call_next):
     if "image/png" not in media_type:
         return response
 
-    body = b""
+    body = bytearray()
+    conversion_limit = _plot_conversion_max_bytes()
     body_iterator = getattr(response, "body_iterator", None)
     if body_iterator is not None:
         async for chunk in body_iterator:
-            body += chunk
+            body.extend(chunk)
+            if len(body) > conversion_limit:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Plot is too large to convert safely."},
+                )
     else:
-        body = getattr(response, "body", b"")
+        body.extend(getattr(response, "body", b""))
+        if len(body) > conversion_limit:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Plot is too large to convert safely."},
+            )
 
     try:
-        converted, converted_media_type = _convert_png_bytes(body, requested_format)
+        converted, converted_media_type = _convert_png_bytes(bytes(body), requested_format)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except Exception as exc:
+        LOGGER.exception("Failed to convert plot download")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Failed to convert plot to '{requested_format}': {exc}"},
+            content={"detail": "Failed to convert plot download."},
         )
 
     passthrough_headers: dict[str, str] = {}
@@ -284,16 +632,11 @@ app.include_router(viewer_auth_router)
 _FRONTEND_DIST = _resolve_frontend_dist()
 
 
-@app.on_event("startup")
-async def startup_event():
-    bootstrap_viewer_mode_if_enabled()
-
-
 @app.get("/api/health")
 async def health():
     return {
         "message": "Backend is running",
-        "frontendDist": str(_FRONTEND_DIST) if _FRONTEND_DIST else None,
+        "frontendAvailable": _FRONTEND_DIST is not None,
     }
 
 
