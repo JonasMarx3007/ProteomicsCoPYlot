@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20-bookworm-slim AS frontend-build
+FROM node:26-bookworm-slim AS frontend-build
 WORKDIR /build/frontend
 
 COPY frontend/package*.json ./
