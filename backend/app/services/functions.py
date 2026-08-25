@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-"""FastAPI-facing CoPYlot service helpers.
-
-Server/runtime code must stay self-contained in this module.
-"""
-
 import re
+import warnings
 from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Literal
@@ -14,9 +10,11 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.special import digamma, polygamma
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.completeness import CompletenessTablesResponse
+from app.services.clustering_tools import require_complete_clustering_matrix
 from app.services.runtime_cache import apply_cached_wrappers
 
 try:
@@ -89,17 +87,242 @@ class ImputationDiagnostics:
     draw_components: list[tuple[float, float, int]]
 
 
-def extract_sample_id(value):
-    original = str(value).strip()
-    sample = re.split(r"[\\/]", original)[-1]
+def strip_sample_measurement_suffix(value):
+    sample = re.split(r"[\\/]", str(value).strip())[-1]
     previous = None
     while sample != previous:
         previous = sample
         sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
         sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
-    sample = _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
-    numbers = _SAMPLE_NUMBER.findall(sample)
+    return _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
+
+
+def extract_sample_id(value):
+    original = str(value).strip()
+    numbers = _SAMPLE_NUMBER.findall(strip_sample_measurement_suffix(original))
     return numbers[-1] if numbers else original
+
+
+def sample_id_map(names) -> dict[str, str]:
+    """Map extracted id -> name, refusing to guess when two names share an id.
+
+    The id is only the *last* number in a name, so a run set following the common
+    date_cellline_condition_replicate convention collapses every condition onto
+    the same handful of ids -- 20240110_HeLa_ctrl_01.raw and
+    20240110_HeLa_treat_01.raw are both "01". Resolving that by first-wins drops
+    one whole condition, and renaming data columns to the id produces duplicate
+    column labels that later select silently as the wrong sample.
+
+    This fallback exists for the case where metadata and run names differ
+    cosmetically; it is only sound when the ids are unique. When they are not,
+    say so instead of picking one.
+    """
+    mapping: dict[str, str] = {}
+    collisions: dict[str, list[str]] = {}
+    for name in names:
+        text = str(name)
+        sample_id = extract_sample_id(text)
+        if sample_id in mapping and mapping[sample_id] != text:
+            collisions.setdefault(sample_id, [mapping[sample_id]]).append(text)
+            continue
+        mapping[sample_id] = text
+    if collisions:
+        detail = "; ".join(
+            f"{' and '.join(repr(name) for name in sorted(names))} both reduce to '{key}'"
+            for key, names in sorted(collisions.items())
+        )
+        raise ValueError(
+            "Sample names cannot be matched by number because they are ambiguous: "
+            f"{detail}. Sample matching falls back to the last number in a name, so "
+            "names that differ only before that number are indistinguishable. Either "
+            "use sample names in the annotation that match the run names exactly, or "
+            "rename the runs so the trailing number is unique."
+        )
+    return mapping
+
+
+def paired_sample_columns(
+    metadata: pd.DataFrame,
+    condition1: str,
+    condition2: str,
+) -> tuple[list[str], list[str]]:
+    if str(condition1) == str(condition2):
+        raise ValueError("Paired tests require two different conditions.")
+    if "pair_id" not in metadata.columns:
+        raise ValueError(
+            "Paired tests require a 'pair_id' metadata column with one stable subject "
+            "identifier per sample."
+        )
+    duplicate_samples = (
+        metadata.loc[
+            metadata["sample"].astype(str).duplicated(keep=False),
+            "sample",
+        ]
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+    if duplicate_samples:
+        raise ValueError(
+            "Paired tests require each sample to appear once in metadata. "
+            f"Duplicates: {', '.join(duplicate_samples)}."
+        )
+
+    def samples_by_id(condition: str) -> dict[str, str]:
+        rows = metadata.loc[
+            metadata["condition"].astype(str) == str(condition),
+            ["sample", "pair_id"],
+        ].copy()
+        if rows.empty:
+            raise ValueError(f"Condition '{condition}' does not have any annotated samples.")
+
+        rows["sample"] = rows["sample"].astype(str)
+        rows["pair_id"] = rows["pair_id"].where(rows["pair_id"].notna(), "").astype(str).str.strip()
+        rows = rows.loc[rows["pair_id"] != ""]
+
+        grouped: dict[str, list[str]] = {}
+        for sample, pair_id in rows.itertuples(index=False, name=None):
+            grouped.setdefault(pair_id, []).append(sample)
+
+        duplicates = {key: values for key, values in grouped.items() if len(values) > 1}
+        if duplicates:
+            details = "; ".join(
+                f"{key}: {', '.join(values)}" for key, values in sorted(duplicates.items())
+            )
+            raise ValueError(
+                f"Paired tests require unique pair IDs within condition '{condition}'. "
+                f"Duplicates: {details}."
+            )
+        return {key: values[0] for key, values in grouped.items()}
+
+    left = samples_by_id(condition1)
+    right = samples_by_id(condition2)
+    pair_ids = [pair_id for pair_id in left if pair_id in right]
+    if len(pair_ids) < 2:
+        raise ValueError("Paired tests require at least two matched pair IDs.")
+    return [left[key] for key in pair_ids], [right[key] for key in pair_ids]
+
+
+# Design (paired or not) and variance model are separate choices, but the API has
+# always carried a single `testType` string, so they are encoded as a flat enum.
+# "unpaired" and "paired" keep their original meaning, so stored requests and
+# saved reports continue to resolve to exactly the test they always did.
+_TEST_TYPES: dict[str, tuple[bool, str]] = {
+    "unpaired": (False, "pooled"),
+    "unpaired_welch": (False, "welch"),
+    "unpaired_moderated": (False, "moderated"),
+    "paired": (True, "pooled"),
+    "paired_moderated": (True, "moderated"),
+}
+
+
+def resolve_test_type(value) -> tuple[bool, str]:
+    """Return (is_paired, variance_model) for a testType string."""
+    mode = str(value).strip().lower()
+    if mode not in _TEST_TYPES:
+        raise ValueError(
+            "test_type must be one of: " + ", ".join(sorted(_TEST_TYPES)) + "."
+        )
+    return _TEST_TYPES[mode]
+
+
+def paired_test_enabled(value) -> bool:
+    return resolve_test_type(value)[0]
+
+
+def variance_model(value) -> str:
+    return resolve_test_type(value)[1]
+
+
+def trigamma_inverse(values: np.ndarray) -> np.ndarray:
+    """Invert the trigamma function by Newton iteration (limma::trigammaInverse).
+
+    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+    """
+    x = np.asarray(values, dtype=float)
+    y = np.empty_like(x)
+    big, small = x > 1e7, x < 1e-6
+    y[big] = 1.0 / np.sqrt(x[big])
+    y[small] = 1.0 / x[small]
+    middle = ~(big | small)
+    if np.any(middle):
+        current = 0.5 + 1.0 / x[middle]
+        for _ in range(50):
+            tri = polygamma(1, current)
+            step = tri * (1.0 - tri / x[middle]) / polygamma(2, current)
+            current = current + step
+            if np.max(-step / current) < 1e-8:
+                break
+        y[middle] = current
+    return y
+
+
+def _fit_variance_prior(variances: np.ndarray, dof: np.ndarray) -> tuple[float, float]:
+    """Method-of-moments scaled inverse chi-square prior (limma::fitFDist)."""
+    variances = np.asarray(variances, dtype=float)
+    dof = np.asarray(dof, dtype=float)
+    usable = np.isfinite(variances) & np.isfinite(dof) & (variances > 0) & (dof > 0)
+    if int(usable.sum()) < 2:
+        fallback = float(np.nanmean(variances[usable])) if usable.any() else 1.0
+        return fallback, float("inf")
+    observed, degrees = variances[usable], dof[usable]
+    transformed = np.log(observed) - digamma(degrees / 2.0) + np.log(degrees / 2.0)
+    count = transformed.size
+    mean_t = float(np.mean(transformed))
+    excess = float(np.sum((transformed - mean_t) ** 2) / (count - 1)) - float(
+        np.mean(polygamma(1, degrees / 2.0))
+    )
+    if excess > 0:
+        df_prior = float(2.0 * trigamma_inverse(np.array([excess]))[0])
+        var_prior = float(np.exp(mean_t + digamma(df_prior / 2.0) - np.log(df_prior / 2.0)))
+    else:
+        # No excess variability between features: the prior carries all the
+        # weight and every feature gets the same variance.
+        df_prior = float("inf")
+        var_prior = float(np.exp(mean_t))
+    return var_prior, df_prior
+
+
+def squeeze_variance(
+    variances: np.ndarray,
+    dof: np.ndarray,
+) -> tuple[np.ndarray, float, float]:
+    """Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
+
+    This is what makes a moderated t-test worth having at proteomics group sizes:
+    a per-feature variance from n=3 is a poor estimate, and borrowing strength
+    across features stabilises it. Returns (posterior variances, prior variance,
+    prior degrees of freedom).
+
+    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+    """
+    var_prior, df_prior = _fit_variance_prior(variances, dof)
+    variances = np.asarray(variances, dtype=float)
+    dof = np.asarray(dof, dtype=float)
+    if not np.isfinite(df_prior):
+        posterior = np.full_like(variances, var_prior, dtype=float)
+    else:
+        posterior = (dof * variances + df_prior * var_prior) / (dof + df_prior)
+    return posterior, var_prior, df_prior
+
+
+def paired_t_test(differences: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    differences = np.asarray(differences, dtype=float)
+    finite = np.isfinite(differences)
+    n_pairs = finite.sum(axis=1).astype(float)
+    clean = np.where(finite, differences, np.nan)
+    mean_diff = np.nanmean(clean, axis=1)
+    variance = np.nanvar(clean, axis=1, ddof=1)
+    se = np.sqrt(variance / n_pairs)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pvalues = 2.0 * stats.t.sf(np.abs(mean_diff / se), n_pairs - 1.0)
+    constant = variance == 0
+    pvalues[constant & (mean_diff == 0)] = 1.0
+    pvalues[constant & (mean_diff != 0)] = 0.0
+    pvalues = np.nan_to_num(pvalues, nan=1.0, posinf=1.0, neginf=1.0)
+    return mean_diff, n_pairs, np.asarray(pvalues, dtype=float)
 
 
 # Data Pipeline
@@ -110,14 +333,26 @@ def build_metadata_from_conditions(
     rows: list[dict[str, str]] = []
     used_samples: set[str] = set()
 
+    # Resolve a requested column to a real one. An exact match always wins, so a
+    # column whose name genuinely carries spaces still works; otherwise the name
+    # is matched with surrounding whitespace ignored. Copying a header out of
+    # Excel picks up a trailing space very easily, and without this the column is
+    # dropped and a 5-vs-5 design quietly becomes 4-vs-5. The uploaded-metadata
+    # path has always tolerated this; the two must not disagree.
+    exact = {str(column) for column in data.columns}
+    by_stripped: dict[str, str] = {}
+    for column in data.columns:
+        by_stripped.setdefault(str(column).strip(), str(column))
+
     for condition in conditions:
         name = str(condition.get("name", "")).strip()
         columns = condition.get("columns", [])
         if not name or not isinstance(columns, list):
             continue
         for col in columns:
-            sample = str(col)
-            if sample in used_samples or sample not in data.columns:
+            requested = str(col)
+            sample = requested if requested in exact else by_stripped.get(requested.strip(), "")
+            if not sample or sample in used_samples:
                 continue
             rows.append({"sample": sample, "condition": name})
             used_samples.add(sample)
@@ -135,9 +370,23 @@ def build_metadata_from_conditions(
     return MetadataBuildResult(metadata=pd.DataFrame(auto_rows), auto_detected=True)
 
 
+def raw_zero_to_nan(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
+    """Apply the raw-intensity missing-value convention to measurement columns.
+
+    A zero in imported linear intensity data means "not detected".  This
+    conversion belongs at the raw-data boundary only: zero is a valid value on
+    log2 and other transformed scales (``2 ** 0 == 1``).  Restricting the
+    conversion to declared sample columns also protects numeric annotations.
+    """
+    out = data.copy()
+    present = [column for column in sample_columns if column in out.columns]
+    if present:
+        out[present] = out[present].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+    return out
+
+
 def log2_transform_data(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    selected = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce")
-    selected.replace(0, np.nan, inplace=True)
+    selected = raw_zero_to_nan(data[sample_columns], sample_columns)[sample_columns]
     log2_data = np.log2(selected)
     remaining = [col for col in data.columns if col not in sample_columns]
     return pd.concat([log2_data, data[remaining]], axis=1)
@@ -156,6 +405,189 @@ def inverse_log2_transform_data(data: pd.DataFrame, sample_columns: list[str]) -
     return pd.concat([original, data[remaining]], axis=1)
 
 
+def _median_center(values: pd.DataFrame) -> pd.DataFrame:
+    """Shift each sample so all samples share a common median.
+
+    Operates on log2 values, where a multiplicative loading difference is an
+    additive offset. Samples are re-centred on the grand median rather than on
+    zero so the result stays on a recognisable intensity scale; that choice is a
+    constant shift and does not affect any fold change.
+    """
+    medians = values.median(axis=0, skipna=True)
+    grand_median = float(np.nanmedian(medians.to_numpy(dtype=float)))
+    return values.sub(medians, axis=1).add(grand_median)
+
+
+def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
+    """Force every sample onto a common intensity distribution.
+
+    Missing values are neither imputed nor allowed to shift a sample's ranks:
+    each sample's observed values are mapped onto their own quantile positions,
+    and the shared reference distribution is read off at those positions. This
+    matches limma::normalizeQuantiles, which interpolates rather than dropping
+    incomplete rows.
+    """
+    from scipy.stats import rankdata
+
+    numeric = values.apply(pd.to_numeric, errors="coerce")
+    row_count = int(numeric.shape[0])
+    if row_count == 0:
+        return numeric
+
+    # Grid spans the full row count, as limma does, so columns with different
+    # numbers of observed values still land on a common reference curve.
+    grid = np.linspace(0.0, 1.0, row_count)
+    curves = []
+    for column in numeric.columns:
+        observed = np.sort(numeric[column].dropna().to_numpy(dtype=float))
+        if observed.size == 0:
+            continue
+        positions = np.linspace(0.0, 1.0, observed.size) if observed.size > 1 else np.zeros(1)
+        curves.append(np.interp(grid, positions, observed))
+    if not curves:
+        return numeric
+    reference = np.mean(np.vstack(curves), axis=0)
+
+    out = numeric.copy()
+    for column in numeric.columns:
+        mask = numeric[column].notna().to_numpy()
+        observed = numeric[column].to_numpy(dtype=float)[mask]
+        if observed.size == 0:
+            continue
+        # Average ranks, matching R's rank(), so ties map to one reference value.
+        ranks = rankdata(observed, method="average")
+        positions = (ranks - 1.0) / max(observed.size - 1, 1)
+        out.loc[mask, column] = np.interp(positions, grid, reference)
+    return out
+
+
+def _normalization_sample_columns(
+    data: pd.DataFrame,
+    meta: "pd.DataFrame | pd.Series | list[str]",
+) -> list[str]:
+    """Resolve the columns to normalize from a metadata frame or a column list.
+
+    The notebook package takes a metadata frame as the second argument in every
+    other public function, so `normalize_data(data, meta, ...)` is the call people
+    write. That used to resolve to no columns and return the input unchanged,
+    which is indistinguishable from a successful normalization.
+    """
+    if isinstance(meta, pd.DataFrame):
+        if "sample" not in meta.columns:
+            raise ValueError(
+                "Metadata must contain a 'sample' column naming the columns to normalize."
+            )
+        requested = [str(value) for value in meta["sample"].tolist()]
+    elif isinstance(meta, pd.Series):
+        requested = [str(value) for value in meta.tolist()]
+    else:
+        requested = [str(value) for value in meta]
+
+    columns = {str(column) for column in data.columns}
+    present = [column for column in requested if column in columns]
+    missing = [column for column in requested if column not in columns]
+    if not present:
+        raise ValueError(
+            "None of the requested sample columns are in the data, so nothing would "
+            f"be normalized. Requested: {', '.join(requested[:6]) or '(nothing)'}."
+        )
+    if missing:
+        raise ValueError(
+            f"{len(missing)} requested sample column(s) are not in the data: "
+            f"{', '.join(missing[:6])}. Normalizing only the rest would silently "
+            "change the reference distribution."
+        )
+    return present
+
+
+def normalize_data(
+    data: pd.DataFrame,
+    meta: "pd.DataFrame | pd.Series | list[str]",
+    method: str = "none",
+    linear_source: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Apply a global normalization to the sample columns of a log2 matrix.
+
+    Always global. Normalising within conditions would remove exactly the
+    differences the downstream tests are looking for.
+
+    `linear_source` matters only for VSN, which models linear intensities.
+    Reconstructing them as 2**log2 perturbs the input at machine epsilon
+    (~6e-16), and VSN's fit is unstable enough on real data that this shifts the
+    result by ~0.34 log2 units -- R disagrees with itself by the same amount on
+    round-tripped input. Passing the untransformed upload keeps the result
+    reproducible against a direct vsn2() call on the same file.
+
+    References: quantile normalization follows limma::normalizeQuantiles (Ritchie
+    et al. 2015, doi:10.1093/nar/gkv007); VSN is delegated to the Bioconductor vsn package
+    (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
+    """
+    resolved = str(method or "none").strip().lower()
+    if resolved in {"", "none"}:
+        return data
+    present = _normalization_sample_columns(data, meta)
+
+    numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    if resolved == "median":
+        normalized = _median_center(numeric)
+    elif resolved == "quantile":
+        normalized = _quantile_normalize(numeric)
+    elif resolved == "vsn":
+        # Delegated to Bioconductor vsn rather than reimplemented; see r_vsn.py
+        # for why. Only reachable when Rscript and the package are present.
+        from app.services.r_vsn import vsn_normalize_linear
+
+        if linear_source is not None:
+            linear = linear_source[present].apply(pd.to_numeric, errors="coerce")
+        else:
+            linear = pd.DataFrame(
+                np.power(2.0, numeric.to_numpy(dtype=float)),
+                index=numeric.index,
+                columns=numeric.columns,
+            )
+        normalized = vsn_normalize_linear(linear)
+    else:
+        raise ValueError("Normalization must be 'none', 'median', 'quantile', or 'vsn'.")
+
+    out = data.copy()
+    out[present] = normalized
+    return out
+
+
+def _validate_filter_thresholds(
+    min_present: int,
+    method: str,
+    min_percentage: float,
+) -> None:
+    """Reject a threshold that is not a meaningful quantity.
+
+    A filter that keeps nothing is a legitimate answer to a strict request, so
+    only impossible values are refused: a percentage outside 0-100, or a negative
+    count. Those cannot describe any completeness requirement.
+    """
+    if method == "percentage":
+        try:
+            value = float(min_percentage)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Minimum completeness percentage must be a number, got {min_percentage!r}."
+            ) from None
+        if not 0.0 <= value <= 100.0:
+            raise ValueError(
+                f"Minimum completeness percentage must be between 0 and 100, got {value:g}."
+            )
+        return
+
+    try:
+        value = int(min_present)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Minimum valid values must be a whole number, got {min_present!r}."
+        ) from None
+    if value < 0:
+        raise ValueError(f"Minimum valid values must be zero or greater, got {value}.")
+
+
 def filter_data(
     data: pd.DataFrame,
     metadata: pd.DataFrame,
@@ -169,12 +601,13 @@ def filter_data(
     method = str(method or "at_least_n").strip().lower()
     if method not in {"at_least_n", "percentage"}:
         raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
+    # The notebook package accepts "per group" and "per_group" alike; accepting only
+    # one spelling here meant the same call worked in a notebook and failed in the
+    # web app. Normalise, then validate.
+    mode = str(mode or "").strip().lower().replace(" ", "_")
     if mode not in {"per_group", "in_at_least_one_group", "overall"}:
         raise ValueError("Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'.")
-    if min_present < 0:
-        raise ValueError("Minimum valid values must be zero or greater.")
-    if min_percentage < 0 or min_percentage > 100:
-        raise ValueError("Minimum completeness percentage must be between 0 and 100.")
+    _validate_filter_thresholds(min_present, method, min_percentage)
 
     if mode == "overall":
         valid = data_selected[sample_columns].notna().sum(axis=1)
@@ -214,7 +647,7 @@ def impute_values_with_diagnostics(
     q: float = 0.01,
     adj_std: float = 0.3,
     seed: int = 1337,
-    sample_wise: bool = False,
+    sample_wise: bool = True,
     method="quantile",
     down_shift=1.8,
     width=0.3,
@@ -228,8 +661,13 @@ def impute_values_with_diagnostics(
         raise ValueError("Numerical downshift must be zero or greater.")
     if width < 0:
         raise ValueError("Numerical width must be zero or greater.")
-    np.random.seed(seed)
-    numeric = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+    # A request-local generator keeps seeded imputation reproducible without
+    # mutating NumPy's process-global RNG or interfering with another session.
+    rng = np.random.default_rng(seed)
+    # This function receives an analysis-scale matrix.  Missing raw zeros have
+    # already been converted while constructing that matrix; a transformed zero
+    # is observed data and must not be imputed.
+    numeric = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce")
     missing_mask = numeric.isna()
     row_has_missing = missing_mask.any(axis=1)
 
@@ -273,8 +711,11 @@ def impute_values_with_diagnostics(
                     draw_std = effective_sd * width
                 else:
                     draw_center = float(np.nanquantile(col_observed, q))
-                    draw_std = col_sd if col_sd > 0 else std_val
-            draws = np.random.normal(draw_center, draw_std, missing_count)
+                    # adj_std must scale the draw here exactly as it does in the
+                    # global branch below; without it the setting is inert in
+                    # sample-wise mode and the spread is always the full SD.
+                    draw_std = (col_sd if col_sd > 0 else std_val) * adj_std
+            draws = rng.normal(draw_center, draw_std, missing_count)
             imputed_numeric.loc[col_values.isna(), col] = draws
             draw_components.append((draw_center, draw_std, missing_count))
     else:
@@ -289,7 +730,7 @@ def impute_values_with_diagnostics(
             missing_count = int(col_values.isna().sum())
             if missing_count <= 0:
                 continue
-            draws = np.random.normal(draw_center, draw_std, missing_count)
+            draws = rng.normal(draw_center, draw_std, missing_count)
             imputed_numeric.loc[col_values.isna(), col] = draws
         if missing_before > 0:
             draw_components.append((draw_center, draw_std, missing_before))
@@ -319,18 +760,153 @@ def impute_values_with_diagnostics(
     )
 
 
-def analysis_data_source(kind, data_source="data"):
+DATA_SOURCE_CHOICES = ("auto", "log2", "filtered", "imputed")
+
+
+def resolve_data_source_choice(data_source, default):
+    """Canonical name for a requested matrix, shared by every pipeline.
+
+    ``auto`` takes the first available of filtered, log2, raw. ``log2`` is the
+    complete annotated matrix before filtering. ``filtered`` and ``imputed``
+    name their materialized outputs.
+
+    ``data`` is the historical spelling. It meant ``auto`` on the analysis path
+    and ``log2`` on the visualization path, which is why it is resolved against
+    a per-path default rather than to a fixed matrix.
+    """
+    requested = str(data_source or "data").strip().lower()
+    if requested == "data":
+        requested = str(default).strip().lower()
+    if requested not in DATA_SOURCE_CHOICES:
+        raise ValueError(
+            "Unsupported data source. Choose 'auto', 'log2', 'filtered', or 'imputed'."
+        )
+    return requested
+
+
+def _visualization_data_source(kind, data_source="log2"):
+    """Select an explicit visualization matrix without silently substituting one.
+
+    Defaults to ``log2``: the complete annotated matrix before filtering.
+    ``filtered`` and ``imputed`` are only accepted when their materialized
+    outputs exist; ``auto`` resolves the way the analysis path does.
+    """
     from app.services.annotation_store import get_annotation
     from app.services.data_tools import _get_current_frame
 
-    requested_source = str(data_source or "data").strip().lower()
-    if requested_source not in {"data", "imputed"}:
-        raise ValueError("Unsupported data source. Choose 'data' or 'imputed'.")
+    source_alias = str(data_source or "data").strip().lower()
+    requested_source = resolve_data_source_choice(data_source, default="log2")
+
+    _get_current_frame(kind)  # Preserve the existing loaded-dataset requirement.
+    annotation = get_annotation(kind)
+    if annotation is None or annotation.metadata.empty:
+        raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
+
+    if requested_source == "auto":
+        source_used, frame, metadata, _ = analysis_data_source(kind, data_source="auto")
+        return source_used, frame, metadata
+
+    if requested_source == "log2":
+        log2_data = getattr(annotation, "log2_data", None)
+        if not isinstance(log2_data, pd.DataFrame) or log2_data.empty:
+            raise ValueError(
+                f"Log2 {kind} data is not available. Generate annotation first."
+            )
+        # The web UI's historical/public label is "data" even though its exact
+        # matrix contract is the complete annotated log2 matrix.
+        source_used = "data" if source_alias == "data" else "log2"
+        return source_used, log2_data.copy(), annotation.metadata.copy()
+
+    if requested_source == "filtered":
+        filtered = getattr(annotation, "filtered_data", None)
+        if not isinstance(filtered, pd.DataFrame) or filtered.empty:
+            raise ValueError(
+                f"Filtered {kind} data is not available. Generate annotation/filtering first."
+            )
+        return "filtered", filtered.copy(), annotation.metadata.copy()
+
+    if not imputed_data_available(kind):
+        raise ValueError(
+            f"Imputed {kind} data is not available. Run imputation successfully first."
+        )
+    imputed = getattr(annotation, "imputed_data", None)
+    return "imputed", imputed.copy(), annotation.metadata.copy()
+
+
+def _visualization_data_source_availability(kind) -> dict[str, bool]:
+    from app.services.annotation_store import get_annotation
+
+    annotation = get_annotation(kind)
+    filtered = getattr(annotation, "filtered_data", None) if annotation is not None else None
+    return {
+        "filteredAvailable": isinstance(filtered, pd.DataFrame) and not filtered.empty,
+        "imputedAvailable": imputed_data_available(kind),
+    }
+
+
+def _phosprot_values_are_centred(kind) -> bool:
+    """True when the stored frame holds ratios to each site's median, not abundances."""
+    from app.services.annotation_store import get_annotation
+
+    if kind != "phosprot":
+        return False
+    annotation = get_annotation(kind)
+    aggregation = getattr(annotation, "phosprot_aggregation", None) if annotation else None
+    return str(aggregation or "").strip().lower() == "robust_site_median"
+
+
+def analysis_data_source(kind, data_source="auto"):
+    """Select the matrix an analysis runs on.
+
+    Defaults to ``auto``: filtered if filtering has run, else log2, else raw.
+    ``log2``, ``filtered`` and ``imputed`` name one matrix each and raise when it
+    does not exist.
+    """
+    from app.services.annotation_store import get_annotation
+    from app.services.data_tools import _get_current_frame
+
+    requested_source = resolve_data_source_choice(data_source, default="auto")
 
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
     if annotation is None or annotation.metadata.empty:
         raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
+
+    if requested_source == "imputed":
+        imputation = getattr(annotation, "imputation", None)
+        imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
+        imputed_data = getattr(annotation, "imputed_data", None)
+        if (
+            imputation is None
+            or imputation_mode == "none"
+            or not isinstance(imputed_data, pd.DataFrame)
+            or imputed_data.empty
+        ):
+            raise ValueError(
+                f"Imputed {kind} data is not available. Run imputation successfully first."
+            )
+        sample_columns = annotation.metadata["sample"].astype(str).tolist()
+        missing_samples = [sample for sample in sample_columns if sample not in imputed_data.columns]
+        if missing_samples:
+            raise ValueError(
+                f"Stored imputed {kind} data is invalid because sample columns are missing: "
+                f"{missing_samples}. Run imputation again."
+            )
+        return "imputed", imputed_data.copy(), annotation.metadata.copy(), []
+
+    if requested_source == "log2":
+        log2_data = getattr(annotation, "log2_data", None)
+        if not isinstance(log2_data, pd.DataFrame) or log2_data.empty:
+            raise ValueError(f"Log2 {kind} data is not available. Generate annotation first.")
+        return "log2", log2_data.copy(), annotation.metadata.copy(), []
+
+    if requested_source == "filtered":
+        filtered = getattr(annotation, "filtered_data", None)
+        if not isinstance(filtered, pd.DataFrame) or filtered.empty:
+            raise ValueError(
+                f"Filtered {kind} data is not available. Generate annotation/filtering first."
+            )
+        return "filtered", filtered.copy(), annotation.metadata.copy(), []
 
     source_used, base_frame = choose_best_source(
         annotation.filtered_data,
@@ -339,75 +915,20 @@ def analysis_data_source(kind, data_source="data"):
     )
     warnings: list[str] = []
     if source_used == "raw":
-        warnings.append("Using raw data because filtered/log2 annotated data is unavailable.")
-
-    imputation = getattr(annotation, "imputation", None)
-    imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
-    if requested_source == "imputed" and imputation is not None and imputation_mode != "none":
         sample_columns = [
             sample
             for sample in annotation.metadata["sample"].astype(str).tolist()
             if sample in base_frame.columns
         ]
-        if sample_columns:
-            q_value = (
-                float(imputation.qValue)
-                if getattr(imputation, "qValue", None) is not None
-                else 0.01
-            )
-            adjust_std = (
-                float(imputation.adjustStd)
-                if getattr(imputation, "adjustStd", None) is not None
-                else 0.3
-            )
-            seed = (
-                int(imputation.seed)
-                if getattr(imputation, "seed", None) is not None
-                else 1337
-            )
-            sample_wise = (
-                bool(imputation.sampleWise)
-                if getattr(imputation, "sampleWise", None) is not None
-                else False
-            )
-            method = imputation_mode if imputation_mode in {"quantile", "numerical"} else "quantile"
-            down_shift = (
-                float(imputation.downShift)
-                if getattr(imputation, "downShift", None) is not None
-                else 1.8
-            )
-            width = (
-                float(imputation.width)
-                if getattr(imputation, "width", None) is not None
-                else 0.3
-            )
-            try:
-                diagnostics = impute_values_with_diagnostics(
-                    data=base_frame,
-                    sample_columns=sample_columns,
-                    q=q_value,
-                    adj_std=adjust_std,
-                    seed=seed,
-                    sample_wise=sample_wise,
-                    method=method,
-                    down_shift=down_shift,
-                    width=width,
-                )
-                return (
-                    source_used,
-                    diagnostics.imputed_data,
-                    annotation.metadata.copy(),
-                    warnings,
-                )
-            except Exception:
-                pass
+        if not bool(getattr(annotation, "is_log2_transformed", False)):
+            base_frame = raw_zero_to_nan(base_frame, sample_columns)
+        warnings.append("Using raw data because filtered/log2 annotated data is unavailable.")
 
     return source_used, base_frame, annotation.metadata.copy(), warnings
 
 
 def imputed_data_available(kind):
     from app.services.annotation_store import get_annotation
-    from app.services.data_tools import _get_current_frame
 
     annotation = get_annotation(kind)
     if annotation is None or annotation.metadata.empty:
@@ -415,20 +936,20 @@ def imputed_data_available(kind):
     imputation = getattr(annotation, "imputation", None)
     if imputation is None:
         return False
-    if str(getattr(imputation, "mode", "none")).strip().lower() == "none":
+    if (
+        str(getattr(imputation, "mode", "none")).strip().lower() == "none"
+        or not bool(getattr(imputation, "applied", False))
+    ):
         return False
-
-    _, frame = choose_best_source(
-        annotation.filtered_data,
-        annotation.log2_data,
-        _get_current_frame(kind),
-    )
+    frame = getattr(annotation, "imputed_data", None)
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return False
     sample_columns = [
         sample
         for sample in annotation.metadata["sample"].astype(str).tolist()
         if sample in frame.columns
     ]
-    return len(sample_columns) > 0
+    return len(sample_columns) == len(annotation.metadata)
 
 
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
@@ -465,7 +986,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
 
-    df = data[cols_to_use].replace(0, np.nan).copy()
+    df = data[cols_to_use].copy()
     df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
 
     valid = np.ones(len(df), dtype=bool)
@@ -513,7 +1034,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     return out.sort_values("adj_pval").reset_index(drop=True)
 
 
-def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster", min_cluster_fraction=0.05):
+def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster"):
     from scipy.cluster.hierarchy import fcluster
 
     if n_clusters < 1:
@@ -525,18 +1046,21 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
 
     if only_significant and "adj_pval" in anova_df.columns:
         cluster_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
-        if cluster_df.empty:
-            cluster_df = anova_df.copy()
     else:
         cluster_df = anova_df.copy()
 
+    if cluster_df.empty:
+        cluster_df.insert(1, cluster_col, pd.Series(index=cluster_df.index, dtype="int64"))
+        return cluster_df.reset_index(drop=True)
+
     matrix = cluster_df[sample_cols].to_numpy(dtype=float)
+    if matrix.shape[0] > 1:
+        require_complete_clustering_matrix(matrix, context="ANOVA")
     if z_score:
         row_mean = np.nanmean(matrix, axis=1, keepdims=True)
         row_sd = np.nanstd(matrix, axis=1, keepdims=True)
         row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
         matrix = (matrix - row_mean) / row_sd
-    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
     if matrix.shape[0] <= 1:
         cluster_df[cluster_col] = 1
@@ -554,32 +1078,193 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
             cluster_map[cluster_id] = len(cluster_map) + 1
         relabeled_clusters.append(cluster_map[cluster_id])
 
-    relabeled_clusters = np.asarray(relabeled_clusters, dtype=int)
-    if min_cluster_fraction and min_cluster_fraction > 0:
-        min_cluster_size = int(np.ceil(len(relabeled_clusters) * min_cluster_fraction))
-        cluster_ids, cluster_counts = np.unique(relabeled_clusters, return_counts=True)
-        count_map = dict(zip(cluster_ids, cluster_counts))
-        large_clusters = [cluster_id for cluster_id in cluster_ids if count_map[cluster_id] >= min_cluster_size]
-        if len(large_clusters) == 0:
-            large_clusters = [max(cluster_ids, key=lambda cluster_id: count_map[cluster_id])]
-        merged_clusters = relabeled_clusters.copy()
-        for cluster_id in cluster_ids:
-            if count_map[cluster_id] >= min_cluster_size:
-                continue
-            target_cluster = min(large_clusters, key=lambda target: (abs(target - cluster_id), target < cluster_id))
-            merged_clusters[relabeled_clusters == cluster_id] = target_cluster
-        cluster_map = {}
-        relabeled_clusters = []
-        for cluster_id in merged_clusters:
-            if cluster_id not in cluster_map:
-                cluster_map[cluster_id] = len(cluster_map) + 1
-            relabeled_clusters.append(cluster_map[cluster_id])
-
     cluster_df = cluster_df.iloc[row_order].copy()
     if cluster_col in cluster_df.columns:
         cluster_df = cluster_df.drop(columns=[cluster_col])
     cluster_df.insert(1, cluster_col, relabeled_clusters)
     return cluster_df.reset_index(drop=True)
+
+
+
+def constant_within_group(values):
+    """True per row where every observed replicate in the group holds one value.
+
+    Such a row has no measured within-group variation, so the standard error
+    collapses and the t-statistic explodes: a fold change of 0.05 can reach
+    p = 2e-54 and outrank every genuine effect at the top of a volcano. The
+    p-value itself is correct and matches `scipy.stats.ttest_ind`; what the flag
+    marks is that the significance comes from absent variation rather than
+    effect size. Values reported at a detection floor, rounded exports and
+    imputation filling one value across replicates all produce it.
+
+    Tested with min == max rather than variance == 0, which is exact regardless
+    of floating-point representation: 14.05 repeated three times has a variance
+    of 4.7e-30, not 0, so a zero test would miss it.
+    """
+    numeric = np.asarray(values, dtype=float)
+    observed = np.isfinite(numeric)
+    counts = observed.sum(axis=1)
+    masked = np.where(observed, numeric, np.nan)
+    with warnings.catch_warnings():
+        # A row with nothing observed is an all-NaN slice; numpy warns and
+        # returns NaN, and the count check below already excludes it.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        low = np.nanmin(masked, axis=1)
+        high = np.nanmax(masked, axis=1)
+    return (counts > 0) & (low == high)
+
+
+def condition_mean(data, columns, min_present=1):
+    """Mean across a condition's replicates, blanked where too few were observed.
+
+    `mean(axis=1)` skips missing values silently, so a condition mean resting on
+    one replicate is plotted and correlated at the same weight as a fully
+    observed one. Measured on 2000 features with 30% poor coverage, the
+    single-replicate means were off by 0.28 log2 on average and 1.21 at worst
+    against the same features' fully observed means.
+
+    `min_present` is the smallest number of observations a mean may rest on. The
+    default of 1 reports every mean, which is the long-standing behaviour and keeps
+    previously generated results reproducible. Pass 2 or more to require that a
+    mean rest on enough replicates to carry spread information.
+
+    Returns (means, counts) so the caller can report how many features were
+    excluded rather than dropping them silently.
+    """
+    numeric = data[list(columns)].apply(pd.to_numeric, errors="coerce")
+    counts = numeric.notna().sum(axis=1)
+    means = numeric.mean(axis=1)
+    return means.where(counts >= int(min_present)), counts
+
+
+def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None):
+    """Tukey HSD for every condition pair, following a one-way ANOVA.
+
+    A significant omnibus F says only that some condition differs; this supplies the
+    pairwise comparisons. Gated on the ANOVA result the way Perseus does it: the BH
+    adjustment on the ANOVA controls error across features, and Tukey controls the
+    family-wise rate across the condition pairs within each feature.
+
+    Tukey-Kramer is used throughout, so unequal group sizes arising from missing
+    values are handled correctly. Returns one row per feature and condition pair;
+    an empty frame when fewer than three conditions are present, because with two
+    the omnibus F and the single pairwise comparison test the same hypothesis.
+    """
+    if label_col is None:
+        label_col = _auto_label_col(anova_df)
+
+    conditions = meta["condition"].dropna().astype(str).unique().tolist()
+    condition_cols = {}
+    for condition in conditions:
+        cols = [
+            col
+            for col in meta.loc[meta["condition"].astype(str) == condition, "sample"].astype(str).tolist()
+            if col in anova_df.columns
+        ]
+        if cols:
+            condition_cols[condition] = cols
+    if len(condition_cols) < 3:
+        return pd.DataFrame()
+
+    if only_significant and "adj_pval" in anova_df.columns:
+        posthoc_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
+    else:
+        posthoc_df = anova_df.copy()
+    if posthoc_df.empty:
+        return pd.DataFrame()
+
+    groups = {
+        condition: posthoc_df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        for condition, cols in condition_cols.items()
+    }
+    counts = {condition: np.sum(~np.isnan(group), axis=1).astype(float) for condition, group in groups.items()}
+    means = {condition: np.nanmean(group, axis=1) for condition, group in groups.items()}
+
+    # Pooled within-group variance across every condition, as the ANOVA itself uses.
+    sum_squares = np.zeros(len(posthoc_df), dtype=float)
+    for condition, group in groups.items():
+        variance = np.nanvar(group, axis=1, ddof=1)
+        sum_squares += np.where(counts[condition] > 1, (counts[condition] - 1) * np.nan_to_num(variance), 0.0)
+    total_n = np.sum([counts[condition] for condition in condition_cols], axis=0)
+    df_resid = total_n - len(condition_cols)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mse = np.where(df_resid > 0, sum_squares / df_resid, np.nan)
+
+    labels = posthoc_df[label_col].astype(str).to_numpy()
+    anova_adj = (
+        posthoc_df["adj_pval"].to_numpy(dtype=float)
+        if "adj_pval" in posthoc_df.columns
+        else np.full(len(posthoc_df), np.nan)
+    )
+    names = list(condition_cols.keys())
+    frames = []
+    for first in range(len(names)):
+        for second in range(first + 1, len(names)):
+            left, right = names[first], names[second]
+            n_left, n_right = counts[left], counts[right]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                standard_error = np.sqrt(mse / 2.0 * (1.0 / n_left + 1.0 / n_right))
+                difference = means[right] - means[left]
+                q_statistic = np.abs(difference) / standard_error
+            pvals = stats.studentized_range.sf(q_statistic, len(names), df_resid)
+            pvals = np.where(np.isfinite(q_statistic) & (df_resid > 0), pvals, np.nan)
+            usable = np.isfinite(pvals) & (n_left >= 2) & (n_right >= 2)
+            if not np.any(usable):
+                continue
+            frames.append(pd.DataFrame({
+                label_col: labels[usable],
+                "comparison": f"{right} vs {left}",
+                "group1": left,
+                "group2": right,
+                "log2FC": difference[usable],
+                "n_group1": n_left[usable].astype(int),
+                "n_group2": n_right[usable].astype(int),
+                "q_statistic": q_statistic[usable],
+                "tukey_pval": pvals[usable],
+                "significance": np.where(pvals[usable] < in_pval, "Significant", "Not significant"),
+                "anova_adj_pval": anova_adj[usable],
+            }))
+
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    return out.sort_values(["tukey_pval", label_col, "comparison"]).reset_index(drop=True)
+
+def resolve_feature_scaling(scaling="auto", method="PCA"):
+    """How features are weighted before a projection.
+
+    ``centered`` subtracts each feature's mean across samples and stops there,
+    so a feature contributes in proportion to its variance. ``unit_variance``
+    also divides by the standard deviation, giving every feature equal weight.
+
+    ``auto`` keeps each method's established default: PCA on the centred matrix,
+    UMAP and t-SNE on unit-variance features because both read distances and are
+    sensitive to feature scale. The two answer different questions, so a run that
+    mixes them without saying which was used is not reproducible.
+    """
+    requested = str(scaling or "auto").strip().lower()
+    if requested in {"centered", "centred"}:
+        return "centered"
+    if requested in {"unit_variance", "scaled"}:
+        return "unit_variance"
+    if requested != "auto":
+        raise ValueError(
+            "Unsupported scaling. Choose 'auto', 'centered', or 'unit_variance'."
+        )
+    return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
+
+
+def abundance_axis_label(workflow, centered=False):
+    """Y-axis label for the abundance plot.
+
+    ``robust_site_median`` phosphoprotein aggregation centres every site on its
+    own across-sample median, so those values carry a ratio to that median
+    rather than an intensity. Every other phosprot mode, and both other
+    workflows, hold real abundances.
+    """
+    if centered:
+        return f"log10 {workflow} Ratio to Site Median"
+    return f"log10 {workflow} Intensity"
 
 
 def _auto_label_col(frame: pd.DataFrame) -> str:
@@ -640,6 +1325,10 @@ def anova_plot(
         plot_df = anova_df.copy()
 
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+    if (cluster_rows and raw_matrix.shape[0] > 1) or (
+        cluster_samples and raw_matrix.shape[1] > 1
+    ):
+        require_complete_clustering_matrix(raw_matrix, context="ANOVA heatmap")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -659,7 +1348,7 @@ def anova_plot(
 
     display_mask = missing_mask | ~np.isfinite(matrix)
     display_matrix = np.ma.array(matrix, mask=display_mask)
-    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    cluster_matrix = matrix.copy()
     row_linkage = None
     col_linkage = None
 
@@ -782,6 +1471,8 @@ def anova_plot_cluster(
 
     plot_df = anova_cluster_df.copy()
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+    if cluster_samples and raw_matrix.shape[1] > 1:
+        require_complete_clustering_matrix(raw_matrix, context="ANOVA cluster heatmap")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -800,7 +1491,7 @@ def anova_plot_cluster(
         vmin = vmax = None
 
     display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
-    cluster_matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    cluster_matrix = matrix.copy()
     col_linkage = None
     if cluster_samples and matrix.shape[1] > 1:
         col_linkage = linkage(cluster_matrix.T, method=cluster_method, metric=cluster_metric)
@@ -910,15 +1601,19 @@ def normal_fit_curve(values: np.ndarray, points: int = 200) -> list[tuple[float,
     return [(float(px), float(py)) for px, py in zip(x, y)]
 
 
-def qqnorm_plot_data(values: np.ndarray, max_points: int = 100_000) -> dict[str, list[tuple[float, float]]]:
+def qqnorm_plot_data(
+    values: np.ndarray,
+    max_points: int = 100_000,
+    seed: int = 187,
+) -> dict[str, list[tuple[float, float]]]:
     clean = values[~np.isnan(values)]
     clean = clean[clean > 0]
     if clean.size == 0:
         return {"points": [], "fitLine": []}
 
     if clean.size > max_points:
-        np.random.seed(187)
-        clean = np.random.choice(clean, max_points, replace=False)
+        rng = np.random.default_rng(seed)
+        clean = rng.choice(clean, max_points, replace=False)
 
     clean = np.sort(clean)
     n = clean.size
@@ -1027,10 +1722,14 @@ def imputation_after_plot(
 
 
 # Distribution Pipeline
-def distribution_qqnorm_plot(kind: AnnotationKind, advanced: dict | None = None) -> bytes:
+def distribution_qqnorm_plot(
+    kind: AnnotationKind,
+    random_seed: int = 187,
+    advanced: dict | None = None,
+) -> bytes:
     from app.services.plot_images import distribution_qqnorm_plot as _impl
 
-    return _impl(kind, advanced=advanced)
+    return _impl(kind, random_seed=random_seed, advanced=advanced)
 
 
 # Completeness Pipeline
@@ -1072,6 +1771,7 @@ def completeness_missing_value_plot_peptide(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from app.services.completeness_tools import completeness_missing_value_plot_peptide as _impl
 
@@ -1085,6 +1785,7 @@ def completeness_missing_value_plot_peptide(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        quantity_column=quantity_column,
     )
 
 
@@ -1098,6 +1799,7 @@ def completeness_missing_value_plot_precursor(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from app.services.completeness_tools import completeness_missing_value_plot_precursor as _impl
 
@@ -1111,6 +1813,7 @@ def completeness_missing_value_plot_precursor(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        quantity_column=quantity_column,
     )
 
 
@@ -1159,6 +1862,7 @@ def qc_coverage_plot(
     summary: bool = False,
     text: bool = False,
     text_size: int = 9,
+    random_seed: int = 187,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
@@ -1174,6 +1878,7 @@ def qc_coverage_plot(
         summary=summary,
         text=text,
         text_size=text_size,
+        random_seed=random_seed,
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
@@ -1189,6 +1894,7 @@ def qc_peptide_coverage_plot(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from app.services.plot_images import qc_peptide_coverage_plot as _impl
 
@@ -1200,6 +1906,7 @@ def qc_peptide_coverage_plot(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        quantity_column=quantity_column,
     )
 
 
@@ -1304,6 +2011,7 @@ def qc_pca_plot(
     dbscan_eps: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
+    scaling: str = "auto",
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
@@ -1330,6 +2038,7 @@ def qc_pca_plot(
         dbscan_eps=dbscan_eps,
         dbscan_min_samples=dbscan_min_samples,
         random_state=random_state,
+        scaling=scaling,
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
@@ -1356,6 +2065,7 @@ def qc_pca_interactive_html(
     dbscan_eps: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
+    scaling: str = "auto",
     width_cm: float = 20,
     height_cm: float = 10,
     advanced: dict | None = None,
@@ -1381,6 +2091,7 @@ def qc_pca_interactive_html(
         dbscan_eps=dbscan_eps,
         dbscan_min_samples=dbscan_min_samples,
         random_state=random_state,
+        scaling=scaling,
         width_cm=width_cm,
         height_cm=height_cm,
         advanced=advanced,
@@ -1465,12 +2176,14 @@ def single_protein_boxplot_plot(
     identifier: str = "workflow",
     outliers: bool = False,
     dots: bool = False,
+    random_seed: int = 69,
     header: bool = True,
     legend: bool = True,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     from app.services.single_protein_tools import single_protein_boxplot_plot as _impl
 
@@ -1481,12 +2194,14 @@ def single_protein_boxplot_plot(
         identifier=identifier,
         outliers=outliers,
         dots=dots,
+        random_seed=random_seed,
         header=header,
         legend=legend,
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        data_source=data_source,
     )
 
 
@@ -1502,6 +2217,7 @@ def single_protein_lineplot_plot(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     from app.services.single_protein_tools import single_protein_lineplot_plot as _impl
 
@@ -1517,6 +2233,7 @@ def single_protein_lineplot_plot(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        data_source=data_source,
     )
 
 
@@ -1536,6 +2253,7 @@ def single_protein_heatmap_plot(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     from app.services.single_protein_tools import single_protein_heatmap_plot as _impl
 
@@ -1555,6 +2273,7 @@ def single_protein_heatmap_plot(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        data_source=data_source,
     )
 
 
@@ -1586,6 +2305,7 @@ def phospho_coverage_png(
     mode: str = "Normal",
     color_class_i: str = "#2563eb",
     color_not_class_i: str = "#f59e0b",
+    random_seed: int = 69,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
@@ -1601,6 +2321,7 @@ def phospho_coverage_png(
         mode=mode,
         color_class_i=color_class_i,
         color_not_class_i=color_not_class_i,
+        random_seed=random_seed,
         width_cm=width_cm,
         height_cm=height_cm,
         dpi=dpi,
@@ -1666,6 +2387,7 @@ def comparison_pearson_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     from app.services.comparison_tools import pearson_correlation_png as _impl
 
@@ -1685,6 +2407,7 @@ def comparison_pearson_png(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        data_source=data_source,
     )
 
 
@@ -1703,6 +2426,7 @@ def comparison_pearson_html(
     width_cm: float = 20,
     height_cm: float = 12,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> str:
     from app.services.comparison_tools import pearson_correlation_html as _impl
 
@@ -1721,6 +2445,7 @@ def comparison_pearson_html(
         width_cm=width_cm,
         height_cm=height_cm,
         advanced=advanced,
+        data_source=data_source,
     )
 
 
@@ -1741,6 +2466,7 @@ def comparison_venn_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     from app.services.comparison_tools import venn_png as _impl
 
@@ -1761,6 +2487,7 @@ def comparison_venn_png(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        data_source=data_source,
     )
 
 

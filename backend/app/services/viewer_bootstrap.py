@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import pandas as pd
 
@@ -16,6 +16,8 @@ from app.schemas.annotation import (
     AnnotationImputationInfo,
     FilterMode,
     MetadataSource,
+    NormalizationMethod,
+    phosprot_filter_config,
 )
 from app.services.annotation_processor import compute_annotation, compute_annotation_from_metadata
 from app.services.annotation_store import save_annotation
@@ -34,7 +36,11 @@ DatasetKind = Literal["protein", "phospho", "phosprot"]
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
-_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+# Must contain at least one character that is not a dot: the name is used as a
+# single path segment, so a name of "." or ".." would resolve outside its own
+# project directory. Names come from admin-controlled config today, but the
+# containment should not depend on that staying true.
+_PROJECT_NAME_RE = re.compile(r"^(?=.*[^.])[A-Za-z0-9_.-]{1,128}$")
 _SESSION_BOOTSTRAP_LOCK = RLock()
 _SESSION_BOOTSTRAP_CONFIG: dict[str, str] = {}
 
@@ -136,8 +142,14 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
             try:
                 frame = _read_table_from_path(absolute_path)
             except Exception as exc:
+                LOGGER.exception(
+                    "Viewer dataset read failed for %s:%s at %s",
+                    package_name,
+                    kind,
+                    absolute_path,
+                )
                 result.warnings.append(
-                    f"{package_name}:{kind} file read failed ({absolute_path}): {exc}"
+                    f"{package_name}:{kind} file could not be read. Check the server log."
                 )
                 continue
             save_table_dataset(
@@ -168,8 +180,13 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 save_peptide_path(str(resolved))
                 result.loaded_datasets.append(f"{package_name}:peptide")
             except Exception as exc:
+                LOGGER.exception(
+                    "Viewer peptide path load failed for %s at %s",
+                    package_name,
+                    peptide_path,
+                )
                 result.warnings.append(
-                    f"{package_name}:peptide path load failed ({peptide_path}): {exc}"
+                    f"{package_name}:peptide path could not be loaded. Check the server log."
                 )
 
         imputation_configs = {
@@ -194,8 +211,14 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 # Profile already exists in this package; continue.
                 pass
             except Exception as exc:
+                LOGGER.exception(
+                    "Viewer metadata profile creation failed for %s:%s",
+                    package_name,
+                    profile_name,
+                )
                 result.warnings.append(
-                    f"{package_name}:{profile_name} metadata profile create failed: {exc}"
+                    f"{package_name}:{profile_name} metadata profile could not be created. "
+                    "Check the server log."
                 )
 
             protein_metadata = _load_metadata(
@@ -248,7 +271,7 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                     kind="protein",
                     frame=frames["protein"],
                     metadata=protein_metadata,
-                    filter_config=_filter_config(package_config, "protein"),
+                    filter_config=_filter_config(package_config, "protein", result.warnings),
                     is_log2_transformed=_log2_flag(package_config, "protein"),
                     metadata_source_with_metadata="uploaded",
                     metadata_profile_name=profile_name,
@@ -262,7 +285,7 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                     kind="phospho",
                     frame=frames["phospho"],
                     metadata=phospho_metadata,
-                    filter_config=_filter_config(package_config, "phospho"),
+                    filter_config=_filter_config(package_config, "phospho", result.warnings),
                     is_log2_transformed=_log2_flag(package_config, "phospho"),
                     metadata_source_with_metadata="uploaded",
                     metadata_profile_name=profile_name,
@@ -276,7 +299,7 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                     kind="phosprot",
                     frame=frames["phosprot"],
                     metadata=phospho_metadata,
-                    filter_config=_filter_config(package_config, "phosphoprotein"),
+                    filter_config=_filter_config(package_config, "phosphoprotein", result.warnings),
                     is_log2_transformed=_log2_flag(package_config, "phosphoprotein"),
                     metadata_source_with_metadata="shared_phospho",
                     metadata_profile_name=profile_name,
@@ -308,15 +331,6 @@ def _bootstrap_annotation(
 ) -> None:
     try:
         source_frame = frame
-        imputation_info = (
-            _viewer_imputation_info(
-                frame=frame,
-                metadata=metadata,
-                config=imputation_config,
-            )
-            if metadata is not None
-            else AnnotationImputationInfo(mode="none", applied=False)
-        )
 
         if metadata is not None:
             computed = compute_annotation_from_metadata(
@@ -327,6 +341,7 @@ def _bootstrap_annotation(
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
+                normalization=filter_config.normalization,
             )
             metadata_source = metadata_source_with_metadata
         else:
@@ -338,10 +353,47 @@ def _bootstrap_annotation(
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
+                normalization=filter_config.normalization,
             )
             metadata_source = "auto" if computed.auto_detected else "manual"
 
         warnings = list(computed.warnings)
+        imputed_data = pd.DataFrame()
+        imputation_error = ""
+        if metadata is not None:
+            imputation_source = (
+                computed.filtered_data
+                if not computed.filtered_data.empty
+                else computed.log2_data
+                if not computed.log2_data.empty
+                else source_frame
+            )
+            try:
+                imputation_info, imputed_data = _viewer_imputation_result(
+                    frame=imputation_source,
+                    metadata=computed.metadata,
+                    config=imputation_config,
+                )
+            except Exception as exc:
+                LOGGER.exception(
+                    "Viewer imputation generation failed for %s:%s",
+                    package_name,
+                    kind,
+                )
+                imputation_info = AnnotationImputationInfo(
+                    mode=imputation_config.mode,
+                    applied=False,
+                    qValue=imputation_config.q_value,
+                    adjustStd=imputation_config.adjust_std,
+                    downShift=imputation_config.down_shift,
+                    width=imputation_config.width,
+                    seed=imputation_config.seed,
+                    sampleWise=imputation_config.sample_wise,
+                )
+                imputation_error = "check the server log"
+        else:
+            imputation_info = AnnotationImputationInfo(mode="none", applied=False)
+
         if imputation_info.mode != "none":
             if imputation_info.mode == "numerical":
                 imputation_settings = (
@@ -351,13 +403,20 @@ def _bootstrap_annotation(
                 imputation_settings = (
                     f"qValue={imputation_info.qValue}, adjustStd={imputation_info.adjustStd}"
                 )
-            warnings.append(
-                "Viewer imputation configured for selectable statistics only; "
-                "original data is retained for completeness, QC, and missing-value plots "
-                f"(mode={imputation_info.mode}, {imputation_settings}, seed={imputation_info.seed}, "
-                f"sampleWise={imputation_info.sampleWise}, samples={imputation_info.sampleCount}, "
-                f"missing={imputation_info.missingBefore}->{imputation_info.missingAfter})."
-            )
+            if imputation_info.applied and not imputed_data.empty:
+                warnings.append(
+                    "Viewer imputation was generated and stored for selectable statistics; "
+                    "original data is retained for completeness, QC, and missing-value plots "
+                    f"(mode={imputation_info.mode}, {imputation_settings}, seed={imputation_info.seed}, "
+                    f"sampleWise={imputation_info.sampleWise}, samples={imputation_info.sampleCount}, "
+                    f"missing={imputation_info.missingBefore}->{imputation_info.missingAfter})."
+                )
+            else:
+                reason = imputation_error or "no matching sample columns were available"
+                warnings.append(
+                    "Viewer imputation was configured but is unavailable because generation "
+                    f"failed: {reason}. Non-imputed data will not be substituted."
+                )
         else:
             warnings.append("Viewer imputation: none.")
 
@@ -374,6 +433,7 @@ def _bootstrap_annotation(
             warnings=warnings,
             log2_auto_detected=computed.log2_auto_detected,
             imputation=imputation_info,
+            imputed_data=imputed_data,
             package_name=package_name,
             metadata_profile_name=metadata_profile_name,
         )
@@ -382,11 +442,18 @@ def _bootstrap_annotation(
         )
         result.loaded_annotations.append(f"{package_name}:{kind}{profile_suffix}")
     except Exception as exc:
+        LOGGER.exception(
+            "Viewer annotation bootstrap failed for %s:%s:%s",
+            package_name,
+            kind,
+            metadata_profile_name or "default",
+        )
         profile_suffix = (
             f":{metadata_profile_name}" if str(metadata_profile_name or "").strip() else ""
         )
         result.warnings.append(
-            f"{package_name}:{kind}{profile_suffix} annotation bootstrap failed: {exc}"
+            f"{package_name}:{kind}{profile_suffix} annotation bootstrap failed. "
+            "Check the server log."
         )
 
 
@@ -409,7 +476,18 @@ def _extract_named_dataset_packages(config: dict[str, Any]) -> dict[str, dict[st
     return out
 
 
-def _filter_config(config: dict[str, Any], suffix: str) -> AnnotationFilterConfig:
+def _filter_config(
+    config: dict[str, Any],
+    suffix: str,
+    warnings: list[str] | None = None,
+) -> AnnotationFilterConfig:
+    """Build a filter config from the viewer config file.
+
+    Unrecognised values fall back rather than raising, so one bad key cannot stop
+    a shared project from loading. That fallback is now reported: a typo in
+    `normalization` silently resolved to "none", leaving loading differences
+    uncorrected for every viewer of that deployment.
+    """
     min_present = _config_int(config, f"filter_min_{suffix}", 0)
     min_percentage = _float_from_any(config.get(f"filter_percentage_{suffix}", 70.0), default=70.0)
     min_percentage = min(100.0, max(0.0, min_percentage))
@@ -418,11 +496,49 @@ def _filter_config(config: dict[str, Any], suffix: str) -> AnnotationFilterConfi
         method = "at_least_n"
     mode_raw = _config_string(config, f"filter_mode_{suffix}")
     mode = _normalize_filter_mode(mode_raw)
-    return AnnotationFilterConfig(
+    # Read per-kind first, then a shared key, so protein and phosphosite datasets
+    # can share a normalization setting. Phosphoprotein is the deliberate
+    # exception because its phosphosite source was normalized before collapse.
+    if suffix in {"phosprot", "phosphoprotein"}:
+        # Phosphoprotein files are collapsed from already-normalized
+        # phosphosite values and must not be normalized a second time.
+        normalization = "none"
+    else:
+        normalization_raw = (
+            _config_string(config, f"normalization_{suffix}")
+            or _config_string(config, "normalization")
+            or "none"
+        )
+        normalization = _normalize_normalization(normalization_raw)
+        if warnings is not None:
+            raw_text = str(normalization_raw or "").strip()
+            if raw_text and normalization == "none" and raw_text.lower() not in {
+                "none", "off", "disabled", "false", "0"
+            }:
+                warnings.append(
+                    f"Viewer config normalization {raw_text!r} for {suffix} was not recognised; "
+                    "no normalization was applied."
+                )
+    if warnings is not None:
+        mode_text = str(mode_raw or "").strip()
+        if mode_text and mode_text.lower().replace("-", "_").replace(" ", "_") not in {
+            "per_group", "in_at_least_one_group", "inatleastonegroup", "overall"
+        }:
+            warnings.append(
+                f"Viewer config filter mode {mode_text!r} for {suffix} was not recognised; "
+                f"{mode} was used."
+            )
+    resolved = AnnotationFilterConfig(
         method=method,
         minPresent=min_present,
         minPercentage=min_percentage,
         mode=mode,
+        normalization=normalization,
+    )
+    return (
+        phosprot_filter_config(resolved)
+        if suffix in {"phosprot", "phosphoprotein"}
+        else resolved
     )
 
 
@@ -483,14 +599,14 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
     )
 
 
-def _viewer_imputation_info(
+def _viewer_imputation_result(
     *,
     frame: pd.DataFrame,
     metadata: pd.DataFrame,
     config: ViewerImputationConfig,
-) -> AnnotationImputationInfo:
+) -> tuple[AnnotationImputationInfo, pd.DataFrame]:
     if config.mode == "none":
-        return AnnotationImputationInfo(mode="none", applied=False)
+        return AnnotationImputationInfo(mode="none", applied=False), pd.DataFrame()
 
     metadata_samples = (
         metadata.get("sample", pd.Series([], dtype="object"))
@@ -502,16 +618,19 @@ def _viewer_imputation_info(
     # Preserve metadata sample order while removing duplicates.
     sample_columns = list(dict.fromkeys(sample_columns))
     if not sample_columns:
-        return AnnotationImputationInfo(
-            mode=config.mode,
-            applied=False,
-            qValue=config.q_value,
-            adjustStd=config.adjust_std,
-            downShift=config.down_shift,
-            width=config.width,
-            seed=config.seed,
-            sampleWise=config.sample_wise,
-            sampleCount=0,
+        return (
+            AnnotationImputationInfo(
+                mode=config.mode,
+                applied=False,
+                qValue=config.q_value,
+                adjustStd=config.adjust_std,
+                downShift=config.down_shift,
+                width=config.width,
+                seed=config.seed,
+                sampleWise=config.sample_wise,
+                sampleCount=0,
+            ),
+            pd.DataFrame(),
         )
 
     diagnostics = impute_values_with_diagnostics(
@@ -525,18 +644,21 @@ def _viewer_imputation_info(
         down_shift=config.down_shift,
         width=config.width,
     )
-    return AnnotationImputationInfo(
-        mode=config.mode,
-        applied=False,
-        qValue=config.q_value,
-        adjustStd=config.adjust_std,
-        downShift=config.down_shift,
-        width=config.width,
-        seed=config.seed,
-        sampleWise=config.sample_wise,
-        sampleCount=len(sample_columns),
-        missingBefore=diagnostics.missing_before,
-        missingAfter=diagnostics.missing_after,
+    return (
+        AnnotationImputationInfo(
+            mode=config.mode,
+            applied=True,
+            qValue=config.q_value,
+            adjustStd=config.adjust_std,
+            downShift=config.down_shift,
+            width=config.width,
+            seed=config.seed,
+            sampleWise=config.sample_wise,
+            sampleCount=len(sample_columns),
+            missingBefore=diagnostics.missing_before,
+            missingAfter=diagnostics.missing_after,
+        ),
+        diagnostics.imputed_data,
     )
 
 
@@ -609,6 +731,25 @@ def _normalize_filter_mode(raw: str) -> FilterMode:
     if value == "overall":
         return "overall"
     return "per_group"
+
+
+def _normalize_normalization(raw: str) -> NormalizationMethod:
+    """Map a viewer-config normalization value onto a supported method.
+
+    Validated against the schema rather than a hardcoded set, and unknown values
+    fall back to "none" rather than raising, so one bad key cannot stop a shared
+    project from loading.
+    """
+    value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"", "off", "disabled", "false", "0"}:
+        return "none"
+    if value in {"median_centering", "median_center", "mediancentering"}:
+        return "median"
+    if value in {"quantile_normalization", "quantiles"}:
+        return "quantile"
+    if value in set(get_args(NormalizationMethod)):
+        return value  # type: ignore[return-value]
+    return "none"
 
 
 def _normalize_imputation_mode(raw: str) -> str:
@@ -713,27 +854,6 @@ def resolve_viewer_project_config(project_name: str) -> Path | None:
     return None
 
 
-def list_viewer_projects() -> list[str]:
-    roots = [
-        PROJECT_ROOT / "viewer_data" / "local",
-        PROJECT_ROOT / "viewer_data",
-        PROJECT_ROOT / "viewer_data" / "projects",
-    ]
-    out: set[str] = set()
-    for root in roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        for child in root.iterdir():
-            if not child.is_dir():
-                continue
-            project = str(child.name).strip()
-            if not _PROJECT_NAME_RE.fullmatch(project):
-                continue
-            if resolve_viewer_project_config(project) is not None:
-                out.add(project)
-    return sorted(out)
-
-
 def _default_project_viewer_config_path(project_name: str) -> Path | None:
     return resolve_viewer_project_config(project_name)
 
@@ -766,8 +886,16 @@ def _load_metadata(
     try:
         return _read_table_from_path(path)
     except Exception as exc:
+        LOGGER.exception(
+            "Viewer metadata read failed for %s:%s:%s at %s",
+            package_name,
+            profile_name,
+            key,
+            path,
+        )
         warnings.append(
-            f"{package_name}:{profile_name}:{key} metadata read failed ({path}): {exc}"
+            f"{package_name}:{profile_name}:{key} metadata could not be read. "
+            "Check the server log."
         )
         return None
 
@@ -871,11 +999,13 @@ def _resolve_config_file_path(
         return None
 
     if not path.exists():
-        warnings.append(f"{label} not found: {path}")
+        LOGGER.warning("Viewer configuration path for %s was not found: %s", label, path)
+        warnings.append(f"{label} was not found. Check the server log.")
         return None
 
     if not path.is_file():
-        warnings.append(f"{label} is not a file: {path}")
+        LOGGER.warning("Viewer configuration path for %s is not a file: %s", label, path)
+        warnings.append(f"{label} is not a regular file. Check the server log.")
         return None
 
     return path

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { DatasetKind } from "../../lib/types";
 
 type UploadFormProps = {
@@ -27,12 +27,6 @@ export default function UploadForm({
   const isTableKind = kind === "protein" || kind === "phospho" || kind === "phosprot";
   const isPeptide = kind === "peptide";
 
-  useEffect(() => {
-    setFile(null);
-    setTableInputValue("");
-    setPeptideInputValue("");
-  }, [kind]);
-
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4">
@@ -46,7 +40,12 @@ export default function UploadForm({
           </label>
           <select
             value={kind}
-            onChange={(e) => onKindChange(e.target.value as DatasetKind)}
+            onChange={(e) => {
+              setFile(null);
+              setTableInputValue("");
+              setPeptideInputValue("");
+              onKindChange(e.target.value as DatasetKind);
+            }}
             className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
           >
             <option value="protein">Protein</option>
@@ -107,7 +106,7 @@ export default function UploadForm({
               disabled={!file || loading}
               className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto"
             >
-              {loading ? "Saving..." : "Upload Path"}
+              {loading ? "Uploading..." : "Upload"}
             </button>
           </div>
         )}

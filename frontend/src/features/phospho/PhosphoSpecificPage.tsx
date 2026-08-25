@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getPhosphoOptions, getPhosphoTable } from "../../lib/api";
+import { buildPlotUrl, getPhosphoOptions, getPhosphoTable, isAbortError, pairingIsReady } from "../../lib/api";
+import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import PaginatedTable from "../../components/PaginatedTable";
+import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -72,6 +74,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     mode: String(persistedCoverage.mode ?? "Normal"),
     colorClassI: String(persistedCoverage.colorClassI ?? "#2563eb"),
     colorNotClassI: String(persistedCoverage.colorNotClassI ?? "#f59e0b"),
+    randomSeed: Number(persistedCoverage.randomSeed ?? 69),
     conditions: Array.isArray(persistedCoverage.conditions)
       ? persistedCoverage.conditions.map((value) => String(value ?? ""))
       : ([] as string[]),
@@ -129,6 +132,22 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   const debouncedSty = useDebouncedValue(sty, 650);
   const debouncedKsea = useDebouncedValue(ksea, 650);
   const debouncedPhosprotRegulation = useDebouncedValue(phosprotRegulation, 650);
+  const kseaPairingReady =
+    debouncedKsea.testType !== "paired" ||
+    pairingIsReady(
+      debouncedKsea.condition1,
+      debouncedKsea.condition2,
+      options?.samplesByCondition ?? {},
+      options?.pairIdsBySample ?? {}
+    );
+  const phosprotPairingReady =
+    debouncedPhosprotRegulation.testType !== "paired" ||
+    pairingIsReady(
+      debouncedPhosprotRegulation.condition1,
+      debouncedPhosprotRegulation.condition2,
+      options?.samplesByCondition ?? {},
+      options?.pairIdsBySample ?? {}
+    );
 
   useEffect(() => {
     writePersistedUiState("phospho.specific.v1", {
@@ -149,26 +168,25 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       setOptionsError("No phospho dataset loaded.");
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setOptionsLoading(true);
     setOptionsError(null);
-    getPhosphoOptions()
+    getPhosphoOptions({ signal: controller.signal })
       .then((data) => {
-        if (cancelled) return;
         setOptions(data);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setOptions(null);
         setOptionsError(err instanceof Error ? err.message : "Failed to load phospho options");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setOptionsLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [hasPhosphoDataset]);
 
@@ -208,6 +226,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     phosprotRegulation.condition1 === phosprotRegulation.condition2;
 
   const plotView = useMemo<PlotView>(() => {
+    void advancedPlotSignal;
     if (activeTab === "phosphositePlot") {
       return {
         title: "Phosphosite Plot",
@@ -235,6 +254,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           mode: debouncedCoverage.mode,
           colorClassI: debouncedCoverage.colorClassI,
           colorNotClassI: debouncedCoverage.colorNotClassI,
+          randomSeed: debouncedCoverage.randomSeed,
           widthCm: debouncedCoverage.widthCm,
           heightCm: debouncedCoverage.heightCm,
           dpi: debouncedCoverage.dpi,
@@ -261,6 +281,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "ksea") {
       if (!debouncedKsea.condition1 || !debouncedKsea.condition2) return null;
+      if (debouncedKsea.condition1 === debouncedKsea.condition2 || !kseaPairingReady) return null;
       return {
         title: "KSEA",
         filename: "ksea_plot.png",
@@ -283,6 +304,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     if (activeTab === "phosprotRegulation") {
       if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
       if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
+      if (!phosprotPairingReady) return null;
       return {
         title: "Phosprot Regulation",
         filename: "phosprot_regulation.html",
@@ -323,6 +345,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     debouncedSty,
     debouncedKsea,
     debouncedPhosprotRegulation,
+    kseaPairingReady,
+    phosprotPairingReady,
     advancedPlotSignal,
   ]);
   const plotDownloadUrl = useMemo(() => {
@@ -369,6 +393,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "ksea") {
       if (!debouncedKsea.condition1 || !debouncedKsea.condition2) return null;
+      if (debouncedKsea.condition1 === debouncedKsea.condition2 || !kseaPairingReady) return null;
       const params: Record<string, string | number | boolean> = {
         condition1: debouncedKsea.condition1,
         condition2: debouncedKsea.condition2,
@@ -386,6 +411,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     if (activeTab === "phosprotRegulation") {
       if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
       if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
+      if (!phosprotPairingReady) return null;
       const params: Record<string, string | number | boolean> = {
         condition1: debouncedPhosprotRegulation.condition1,
         condition2: debouncedPhosprotRegulation.condition2,
@@ -412,6 +438,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     debouncedDistribution.cutoff,
     debouncedKsea,
     debouncedPhosprotRegulation,
+    kseaPairingReady,
+    phosprotPairingReady,
   ]);
 
   useEffect(() => {
@@ -428,26 +456,25 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
-    getPhosphoTable(tableRequest.tab, tableRequest.params)
+    getPhosphoTable(tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setTableRows(payload.rows ?? []);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setTableRows([]);
         setTableError(err instanceof Error ? err.message : "Failed to load phospho table");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setTableLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [tableRequest, hasPhosphoDataset]);
 
@@ -496,6 +523,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             "tab=coverage",
             `mode=${coverage.mode}`,
             `includeId=${coverage.includeId ? "true" : "false"}`,
+            `randomSeed=${coverage.randomSeed}`,
             `conditions=${coverage.conditions.map((value) => sanitize(value)).join(",")}`,
           ];
     onContextModeChange(parts.join("|"));
@@ -515,6 +543,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     debouncedPhosprotRegulation.showPhosphosites,
     coverage.mode,
     coverage.includeId,
+    coverage.randomSeed,
     coverage.conditions,
   ]);
 
@@ -746,6 +775,18 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               value={coverage.colorNotClassI}
               onChange={(value) => setCoverage({ ...coverage, colorNotClassI: value })}
             />,
+            ...(coverage.mode === "Summary"
+              ? [
+                  <NumericField
+                    key="randomSeed"
+                    label="Random Seed"
+                    value={coverage.randomSeed}
+                    onChange={(value) =>
+                      setCoverage({ ...coverage, randomSeed: Math.max(0, Math.round(value)) })
+                    }
+                  />,
+                ]
+              : []),
           ]}
           toggles={[
             <Checkbox key="id" label="Toggle ID" checked={coverage.includeId} onChange={(value) => setCoverage({ ...coverage, includeId: value })} />,
@@ -841,6 +882,20 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               options={["unpaired", "paired"]}
               onChange={(value) => setKsea({ ...ksea, testType: value })}
             />,
+            ...(ksea.testType === "paired"
+              ? [
+                  <div key="pairing" className="lg:col-span-2">
+                    <PairingEditor
+                      kind="phospho"
+                      condition1={ksea.condition1}
+                      condition2={ksea.condition2}
+                      samplesByCondition={options?.samplesByCondition ?? {}}
+                      pairIdsBySample={options?.pairIdsBySample ?? {}}
+                      onSaved={async () => setOptions(await getPhosphoOptions())}
+                    />
+                  </div>,
+                ]
+              : []),
           ]}
           toggles={[
             <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={ksea.useUncorrected} onChange={(value) => setKsea({ ...ksea, useUncorrected: value })} />,
@@ -899,6 +954,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               value={phosprotRegulation.log2fcThreshold}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, log2fcThreshold: Math.max(0, value) })}
             />,
+            <div key="scoreExplanation" className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 lg:col-span-2">
+              Each protein&apos;s coordinates sum the log2 fold changes of phosphosites that pass both selected thresholds. The down-site score uses absolute magnitudes.
+            </div>,
             <SelectField
               key="testType"
               label="Test Type"
@@ -906,6 +964,20 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               options={["unpaired", "paired"]}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, testType: value })}
             />,
+            ...(phosprotRegulation.testType === "paired"
+              ? [
+                  <div key="pairing" className="lg:col-span-2">
+                    <PairingEditor
+                      kind="phospho"
+                      condition1={phosprotRegulation.condition1}
+                      condition2={phosprotRegulation.condition2}
+                      samplesByCondition={options?.samplesByCondition ?? {}}
+                      pairIdsBySample={options?.pairIdsBySample ?? {}}
+                      onSaved={async () => setOptions(await getPhosphoOptions())}
+                    />
+                  </div>,
+                ]
+              : []),
             <NumericField
               key="maxHoverSites"
               label="Max Sites in Table"
@@ -997,9 +1069,9 @@ function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={onWidthChange} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={onHeightChange} />
-      <NumericField label="DPI" value={dpi} onChange={onDpiChange} />
+      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
+      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
     </div>
   );
 }
@@ -1078,25 +1150,22 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -1106,7 +1175,7 @@ function NumericField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         onChange={(event) => {
           const normalized = event.target.value.replace(",", ".");
           setDraft(normalized);

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import io
 
 import pandas as pd
@@ -15,7 +17,9 @@ from app.schemas.annotation import (
     Log2DetectionResponse,
     MetadataAnnotationKind,
     MetadataUploadResponse,
+    PairingUpdateRequest,
     PhosprotAggregateRequest,
+    phosprot_filter_config,
 )
 from app.services.annotation_processor import (
     compute_annotation,
@@ -23,7 +27,13 @@ from app.services.annotation_processor import (
     detect_log2_transformed,
     normalize_uploaded_metadata,
 )
-from app.services.annotation_store import clear_annotation, get_annotation, save_annotation
+from app.services.annotation_store import (
+    clear_annotation,
+    get_annotation,
+    preserve_annotation_pair_ids,
+    save_annotation,
+    update_annotation_pairing,
+)
 from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.dataset_store import get_current_dataset
 from app.services.metadata_upload_store import (
@@ -34,6 +44,10 @@ from app.services.metadata_upload_store import (
     save_uploaded_metadata,
 )
 from app.services.phosprot_tools import aggregate_from_phospho, upload_phosprot
+from app.services.upload_limits import ensure_upload_size
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/annotations", tags=["annotations"])
 
@@ -95,7 +109,8 @@ def _stream_dataframe_download(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{error_detail}: {e}") from e
+        LOGGER.exception("{error_detail}")
+        raise HTTPException(status_code=500, detail="{error_detail}.") from e
 
 
 def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> None:
@@ -129,6 +144,7 @@ def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> No
             filter_mode=filter_config.mode,
             filter_method=filter_config.method,
             min_percentage=filter_config.minPercentage,
+            normalization=filter_config.normalization,
         )
         save_annotation(
             kind=kind,
@@ -147,12 +163,16 @@ def _sync_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> No
 
 
 @router.post("/metadata/upload", response_model=MetadataUploadResponse)
-async def upload_annotation_metadata(
+def upload_annotation_metadata(
     file: UploadFile = File(...),
     kind: MetadataAnnotationKind = Form(...),
 ) -> MetadataUploadResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Metadata file")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
     try:
         _ = get_extension(file.filename)
@@ -160,7 +180,8 @@ async def upload_annotation_metadata(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse metadata file: {e}") from e
+        LOGGER.exception("Failed to parse annotation metadata upload")
+        raise HTTPException(status_code=400, detail="Failed to parse metadata file.") from e
 
     stored = save_uploaded_metadata(kind=kind, filename=file.filename, frame=frame)
     _sync_auto_generated_profile_annotations(kind)
@@ -168,7 +189,7 @@ async def upload_annotation_metadata(
 
 
 @router.get("/metadata/current/{kind}", response_model=MetadataUploadResponse)
-async def get_current_uploaded_metadata(kind: MetadataAnnotationKind) -> MetadataUploadResponse:
+def get_current_uploaded_metadata(kind: MetadataAnnotationKind) -> MetadataUploadResponse:
     stored = get_uploaded_metadata(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No uploaded metadata stored for {kind} dataset")
@@ -176,14 +197,14 @@ async def get_current_uploaded_metadata(kind: MetadataAnnotationKind) -> Metadat
 
 
 @router.delete("/metadata/current/{kind}")
-async def clear_current_uploaded_metadata(kind: MetadataAnnotationKind) -> dict[str, object]:
+def clear_current_uploaded_metadata(kind: MetadataAnnotationKind) -> dict[str, object]:
     clear_uploaded_metadata(kind)
     _sync_auto_generated_profile_annotations(kind)
     return {"kind": kind, "cleared": True}
 
 
 @router.post("/generate", response_model=AnnotationResultResponse)
-async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultResponse:
+def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultResponse:
     current_dataset = get_current_dataset(payload.kind)
     if current_dataset is None or not hasattr(current_dataset, "frame"):
         raise HTTPException(
@@ -192,6 +213,10 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
         )
 
     filter_config = payload.filter or AnnotationFilterConfig()
+    if payload.kind == "phosprot":
+        # Phosphoprotein data already carry any phosphosite-level
+        # normalization performed before collapse.
+        filter_config = phosprot_filter_config(filter_config)
 
     metadata_kind: MetadataAnnotationKind | None
     if payload.kind == "protein":
@@ -217,6 +242,7 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
+                normalization=filter_config.normalization,
             )
             metadata_source = "shared_phospho" if payload.kind == "phosprot" else "uploaded"
         else:
@@ -228,12 +254,18 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
+                normalization=filter_config.normalization,
+            )
+            computed.metadata = preserve_annotation_pair_ids(
+                payload.kind,
+                computed.metadata,
             )
             metadata_source = "auto" if computed.auto_detected else "manual"
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate annotation: {e}") from e
+        LOGGER.exception("Failed to generate annotation")
+        raise HTTPException(status_code=500, detail="Failed to generate annotation.") from e
 
     stored = save_annotation(
         kind=payload.kind,
@@ -252,8 +284,22 @@ async def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationR
     return _response_from_stored(stored)
 
 
+@router.put("/pairing", response_model=AnnotationResultResponse)
+def update_pairing(payload: PairingUpdateRequest) -> AnnotationResultResponse:
+    try:
+        stored = update_annotation_pairing(
+            payload.kind,
+            payload.condition1,
+            payload.condition2,
+            payload.pairs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _response_from_stored(stored)
+
+
 @router.get("/current/{kind}", response_model=AnnotationResultResponse)
-async def get_current_annotation(kind: AnnotationKind) -> AnnotationResultResponse:
+def get_current_annotation(kind: AnnotationKind) -> AnnotationResultResponse:
     stored = get_annotation(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
@@ -262,7 +308,7 @@ async def get_current_annotation(kind: AnnotationKind) -> AnnotationResultRespon
 
 
 @router.post("/log2-detect", response_model=Log2DetectionResponse)
-async def detect_annotation_log2_scale(
+def detect_annotation_log2_scale(
     payload: Log2DetectionRequest,
 ) -> Log2DetectionResponse:
     current_dataset = get_current_dataset(payload.kind)
@@ -299,7 +345,7 @@ async def detect_annotation_log2_scale(
 
 
 @router.get("/current/{kind}/filtered/download")
-async def download_current_filtered_annotation(kind: AnnotationKind) -> StreamingResponse:
+def download_current_filtered_annotation(kind: AnnotationKind) -> StreamingResponse:
     stored = get_annotation(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
@@ -312,7 +358,7 @@ async def download_current_filtered_annotation(kind: AnnotationKind) -> Streamin
 
 
 @router.get("/current/{kind}/source/download")
-async def download_current_source_annotation(kind: AnnotationKind) -> StreamingResponse:
+def download_current_source_annotation(kind: AnnotationKind) -> StreamingResponse:
     stored = get_annotation(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
@@ -325,7 +371,7 @@ async def download_current_source_annotation(kind: AnnotationKind) -> StreamingR
 
 
 @router.get("/current/{kind}/metadata/download")
-async def download_current_metadata_annotation(kind: AnnotationKind) -> StreamingResponse:
+def download_current_metadata_annotation(kind: AnnotationKind) -> StreamingResponse:
     stored = get_annotation(kind)
     if stored is None:
         raise HTTPException(status_code=404, detail=f"No annotation stored for {kind} dataset")
@@ -338,7 +384,7 @@ async def download_current_metadata_annotation(kind: AnnotationKind) -> Streamin
 
 
 @router.post("/phosprot/aggregate", response_model=AnnotationResultResponse)
-async def aggregate_phosprot_annotation(
+def aggregate_phosprot_annotation(
     payload: PhosprotAggregateRequest,
 ) -> AnnotationResultResponse:
     try:
@@ -346,20 +392,22 @@ async def aggregate_phosprot_annotation(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to aggregate phosphoprotein dataset: {e}",
-        ) from e
+        LOGGER.exception("Failed to aggregate phosphoprotein dataset")
+        raise HTTPException(status_code=500, detail="Failed to aggregate phosphoprotein dataset.") from e
     return _response_from_stored(stored)
 
 
 @router.post("/phosprot/upload", response_model=AnnotationResultResponse)
-async def upload_phosprot_annotation(
+def upload_phosprot_annotation(
     file: UploadFile = File(...),
     isLog2Transformed: bool | None = Form(default=None),
 ) -> AnnotationResultResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Phosphoprotein dataset")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
     try:
         _ = get_extension(file.filename)
@@ -372,8 +420,6 @@ async def upload_phosprot_annotation(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to upload phosphoprotein dataset: {e}",
-        ) from e
+        LOGGER.exception("Failed to upload phosphoprotein dataset")
+        raise HTTPException(status_code=500, detail="Failed to upload phosphoprotein dataset.") from e
     return _response_from_stored(stored)

@@ -1,53 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
-import AdvancedPlotOptions, { type AdvancedPlotControlDefaults } from "./components/plots/AdvancedPlotOptions";
+import ModuleLoadBoundary from "./components/ModuleLoadBoundary";
+import type { AdvancedPlotControlDefaults } from "./components/plots/AdvancedPlotOptions";
 import UploadPage from "./features/upload/UploadPage";
-import AnalysisPage from "./features/analysis/AnalysisPage";
-import AnnotationPage from "./features/metadata/AnnotationPage";
-import AnnotationViewerPage from "./features/metadata/AnnotationViewerPage";
-import ImputationPage from "./features/data/ImputationPage";
-import DistributionPage from "./features/data/DistributionPage";
-import IdTranslatorPage from "./features/data/IdTranslatorPage";
-import ColorsPage from "./features/data/ColorsPage";
-import RestorePage from "./features/data/RestorePage";
-import MissingValuePlotPage from "./features/completeness/MissingValuePlotPage";
-import MissingValueHeatmapPage from "./features/completeness/MissingValueHeatmapPage";
-import CompletenessTablesPage from "./features/completeness/CompletenessTablesPage";
-import CoveragePlotPage from "./features/qc/CoveragePlotPage";
-import HistogramIntensityPage from "./features/qc/HistogramIntensityPage";
-import BoxplotIntensityPage from "./features/qc/BoxplotIntensityPage";
-import CovPlotPage from "./features/qc/CovPlotPage";
-import PrincipalComponentAnalysisPage from "./features/qc/PrincipalComponentAnalysisPage";
-import AbundancePlotPage from "./features/qc/AbundancePlotPage";
-import CorrelationPlotPage from "./features/qc/CorrelationPlotPage";
-import VolcanoPlotPage from "./features/stats/VolcanoPlotPage";
-import AnovaPage from "./features/stats/AnovaPage";
-import GseaPage from "./features/stats/GseaPage";
-import PathwayHeatmapPage from "./features/stats/PathwayHeatmapPage";
-import SimulationPage from "./features/stats/SimulationPage";
-import RtPlotPage from "./features/peptide/RtPlotPage";
-import ModificationPlotPage from "./features/peptide/ModificationPlotPage";
-import MissedCleavagePlotPage from "./features/peptide/MissedCleavagePlotPage";
-import SequenceCoveragePage from "./features/peptide/SequenceCoveragePage";
-import ProteinBoxplotPage from "./features/single-protein/ProteinBoxplotPage";
-import ProteinLineplotPage from "./features/single-protein/ProteinLineplotPage";
-import PhosphositesOnProteinHeatmapPage from "./features/single-protein/PhosphositesOnProteinHeatmapPage";
-import PhosphositePlotPage from "./features/phospho/PhosphositePlotPage";
-import PhosphositeCoveragePage from "./features/phospho/PhosphositeCoveragePage";
-import PhosphositeDistributionPage from "./features/phospho/PhosphositeDistributionPage";
-import StyPlotPage from "./features/phospho/StyPlotPage";
-import KseaPage from "./features/phospho/KseaPage";
-import PhosprotRegulationPage from "./features/phospho/PhosprotRegulationPage";
-import PearsonCorrelationPage from "./features/comparison/PearsonCorrelationPage";
-import VennDiagramPage from "./features/comparison/VennDiagramPage";
-import PeptideCollapsePage from "./features/external/PeptideCollapsePage";
-import GONetViewPage from "./features/external/GONetViewPage";
-import SettingsPage from "./features/settings/SettingsPage";
-import TablesPage from "./features/summary/TablesPage";
-import TextPage from "./features/summary/TextPage";
-import ReportPage from "./features/summary/ReportPage";
 import type {
   ComparisonTab,
   CompletenessTab,
@@ -67,7 +24,9 @@ import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
 import { downloadRestoreState } from "./lib/api";
 import {
   applyCopylotLocalStorageState,
+  applyCopylotSessionStorageState,
   captureCopylotLocalStorageState,
+  captureCopylotSessionStorageState,
 } from "./lib/restoreUiState";
 import {
   clearPersistedSaveStateTarget,
@@ -88,6 +47,30 @@ import {
   setAdvancedPlotMode,
   setAdvancedPlotSettingsByKey,
 } from "./lib/appSettings";
+
+const AdvancedPlotOptions = lazy(() => import("./components/plots/AdvancedPlotOptions"));
+const AnalysisPage = lazy(() => import("./features/analysis/AnalysisPage"));
+const AnnotationPage = lazy(() => import("./features/metadata/AnnotationPage"));
+const AnnotationViewerPage = lazy(() => import("./features/metadata/AnnotationViewerPage"));
+const ImputationPage = lazy(() => import("./features/data/ImputationPage"));
+const DistributionPage = lazy(() => import("./features/data/DistributionPage"));
+const IdTranslatorPage = lazy(() => import("./features/data/IdTranslatorPage"));
+const ColorsPage = lazy(() => import("./features/data/ColorsPage"));
+const RestorePage = lazy(() => import("./features/data/RestorePage"));
+const CompletenessPage = lazy(() => import("./features/completeness/CompletenessPage"));
+const QCPipelinePage = lazy(() => import("./features/qc/QCPipelinePage"));
+const StatisticalAnalysisPage = lazy(() => import("./features/stats/StatisticalAnalysisPage"));
+const PeptideLevelPage = lazy(() => import("./features/peptide/PeptideLevelPage"));
+const SingleProteinPage = lazy(() => import("./features/single-protein/SingleProteinPage"));
+const PhosphoSpecificPage = lazy(() => import("./features/phospho/PhosphoSpecificPage"));
+const KseaPage = lazy(() => import("./features/phospho/KseaPage"));
+const ComparisonPipelinePage = lazy(() => import("./features/comparison/ComparisonPipelinePage"));
+const PeptideCollapsePage = lazy(() => import("./features/external/PeptideCollapsePage"));
+const GONetViewPage = lazy(() => import("./features/external/GONetViewPage"));
+const SettingsPage = lazy(() => import("./features/settings/SettingsPage"));
+const TablesPage = lazy(() => import("./features/summary/TablesPage"));
+const TextPage = lazy(() => import("./features/summary/TextPage"));
+const ReportPage = lazy(() => import("./features/summary/ReportPage"));
 
 const dataTabs: { key: DataTab; label: string }[] = [
   { key: "upload", label: "Upload" },
@@ -118,7 +101,7 @@ const completenessTabs: { key: CompletenessTab; label: string }[] = [
 const statsTabs: { key: StatsTab; label: string }[] = [
   { key: "volcano", label: "Volcano Plot" },
   { key: "anova", label: "ANOVA" },
-  { key: "gsea", label: "GSEA" },
+  { key: "ora", label: "GO Enrichment (ORA)" },
   { key: "pathwayHeatmap", label: "Pathway Heatmap" },
   { key: "simulation", label: "Simulation" },
 ];
@@ -375,7 +358,7 @@ export default function App() {
   const [completenessContextMode, setCompletenessContextMode] = useState<string>("");
   const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
   const [statsAnovaContextMode, setStatsAnovaContextMode] = useState<string>("");
-  const [statsGseaContextMode, setStatsGseaContextMode] = useState<string>("");
+  const [statsOraContextMode, setStatsOraContextMode] = useState<string>("");
   const [statsPathwayHeatmapContextMode, setStatsPathwayHeatmapContextMode] = useState<string>("");
   const [peptideContextMode, setPeptideContextMode] = useState<string>("");
   const [singleProteinBoxplotContextMode, setSingleProteinBoxplotContextMode] = useState<string>("");
@@ -383,6 +366,7 @@ export default function App() {
   const [phosphoContextMode, setPhosphoContextMode] = useState<string>("");
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [metadataSwitchTarget, setMetadataSwitchTarget] = useState<string | null>(null);
   const [saveStateHandle, setSaveStateHandle] = useState<SaveStateFileHandle | null>(null);
   const [saveStateFileName, setSaveStateFileName] = useState<string | null>(null);
   const [saveStateStatus, setSaveStateStatus] = useState<SaveStateStatus | null>(null);
@@ -397,6 +381,22 @@ export default function App() {
   }, [annotationMode, availableMetadataProfiles, autoGeneratedMetadataProfiles]);
   const showMetadataSwitcher = metadataOptions.length >= 2;
   const showTopSelector = showDatasetSwitcher || showMetadataSwitcher;
+  const switchMetadataProfile = useCallback(
+    async (profileName: string) => {
+      const next = profileName.trim();
+      if (!next || next === activeMetadataProfile) return;
+      setSwitchError(null);
+      setMetadataSwitchTarget(next);
+      try {
+        await setMetadataProfile(next);
+      } catch (err) {
+        setSwitchError(err instanceof Error ? err.message : "Failed to switch metadata profile");
+      } finally {
+        setMetadataSwitchTarget((current) => (current === next ? null : current));
+      }
+    },
+    [activeMetadataProfile, setMetadataProfile]
+  );
   const activeAdvancedPlotKey = useMemo(() => {
     if (activeSection === "data" && activeDataTab === "distribution") {
       return "data:distribution";
@@ -412,7 +412,6 @@ export default function App() {
   }, [
     activeSection,
     activeDataTab,
-    activeCompletenessTab,
     activeStatsTab,
     activePeptideTab,
     activeSingleProteinTab,
@@ -486,13 +485,17 @@ export default function App() {
   useEffect(() => {
     if (!annotationMode) return;
     if (metadataOptions.includes(activeMetadataProfile)) return;
+    if (metadataSwitchTarget) return;
     const fallback = metadataOptions[0];
     if (!fallback) return;
-    setSwitchError(null);
-    setMetadataProfile(fallback).catch((err) => {
-      setSwitchError(err instanceof Error ? err.message : "Failed to switch metadata profile");
-    });
-  }, [annotationMode, metadataOptions, activeMetadataProfile, setMetadataProfile]);
+    void switchMetadataProfile(fallback);
+  }, [
+    annotationMode,
+    metadataOptions,
+    activeMetadataProfile,
+    metadataSwitchTarget,
+    switchMetadataProfile,
+  ]);
 
   useEffect(() => {
     document.title = "Proteomics CoPYlot";
@@ -530,7 +533,7 @@ export default function App() {
     if (!IS_AI_MODE && rightPanel === "chat") {
       setRightPanel("none");
     }
-  }, [rightPanel, IS_AI_MODE]);
+  }, [rightPanel]);
 
   useEffect(() => {
     if (activeSection === "qc") return;
@@ -566,8 +569,8 @@ export default function App() {
   }, [activeSection, activeStatsTab]);
 
   useEffect(() => {
-    if (activeSection === "stats" && activeStatsTab === "gsea") return;
-    setStatsGseaContextMode("");
+    if (activeSection === "stats" && activeStatsTab === "ora") return;
+    setStatsOraContextMode("");
   }, [activeSection, activeStatsTab]);
 
   useEffect(() => {
@@ -771,7 +774,6 @@ export default function App() {
     return null;
   }, [
     activeSection,
-    activeDataTab,
     activeQcTab,
     activeCompletenessTab,
     activeStatsTab,
@@ -780,9 +782,12 @@ export default function App() {
     activeComparisonTab,
   ]);
 
-  const topManualButton = topManual ? (
-    <ManualEmbed pdfPath={topManual.path} title={topManual.title} buttonLabel="Manual" />
-  ) : null;
+  const topManualButton = useMemo(
+    () => topManual ? (
+      <ManualEmbed pdfPath={topManual.path} title={topManual.title} buttonLabel="Manual" />
+    ) : null,
+    [topManual]
+  );
 
   const activeModuleKey = useMemo(() => {
     if (activeSection === "data") return `data.${activeDataTab}`;
@@ -842,7 +847,6 @@ export default function App() {
     return "";
   }, [
     activeSection,
-    activeQcTab,
     activePhosphoTab,
     activeSingleProteinTab,
     activeComparisonTab,
@@ -858,8 +862,8 @@ export default function App() {
     if (activeSection === "stats" && activeStatsTab === "anova") {
       return statsAnovaContextMode.trim();
     }
-    if (activeSection === "stats" && activeStatsTab === "gsea") {
-      return statsGseaContextMode.trim();
+    if (activeSection === "stats" && activeStatsTab === "ora") {
+      return statsOraContextMode.trim();
     }
     if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") {
       return statsPathwayHeatmapContextMode.trim();
@@ -920,7 +924,7 @@ export default function App() {
     activePhosphoTab,
     statsVolcanoContextMode,
     statsAnovaContextMode,
-    statsGseaContextMode,
+    statsOraContextMode,
     statsPathwayHeatmapContextMode,
     completenessContextMode,
     qcBoxplotMode,
@@ -964,14 +968,11 @@ export default function App() {
               Metadata
             </label>
             <select
-              value={activeMetadataProfile}
+              value={metadataSwitchTarget ?? activeMetadataProfile}
               onChange={(event) => {
-                const next = event.target.value;
-                setSwitchError(null);
-                setMetadataProfile(next).catch((err) => {
-                  setSwitchError(err instanceof Error ? err.message : "Failed to switch metadata profile");
-                });
+                void switchMetadataProfile(event.target.value);
               }}
+              disabled={metadataSwitchTarget !== null}
               className="min-w-44 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
             >
               {metadataOptions.map((name) => (
@@ -1145,7 +1146,7 @@ export default function App() {
 
   function buildUiStateSnapshot(): Record<string, unknown> {
     return {
-      version: 1,
+      version: 2,
       app: {
         activeSection,
         activeDataTab,
@@ -1165,6 +1166,7 @@ export default function App() {
         settingsByKey: advancedByKey,
       },
       localStorageState: captureCopylotLocalStorageState(),
+      sessionStorageState: captureCopylotSessionStorageState(),
     };
   }
 
@@ -1172,15 +1174,23 @@ export default function App() {
     const appState = payload?.app;
     const advancedPlotState = payload?.advancedPlot;
     const localStorageState = payload?.localStorageState ?? payload?.reportLocalStorage;
-    if (localStorageState && typeof localStorageState === "object") {
-      applyCopylotLocalStorageState(localStorageState as Record<string, unknown>);
-      const restoredAdvancedMode = getAdvancedPlotMode();
-      const restoredAdvancedSettings = getAdvancedPlotSettingsByKey();
-      setAdvancedModeEnabled(restoredAdvancedMode);
-      setAdvancedByKey(restoredAdvancedSettings);
-      if (!restoredAdvancedMode) {
-        setActiveAdvancedPlotSettings(null);
-      }
+    const sessionStorageState = payload?.sessionStorageState;
+    applyCopylotLocalStorageState(
+      localStorageState && typeof localStorageState === "object"
+        ? (localStorageState as Record<string, unknown>)
+        : {}
+    );
+    applyCopylotSessionStorageState(
+      sessionStorageState && typeof sessionStorageState === "object"
+        ? (sessionStorageState as Record<string, unknown>)
+        : {}
+    );
+    const restoredAdvancedMode = getAdvancedPlotMode();
+    const restoredAdvancedSettings = getAdvancedPlotSettingsByKey();
+    setAdvancedModeEnabled(restoredAdvancedMode);
+    setAdvancedByKey(restoredAdvancedSettings);
+    if (!restoredAdvancedMode) {
+      setActiveAdvancedPlotSettings(null);
     }
     if (advancedPlotState && typeof advancedPlotState === "object") {
       const advanced = advancedPlotState as Record<string, unknown>;
@@ -1196,56 +1206,60 @@ export default function App() {
       if (!enabled) {
         setActiveAdvancedPlotSettings(null);
       }
+    } else {
+      setAdvancedPlotSettingsByKey(restoredAdvancedSettings);
+      setAdvancedPlotMode(restoredAdvancedMode);
     }
-    if (!appState || typeof appState !== "object") return;
-    const next = appState as Record<string, unknown>;
+    const next = appState && typeof appState === "object"
+      ? (appState as Record<string, unknown>)
+      : {};
 
-    const nextSection = String(next.activeSection ?? "").trim() as SidebarSection;
+    const nextSection = String(next.activeSection ?? "data").trim() as SidebarSection;
     if (allSidebarSections.includes(nextSection)) {
       setActiveSection(nextSection);
     }
 
-    const nextData = String(next.activeDataTab ?? "").trim() as DataTab;
+    const nextData = String(next.activeDataTab ?? "upload").trim() as DataTab;
     if (dataTabs.some((item) => item.key === nextData)) {
       setActiveDataTab(nextData);
     }
-    const nextQc = String(next.activeQcTab ?? "").trim() as QcTab;
+    const nextQc = String(next.activeQcTab ?? "coverage").trim() as QcTab;
     if (qcTabs.some((item) => item.key === nextQc)) {
       setActiveQcTab(nextQc);
     }
-    const nextCompleteness = String(next.activeCompletenessTab ?? "").trim() as CompletenessTab;
+    const nextCompleteness = String(next.activeCompletenessTab ?? "missingPlot").trim() as CompletenessTab;
     if (completenessTabs.some((item) => item.key === nextCompleteness)) {
       setActiveCompletenessTab(nextCompleteness);
     }
-    const nextStats = String(next.activeStatsTab ?? "").trim() as StatsTab;
+    const nextStats = String(next.activeStatsTab ?? "volcano").trim() as StatsTab;
     if (statsTabs.some((item) => item.key === nextStats)) {
       setActiveStatsTab(nextStats);
     }
-    const nextPeptide = String(next.activePeptideTab ?? "").trim() as PeptideTab;
+    const nextPeptide = String(next.activePeptideTab ?? "rtPlot").trim() as PeptideTab;
     if (peptideTabs.some((item) => item.key === nextPeptide)) {
       setActivePeptideTab(nextPeptide);
     }
-    const nextSingle = String(next.activeSingleProteinTab ?? "").trim() as SingleProteinTab;
+    const nextSingle = String(next.activeSingleProteinTab ?? "boxplot").trim() as SingleProteinTab;
     if (singleProteinTabs.some((item) => item.key === nextSingle)) {
       setActiveSingleProteinTab(nextSingle);
     }
-    const nextPhospho = String(next.activePhosphoTab ?? "").trim() as PhosphoTab;
+    const nextPhospho = String(next.activePhosphoTab ?? "phosphositePlot").trim() as PhosphoTab;
     if (phosphoTabs.some((item) => item.key === nextPhospho)) {
       setActivePhosphoTab(nextPhospho);
     }
-    const nextComparison = String(next.activeComparisonTab ?? "").trim() as ComparisonTab;
+    const nextComparison = String(next.activeComparisonTab ?? "pearson").trim() as ComparisonTab;
     if (comparisonTabs.some((item) => item.key === nextComparison)) {
       setActiveComparisonTab(nextComparison);
     }
-    const nextSummary = String(next.activeSummaryTab ?? "").trim() as SummaryTab;
+    const nextSummary = String(next.activeSummaryTab ?? "tables").trim() as SummaryTab;
     if (summaryTabs.some((item) => item.key === nextSummary)) {
       setActiveSummaryTab(nextSummary);
     }
-    const nextExternal = String(next.activeExternalTab ?? "").trim() as ExternalTab;
+    const nextExternal = String(next.activeExternalTab ?? "peptideCollapse").trim() as ExternalTab;
     if (externalTabs.some((item) => item.key === nextExternal)) {
       setActiveExternalTab(nextExternal);
     }
-    const nextRightPanel = String(next.rightPanel ?? "").trim() as RightPanel;
+    const nextRightPanel = String(next.rightPanel ?? "none").trim() as RightPanel;
     if (nextRightPanel === "none" || nextRightPanel === "list" || nextRightPanel === "chat") {
       setRightPanel(nextRightPanel);
     }
@@ -1285,6 +1299,31 @@ export default function App() {
     }
   }
 
+  async function handlePortableSave(): Promise<void> {
+    try {
+      const { blob, filename } = await downloadRestoreState(buildUiStateSnapshot(), {
+        portable: true,
+      });
+      const result = await saveRestoreStateBlob({
+        blob,
+        suggestedName: filename,
+        existingHandle: null,
+        forcePicker: true,
+      });
+      showSaveStateMessage(
+        "success",
+        `Portable save state written to ${result.fileName}; local dataset paths were omitted.`
+      );
+    } catch (error) {
+      if (isPickerAbortError(error)) return;
+      const message = error instanceof Error ? error.message : "Failed to save portable state.";
+      showSaveStateMessage("error", message);
+      throw error;
+    }
+  }
+  const handleQuickSaveRef = useRef(handleQuickSave);
+  handleQuickSaveRef.current = handleQuickSave;
+
   async function handleOpenRestoreStateFile(): Promise<File | null> {
     try {
       const opened = await openRestoreStateFileWithPicker();
@@ -1308,175 +1347,111 @@ export default function App() {
       if (!(event.ctrlKey || event.metaKey)) return;
       if (String(event.key || "").toLowerCase() !== "s") return;
       event.preventDefault();
-      void handleQuickSave(false).catch(() => {
+      void handleQuickSaveRef.current(false).catch(() => {
         // Status is already surfaced through the shared save-state banner.
       });
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    saveStateHandle,
-    saveStateFileName,
-    activeSection,
-    activeDataTab,
-    activeQcTab,
-    activeCompletenessTab,
-    activeStatsTab,
-    activePeptideTab,
-    activeSingleProteinTab,
-    activePhosphoTab,
-    activeComparisonTab,
-    activeSummaryTab,
-    activeExternalTab,
-    rightPanel,
-    advancedModeEnabled,
-    advancedByKey,
-  ]);
+  }, []);
 
   function renderContent() {
     if (activeSection === "completeness") {
-      if (activeCompletenessTab === "missingPlot") {
-        return <MissingValuePlotPage onContextModeChange={setCompletenessContextMode} />;
-      }
-
-      if (activeCompletenessTab === "heatmap") {
-        return <MissingValueHeatmapPage onContextModeChange={setCompletenessContextMode} />;
-      }
-
-      return <CompletenessTablesPage onContextModeChange={setCompletenessContextMode} />;
+      return (
+        <CompletenessPage
+          activeTab={activeCompletenessTab}
+          onContextModeChange={setCompletenessContextMode}
+        />
+      );
     }
 
     if (activeSection === "qc") {
-      if (activeQcTab === "coverage") {
-        return <CoveragePlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
-      }
-
-      if (activeQcTab === "histogram") {
-        return <HistogramIntensityPage onWorkflowScopeChange={setQcWorkflowScope} />;
-      }
-
-      if (activeQcTab === "boxplot") {
-        return (
-          <BoxplotIntensityPage
-            onModeChange={setQcBoxplotMode}
-            onWorkflowScopeChange={setQcWorkflowScope}
-          />
-        );
-      }
-
-      if (activeQcTab === "cv") {
-        return <CovPlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
-      }
-
-      if (activeQcTab === "pca") {
-        return (
-          <PrincipalComponentAnalysisPage
-            onWorkflowScopeChange={setQcWorkflowScope}
-            onPcaContextModeChange={setQcPcaContextMode}
-          />
-        );
-      }
-
-      if (activeQcTab === "abundance") {
-        return <AbundancePlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
-      }
-
-      return <CorrelationPlotPage onWorkflowScopeChange={setQcWorkflowScope} />;
+      return (
+        <QCPipelinePage
+          activeTab={activeQcTab}
+          onWorkflowScopeChange={setQcWorkflowScope}
+          onBoxplotModeChange={setQcBoxplotMode}
+          onPcaContextModeChange={setQcPcaContextMode}
+        />
+      );
     }
 
     if (activeSection === "stats") {
-      if (activeStatsTab === "volcano") {
-        return <VolcanoPlotPage onContextModeChange={setStatsVolcanoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activeStatsTab === "anova") {
-        return <AnovaPage onContextModeChange={setStatsAnovaContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activeStatsTab === "gsea") {
-        return <GseaPage onContextModeChange={setStatsGseaContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activeStatsTab === "pathwayHeatmap") {
-        return <PathwayHeatmapPage onContextModeChange={setStatsPathwayHeatmapContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (IS_VIEWER_MODE) {
-        return <VolcanoPlotPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      return <SimulationPage />;
+      const effectiveStatsTab = IS_VIEWER_MODE && activeStatsTab === "simulation"
+        ? "volcano"
+        : activeStatsTab;
+      const onContextModeChange = effectiveStatsTab === "volcano"
+        ? setStatsVolcanoContextMode
+        : effectiveStatsTab === "anova"
+          ? setStatsAnovaContextMode
+          : effectiveStatsTab === "ora"
+            ? setStatsOraContextMode
+            : effectiveStatsTab === "pathwayHeatmap"
+              ? setStatsPathwayHeatmapContextMode
+              : undefined;
+      return (
+        <StatisticalAnalysisPage
+          activeTab={effectiveStatsTab}
+          onContextModeChange={onContextModeChange}
+          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+        />
+      );
     }
 
     if (activeSection === "peptide") {
-      if (activePeptideTab === "rtPlot") {
-        return <RtPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activePeptideTab === "modification") {
-        return <ModificationPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activePeptideTab === "missedCleavage") {
-        return <MissedCleavagePlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (IS_VIEWER_MODE) {
-        return <RtPlotPage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      return <SequenceCoveragePage onContextModeChange={setPeptideContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+      const effectivePeptideTab = IS_VIEWER_MODE && activePeptideTab === "sequenceCoverage"
+        ? "rtPlot"
+        : activePeptideTab;
+      return (
+        <PeptideLevelPage
+          activeTab={effectivePeptideTab}
+          onContextModeChange={setPeptideContextMode}
+          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+        />
+      );
     }
 
     if (activeSection === "singleProtein") {
-      if (activeSingleProteinTab === "boxplot") {
-        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activeSingleProteinTab === "lineplot") {
-        return <ProteinLineplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (IS_VIEWER_MODE && !datasets?.phospho && !datasetsLoading) {
-        return <ProteinBoxplotPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      return <PhosphositesOnProteinHeatmapPage onContextModeChange={setSingleProteinBoxplotContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+      const effectiveSingleProteinTab = IS_VIEWER_MODE &&
+        activeSingleProteinTab === "heatmap" &&
+        !datasets?.phospho &&
+        !datasetsLoading
+        ? "boxplot"
+        : activeSingleProteinTab;
+      return (
+        <SingleProteinPage
+          activeTab={effectiveSingleProteinTab}
+          onContextModeChange={setSingleProteinBoxplotContextMode}
+          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+        />
+      );
     }
 
     if (activeSection === "phospho") {
-      if (activePhosphoTab === "phosphositePlot") {
-        return <PhosphositePlotPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activePhosphoTab === "coverage") {
-        return <PhosphositeCoveragePage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
       if (activePhosphoTab === "ksea") {
         if (IS_VIEWER_MODE) {
-          return <PhosphositePlotPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+          return <PhosphoSpecificPage activeTab="phosphositePlot" advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
         }
         return <KseaPage advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
-
-      if (activePhosphoTab === "distribution") {
-        return <PhosphositeDistributionPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      if (activePhosphoTab === "phosprotRegulation") {
-        return <PhosprotRegulationPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-
-      return <StyPlotPage onContextModeChange={setPhosphoContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+      return (
+        <PhosphoSpecificPage
+          activeTab={activePhosphoTab}
+          onContextModeChange={setPhosphoContextMode}
+          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+        />
+      );
     }
 
     if (activeSection === "comparison") {
-      if (activeComparisonTab === "pearson") {
-        return <PearsonCorrelationPage onContextModeChange={setComparisonPearsonContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
-      }
-      return <VennDiagramPage onContextModeChange={setComparisonPearsonContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+      return (
+        <ComparisonPipelinePage
+          activeTab={activeComparisonTab}
+          onContextModeChange={setComparisonPearsonContextMode}
+          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+        />
+      );
     }
 
     if (activeSection === "summary") {
@@ -1540,6 +1515,7 @@ export default function App() {
             onApplyUiState={applyUiStateSnapshot}
             onQuickSave={() => handleQuickSave(false)}
             onQuickSaveAs={() => handleQuickSave(true)}
+            onPortableSave={handlePortableSave}
             onOpenStateFile={supportsNativeOpenStatePicker() ? handleOpenRestoreStateFile : null}
             currentSaveFileName={saveStateFileName}
           />
@@ -1612,9 +1588,32 @@ export default function App() {
         className="space-y-6"
         key={`${activePackage}:${activeMetadataProfile}:${activeSection}`}
       >
-        {renderContent()}
+        <ModuleLoadBoundary
+          key={activeModuleKey}
+          onReturnToUpload={() => {
+            setActiveDataTab("upload");
+            setActiveSection("data");
+          }}
+        >
+          <Suspense fallback={<ModuleLoadingFallback />}>
+            {renderContent()}
+          </Suspense>
+        </ModuleLoadBoundary>
       </div>
     </AppShell>
+  );
+}
+
+function ModuleLoadingFallback() {
+  return (
+    <div
+      className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-800" />
+      <div className="mt-3 text-sm font-medium text-slate-700">Loading module…</div>
+    </div>
   );
 }
 

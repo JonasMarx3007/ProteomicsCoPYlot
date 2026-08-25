@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.functions import (
+    condition_mean,
+    _visualization_data_source,
+    _visualization_data_source_availability,
+)
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
@@ -138,25 +141,15 @@ def _truncate_hover_text(value: object, max_len: int) -> str:
     return f"{text[: max_len - 1]}..."
 
 
-def _analysis_context(kind: AnnotationKind) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.log2_data.empty:
-        frame = annotation.log2_data.copy()
-    elif annotation is not None and not annotation.filtered_data.empty:
-        frame = annotation.filtered_data.copy()
-    elif annotation is not None and not annotation.source_data.empty:
-        frame = annotation.source_data.copy()
-    else:
-        frame = raw.copy()
-
-    if annotation is not None and not annotation.metadata.empty:
-        meta = annotation.metadata.copy()
-        sample_columns = [sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns]
-        meta = meta[meta["sample"].isin(sample_columns)].copy()
-    else:
-        sample_columns = _get_sample_columns(kind, frame)
-        meta = pd.DataFrame({"sample": sample_columns, "condition": sample_columns})
+def _analysis_context(
+    kind: AnnotationKind,
+    data_source: str = "data",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    _, frame, meta = _visualization_data_source(kind, data_source=data_source)
+    sample_columns = [
+        sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
+    ]
+    meta = meta[meta["sample"].astype(str).isin(sample_columns)].copy()
 
     if "condition" not in meta.columns:
         meta["condition"] = meta["sample"]
@@ -179,8 +172,23 @@ def _id_column(kind: AnnotationKind, frame: pd.DataFrame) -> str:
     raise ValueError(f"No identifier column found for {kind} dataset.")
 
 
-def comparison_options(kind: AnnotationKind) -> dict[str, list[str] | int]:
-    _, meta, _ = _analysis_context(kind)
+def comparison_options(
+    kind: AnnotationKind,
+    data_source: str = "data",
+) -> dict[str, list[str] | int | bool | str]:
+    availability = _visualization_data_source_availability(kind)
+    requested_source = str(data_source or "data").strip().lower()
+    if (
+        (requested_source == "filtered" and not availability["filteredAvailable"])
+        or (requested_source == "imputed" and not availability["imputedAvailable"])
+    ):
+        requested_source = "data"
+    source_used, frame, meta = _visualization_data_source(kind, data_source=requested_source)
+    sample_columns = [
+        sample for sample in meta["sample"].astype(str).tolist()
+        if sample in frame.columns
+    ]
+    meta = meta[meta["sample"].astype(str).isin(sample_columns)].copy()
     samples = (
         meta["sample"]
         .dropna()
@@ -204,18 +212,22 @@ def comparison_options(kind: AnnotationKind) -> dict[str, list[str] | int]:
         "conditions": conditions,
         "sampleCount": len(samples),
         "conditionCount": len(conditions),
+        "dataSource": source_used,
+        **availability,
     }
 
 
 def _pearson_vectors(
     kind: AnnotationKind,
     mode: str,
+    data_source: str = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
     condition2: str = "",
+    min_present: int = 1,
 ) -> tuple[pd.Series, pd.Series, str, str]:
-    frame, meta, _ = _analysis_context(kind)
+    frame, meta, _ = _analysis_context(kind, data_source=data_source)
     mode_norm = str(mode).strip().lower()
 
     if mode_norm in {"single", "sample"}:
@@ -243,8 +255,8 @@ def _pearson_vectors(
         if not cols1 or not cols2:
             raise ValueError("No matching sample columns for one or both selected conditions.")
 
-        x = frame[cols1].apply(pd.to_numeric, errors="coerce").mean(axis=1)
-        y = frame[cols2].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        x, _ = condition_mean(frame, cols1, min_present=min_present)
+        y, _ = condition_mean(frame, cols2, min_present=min_present)
         return x, y, condition1, condition2
 
     raise ValueError("Mode must be 'Single' or 'Condition'.")
@@ -253,12 +265,14 @@ def _pearson_vectors(
 def _pearson_vectors_with_features(
     kind: AnnotationKind,
     mode: str,
+    data_source: str = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
     condition2: str = "",
+    min_present: int = 1,
 ) -> tuple[pd.Series, pd.Series, pd.Series, str, str]:
-    frame, meta, _ = _analysis_context(kind)
+    frame, meta, _ = _analysis_context(kind, data_source=data_source)
     mode_norm = str(mode).strip().lower()
     id_col = _id_column(kind, frame)
     features = frame[id_col].fillna("").astype(str)
@@ -288,8 +302,8 @@ def _pearson_vectors_with_features(
         if not cols1 or not cols2:
             raise ValueError("No matching sample columns for one or both selected conditions.")
 
-        x = frame[cols1].apply(pd.to_numeric, errors="coerce").mean(axis=1)
-        y = frame[cols2].apply(pd.to_numeric, errors="coerce").mean(axis=1)
+        x, _ = condition_mean(frame, cols1, min_present=min_present)
+        y, _ = condition_mean(frame, cols2, min_present=min_present)
         return x, y, features, condition1, condition2
 
     raise ValueError("Mode must be 'Single' or 'Condition'.")
@@ -304,14 +318,18 @@ def pearson_correlation_table(
     condition2: str = "",
     alias1: str = "",
     alias2: str = "",
+    min_present: int = 1,
+    data_source: str = "data",
 ) -> pd.DataFrame:
     x, y, label1, label2 = _pearson_vectors(
         kind=kind,
         mode=mode,
+        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
         condition2=condition2,
+        min_present=min_present,
     )
 
     pairs = pd.DataFrame({"x": x, "y": y}).dropna()
@@ -348,11 +366,13 @@ def pearson_correlation_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     x, y, label1, label2 = _pearson_vectors(
         kind=kind,
         mode=mode,
+        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
@@ -410,11 +430,13 @@ def pearson_correlation_html(
     width_cm: float = 20,
     height_cm: float = 12,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> str:
     go = _get_plotly()
     x, y, features, label1, label2 = _pearson_vectors_with_features(
         kind=kind,
         mode=mode,
+        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
@@ -547,8 +569,9 @@ def _venn_sets(
     first: str,
     second: str,
     third: str = "",
+    data_source: str = "data",
 ) -> tuple[set[str], set[str], set[str] | None]:
-    frame, meta, _ = _analysis_context(kind)
+    frame, meta, _ = _analysis_context(kind, data_source=data_source)
     id_col = _id_column(kind, frame)
     mode_norm = str(mode).strip().lower()
     if not first or not second:
@@ -580,8 +603,16 @@ def venn_table(
     alias1: str = "",
     alias2: str = "",
     alias3: str = "",
+    data_source: str = "data",
 ) -> pd.DataFrame:
-    set1, set2, set3 = _venn_sets(kind=kind, mode=mode, first=first, second=second, third=third)
+    set1, set2, set3 = _venn_sets(
+        kind=kind,
+        mode=mode,
+        first=first,
+        second=second,
+        third=third,
+        data_source=data_source,
+    )
     label1 = alias1.strip() or first
     label2 = alias2.strip() or second
     label3 = alias3.strip() or third
@@ -630,10 +661,18 @@ def venn_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     venn2, venn3 = _get_venn()
-    set1, set2, set3 = _venn_sets(kind=kind, mode=mode, first=first, second=second, third=third)
+    set1, set2, set3 = _venn_sets(
+        kind=kind,
+        mode=mode,
+        first=first,
+        second=second,
+        third=third,
+        data_source=data_source,
+    )
     label1 = alias1.strip() or first
     label2 = alias2.strip() or second
     label3 = alias3.strip() or third

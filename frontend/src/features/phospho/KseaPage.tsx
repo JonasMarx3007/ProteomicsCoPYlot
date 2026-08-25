@@ -2,37 +2,52 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   getPhosphoOptions,
   getPhosphoTable,
+  isAbortError,
+  pairingIsReady,
   renderKseaVolcanoFromFiles,
 } from "../../lib/api";
 import PaginatedTable from "../../components/PaginatedTable";
+import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { PhosphoOptionsResponse } from "../../lib/types";
 
 type KseaSourceMode = "volcano" | "volcano_control";
-type KseaDataSource = "data" | "imputed";
+type KseaDataSource = "auto" | "imputed";
 
 type Props = {
   advancedPlotOptions?: ReactNode;
 };
 
 export default function KseaPage({ advancedPlotOptions }: Props) {
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("phospho.ksea.v1", {}),
+    []
+  );
   const { datasets } = useCurrentDatasetsSnapshot();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
 
-  const [condition1, setCondition1] = useState("");
-  const [condition2, setCondition2] = useState("");
-  const [sourceMode, setSourceMode] = useState<KseaSourceMode>("volcano");
-  const [dataSource, setDataSource] = useState<KseaDataSource>("data");
-  const [condition1Control, setCondition1Control] = useState("");
-  const [condition2Control, setCondition2Control] = useState("");
-  const [pValueThreshold, setPValueThreshold] = useState(0.05);
-  const [log2fcThreshold, setLog2fcThreshold] = useState(1.0);
-  const [testType, setTestType] = useState<"unpaired" | "paired">("unpaired");
-  const [useUncorrected, setUseUncorrected] = useState(false);
+  const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
+  const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
+  const [sourceMode, setSourceMode] = useState<KseaSourceMode>(() =>
+    persisted.sourceMode === "volcano_control" ? "volcano_control" : "volcano"
+  );
+  const [dataSource, setDataSource] = useState<KseaDataSource>(() =>
+    // "data" is the historical spelling for this control's default.
+    persisted.dataSource === "imputed" ? "imputed" : "auto"
+  );
+  const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
+  const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
+  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1.0));
+  const [testType, setTestType] = useState<"unpaired" | "paired">(() =>
+    persisted.testType === "paired" ? "paired" : "unpaired"
+  );
+  const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
 
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
@@ -40,13 +55,47 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
 
   const [fileSt, setFileSt] = useState<File | null>(null);
   const [fileTnc, setFileTnc] = useState<File | null>(null);
-  const [volcanoPValueThreshold, setVolcanoPValueThreshold] = useState(0.1);
-  const [volcanoHeader, setVolcanoHeader] = useState(true);
-  const [highlightGrk, setHighlightGrk] = useState(false);
-  const [annotateHits, setAnnotateHits] = useState(false);
+  const [volcanoPValueThreshold, setVolcanoPValueThreshold] = useState(() => Number(persisted.volcanoPValueThreshold ?? 0.1));
+  const [volcanoHeader, setVolcanoHeader] = useState(() => Boolean(persisted.volcanoHeader ?? true));
+  const [highlightGrk, setHighlightGrk] = useState(() => Boolean(persisted.highlightGrk ?? false));
+  const [annotateHits, setAnnotateHits] = useState(() => Boolean(persisted.annotateHits ?? false));
   const [volcanoHtml, setVolcanoHtml] = useState("");
   const [volcanoLoading, setVolcanoLoading] = useState(false);
   const [volcanoError, setVolcanoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    writePersistedUiState("phospho.ksea.v1", {
+      condition1,
+      condition2,
+      sourceMode,
+      dataSource,
+      condition1Control,
+      condition2Control,
+      pValueThreshold,
+      log2fcThreshold,
+      testType,
+      useUncorrected,
+      volcanoPValueThreshold,
+      volcanoHeader,
+      highlightGrk,
+      annotateHits,
+    });
+  }, [
+    condition1,
+    condition2,
+    sourceMode,
+    dataSource,
+    condition1Control,
+    condition2Control,
+    pValueThreshold,
+    log2fcThreshold,
+    testType,
+    useUncorrected,
+    volcanoPValueThreshold,
+    volcanoHeader,
+    highlightGrk,
+    annotateHits,
+  ]);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -55,26 +104,27 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
       setOptionsError("No phospho dataset loaded.");
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setOptionsLoading(true);
     setOptionsError(null);
-    getPhosphoOptions()
+    getPhosphoOptions({ signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setOptions(payload);
-        setDataSource(payload.imputedAvailable ? "imputed" : "data");
+        setDataSource((current) =>
+          current === "imputed" && !payload.imputedAvailable ? "auto" : current
+        );
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setOptions(null);
         setOptionsError(err instanceof Error ? err.message : "Failed to load phospho options");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setOptionsLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [hasPhosphoDataset]);
 
@@ -96,7 +146,14 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
     condition1.trim() !== "" &&
     condition2.trim() !== "" &&
     condition1 !== condition2 &&
-    controlSelectionValid;
+    controlSelectionValid &&
+    (testType !== "paired" ||
+      pairingIsReady(
+        condition1,
+        condition2,
+        options?.samplesByCondition ?? {},
+        options?.pairIdsBySample ?? {}
+      ));
   const tableRequest = useMemo(() => {
     if (!validSelection) return null;
     return {
@@ -139,25 +196,24 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
       setTableError(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
-    getPhosphoTable("ksea", debouncedTableRequest)
+    getPhosphoTable("ksea", debouncedTableRequest, { signal: controller.signal })
       .then((payload) => {
-        if (cancelled) return;
         setTableRows(payload.rows ?? []);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (isAbortError(err)) return;
         setTableRows([]);
         setTableError(err instanceof Error ? err.message : "Failed to load KSEA table");
       })
       .finally(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setTableLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [
     hasPhosphoDataset,
@@ -252,10 +308,10 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
                   onChange={(event) => setDataSource(event.target.value as KseaDataSource)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
                 >
-                  <option value="data">Data</option>
-                  <option value="imputed" disabled={!options?.imputedAvailable}>
-                    Imputed Data
-                  </option>
+                  <option value="auto">Data</option>
+                  {options?.imputedAvailable ? (
+                    <option value="imputed">Imputed Data</option>
+                  ) : null}
                 </select>
               </label>
             </div>
@@ -320,6 +376,16 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
                 onChange={(value) => setTestType(value as "unpaired" | "paired")}
               />
             </div>
+            {testType === "paired" ? (
+              <PairingEditor
+                kind="phospho"
+                condition1={condition1}
+                condition2={condition2}
+                samplesByCondition={options?.samplesByCondition ?? {}}
+                pairIdsBySample={options?.pairIdsBySample ?? {}}
+                onSaved={async () => setOptions(await getPhosphoOptions())}
+              />
+            ) : null}
             <div className="flex flex-wrap gap-3">
               <Checkbox
                 label="Use Uncorrected P-values"
@@ -485,24 +551,22 @@ function NumericField({
   value: number;
   onChange: (value: number) => void;
 }) {
-  const [draft, setDraft] = useState(() => (Number.isFinite(value) ? String(value) : ""));
-  useEffect(() => {
-    setDraft(Number.isFinite(value) ? String(value) : "");
-  }, [value]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
   const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
+    const normalized = displayedValue.trim().replace(",", ".");
     if (!normalized) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     const parsed = Number(normalized);
     if (!Number.isFinite(parsed)) {
-      setDraft(Number.isFinite(value) ? String(value) : "");
+      setDraft(null);
       return;
     }
     onChange(parsed);
-    setDraft(String(parsed));
+    setDraft(null);
   };
 
   return (
@@ -512,7 +576,7 @@ function NumericField({
         type="text"
         lang="en-US"
         inputMode="decimal"
-        value={draft}
+        value={displayedValue}
         onChange={(event) => {
           const normalized = event.target.value.replace(",", ".");
           setDraft(normalized);

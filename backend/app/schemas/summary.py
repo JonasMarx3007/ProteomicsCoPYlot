@@ -25,7 +25,7 @@ class SummaryTablesResponse(BaseModel):
 class SummaryVolcanoEntry(BaseModel):
     kind: AnnotationKind
     control: bool = False
-    dataSource: VolcanoDataSource = "imputed"
+    dataSource: VolcanoDataSource = "data"
     condition1: str
     condition2: str
     condition1Control: str | None = None

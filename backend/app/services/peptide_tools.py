@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import io
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -14,7 +17,27 @@ from app.services.annotation_store import get_annotation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
+from app.services.functions import sample_id_map
+from app.services.peptide_metadata_store import get_peptide_metadata
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
+
+
+LOGGER = logging.getLogger(__name__)
+
+PEPTIDE_MODIFICATION_PATTERNS: dict[str, re.Pattern[str]] = {
+    "Carbamidomethylation": re.compile(
+        r"(?:UniMod:4(?!\d)|(?<![A-Za-z])Carbamidomethyl(?:ation)?(?![A-Za-z]))",
+        re.IGNORECASE,
+    ),
+    "Oxidation": re.compile(
+        r"(?:UniMod:35(?!\d)|(?<![A-Za-z])Oxidation(?![A-Za-z]))",
+        re.IGNORECASE,
+    ),
+    "Acetylation": re.compile(
+        r"(?:UniMod:1(?!\d)|(?<![A-Za-z])Acetyl(?:ation)?(?![A-Za-z]))",
+        re.IGNORECASE,
+    ),
+}
 
 
 def _get_plt():
@@ -35,6 +58,57 @@ def _get_plotly():
         raise ModuleNotFoundError(
             "plotly is required for interactive peptide plots. Install it with: pip install plotly"
         ) from exc
+
+
+def peptide_modification_counts(
+    frame: pd.DataFrame,
+    *,
+    sequence_column: str,
+    sample_columns: list[str],
+) -> pd.DataFrame:
+    """Count detected modified sequences per sample using shared exact classifiers.
+
+    Each sequence contributes at most once to a modification class in a sample,
+    even if the sequence contains that modification more than once. A sequence
+    carrying multiple tracked classes contributes once to each relevant class
+    but only once to ``UniqueTrackedModifiedPeptides``.
+    """
+    if sequence_column not in frame.columns:
+        raise ValueError("Modified sequence column is missing.")
+    missing_samples = [column for column in sample_columns if column not in frame.columns]
+    if missing_samples:
+        raise ValueError("Modification count sample columns are missing from the peptide table.")
+
+    sequences = frame[sequence_column].fillna("").astype(str)
+    quantities = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
+    quantities = quantities.replace([np.inf, -np.inf], np.nan).replace(0, np.nan)
+    detected = quantities.notna()
+    detected_by_sequence = detected.groupby(sequences, sort=False).any()
+    unique_sequences = pd.Series(
+        detected_by_sequence.index.astype(str),
+        index=detected_by_sequence.index,
+        dtype="string",
+    )
+
+    counts = pd.DataFrame(index=sample_columns, dtype="int64")
+    matched_masks: list[pd.Series] = []
+    for modification, pattern in PEPTIDE_MODIFICATION_PATTERNS.items():
+        matched = unique_sequences.str.contains(pattern, na=False)
+        matched_masks.append(matched)
+        counts[modification] = (
+            detected_by_sequence.loc[matched].sum(axis=0).astype("int64")
+        )
+
+    any_tracked = (
+        pd.concat(matched_masks, axis=1).any(axis=1)
+        if matched_masks
+        else pd.Series(False, index=detected_by_sequence.index)
+    )
+    counts["UniqueTrackedModifiedPeptides"] = (
+        detected_by_sequence.loc[any_tracked].sum(axis=0).astype("int64")
+    )
+    counts.index.name = "Sample"
+    return counts
 
 
 def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
@@ -131,7 +205,11 @@ def _peptide_dataset_path() -> Path:
         raise ValueError("No peptide dataset path is currently loaded. Upload a peptide dataset path first.")
     path = Path(str(stored.path)).expanduser()
     if not path.exists():
-        raise ValueError(f"Peptide dataset file does not exist: {path}")
+        LOGGER.error("Peptide dataset file is missing: %s", path)
+        raise ValueError(
+            f"The peptide dataset file '{path.name}' is no longer available. "
+            "Upload it again."
+        )
     return path
 
 
@@ -213,22 +291,131 @@ def _short_sample_label(value: object, max_len: int = 14) -> str:
     return _truncate_hover_text(candidate, max_len=max_len)
 
 
+PeptideProtease = Literal["trypsin", "trypsin_lysc"]
+
+# Which residues are cleaved after, and whether a following proline blocks it.
+#   trypsin       K and R, both proline-blocked (K-P and R-P are not cut).
+#   trypsin_lysc  K and R, but the Lys-C component is not proline-inhibited, so
+#                 K-P is cleaved. R is cut by trypsin only, so R-P stays blocked.
+_PROTEASE_PROLINE_BLOCKED: dict[str, dict[str, bool]] = {
+    "trypsin": {"K": True, "R": True},
+    "trypsin_lysc": {"K": False, "R": True},
+}
+
+PROTEASE_LABELS: dict[str, str] = {
+    "trypsin": "Trypsin",
+    "trypsin_lysc": "Trypsin / Lys-C",
+}
+
+
+def normalize_protease(value: object) -> PeptideProtease:
+    key = str(value or "trypsin").strip().lower().replace("-", "_").replace("/", "_")
+    key = key.replace("__", "_")
+    if key in {"trypsin_lysc", "trypsin_lys_c", "trypsinlysc"}:
+        return "trypsin_lysc"
+    if key == "trypsin":
+        return "trypsin"
+    raise ValueError("Protease must be 'trypsin' or 'trypsin_lysc'.")
+
+
+def count_missed_cleavages(sequence: object, protease: object = "trypsin") -> int:
+    """Count internal missed cleavage sites in a peptide sequence.
+
+    A missed cleavage is a cleavable residue that is neither the C-terminal
+    residue -- that one is the expected cut site, not a missed one -- nor
+    blocked by a following proline. Proline blocking is protease dependent, so
+    it is looked up rather than assumed; see _PROTEASE_PROLINE_BLOCKED.
+    """
+    rules = _PROTEASE_PROLINE_BLOCKED[normalize_protease(protease)]
+    residues = str(sequence or "").strip().upper()
+    total = 0
+    for index in range(len(residues) - 1):
+        proline_blocked = rules.get(residues[index])
+        if proline_blocked is None:
+            continue
+        if proline_blocked and residues[index + 1] == "P":
+            continue
+        total += 1
+    return total
+
+
+def peptide_missed_cleavage_summary(
+    frame: pd.DataFrame,
+    *,
+    sequence_column: str,
+    sample_columns: list[str],
+    protease: object = "trypsin",
+) -> pd.DataFrame:
+    """Summarize detected unique peptide sequences by missed-cleavage count."""
+    resolved_protease = normalize_protease(protease)
+    if sequence_column not in frame.columns:
+        raise ValueError("Stripped sequence column is missing.")
+    missing_samples = [column for column in sample_columns if column not in frame.columns]
+    if missing_samples:
+        raise ValueError("Missed-cleavage sample columns are missing from the peptide table.")
+
+    sequences = frame[sequence_column].fillna("").astype(str).str.strip()
+    quantities = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
+    quantities = quantities.replace([np.inf, -np.inf], np.nan).replace(0, np.nan)
+    detected_by_sequence = quantities.notna().groupby(sequences, sort=False).any()
+    detected_by_sequence = detected_by_sequence.loc[detected_by_sequence.index != ""]
+
+    columns = ["Sample", "Count", "Occurrences", "Total", "Percentage"]
+    if detected_by_sequence.empty:
+        return pd.DataFrame(columns=columns)
+
+    cleavage_counts = pd.Series(
+        [
+            count_missed_cleavages(sequence, resolved_protease)
+            for sequence in detected_by_sequence.index
+        ],
+        index=detected_by_sequence.index,
+        dtype="int64",
+    )
+    detected_counts = detected_by_sequence.astype("int64").mul(cleavage_counts, axis=0)
+    long = (
+        detected_counts.where(detected_by_sequence)
+        .reset_index(names=sequence_column)
+        .melt(id_vars=sequence_column, var_name="Sample", value_name="Count")
+        .dropna(subset=["Count"])
+    )
+    if long.empty:
+        return pd.DataFrame(columns=columns)
+
+    long["Count"] = long["Count"].astype("int64")
+    summary = long.groupby(["Sample", "Count"]).size().reset_index(name="Occurrences")
+    summary["Total"] = summary.groupby("Sample")["Occurrences"].transform("sum")
+    summary["Percentage"] = (summary["Occurrences"] / summary["Total"]) * 100.0
+    return summary[columns]
+
+
 def _protein_names_column(frame: pd.DataFrame) -> str:
     return _require_column(frame, "ProteinNames")
 
 
 def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
-    stored = get_annotation("protein")
-    if stored is None or stored.metadata.empty:
-        raise ValueError(
-            "Protein annotation metadata is required for this plot. Generate protein annotation first."
-        )
+    protein_dataset = get_current_dataset("protein")
+    if protein_dataset is not None:
+        stored = get_annotation("protein")
+        if stored is None or stored.metadata.empty:
+            raise ValueError(
+                "Protein annotation metadata is required for this plot because a protein "
+                "dataset is loaded. Generate protein annotation first."
+            )
+        meta = stored.metadata.copy()
+    else:
+        peptide_metadata = get_peptide_metadata()
+        if peptide_metadata is None or peptide_metadata.frame.empty:
+            raise ValueError(
+                "Peptide annotation metadata is required for this plot. Annotate the unique "
+                "peptide file names in Data > Annotation first."
+            )
+        meta = peptide_metadata.frame.copy()
 
-    meta = stored.metadata.copy()
     normalized = {str(column).strip().lower(): str(column) for column in meta.columns}
     if "sample" not in normalized or "condition" not in normalized:
         raise ValueError(
-            "Protein annotation metadata must contain 'sample' and 'condition' columns."
+            "Annotation metadata must contain 'sample' and 'condition' columns."
         )
 
     meta = meta.rename(
@@ -242,7 +429,7 @@ def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
     meta = meta[(meta["sample"] != "") & (meta["condition"] != "")].reset_index(drop=True)
     if meta.empty:
         raise ValueError(
-            "Protein annotation metadata does not contain any usable sample/condition rows."
+            "Annotation metadata does not contain any usable sample/condition rows."
         )
 
     file_col = _file_name_column(frame)
@@ -265,10 +452,55 @@ def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
     return meta
 
 
+def _sample_rename_map(
+    columns, meta: pd.DataFrame, key_column: str
+) -> dict[str, str]:
+    """Map run-name columns onto the metadata's display names.
+
+    Exact run names are matched first: they are what the annotation normally
+    carries, and they are always unambiguous. The number fallback runs only for
+    metadata samples that do not name a run exactly.
+
+    This used to rewrite every column to `extract_sample_id(column)` before
+    matching, which reduces a name to its last number. Run sets following the
+    common date_cellline_condition_replicate convention then collapse -- both
+    20240110_HeLa_ctrl_01.raw and 20240110_HeLa_treat_01.raw become "01" -- so
+    `wide` ended up with duplicate column labels and `dict(zip(...))` kept only
+    the last metadata row per id. Selecting a sample then returned two columns,
+    one of them the other condition's data under this condition's name.
+    """
+    run_columns = [str(column) for column in columns if str(column) != key_column]
+    by_name = dict(
+        zip(meta["sample"].astype(str).tolist(), meta["new_sample"].astype(str).tolist())
+    )
+
+    mapping = {column: by_name[column] for column in run_columns if column in by_name}
+    leftover_columns = [column for column in run_columns if column not in by_name]
+    leftover_samples = [sample for sample in by_name if sample not in run_columns]
+    if leftover_columns and leftover_samples:
+        # Both sides are checked: an ambiguous id is unusable whichever side it
+        # comes from, and reporting it here names the offending files.
+        id_to_column = sample_id_map(leftover_columns)
+        sample_id_map(leftover_samples)
+        for sample in leftover_samples:
+            column = id_to_column.get(_extract_id_or_number(sample))
+            if column is not None:
+                mapping[column] = by_name[sample]
+    return mapping
+
+
 def peptide_overview() -> dict[str, object]:
     path = _peptide_dataset_path()
     frame = get_peptide_frame()
     warnings: list[str] = []
+    try:
+        file_col = _file_name_column(frame)
+        sample_values = frame[file_col].dropna().astype(str).str.strip()
+        available_samples = sample_values[sample_values != ""].drop_duplicates().tolist()
+    except ValueError:
+        available_samples = []
+        warnings.append("A file-name column is missing, so sample annotation is unavailable.")
+
     if "ProteinNames" in frame.columns:
         first_proteins = (
             frame["ProteinNames"]
@@ -281,17 +513,26 @@ def peptide_overview() -> dict[str, object]:
     else:
         proteins = []
         warnings.append("ProteinNames is missing, so sequence coverage is unavailable for this peptide dataset.")
-    protein_annotation = get_annotation("protein")
-    metadata_loaded = protein_annotation is not None and not protein_annotation.metadata.empty
-    metadata_name = (
-        "Protein Annotation (Data > Annotation)"
-        if metadata_loaded
-        else None
-    )
-    if not metadata_loaded:
-        warnings.append(
-            "Protein annotation metadata is required for modification and missed cleavage plots. Generate protein annotation in Data > Annotation."
+    protein_dataset = get_current_dataset("protein")
+    if protein_dataset is not None:
+        protein_annotation = get_annotation("protein")
+        metadata_loaded = protein_annotation is not None and not protein_annotation.metadata.empty
+        metadata_name = "Protein Annotation (Data > Annotation)" if metadata_loaded else None
+        missing_metadata_warning = (
+            "Protein annotation metadata is required for modification and missed cleavage "
+            "plots because a protein dataset is loaded. Generate protein annotation in "
+            "Data > Annotation."
         )
+    else:
+        peptide_metadata = get_peptide_metadata()
+        metadata_loaded = peptide_metadata is not None and not peptide_metadata.frame.empty
+        metadata_name = peptide_metadata.filename if metadata_loaded else None
+        missing_metadata_warning = (
+            "Peptide annotation metadata is required for modification and missed cleavage "
+            "plots. Annotate the unique peptide file names in Data > Annotation."
+        )
+    if not metadata_loaded:
+        warnings.append(missing_metadata_warning)
 
     return {
         "filename": path.name,
@@ -299,6 +540,7 @@ def peptide_overview() -> dict[str, object]:
         "rows": len(frame),
         "columns": len(frame.columns),
         "columnNames": [str(column) for column in frame.columns],
+        "availableSamples": available_samples,
         "availableProteins": proteins,
         "metadataLoaded": metadata_loaded,
         "metadataFilename": metadata_name,
@@ -312,6 +554,7 @@ def peptide_rt_plot(
     add_line: bool = False,
     bins: int = 1000,
     header: bool = True,
+    sampling_seed: int = 69,
     width_cm: float = 20,
     height_cm: float = 15,
     dpi: int = 100,
@@ -329,7 +572,7 @@ def peptide_rt_plot(
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi)))
     if method == "Scatter Plot":
         if len(data) > 100000:
-            data = data.sample(n=100000, random_state=69)
+            data = data.sample(n=100000, random_state=int(sampling_seed))
         ax.scatter(data["Predicted.RT"], data["RT"], alpha=0.2, s=1)
     elif method == "Density Plot":
         from matplotlib.colors import LogNorm
@@ -367,6 +610,7 @@ def peptide_rt_interactive_html(
     *,
     add_line: bool = False,
     header: bool = True,
+    sampling_seed: int = 69,
     width_cm: float = 20,
     height_cm: float = 15,
     advanced: dict | None = None,
@@ -406,7 +650,7 @@ def peptide_rt_interactive_html(
     data["delta"] = data["actual"] - data["predicted"]
 
     if len(data) > 250_000:
-        data = data.sample(n=250_000, random_state=69)
+        data = data.sample(n=250_000, random_state=int(sampling_seed))
 
     custom_data = np.column_stack(
         [
@@ -493,13 +737,8 @@ def peptide_modification_plot(
         )
         .T.reset_index()
     )
-    wide.columns = [
-        _extract_id_or_number(column) if str(column) != "Modified.Sequence" else "Modified.Sequence"
-        for column in wide.columns
-    ]
-
-    rename_map = dict(zip(meta["id"], meta["new_sample"]))
-    wide = wide.rename(columns=rename_map)
+    wide.columns = [str(column) for column in wide.columns]
+    wide = wide.rename(columns=_sample_rename_map(wide.columns, meta, "Modified.Sequence"))
     ordered_samples = meta["new_sample"].tolist()
     annotated_cols = [column for column in ordered_samples if column in wide.columns]
     if not annotated_cols:
@@ -508,24 +747,20 @@ def peptide_modification_plot(
         )
 
     filtered = wide[["Modified.Sequence", *annotated_cols]].copy()
-
-    def get_mod_count(pattern: str) -> pd.Series:
-        subset = filtered[filtered["Modified.Sequence"].astype(str).str.contains(pattern, na=False)].copy()
-        if subset.empty:
-            return pd.Series(0, index=filtered.columns[1:], dtype=float)
-        for column in subset.columns[1:]:
-            subset[column] = subset[column].notna().astype(int)
-        return subset.iloc[:, 1:].sum(axis=0)
-
-    carb = get_mod_count("UniMod:4|Carbamidomethyl")
-    oxi = get_mod_count("UniMod:35|Oxidation")
-    ace = get_mod_count("UniMod:1|Acetyl")
+    modification_counts = peptide_modification_counts(
+        filtered,
+        sequence_column="Modified.Sequence",
+        sample_columns=annotated_cols,
+    )
+    carb = modification_counts["Carbamidomethylation"]
+    oxi = modification_counts["Oxidation"]
+    ace = modification_counts["Acetylation"]
 
     plot_data = pd.DataFrame(
         {
             "Sample": list(carb.index) * 3,
             "Count": list(carb.values) + list(oxi.values) + list(ace.values),
-            "Modification": (["Carbamylation"] * len(carb))
+            "Modification": (["Carbamidomethylation"] * len(carb))
             + (["Oxidation"] * len(oxi))
             + (["Acetylation"] * len(ace)),
         }
@@ -535,13 +770,13 @@ def peptide_modification_plot(
     plot_data = plot_data.sort_values("Sample")
 
     mod_colors = {
-        "Carbamylation": "blue",
+        "Carbamidomethylation": "blue",
         "Oxidation": "red",
         "Acetylation": "green",
     }
     found_mods = [
         value
-        for value in ["Carbamylation", "Oxidation", "Acetylation"]
+        for value in ["Carbamidomethylation", "Oxidation", "Acetylation"]
         if value in plot_data["Modification"].unique()
     ]
 
@@ -580,11 +815,13 @@ def peptide_missed_cleavage_plot(
     text: bool = True,
     text_size: int = 8,
     header: bool = True,
+    protease: PeptideProtease = "trypsin",
     width_cm: float = 25,
     height_cm: float = 15,
     dpi: int = 100,
     advanced: dict | None = None,
 ) -> bytes:
+    resolved_protease = normalize_protease(protease)
     plt = _get_plt()
     frame = get_peptide_frame()
     meta = _prepare_metadata(frame, include_id=include_id)
@@ -602,36 +839,22 @@ def peptide_missed_cleavage_plot(
         .T.reset_index()
     )
     wide = wide.rename(columns={"index": seq_col})
-    wide.columns = [
-        _extract_id_or_number(column) if str(column) != seq_col else seq_col
-        for column in wide.columns
-    ]
-
-    rename_map = dict(zip(meta["id"], meta["new_sample"]))
-    wide = wide.rename(columns=rename_map)
+    wide.columns = [str(column) for column in wide.columns]
+    wide = wide.rename(columns=_sample_rename_map(wide.columns, meta, seq_col))
     annotated_cols = [column for column in meta["new_sample"].tolist() if column in wide.columns]
     if not annotated_cols:
         raise ValueError(
             "Protein annotation metadata does not match any peptide sample columns after normalization."
         )
 
-    filtered = wide[[seq_col, *annotated_cols]].copy()
-
-    def count_all_rk(sequence: str) -> int:
-        return max(0, sequence.count("R") + sequence.count("K") - 1)
-
-    rk_counts = [count_all_rk(str(sequence)) for sequence in filtered[seq_col].tolist()]
-    for column in filtered.columns[1:]:
-        filtered[column] = np.where(filtered[column].notna(), rk_counts, np.nan)
-
-    plot_data = filtered.melt(id_vars=seq_col, var_name="Sample", value_name="Count").dropna()
-    if plot_data.empty:
+    summary = peptide_missed_cleavage_summary(
+        wide[[seq_col, *annotated_cols]],
+        sequence_column=seq_col,
+        sample_columns=annotated_cols,
+        protease=resolved_protease,
+    )
+    if summary.empty:
         raise ValueError("No peptide intensities are available to calculate missed cleavages.")
-    plot_data["Count"] = plot_data["Count"].astype(int)
-
-    summary = plot_data.groupby(["Sample", "Count"]).size().reset_index(name="Occurrences")
-    summary["Total"] = summary.groupby("Sample")["Occurrences"].transform("sum")
-    summary["Percentage"] = (summary["Occurrences"] / summary["Total"]) * 100.0
 
     sample_order = meta["new_sample"].tolist()
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=sample_order, ordered=True)
@@ -652,7 +875,11 @@ def peptide_missed_cleavage_plot(
 
     ax.set_ylabel("Percentage of peptides with missed cleavage (%)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
-    ax.set_title("Missed cleavages per sample" if header else "")
+    # Name the rule on the plot: the same peptides give different counts under
+    # trypsin and trypsin/Lys-C, so the figure is ambiguous without it.
+    ax.set_title(
+        f"Missed cleavages per sample ({PROTEASE_LABELS[resolved_protease]})" if header else ""
+    )
     ax.set_xticks(range(len(sample_order)))
     ax.set_xticklabels(sample_order, rotation=90)
 
@@ -671,10 +898,6 @@ def peptide_missed_cleavage_plot(
     _apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
-
-
-def _split_protein_names(value: object) -> list[str]:
-    return [token.strip() for token in str(value).split(";") if token.strip()]
 
 
 @lru_cache(maxsize=4)
@@ -720,13 +943,28 @@ def _fasta_path(species: PeptideSpecies) -> Path:
         if candidate.exists():
             return candidate
     searched = ", ".join(str(candidate) for candidate in candidates)
-    raise ValueError(f"Could not find FASTA database for {species}. Checked: {searched}")
+    LOGGER.error("FASTA database for %s not found. Searched: %s", species, searched)
+    raise ValueError(
+        f"Could not find the bundled FASTA database for {species}. "
+        "The searched locations are recorded in the server log."
+    )
 
 
 def _load_fasta_dataframe(species: PeptideSpecies) -> pd.DataFrame:
     path = _fasta_path(species)
     stat = path.stat()
     return _load_fasta_dataframe_cached(str(path), stat.st_mtime_ns).copy()
+
+
+def _fasta_sequence(db: pd.DataFrame, protein: str) -> str | None:
+    identifier = str(protein).strip()
+    if not identifier:
+        return None
+    for column in ("name", "accession"):
+        sequence_row = db.loc[db[column].astype(str) == identifier, "V1"]
+        if not sequence_row.empty:
+            return str(sequence_row.iloc[0])
+    return None
 
 
 def _coverage_visualization(
@@ -740,10 +978,9 @@ def _coverage_visualization(
     filtered = frame[frame[protein_col].astype(str).str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)]
     found_sequences = filtered[seq_col].dropna().astype(str).unique()
 
-    sequence_row = db.loc[db["name"] == protein, "V1"]
-    if sequence_row.empty:
+    sequence = _fasta_sequence(db, protein)
+    if sequence is None:
         raise ValueError(f"No sequence found in the selected database for protein: {protein}")
-    sequence = str(sequence_row.iloc[0])
 
     n = len(sequence)
     result_sequences = ["-" * n]
@@ -825,10 +1062,9 @@ def peptide_sequence_coverage(
         raise ValueError(f"No peptides were found for protein '{protein}'.")
 
     db = _load_fasta_dataframe(species)
-    sequence_row = db.loc[db["name"] == protein, "V1"]
-    if sequence_row.empty:
+    sequence = _fasta_sequence(db, protein)
+    if sequence is None:
         raise ValueError(f"The selected protein variant '{protein}' does not exist in the loaded database.")
-    sequence = str(sequence_row.iloc[0])
 
     coverage_mask = [0] * len(sequence)
     for peptide in peptides:

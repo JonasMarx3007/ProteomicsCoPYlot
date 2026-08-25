@@ -6,9 +6,13 @@ import {
   downloadCurrentAnnotationFilteredData,
   downloadCurrentAnnotationMetadataData,
   downloadCurrentAnnotationSourceData,
+  generatePeptideMetadata,
   generateAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
+  getCurrentPeptideMetadata,
+  getNormalizationCapability,
+  getPeptideOverview,
   getUploadedAnnotationMetadata,
   renameMetadataProfile,
   setActiveMetadataProfile,
@@ -24,6 +28,9 @@ import type {
   CurrentDatasetsResponse,
   MetadataUploadResponse,
   MetadataAnnotationKind,
+  NormalizationCapabilityResponse,
+  PeptideMetadataResponse,
+  PeptideOverviewResponse,
   PhosprotAggregationMode,
   PhosprotAggregationSource,
 } from "../../lib/types";
@@ -34,17 +41,31 @@ type ConditionDraft = {
   columns: string[];
 };
 
+type AnnotationPageKind = AnnotationKind | "peptide";
+
 const DEFAULT_FILTER: AnnotationFilterConfig = {
   method: "at_least_n",
   minPresent: 0,
   minPercentage: 70,
   mode: "per_group",
+  normalization: "none",
+};
+
+const PHOSPROT_MODE_DESCRIPTIONS: Record<PhosprotAggregationMode, string> = {
+  robust_site_median:
+    "Default: centre each site on log2 scale and take the protein median when at least 50% of its eligible sites are observed.",
+  sum_propagate_na:
+    "Sum the fixed eligible site set on linear scale; any missing eligible site makes that sample value missing.",
+  sum_ignore_na:
+    "Sum observed sites on linear scale while ignoring missing sites; inspect the exported coverage diagnostics.",
+  mean:
+    "Take the linear-scale mean of observed sites; changing site coverage can change the result.",
 };
 
 const ANNOTATION_MANAGER_VISIBILITY_KEY = "data.annotationManager.visible.v1";
 
 export default function AnnotationPage() {
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const [kind, setKind] = useState<AnnotationPageKind>("protein");
   const [currentDatasets, setCurrentDatasets] = useState<CurrentDatasetsResponse | null>(
     null
   );
@@ -53,7 +74,27 @@ export default function AnnotationPage() {
   ]);
   const [isLog2Transformed, setIsLog2Transformed] = useState(true);
   const [filterConfig, setFilterConfig] = useState<AnnotationFilterConfig>(DEFAULT_FILTER);
+  // VSN is delegated to Bioconductor `vsn` via Rscript, so it is only offered
+  // when R and the package are actually present rather than failing at run time.
+  const [normalizationCapability, setNormalizationCapability] =
+    useState<NormalizationCapabilityResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getNormalizationCapability()
+      .then((payload) => {
+        if (!cancelled) setNormalizationCapability(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setNormalizationCapability(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [result, setResult] = useState<AnnotationResultResponse | null>(null);
+  const [peptideOverview, setPeptideOverview] = useState<PeptideOverviewResponse | null>(null);
+  const [peptideResult, setPeptideResult] = useState<PeptideMetadataResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [metadataFile, setMetadataFile] = useState<File | null>(null);
@@ -61,7 +102,7 @@ export default function AnnotationPage() {
   const [uploadingMetadata, setUploadingMetadata] = useState(false);
   const [phosprotResult, setPhosprotResult] = useState<AnnotationResultResponse | null>(null);
   const [phosprotMode, setPhosprotMode] =
-    useState<PhosprotAggregationMode>("sum_ignore_na");
+    useState<PhosprotAggregationMode>("robust_site_median");
   const [phosprotSource, setPhosprotSource] =
     useState<PhosprotAggregationSource>("non_imputed");
   const [phosprotBusy, setPhosprotBusy] = useState(false);
@@ -74,12 +115,25 @@ export default function AnnotationPage() {
   );
 
   const activeDataset = currentDatasets?.[kind] ?? null;
-  const availableColumns = activeDataset?.columnNames ?? [];
-  const availableKinds = useMemo<AnnotationKind[]>(() => {
-    const kinds: AnnotationKind[] = [];
+  const activeDatasetSource =
+    kind === "peptide"
+      ? currentDatasets?.peptide?.path
+      : currentDatasets?.[kind]?.sourcePath;
+  const peptideDatasetAvailable = Boolean(currentDatasets?.peptide);
+  const proteinDatasetAvailable = Boolean(currentDatasets?.protein);
+  const peptideDatasetFilename = currentDatasets?.peptide?.filename;
+  const peptideDatasetPath = currentDatasets?.peptide?.path;
+  const proteinDatasetFilename = currentDatasets?.protein?.filename;
+  const availableColumns =
+    kind === "peptide"
+      ? peptideOverview?.availableSamples ?? []
+      : activeDataset?.columnNames ?? [];
+  const availableKinds = useMemo<AnnotationPageKind[]>(() => {
+    const kinds: AnnotationPageKind[] = [];
     if (currentDatasets?.protein) kinds.push("protein");
     if (currentDatasets?.phospho) kinds.push("phospho");
     if (currentDatasets?.phosprot) kinds.push("phosprot");
+    if (!currentDatasets?.protein && currentDatasets?.peptide) kinds.push("peptide");
     return kinds;
   }, [currentDatasets]);
   const kindOptions = useMemo(
@@ -91,7 +145,9 @@ export default function AnnotationPage() {
             ? "Protein"
             : value === "phospho"
               ? "Phospho"
-              : "Phosphoprotein",
+              : value === "phosprot"
+                ? "Phosphoprotein"
+                : "Peptide",
       })),
     [availableKinds]
   );
@@ -123,12 +179,35 @@ export default function AnnotationPage() {
   }, []);
 
   useEffect(() => {
-    return subscribeDatasetStateChanged(() => {
+    return subscribeDatasetStateChanged((snapshot) => {
+      if (snapshot) {
+        setCurrentDatasets(snapshot);
+        return;
+      }
       refreshCurrent().catch(() => {
         // keep current snapshot if transient refresh fails
       });
     });
   }, []);
+
+  useEffect(() => {
+    if (!peptideDatasetAvailable || proteinDatasetAvailable) {
+      setPeptideOverview(null);
+      return;
+    }
+    getPeptideOverview()
+      .then((overview) => setPeptideOverview(overview))
+      .catch((err) => {
+        setPeptideOverview(null);
+        setError(err instanceof Error ? err.message : "Failed to load peptide samples");
+      });
+  }, [
+    peptideDatasetAvailable,
+    proteinDatasetAvailable,
+    peptideDatasetFilename,
+    peptideDatasetPath,
+    proteinDatasetFilename,
+  ]);
 
   useEffect(() => {
     setRenameMetadataProfileName(currentDatasets?.activeMetadataProfile ?? "Metadata");
@@ -152,6 +231,14 @@ export default function AnnotationPage() {
   }, [availableKinds, kind]);
 
   useEffect(() => {
+    if (kind === "peptide") {
+      setResult(null);
+      getCurrentPeptideMetadata()
+        .then((stored) => setPeptideResult(stored))
+        .catch(() => setPeptideResult(null));
+      return;
+    }
+    setPeptideResult(null);
     getCurrentAnnotation(kind)
       .then((stored) => {
         setResult(stored);
@@ -167,7 +254,7 @@ export default function AnnotationPage() {
   }, [
     kind,
     activeDataset?.filename,
-    activeDataset?.sourcePath,
+    activeDatasetSource,
     currentDatasets?.activeMetadataProfile,
   ]);
 
@@ -225,6 +312,7 @@ export default function AnnotationPage() {
   }
 
   function updateLog2FromConditions(nextConditions: ConditionDraft[]) {
+    if (kind === "peptide") return;
     const sampleColumns = Array.from(
       new Set(nextConditions.flatMap((condition) => condition.columns))
     );
@@ -233,7 +321,7 @@ export default function AnnotationPage() {
   }
 
   async function applyDetectedLog2State(sampleColumns: string[]) {
-    if (!activeDataset) return;
+    if (!activeDataset || kind === "peptide") return;
     try {
       const detection = await detectAnnotationLog2Scale({ kind, sampleColumns });
       if (typeof detection.isLog2Transformed === "boolean") {
@@ -263,11 +351,22 @@ export default function AnnotationPage() {
       setLoading(true);
       setError(null);
 
+      if (kind === "peptide") {
+        const generated = await generatePeptideMetadata({
+          conditions: requestConditions,
+        });
+        setPeptideResult(generated);
+        return;
+      }
+
       const generated = await generateAnnotation({
         kind,
         conditions: requestConditions,
         isLog2Transformed,
-        filter: filterConfig,
+        filter:
+          kind === "phosprot"
+            ? { ...filterConfig, normalization: "none" }
+            : filterConfig,
       });
 
       setResult(generated);
@@ -366,8 +465,8 @@ export default function AnnotationPage() {
     try {
       setMetadataProfileBusy(true);
       setError(null);
-      await createMetadataProfile(name);
-      await refreshCurrent();
+      const updated = await createMetadataProfile(name);
+      setCurrentDatasets(updated);
       setNewMetadataProfileName("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create metadata profile");
@@ -382,8 +481,8 @@ export default function AnnotationPage() {
     try {
       setMetadataProfileBusy(true);
       setError(null);
-      await setActiveMetadataProfile(name);
-      await refreshCurrent();
+      const updated = await setActiveMetadataProfile(name);
+      setCurrentDatasets(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to switch metadata profile");
     } finally {
@@ -405,8 +504,8 @@ export default function AnnotationPage() {
     try {
       setMetadataProfileBusy(true);
       setError(null);
-      await renameMetadataProfile(oldName, newName);
-      await refreshCurrent();
+      const updated = await renameMetadataProfile(oldName, newName);
+      setCurrentDatasets(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to rename metadata profile");
     } finally {
@@ -427,6 +526,7 @@ export default function AnnotationPage() {
     kind === "phospho" &&
     result?.imputation != null &&
     result.imputation.mode !== "none" &&
+    result.imputation.applied === true &&
     (result.imputation.sampleCount ?? result.sampleCount) > 0;
 
   useEffect(() => {
@@ -531,7 +631,7 @@ export default function AnnotationPage() {
             </label>
             <select
               value={kindOptions.length === 0 ? "" : kind}
-              onChange={(e) => setKind(e.target.value as AnnotationKind)}
+              onChange={(e) => setKind(e.target.value as AnnotationPageKind)}
               disabled={kindOptions.length === 0}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
@@ -555,7 +655,9 @@ export default function AnnotationPage() {
                   {activeDataset.filename}
                 </div>
                 <div>
-                  {activeDataset.rows} rows, {activeDataset.columns} columns
+                  {kind === "peptide" && peptideOverview
+                    ? `${peptideOverview.rows} rows, ${peptideOverview.columns} columns`
+                    : `${activeDataset.rows} rows, ${activeDataset.columns} columns`}
                 </div>
               </div>
             ) : (
@@ -564,26 +666,38 @@ export default function AnnotationPage() {
           </div>
         </div>
 
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={isLog2Transformed}
-              onChange={(e) => setIsLog2Transformed(e.target.checked)}
-            />
-            Dataset is already log2 transformed
-          </label>
-        </div>
+        {kind !== "peptide" ? (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={isLog2Transformed}
+                onChange={(e) => setIsLog2Transformed(e.target.checked)}
+              />
+              Dataset is already log2 transformed
+            </label>
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+            No protein dataset is loaded. Peptide plots will use the condition mapping from
+            the unique peptide file names below.
+          </div>
+        )}
 
         {kindOptions.length === 0 ? (
           <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-            Upload a protein, phospho, or phosphoprotein dataset in the Data tab before annotation.
+            Upload a protein, phospho, phosphoprotein, or peptide dataset in the Data tab before annotation.
           </div>
         ) : null}
 
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <div className="text-sm font-medium text-slate-700">Uploaded Metadata (Optional)</div>
-          {metadataSupportedKind ? (
+          {kind === "peptide" ? (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              Peptide-only annotation is generated from the unique file names in the loaded
+              peptide report. Assign them to conditions below.
+            </div>
+          ) : metadataSupportedKind ? (
             <>
               <p className="mt-1 text-sm text-slate-600">
                 If a metadata file is uploaded for this level, it overrides UI condition mapping during annotation generation.
@@ -668,7 +782,7 @@ export default function AnnotationPage() {
 
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700">
-                    Sample columns
+                    {kind === "peptide" ? "Peptide file names" : "Sample columns"}
                   </label>
                   <div className="overflow-x-auto rounded-xl border border-slate-300">
                     <select
@@ -714,10 +828,27 @@ export default function AnnotationPage() {
           >
             Add condition
           </button>
+          {kind === "peptide" ? (
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={!activeDataset || loading}
+              className="ml-3 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Generating..." : "Generate Peptide Annotation"}
+            </button>
+          ) : null}
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      {kind === "peptide" && error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      ) : null}
+
+      {kind !== "peptide" ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Filter Settings</h3>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <div>
@@ -798,6 +929,46 @@ export default function AnnotationPage() {
               <option value="overall">Overall</option>
             </select>
           </div>
+          {kind === "phosprot" ? (
+            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+              Phosphoprotein values retain the normalization applied at phosphosite level
+              before collapse. No second normalization is applied here.
+            </div>
+          ) : (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Normalization
+              </label>
+              <select
+                value={filterConfig.normalization ?? "none"}
+                onChange={(e) =>
+                  setFilterConfig((prev) => ({
+                    ...prev,
+                    normalization: e.target.value as AnnotationFilterConfig["normalization"],
+                  }))
+                }
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+              >
+                <option value="none">None</option>
+                <option value="median">Median centering</option>
+                <option value="quantile">Quantile</option>
+                {normalizationCapability?.vsnAvailable ? (
+                  <option value="vsn">VSN</option>
+                ) : null}
+              </select>
+              <p className="mt-2 text-xs text-slate-500">
+                Applied globally to the log2 values before filtering. Skip it if your export is
+                already normalized (for example MaxLFQ or PG.Normalised).
+                {normalizationCapability?.vsnAvailable
+                  ? ` VSN runs through the Bioconductor vsn package${
+                      normalizationCapability.vsnPackageVersion
+                        ? ` (${normalizationCapability.vsnPackageVersion})`
+                        : ""
+                    }.`
+                  : " VSN is hidden because it requires R with the Bioconductor vsn package."}
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="mt-5">
@@ -816,9 +987,35 @@ export default function AnnotationPage() {
             {error}
           </div>
         )}
-      </section>
+        </section>
+      ) : null}
 
-      {result ? (
+      {kind === "peptide" ? (
+        peptideResult ? (
+          <>
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">Peptide Annotation Ready</h3>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <SummaryCard label="Annotated Samples" value={String(peptideResult.rows)} />
+                <SummaryCard label="Metadata Source" value="peptide file names" />
+              </div>
+            </section>
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">Metadata</h3>
+              <div className="mt-4">
+                <PreviewTable
+                  rows={peptideResult.preview}
+                  emptyText="No peptide metadata rows available."
+                />
+              </div>
+            </section>
+          </>
+        ) : (
+          <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
+            No peptide annotation result yet.
+          </section>
+        )
+      ) : result ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">Result Summary</h3>
@@ -898,11 +1095,14 @@ export default function AnnotationPage() {
                           }
                           className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
                         >
-                          <option value="sum_mean_impute">sum_mean_impute</option>
+                          <option value="robust_site_median">robust_site_median</option>
                           <option value="sum_propagate_na">sum_propagate_na</option>
                           <option value="sum_ignore_na">sum_ignore_na</option>
                           <option value="mean">mean</option>
                         </select>
+                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                          {PHOSPROT_MODE_DESCRIPTIONS[phosprotMode]}
+                        </p>
                       </div>
                       <div>
                         <label className="mb-2 block text-sm font-medium text-slate-700">

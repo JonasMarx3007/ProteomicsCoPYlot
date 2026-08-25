@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+import logging
+
 import io
 import os
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.schemas.restore import RestoreExportRequest, RestoreImportResponse, RestoreMissingFile
 from app.services.restore_state import (
+    RESTORE_COMPATIBILITY_NOTICE,
     RestoreStateError,
     apply_restore_state,
     decode_restore_blob,
     describe_restore_version_warning,
     export_state_blob,
     inspect_missing_files,
+    migrate_restore_ui_state,
     parse_replacements_manifest,
+    restore_upload_max_bytes,
 )
 from app.services.annotation_store import reset_all_annotations
 from app.services.condition_palette_store import reset_condition_palettes
@@ -28,6 +34,9 @@ from app.services.viewer_portal import (
     viewer_session_authenticated,
 )
 from app.services.viewer_bootstrap import bootstrap_current_viewer_session, viewer_mode_enabled
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/restore", tags=["restore"])
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -43,14 +52,16 @@ def _reset_on_browser_load_enabled() -> bool:
 
 
 @router.post("/export")
-async def export_restore_state(payload: RestoreExportRequest) -> StreamingResponse:
+def export_restore_state(payload: RestoreExportRequest) -> StreamingResponse:
     try:
-        blob = export_state_blob(ui_state=payload.uiState)
+        blob = export_state_blob(ui_state=payload.uiState, portable=payload.portable)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to export restore state: {exc}") from exc
+        LOGGER.exception("Failed to export restore state")
+        raise HTTPException(status_code=500, detail="Failed to export restore state.") from exc
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"copylot_state_{timestamp}.copylotstate"
+    label = "portable_state" if payload.portable else "state"
+    filename = f"copylot_{label}_{timestamp}.copylotstate"
     return StreamingResponse(
         io.BytesIO(blob),
         media_type="application/octet-stream",
@@ -65,22 +76,34 @@ async def import_restore_state(
     replacements: list[UploadFile] = File(default=[]),
 ) -> RestoreImportResponse:
     try:
-        blob = await stateFile.read()
-        state = decode_restore_blob(blob)
-        replacement_map = parse_replacements_manifest(replacementsManifest, replacements)
-        missing = inspect_missing_files(state, replacement_map)
+        upload_limit = restore_upload_max_bytes()
+        blob = await stateFile.read(upload_limit + 1)
+        if len(blob) > upload_limit:
+            raise RestoreStateError("Restore file exceeds the configured upload limit.")
+        state = await run_in_threadpool(decode_restore_blob, blob)
+        replacement_map = await run_in_threadpool(
+            parse_replacements_manifest,
+            replacementsManifest,
+            replacements,
+        )
+        missing = await run_in_threadpool(inspect_missing_files, state, replacement_map)
         version_warning = describe_restore_version_warning(state)
     except RestoreStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to parse restore state: {exc}") from exc
+        LOGGER.exception("Failed to parse restore state")
+        raise HTTPException(status_code=400, detail="Failed to parse restore state.") from exc
 
-    ui_state = state.get("uiState")
+    ui_state, ui_migration_warnings = migrate_restore_ui_state(state.get("uiState"))
     if missing:
         payload = RestoreImportResponse(
             ok=False,
             uiState=ui_state if isinstance(ui_state, dict) else {},
-            warnings=[version_warning] if version_warning else [],
+            warnings=[
+                RESTORE_COMPATIBILITY_NOTICE,
+                *([version_warning] if version_warning else []),
+                *ui_migration_warnings,
+            ],
             missingFiles=[
                 RestoreMissingFile(
                     packageName=item.package_name,
@@ -97,16 +120,22 @@ async def import_restore_state(
         return JSONResponse(status_code=409, content=payload.model_dump())
 
     try:
-        restored = apply_restore_state(state, replacement_map)
+        restored = await run_in_threadpool(apply_restore_state, state, replacement_map)
     except RestoreStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to apply restore state: {exc}") from exc
+        LOGGER.exception("Failed to apply restore state")
+        raise HTTPException(status_code=500, detail="Failed to apply restore state.") from exc
 
     return RestoreImportResponse(
         ok=True,
         uiState=ui_state if isinstance(ui_state, dict) else {},
-        warnings=([version_warning] if version_warning else []) + restored.warnings,
+        warnings=[
+            RESTORE_COMPATIBILITY_NOTICE,
+            *([version_warning] if version_warning else []),
+            *ui_migration_warnings,
+            *restored.warnings,
+        ],
         missingFiles=[],
         restoredDatasets=restored.restored_datasets,
         restoredAnnotations=restored.restored_annotations,
@@ -114,7 +143,7 @@ async def import_restore_state(
 
 
 @router.post("/browser-session-reset")
-async def browser_session_reset() -> dict[str, bool]:
+def browser_session_reset() -> dict[str, bool]:
     enabled = _reset_on_browser_load_enabled()
     if enabled:
         reset_all_annotations()

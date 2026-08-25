@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getDistributionSummary } from "../../lib/api";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { buildPlotUrl, getDistributionSummary, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -9,6 +9,7 @@ import {
 } from "../../lib/plotDownload";
 import { withBasePath } from "../../lib/basePath";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
 type Props = {
@@ -17,14 +18,29 @@ type Props = {
 
 export default function DistributionPage({ advancedPlotOptions }: Props) {
   const advancedPlotSignal = useAdvancedPlotSignal();
-  const [kind, setKind] = useState<AnnotationKind>("protein");
+  const persisted = useMemo(
+    () => readPersistedUiState<Record<string, unknown>>("data.distribution.v1", {}),
+    []
+  );
+  const [kind, setKind] = useState<AnnotationKind>(() => {
+    const value = String(persisted.kind ?? "protein");
+    return value === "phospho" || value === "phosprot" ? value : "protein";
+  });
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DistributionSummaryResponse | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
+    const value = String(persisted.downloadFormat ?? "png");
+    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
+  });
+  const [randomSeed, setRandomSeed] = useState(() => Number(persisted.randomSeed ?? 187));
 
-  async function loadSummary() {
+  useEffect(() => {
+    writePersistedUiState("data.distribution.v1", { kind, downloadFormat, randomSeed });
+  }, [kind, downloadFormat, randomSeed]);
+
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
     if (!availableKinds.includes(kind)) {
       setSummary(null);
       setError("Please upload a protein, phospho, or phosphoprotein dataset first.");
@@ -33,14 +49,15 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
     try {
       setLoading(true);
       setError(null);
-      const data = await getDistributionSummary(kind);
+      const data = await getDistributionSummary(kind, { signal });
       setSummary(data);
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : "Failed to load distribution summary");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  }
+  }, [availableKinds, kind]);
 
   useEffect(() => {
     if (availableKinds.length === 0) {
@@ -51,12 +68,17 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
       setKind(availableKinds[0]);
       return;
     }
-    loadSummary();
-  }, [kind, availableKinds]);
+    const controller = new AbortController();
+    loadSummary(controller.signal);
+    return () => controller.abort();
+  }, [kind, availableKinds, loadSummary]);
 
   const qqPlotUrl = useMemo(
-    () => buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`),
-    [kind, advancedPlotSignal]
+    () => {
+      void advancedPlotSignal;
+      return buildPlotUrl(`/api/plots/distribution/${kind}/qqnorm.png`, { randomSeed });
+    },
+    [kind, randomSeed, advancedPlotSignal]
   );
   const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
   const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
@@ -68,17 +90,30 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Distribution</h2>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <SelectField
             label="Dataset level"
             value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
             options={kindOptions}
           />
+          <label className="grid gap-1 text-sm text-slate-700">
+            <span>Random seed</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={randomSeed}
+              onChange={(event) =>
+                setRandomSeed(Math.max(0, Math.round(Number(event.target.value) || 0)))
+              }
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
+            />
+          </label>
           <div className="self-end">
             <button
               type="button"
-              onClick={loadSummary}
+              onClick={() => void loadSummary()}
               disabled={loading}
               className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >

@@ -3,26 +3,44 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import logging
+import os
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from threading import RLock
+from typing import Any, Iterable, Literal, get_args
 from uuid import uuid4
 
 import pandas as pd
 from fastapi import UploadFile
 
 from app.app_version import APP_VERSION
-from app.schemas.annotation import AnnotationFilterConfig, AnnotationImputationInfo, AnnotationKind
+from app.schemas.annotation import (
+    AnnotationFilterConfig,
+    AnnotationImputationInfo,
+    AnnotationKind,
+    NormalizationMethod,
+    phosprot_filter_config,
+)
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.annotation_store import (
     get_annotation,
     list_annotation_profiles,
     reset_all_annotations,
+    restore_annotation_session_state,
     save_annotation,
+    snapshot_annotation_session_state,
 )
-from app.services.condition_palette_store import get_condition_palette, reset_condition_palettes, set_condition_palette
+from app.services.condition_palette_store import (
+    get_condition_palette,
+    reset_condition_palettes,
+    restore_condition_palette_session_state,
+    set_condition_palette,
+    snapshot_condition_palette_session_state,
+)
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import (
     create_package,
@@ -31,9 +49,11 @@ from app.services.dataset_store import (
     get_current_dataset,
     list_packages,
     reset_all_datasets,
+    restore_dataset_session_state,
     save_peptide_path,
     save_table_dataset,
     set_active_package,
+    snapshot_dataset_session_state,
 )
 from app.services.metadata_upload_store import (
     DEFAULT_METADATA_PROFILE_NAME,
@@ -42,10 +62,20 @@ from app.services.metadata_upload_store import (
     get_uploaded_metadata,
     list_profiles,
     reset_all_uploaded_metadata,
+    restore_metadata_session_state,
     save_uploaded_metadata,
     set_active_profile,
+    snapshot_metadata_session_state,
 )
-from app.services.peptide_metadata_store import clear_peptide_metadata, get_peptide_metadata, save_peptide_metadata
+from app.services.peptide_metadata_store import (
+    clear_peptide_metadata,
+    get_peptide_metadata,
+    restore_peptide_metadata_session_state,
+    save_peptide_metadata,
+    snapshot_peptide_metadata_session_state,
+)
+from app.services.session_context import get_session_id
+from app.services.upload_limits import upload_max_bytes, upload_size_bytes
 
 TableKind = Literal["protein", "phospho", "phosprot"]
 DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
@@ -53,10 +83,99 @@ _TABLE_KINDS: tuple[TableKind, ...] = ("protein", "phospho", "phosprot")
 _DATASET_KINDS: tuple[DatasetKind, ...] = ("protein", "phospho", "phosprot", "peptide")
 _METADATA_KINDS: tuple[Literal["protein", "phospho"], ...] = ("protein", "phospho")
 _STATE_FORMAT = "copylot_state_v1"
+_DEFAULT_RESTORE_UPLOAD_LIMIT_BYTES = 64 * 1024 * 1024
+_DEFAULT_RESTORE_EXPANDED_LIMIT_BYTES = 256 * 1024 * 1024
+_DEFAULT_RESTORE_TABLE_MAX_ROWS = 5_000_000
+_DEFAULT_RESTORE_TABLE_MAX_COLUMNS = 50_000
+_DEFAULT_RESTORE_TABLE_MAX_CELLS = 50_000_000
+_DEFAULT_RESTORE_REPLACEMENT_MAX_FILES = 256
+_DEFAULT_RESTORE_MANIFEST_MAX_CHARS = 1_000_000
+_READ_CHUNK_BYTES = 1024 * 1024
+LOGGER = logging.getLogger(__name__)
+RESTORE_COMPATIBILITY_NOTICE = (
+    "Save states are compatibility snapshots: saved settings were restored, and any "
+    "options not present in the file use the current application defaults."
+)
+SIMULATION_SAMPLE_SIZE_MIGRATION_WARNING = (
+    "Legacy Simulation sample-size override 1 was migrated to 0 (use observed sample sizes). "
+    "A t-test cannot estimate variance from one sample per group."
+)
+_RESTORE_LOCKS_GUARD = RLock()
+_RESTORE_LOCKS: dict[str, RLock] = {}
 
 
 class RestoreStateError(ValueError):
     pass
+
+
+def _current_restore_lock() -> RLock:
+    session_id = get_session_id()
+    with _RESTORE_LOCKS_GUARD:
+        lock = _RESTORE_LOCKS.get(session_id)
+        if lock is None:
+            lock = RLock()
+            _RESTORE_LOCKS[session_id] = lock
+        return lock
+
+
+def _positive_env_bytes(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return max(1, parsed)
+
+
+def restore_upload_max_bytes() -> int:
+    return _positive_env_bytes(
+        "COPYLOT_RESTORE_UPLOAD_MAX_BYTES",
+        _DEFAULT_RESTORE_UPLOAD_LIMIT_BYTES,
+    )
+
+
+def restore_expanded_max_bytes() -> int:
+    return _positive_env_bytes(
+        "COPYLOT_RESTORE_EXPANDED_MAX_BYTES",
+        _DEFAULT_RESTORE_EXPANDED_LIMIT_BYTES,
+    )
+
+
+def restore_replacement_max_bytes() -> int:
+    return _positive_env_bytes("COPYLOT_RESTORE_REPLACEMENT_MAX_BYTES", upload_max_bytes())
+
+
+def restore_replacements_total_max_bytes() -> int:
+    per_file = restore_replacement_max_bytes()
+    return _positive_env_bytes("COPYLOT_RESTORE_REPLACEMENTS_TOTAL_MAX_BYTES", per_file * 2)
+
+
+def restore_table_max_rows() -> int:
+    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_ROWS", _DEFAULT_RESTORE_TABLE_MAX_ROWS)
+
+
+def restore_table_max_columns() -> int:
+    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_COLUMNS", _DEFAULT_RESTORE_TABLE_MAX_COLUMNS)
+
+
+def restore_table_max_cells() -> int:
+    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_CELLS", _DEFAULT_RESTORE_TABLE_MAX_CELLS)
+
+
+def restore_replacement_max_files() -> int:
+    return _positive_env_bytes(
+        "COPYLOT_RESTORE_REPLACEMENT_MAX_FILES",
+        _DEFAULT_RESTORE_REPLACEMENT_MAX_FILES,
+    )
+
+
+def restore_manifest_max_chars() -> int:
+    return _positive_env_bytes(
+        "COPYLOT_RESTORE_MANIFEST_MAX_CHARS",
+        _DEFAULT_RESTORE_MANIFEST_MAX_CHARS,
+    )
 
 
 @dataclass
@@ -79,6 +198,7 @@ class PreparedRestoreInput:
 class ReplacementInput:
     file: UploadFile
     source_path: str | None = None
+    size_bytes: int | None = None
 
 
 @dataclass
@@ -112,6 +232,17 @@ def _frame_from_payload(payload: Any) -> pd.DataFrame:
     data_raw = payload.get("data")
     if not isinstance(columns_raw, list) or not isinstance(data_raw, list):
         raise RestoreStateError("Invalid table payload format in restore state.")
+    row_count = len(data_raw)
+    column_count = len(columns_raw)
+    if row_count > restore_table_max_rows():
+        raise RestoreStateError("Restore table exceeds the configured row limit.")
+    if column_count > restore_table_max_columns():
+        raise RestoreStateError("Restore table exceeds the configured column limit.")
+    if row_count * column_count > restore_table_max_cells():
+        raise RestoreStateError("Restore table exceeds the configured cell limit.")
+    for row in data_raw:
+        if not isinstance(row, list) or len(row) != column_count:
+            raise RestoreStateError("Restore table rows do not match the declared columns.")
     columns = [str(column) for column in columns_raw]
     return pd.DataFrame(data_raw, columns=columns)
 
@@ -167,12 +298,31 @@ def _coerce_filter_config(payload: Any) -> AnnotationFilterConfig:
         method_raw = "at_least_n"
     if mode_raw not in {"per_group", "in_at_least_one_group", "overall"}:
         mode_raw = "per_group"
+    # Validated against the schema rather than a hardcoded set, so a new
+    # normalization method cannot be silently downgraded to "none" on restore.
+    normalization_raw = str(payload.get("normalization", "none")).strip().lower()
+    if normalization_raw not in set(get_args(NormalizationMethod)):
+        normalization_raw = "none"
     return AnnotationFilterConfig(
         method=method_raw,
         minPresent=min_present,
         minPercentage=min_percentage,
         mode=mode_raw,
+        normalization=normalization_raw,
     )  # type: ignore[arg-type]
+
+
+def _coerce_phosprot_aggregation(payload: Any) -> str | None:
+    """Accept only a known aggregation mode from a restored state file.
+
+    A state file is user-supplied, so an unrecognised value is dropped rather
+    than trusted: `None` means "unknown provenance", which is the safe reading.
+    """
+    from app.schemas.annotation import PhosprotAggregationMode
+
+    text = str(payload or "").strip().lower()
+    allowed = {*get_args(PhosprotAggregationMode), "uploaded"}
+    return text if text in allowed else None
 
 
 def _coerce_imputation(payload: Any) -> AnnotationImputationInfo | None:
@@ -230,11 +380,19 @@ def _ensure_exportable_table_path(stored: Any) -> str | None:
 def _parse_state_blob(blob: bytes) -> dict[str, Any]:
     if not blob:
         raise RestoreStateError("Restore file is empty.")
+    if len(blob) > restore_upload_max_bytes():
+        raise RestoreStateError("Restore file exceeds the configured upload limit.")
     raw: bytes
-    try:
-        raw = gzip.decompress(blob)
-    except Exception:
+    if blob.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(blob), mode="rb") as handle:
+                raw = handle.read(restore_expanded_max_bytes() + 1)
+        except Exception as exc:
+            raise RestoreStateError(f"Restore file has invalid gzip data: {exc}") from exc
+    else:
         raw = blob
+    if len(raw) > restore_expanded_max_bytes():
+        raise RestoreStateError("Expanded restore state exceeds the configured size limit.")
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except Exception as exc:
@@ -256,6 +414,43 @@ def describe_restore_version_warning(state: dict[str, Any]) -> str | None:
     return (
         f"Save state was created with app version {saved_version}. "
         f"Current app version is {APP_VERSION}."
+    )
+
+
+def migrate_restore_ui_state(payload: Any) -> tuple[dict[str, Any], list[str]]:
+    """Apply narrow, disclosed migrations to otherwise opaque client UI state."""
+    if not isinstance(payload, dict):
+        return {}, []
+    migrated = deepcopy(payload)
+    changed = False
+    for container_name in ("localStorageState", "reportLocalStorage"):
+        storage = migrated.get(container_name)
+        if not isinstance(storage, dict):
+            continue
+        for key, raw in list(storage.items()):
+            if not str(key).endswith("stats.simulation.v1") or not isinstance(raw, str):
+                continue
+            try:
+                simulation_state = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(simulation_state, dict):
+                continue
+            sample_size = simulation_state.get("sampleSizeOverride")
+            if not isinstance(sample_size, (int, float)) or isinstance(sample_size, bool):
+                continue
+            if float(sample_size) != 1.0:
+                continue
+            simulation_state["sampleSizeOverride"] = 0
+            storage[key] = json.dumps(
+                simulation_state,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            changed = True
+    return (
+        migrated,
+        [SIMULATION_SAMPLE_SIZE_MIGRATION_WARNING] if changed else [],
     )
 
 
@@ -294,7 +489,11 @@ def _export_profile_names(package_name: str) -> list[str]:
     return ordered
 
 
-def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
+def export_state_blob(
+    *,
+    ui_state: dict[str, Any] | None = None,
+    portable: bool = False,
+) -> bytes:
     active_package = get_active_package()
     packages_payload: list[dict[str, Any]] = []
 
@@ -308,7 +507,7 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                 continue
             dataset_payload[kind] = {
                 "filename": str(getattr(stored, "filename", "") or ""),
-                "path": _ensure_exportable_table_path(stored),
+                "path": None if portable else _ensure_exportable_table_path(stored),
             }
         peptide_stored = current.get("peptide")
         dataset_payload["peptide"] = (
@@ -316,7 +515,11 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
             if peptide_stored is None
             else {
                 "filename": str(getattr(peptide_stored, "filename", "") or ""),
-                "path": _optional_text(getattr(peptide_stored, "path", None)),
+                "path": (
+                    None
+                    if portable
+                    else _optional_text(getattr(peptide_stored, "path", None))
+                ),
             }
         )
 
@@ -369,16 +572,34 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                             "minPresent": int(stored_annotation.filter_config.minPresent),
                             "minPercentage": float(stored_annotation.filter_config.minPercentage),
                             "mode": str(stored_annotation.filter_config.mode),
+                            "normalization": str(stored_annotation.filter_config.normalization),
                         },
                         "imputation": (
                             stored_annotation.imputation.model_dump()
                             if stored_annotation.imputation is not None
                             else None
                         ),
+                        # Which aggregation produced a phosprot frame. Without it a
+                        # restored session forgets that `robust_site_median` values
+                        # are ratios rather than abundances, and the abundance plot
+                        # goes back to labelling them "Intensity".
+                        "phosprotAggregation": getattr(
+                            stored_annotation, "phosprot_aggregation", None
+                        ),
+                        "imputedFrame": (
+                            _frame_to_payload(stored_annotation.imputed_data)
+                            if isinstance(
+                                getattr(stored_annotation, "imputed_data", None),
+                                pd.DataFrame,
+                            )
+                            and not stored_annotation.imputed_data.empty
+                            else None
+                        ),
                         "metadataFrame": _frame_to_payload(stored_annotation.metadata),
                     }
                 )
 
+        package_peptide_metadata = get_peptide_metadata(package_name=package_name)
         packages_payload.append(
             {
                 "name": package_name,
@@ -388,14 +609,22 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                     "profiles": metadata_profiles_payload,
                 },
                 "annotations": annotation_payload,
+                "peptideMetadata": (
+                    None
+                    if package_peptide_metadata is None
+                    else {
+                        "filename": package_peptide_metadata.filename,
+                        "frame": _frame_to_payload(package_peptide_metadata.frame),
+                    }
+                ),
             }
         )
 
-    peptide_metadata = get_peptide_metadata()
     payload: dict[str, Any] = {
         "format": _STATE_FORMAT,
         "appVersion": APP_VERSION,
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "portable": portable,
         "uiState": ui_state or {},
         "backend": {
             "activePackage": active_package,
@@ -405,14 +634,6 @@ def export_state_blob(*, ui_state: dict[str, Any] | None = None) -> bytes:
                 "phospho": get_condition_palette("phospho"),
                 "phosprot": get_condition_palette("phosprot"),
             },
-            "peptideMetadata": (
-                None
-                if peptide_metadata is None
-                else {
-                    "filename": peptide_metadata.filename,
-                    "frame": _frame_to_payload(peptide_metadata.frame),
-                }
-            ),
         },
     }
     return _serialize_state_payload(payload)
@@ -425,8 +646,12 @@ def parse_replacements_manifest(
     files = list(replacement_files or [])
     if not files:
         return {}
+    if len(files) > restore_replacement_max_files():
+        raise RestoreStateError("Too many replacement files were provided.")
     if not manifest_text:
         raise RestoreStateError("Replacement file manifest is required when replacement files are provided.")
+    if len(manifest_text) > restore_manifest_max_chars():
+        raise RestoreStateError("Replacement manifest exceeds the configured size limit.")
     try:
         parsed = json.loads(manifest_text)
     except Exception as exc:
@@ -437,6 +662,9 @@ def parse_replacements_manifest(
         raise RestoreStateError("Replacement manifest size does not match number of replacement files.")
 
     mapped: dict[tuple[str, DatasetKind], ReplacementInput] = {}
+    total_size = 0
+    per_file_limit = restore_replacement_max_bytes()
+    total_limit = restore_replacements_total_max_bytes()
     for index, entry in enumerate(parsed):
         if not isinstance(entry, dict):
             raise RestoreStateError("Replacement manifest entries must be objects.")
@@ -445,11 +673,76 @@ def parse_replacements_manifest(
         source_path = _optional_text(entry.get("sourcePath"))
         if not package_name or kind is None:
             raise RestoreStateError("Replacement manifest entry is missing packageName or kind.")
-        mapped[(package_name, kind)] = ReplacementInput(
+        key = (package_name, kind)
+        if key in mapped:
+            raise RestoreStateError(f"Replacement manifest contains duplicate entry for {package_name}:{kind}.")
+        try:
+            size_bytes = upload_size_bytes(
+                files[index],
+                label=f"Replacement file for {package_name}:{kind}",
+                max_bytes=per_file_limit,
+            )
+        except ValueError as exc:
+            raise RestoreStateError(str(exc)) from exc
+        total_size += size_bytes
+        if total_size > total_limit:
+            raise RestoreStateError("Replacement files exceed the configured aggregate upload limit.")
+        mapped[key] = ReplacementInput(
             file=files[index],
             source_path=source_path,
+            size_bytes=size_bytes,
         )
     return mapped
+
+
+def _validate_replacement_inputs(
+    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+) -> None:
+    total_size = 0
+    per_file_limit = restore_replacement_max_bytes()
+    total_limit = restore_replacements_total_max_bytes()
+    for (package_name, kind), replacement in replacements.items():
+        if isinstance(replacement.size_bytes, int):
+            size_bytes = replacement.size_bytes
+            if size_bytes > per_file_limit:
+                raise RestoreStateError(
+                    f"Replacement file for {package_name}:{kind} exceeds the configured upload limit."
+                )
+        else:
+            try:
+                size_bytes = upload_size_bytes(
+                    replacement.file,
+                    label=f"Replacement file for {package_name}:{kind}",
+                    max_bytes=per_file_limit,
+                )
+            except ValueError as exc:
+                raise RestoreStateError(str(exc)) from exc
+        replacement.size_bytes = size_bytes
+        total_size += size_bytes
+        if total_size > total_limit:
+            raise RestoreStateError("Replacement files exceed the configured aggregate upload limit.")
+
+
+def _read_replacement_bytes(replacement: ReplacementInput, *, label: str) -> bytes:
+    limit = restore_replacement_max_bytes()
+    stream = getattr(replacement.file, "file", None)
+    if stream is None or not hasattr(stream, "read"):
+        raise RestoreStateError(f"{label} could not be read safely.")
+    try:
+        stream.seek(0)
+    except Exception:
+        pass
+    chunks: list[bytes] = []
+    observed = 0
+    while True:
+        chunk = stream.read(min(_READ_CHUNK_BYTES, limit - observed + 1))
+        if not chunk:
+            break
+        observed += len(chunk)
+        if observed > limit:
+            raise RestoreStateError(f"{label} exceeds the configured upload limit.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def inspect_missing_files(
@@ -531,6 +824,7 @@ def _prepare_restore_inputs(
     state: dict[str, Any],
     replacements: dict[tuple[str, DatasetKind], ReplacementInput],
 ) -> PreparedRestoreInput:
+    _validate_replacement_inputs(replacements)
     backend = state.get("backend")
     if not isinstance(backend, dict):
         raise RestoreStateError("Restore file is missing backend state.")
@@ -575,7 +869,10 @@ def _prepare_restore_inputs(
                 raise RestoreStateError(
                     f"Missing replacement for dataset {package_name}:{kind}."
                 )
-            content = replacement.file.read()
+            content = _read_replacement_bytes(
+                replacement,
+                label=f"Replacement file for {package_name}:{kind}",
+            )
             frame = read_dataframe(replacement.file.filename or filename, io.BytesIO(content))
             frame_by_package_kind[(package_name, kind)] = (
                 frame,
@@ -607,7 +904,10 @@ def _prepare_restore_inputs(
                 replacement.source_path,
             )
         else:
-            content = replacement.file.read()
+            content = _read_replacement_bytes(
+                replacement,
+                label=f"Replacement file for {package_name}:peptide",
+            )
             target = _restore_upload_dir() / f"{uuid4().hex}_{Path(peptide_filename).name}"
             target.write_bytes(content)
             peptide_path_by_package[package_name] = (str(target.resolve()), None)
@@ -620,11 +920,29 @@ def _prepare_restore_inputs(
     )
 
 
-def apply_restore_state(
+def _restore_peptide_metadata_payload(
+    payload: Any,
+    *,
+    package_name: str,
+    warnings: list[str],
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    frame_payload = payload.get("frame")
+    if frame_payload is None:
+        return
+    try:
+        frame = _frame_from_payload(frame_payload)
+        filename = str(payload.get("filename", "")).strip() or "peptide_metadata.csv"
+        save_peptide_metadata(filename=filename, frame=frame, package_name=package_name)
+    except Exception:
+        warnings.append(f"Failed to restore peptide metadata table for {package_name}.")
+
+
+def _apply_prepared_restore_state(
     state: dict[str, Any],
-    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+    prepared: PreparedRestoreInput,
 ) -> RestoreApplyResult:
-    prepared = _prepare_restore_inputs(state, replacements)
     backend = state.get("backend")
     if not isinstance(backend, dict):
         raise RestoreStateError("Restore file is missing backend state.")
@@ -753,6 +1071,12 @@ def apply_restore_state(
                             profile_name=profile_name,
                         )
 
+        _restore_peptide_metadata_payload(
+            package_entry.get("peptideMetadata"),
+            package_name=package_name,
+            warnings=warnings,
+        )
+
     for deferred in deferred_auto_metadata:
         restored_metadata = get_uploaded_metadata(
             deferred.metadata_kind,
@@ -815,10 +1139,37 @@ def apply_restore_state(
                 if metadata_frame.empty:
                     continue
                 filter_config = _coerce_filter_config(annotation_entry.get("filter"))
+                if kind == "phosprot":
+                    filter_config = phosprot_filter_config(filter_config)
                 is_log2_transformed = bool(annotation_entry.get("isLog2Transformed", True))
                 log2_auto_detected = bool(annotation_entry.get("log2AutoDetected", False))
                 metadata_source = _normalize_metadata_source(annotation_entry.get("metadataSource"))
                 imputation = _coerce_imputation(annotation_entry.get("imputation"))
+                imputed_data = pd.DataFrame()
+                imputed_payload = annotation_entry.get("imputedFrame")
+                if imputed_payload is not None:
+                    try:
+                        imputed_data = _frame_from_payload(imputed_payload)
+                    except Exception:
+                        warnings.append(
+                            f"Discarded invalid imputed data for "
+                            f"{package_name}:{profile_name}:{kind}."
+                        )
+                required_imputed_samples = metadata_frame["sample"].astype(str).tolist()
+                if not imputed_data.empty and any(
+                    sample not in imputed_data.columns for sample in required_imputed_samples
+                ):
+                    warnings.append(
+                        f"Discarded stale imputed data for {package_name}:{profile_name}:{kind} "
+                        "because sample columns no longer match."
+                    )
+                    imputed_data = pd.DataFrame()
+                if imputation is None:
+                    imputed_data = pd.DataFrame()
+                elif imputed_data.empty:
+                    imputation = imputation.model_copy(update={"applied": False})
+                else:
+                    imputation = imputation.model_copy(update={"applied": True})
                 try:
                     computed = compute_annotation_from_metadata(
                         data=dataset.frame,
@@ -828,6 +1179,7 @@ def apply_restore_state(
                         filter_mode=filter_config.mode,
                         filter_method=filter_config.method,
                         min_percentage=filter_config.minPercentage,
+                        normalization=filter_config.normalization,
                     )
                     save_annotation(
                         kind=kind,
@@ -842,13 +1194,24 @@ def apply_restore_state(
                         warnings=computed.warnings,
                         log2_auto_detected=log2_auto_detected,
                         imputation=imputation,
+                        imputed_data=imputed_data,
                         package_name=package_name,
                         metadata_profile_name=profile_name,
+                        phosprot_aggregation=_coerce_phosprot_aggregation(
+                            annotation_entry.get("phosprotAggregation")
+                        ),
                     )
                     restored_annotations.append(f"{package_name}:{profile_name}:{kind}")
                 except Exception as exc:
+                    LOGGER.exception(
+                        "Failed to restore annotation %s:%s:%s",
+                        package_name,
+                        profile_name,
+                        kind,
+                    )
                     warnings.append(
-                        f"Failed to restore annotation {package_name}:{profile_name}:{kind}: {exc}"
+                        f"Failed to restore annotation {package_name}:{profile_name}:{kind}. "
+                        "Check the server log."
                     )
 
         try:
@@ -872,18 +1235,19 @@ def apply_restore_state(
             if isinstance(palette_value, dict):
                 set_condition_palette(kind, {str(key): str(value) for key, value in palette_value.items()})
 
-    peptide_metadata_payload = backend.get("peptideMetadata")
-    if isinstance(peptide_metadata_payload, dict):
-        frame_payload = peptide_metadata_payload.get("frame")
-        if frame_payload is not None:
-            try:
-                frame = _frame_from_payload(frame_payload)
-                filename = str(peptide_metadata_payload.get("filename", "")).strip() or "peptide_metadata.csv"
-                save_peptide_metadata(filename=filename, frame=frame)
-            except Exception:
-                warnings.append("Failed to restore peptide metadata table.")
-
     active_package = str(backend.get("activePackage", "")).strip()
+    legacy_peptide_metadata_payload = backend.get("peptideMetadata")
+    legacy_peptide_package = (
+        active_package
+        if active_package and active_package in package_names
+        else (package_names[0] if package_names else "")
+    )
+    if legacy_peptide_package:
+        _restore_peptide_metadata_payload(
+            legacy_peptide_metadata_payload,
+            package_name=legacy_peptide_package,
+            warnings=warnings,
+        )
     if active_package and active_package in package_names:
         set_active_package(active_package)
     elif package_names:
@@ -894,6 +1258,38 @@ def apply_restore_state(
         restored_datasets=restored_datasets,
         restored_annotations=restored_annotations,
     )
+
+
+def apply_restore_state(
+    state: dict[str, Any],
+    replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+) -> RestoreApplyResult:
+    """Apply a restore atomically within the current browser session.
+
+    Input files are fully read before the live stores are touched. If any
+    unexpected failure occurs after clearing begins, every participating store
+    is replaced with its exact pre-restore snapshot before the error escapes.
+    Separate sessions use separate locks and therefore remain independent.
+    """
+    prepared = _prepare_restore_inputs(state, replacements)
+    with _current_restore_lock():
+        snapshots = (
+            snapshot_dataset_session_state(),
+            snapshot_metadata_session_state(),
+            snapshot_annotation_session_state(),
+            snapshot_condition_palette_session_state(),
+            snapshot_peptide_metadata_session_state(),
+        )
+        try:
+            return _apply_prepared_restore_state(state, prepared)
+        except Exception:
+            restore_dataset_session_state(snapshots[0])
+            restore_metadata_session_state(snapshots[1])
+            restore_annotation_session_state(snapshots[2])
+            restore_condition_palette_session_state(snapshots[3])
+            restore_peptide_metadata_session_state(snapshots[4])
+            LOGGER.exception("Restore failed; the previous session state was rolled back")
+            raise
 
 
 def decode_restore_blob(blob: bytes) -> dict[str, Any]:

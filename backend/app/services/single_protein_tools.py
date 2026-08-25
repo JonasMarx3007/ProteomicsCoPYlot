@@ -7,9 +7,13 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
+from app.services.clustering_tools import require_complete_clustering_matrix
 from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import extract_sample_id as _extract_id_or_number
+from app.services.functions import (
+    extract_sample_id as _extract_id_or_number,
+    _visualization_data_source,
+    _visualization_data_source_availability,
+)
 from app.services.plot_images import _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
 
@@ -71,27 +75,18 @@ def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns
     return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)})
 
 
-def _analysis_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.log2_data.empty:
-        frame = annotation.log2_data.copy()
-    elif annotation is not None and not annotation.filtered_data.empty:
-        frame = annotation.filtered_data.copy()
-    elif annotation is not None and not annotation.source_data.empty:
-        frame = annotation.source_data.copy()
-    else:
-        frame = raw
-
-    sample_columns = _get_sample_columns(kind, frame)
+def _analysis_frame(
+    kind: AnnotationKind,
+    data_source: str = "data",
+) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
+    _, frame, metadata = _visualization_data_source(kind, data_source=data_source)
+    sample_columns = [
+        sample for sample in metadata["sample"].astype(str).tolist() if sample in frame.columns
+    ]
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
     meta = _metadata_for_kind(kind, frame, sample_columns)
     return frame, sample_columns, meta
-
-
-def _line_box_key_column(kind: AnnotationKind, frame: pd.DataFrame) -> str:
-    return _line_box_key_column_for_identifier(kind, frame, identifier="workflow")
 
 
 def _normalize_identifier(identifier: str) -> SingleProteinIdentifier:
@@ -176,6 +171,8 @@ def _feature_label(value: object, kind: AnnotationKind) -> str:
 
 
 def _gene_tokens(value: object) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
     text = str(value or "").strip()
     if not text:
         return []
@@ -219,9 +216,11 @@ def _feature_match_mask(
 ) -> pd.Series:
     text_values = values.astype(str)
     if identifier == "genes":
+        selected_keys = {value.casefold() for value in selected}
+
         def _has_gene(value: str) -> bool:
             tokens = _gene_tokens(value)
-            return any(token in selected for token in tokens)
+            return any(token.casefold() in selected_keys for token in tokens)
 
         return text_values.apply(_has_gene)
 
@@ -288,14 +287,24 @@ def _lineplot_long_table(
     conditions: list[str],
     include_id: bool,
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> tuple[pd.DataFrame, list[str]]:
     if not proteins:
         raise ValueError("Please select at least one protein/site for the lineplot.")
 
-    frame, sample_columns, meta = _analysis_frame(kind)
+    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)
     resolved_identifier = _normalize_identifier(identifier)
     key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
-    data = frame[[key_col] + sample_columns].copy()
+    workflow_col = key_col
+    if resolved_identifier == "genes":
+        try:
+            workflow_col = _line_box_key_column_for_identifier(kind, frame, identifier="workflow")
+        except ValueError:
+            # The gene itself remains a valid source identity when no separate
+            # workflow identifier is present.
+            workflow_col = key_col
+    selected_columns = list(dict.fromkeys([key_col, workflow_col, *sample_columns]))
+    data = frame[selected_columns].copy()
 
     meta_filtered, selected_conditions = _select_conditions(meta, conditions)
     labeled = _build_sample_labels(meta_filtered, include_id=include_id)
@@ -319,28 +328,129 @@ def _lineplot_long_table(
         raise ValueError("No sample columns available after condition filtering.")
 
     if resolved_identifier == "genes":
-        feature_rows["__feature_tokens"] = feature_rows[key_col].astype(str).apply(
-            lambda value: [token for token in _gene_tokens(value) if token in selected_set]
+        selected_gene_labels = {
+            value.casefold(): value
+            for value in sorted(selected_set, key=str.casefold)
+        }
+        feature_rows["__source_row"] = np.arange(len(feature_rows), dtype=int)
+        feature_rows["__feature_tokens"] = feature_rows[key_col].apply(
+            lambda value: list(
+                dict.fromkeys(
+                    selected_gene_labels[token.casefold()]
+                    for token in _gene_tokens(value)
+                    if token.casefold() in selected_gene_labels
+                )
+            )
         )
         feature_rows = feature_rows.explode("__feature_tokens")
         feature_rows = feature_rows[feature_rows["__feature_tokens"].notna()].copy()
         if feature_rows.empty:
             raise ValueError("No rows matched the selected genes.")
+
+        feature_metadata = (
+            feature_rows.groupby("__feature_tokens", sort=True)
+            .agg(
+                SourceFeatureCount=("__source_row", "nunique"),
+                SourceFeatures=(
+                    workflow_col,
+                    lambda values: "; ".join(
+                        sorted(
+                            {
+                                str(value).strip()
+                                for value in values
+                                if str(value).strip()
+                            },
+                            key=str.casefold,
+                        )
+                    ),
+                ),
+            )
+            .reset_index()
+        )
         melted = feature_rows[["__feature_tokens"] + available_plot_samples].melt(
             id_vars="__feature_tokens",
             var_name="Sample",
             value_name="Value",
         )
         melted["Feature"] = melted["__feature_tokens"].astype(str)
+        melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        melted = (
+            melted.groupby(["Feature", "Sample"], as_index=False, sort=True)["Value"]
+            .median()
+        )
+        melted = melted.dropna(subset=["Value"])
+        melted = melted.merge(
+            feature_metadata.rename(columns={"__feature_tokens": "Feature"}),
+            on="Feature",
+            how="left",
+        )
+        melted["SampleCount"] = melted.groupby("Feature")["Sample"].transform("nunique")
+        melted["Aggregation"] = "Per-sample median"
+        melted["Warning"] = melted.apply(
+            lambda row: (
+                f"Combined {int(row['SourceFeatureCount'])} source features mapped to this gene; "
+                "each plotted value is their per-sample median."
+                if int(row["SourceFeatureCount"]) > 1
+                else ""
+            ),
+            axis=1,
+        )
     else:
-        melted = feature_rows[[key_col] + available_plot_samples].melt(
-            id_vars=key_col,
+        feature_rows["Feature"] = feature_rows[key_col].apply(
+            lambda value: _feature_label(value, kind)
+        )
+        feature_rows["__source_row"] = np.arange(len(feature_rows), dtype=int)
+        feature_metadata = (
+            feature_rows.groupby("Feature", sort=True)
+            .agg(
+                SourceFeatureCount=("__source_row", "nunique"),
+                SourceFeatures=(
+                    workflow_col,
+                    lambda values: "; ".join(
+                        sorted(
+                            {
+                                str(value).strip()
+                                for value in values
+                                if str(value).strip()
+                            },
+                            key=str.casefold,
+                        )
+                    ),
+                ),
+            )
+            .reset_index()
+        )
+        melted = feature_rows[["Feature"] + available_plot_samples].melt(
+            id_vars="Feature",
             var_name="Sample",
             value_name="Value",
         )
-        melted["Feature"] = melted[key_col].apply(lambda value: _feature_label(value, kind))
+        melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        melted = (
+            melted.groupby(["Feature", "Sample"], as_index=False, sort=True)["Value"]
+            .median()
+        )
+        melted = melted.dropna(subset=["Value"])
+        melted = melted.merge(feature_metadata, on="Feature", how="left")
+        melted["SampleCount"] = melted.groupby("Feature")["Sample"].transform("nunique")
+        melted["Aggregation"] = "Per-sample median"
+        melted["Warning"] = melted.apply(
+            lambda row: (
+                f"Consolidated {int(row['SourceFeatureCount'])} duplicate rows for this feature; "
+                "each plotted value is their per-sample median."
+                if int(row["SourceFeatureCount"]) > 1
+                else ""
+            ),
+            axis=1,
+        )
 
-    melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce")
+    melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
     melted = melted.dropna(subset=["Value"])
     if melted.empty:
         raise ValueError("Selected proteins/sites have no numeric values in the chosen conditions.")
@@ -361,14 +471,22 @@ def _boxplot_data(
     protein: str,
     conditions: list[str],
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray], pd.DataFrame]:
     if not str(protein).strip():
         raise ValueError("Please select one protein/site for the boxplot.")
 
-    frame, sample_columns, meta = _analysis_frame(kind)
+    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)
     resolved_identifier = _normalize_identifier(identifier)
     key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
-    data = frame[[key_col] + sample_columns].copy()
+    workflow_col = key_col
+    if resolved_identifier == "genes":
+        try:
+            workflow_col = _line_box_key_column_for_identifier(kind, frame, identifier="workflow")
+        except ValueError:
+            workflow_col = key_col
+    selected_columns = list(dict.fromkeys([key_col, workflow_col, *sample_columns]))
+    data = frame[selected_columns].copy()
     meta_filtered, _ = _select_conditions(meta, conditions)
 
     selected_set = {str(protein).strip()}
@@ -380,14 +498,40 @@ def _boxplot_data(
     labeled = _build_sample_labels(meta_filtered, include_id=False)
     rename_map = dict(zip(labeled["sample"], labeled["new_sample"]))
     selected_rows = selected_rows.rename(columns=rename_map)
+    source_feature_count = int(len(selected_rows))
+    source_features = "; ".join(
+        sorted(
+            {
+                str(value).strip()
+                for value in selected_rows[workflow_col].tolist()
+                if str(value).strip()
+            },
+            key=str.casefold,
+        )
+    )
+    aggregation_warning = ""
+    if source_feature_count > 1:
+        if resolved_identifier == "genes":
+            aggregation_warning = (
+                f"Combined {source_feature_count} source features mapped to this gene; "
+                "each value is their per-sample median."
+            )
+        else:
+            aggregation_warning = (
+                f"Consolidated {source_feature_count} duplicate rows matching this feature; "
+                "each value is their per-sample median."
+            )
 
     condition_values: dict[str, np.ndarray] = {}
     for condition in labeled["condition"].astype(str).drop_duplicates().tolist():
         columns = labeled.loc[labeled["condition"] == condition, "new_sample"].tolist()
         present = [column for column in columns if column in selected_rows.columns]
-        if len(present) < 3:
+        if not present:
             continue
-        values = selected_rows[present].apply(pd.to_numeric, errors="coerce").values.flatten()
+        numeric = selected_rows[present].apply(pd.to_numeric, errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        values = numeric.median(axis=0, skipna=True).to_numpy(dtype=float)
         values = values[np.isfinite(values)]
         if values.size == 0:
             continue
@@ -400,18 +544,26 @@ def _boxplot_data(
         q1 = float(np.percentile(values, 25))
         median = float(np.median(values))
         q3 = float(np.percentile(values, 75))
-        summary_rows.append(
+        summary_row: dict[str, object] = {
+            "Condition": label,
+            "N": int(values.size),
+            "Mean": round(float(np.mean(values)), 4),
+            "Median": round(median, 4),
+            "Q1": round(q1, 4),
+            "Q3": round(q3, 4),
+            "Min": round(float(np.min(values)), 4),
+            "Max": round(float(np.max(values)), 4),
+        }
+        summary_row.update(
             {
-                "Condition": label,
-                "N": int(values.size),
-                "Mean": round(float(np.mean(values)), 4),
-                "Median": round(median, 4),
-                "Q1": round(q1, 4),
-                "Q3": round(q3, 4),
-                "Min": round(float(np.min(values)), 4),
-                "Max": round(float(np.max(values)), 4),
+                "SampleCount": int(values.size),
+                "SourceFeatureCount": source_feature_count,
+                "SourceFeatures": source_features,
+                "Aggregation": "Per-sample median",
+                "Warning": aggregation_warning,
             }
         )
+        summary_rows.append(summary_row)
     summary_df = pd.DataFrame(summary_rows)
     return intensities, labels, condition_values, summary_df
 
@@ -426,13 +578,14 @@ def _heatmap_matrix(
     cluster_cols: bool,
     value_type: str,
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> tuple[pd.DataFrame, str]:
     if kind != "phospho":
         raise ValueError("Phosphosite-on-protein heatmap is only available for phospho dataset.")
     if not str(protein).strip():
         raise ValueError("Please select a protein for the heatmap.")
 
-    frame, _, meta = _analysis_frame(kind)
+    frame, _, meta = _analysis_frame(kind, data_source=data_source)
     resolved_identifier = _normalize_identifier(identifier)
     key_col = _heatmap_key_column_for_identifier(frame, identifier=resolved_identifier)
     if "PTM_Collapse_key" not in frame.columns:
@@ -497,6 +650,20 @@ def _heatmap_matrix(
     else:
         raise ValueError("valueType must be 'log2' or 'z'.")
 
+    # Constant rows become undefined after row z-scoring and carry no pattern
+    # information. They were already absent from the final heatmap; remove them
+    # before checking whether the remaining matrix can be clustered.
+    matrix = matrix.replace([np.inf, -np.inf], np.nan).dropna(how="all")
+    if matrix.empty:
+        raise ValueError("Heatmap matrix is empty after preprocessing.")
+
+    cluster_matrix = None
+    if (cluster_rows and matrix.shape[0] > 1) or (cluster_cols and matrix.shape[1] > 1):
+        cluster_matrix = require_complete_clustering_matrix(
+            matrix,
+            context="single-protein heatmap",
+        )
+
     if cluster_rows and matrix.shape[0] > 1:
         try:
             from scipy.cluster.hierarchy import leaves_list, linkage
@@ -504,8 +671,10 @@ def _heatmap_matrix(
             raise ModuleNotFoundError(
                 "scipy is required for row clustering. Install it with: pip install scipy"
             ) from exc
-        row_linkage = linkage(matrix.fillna(0), method="average", metric="euclidean")
-        matrix = matrix.iloc[leaves_list(row_linkage)]
+        row_linkage = linkage(cluster_matrix, method="average", metric="euclidean")
+        row_order = leaves_list(row_linkage)
+        matrix = matrix.iloc[row_order]
+        cluster_matrix = cluster_matrix[row_order]
 
     if cluster_cols and matrix.shape[1] > 1:
         try:
@@ -514,12 +683,8 @@ def _heatmap_matrix(
             raise ModuleNotFoundError(
                 "scipy is required for column clustering. Install it with: pip install scipy"
             ) from exc
-        col_linkage = linkage(matrix.T.fillna(0), method="average", metric="euclidean")
+        col_linkage = linkage(cluster_matrix.T, method="average", metric="euclidean")
         matrix = matrix.iloc[:, leaves_list(col_linkage)]
-
-    matrix = matrix.dropna(how="all")
-    if matrix.empty:
-        raise ValueError("Heatmap matrix is empty after preprocessing.")
     return matrix, cbar_label
 
 
@@ -527,8 +692,16 @@ def single_protein_options(
     kind: AnnotationKind,
     tab: str = "boxplot",
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> dict[str, object]:
-    frame, _, meta = _analysis_frame(kind)
+    availability = _visualization_data_source_availability(kind)
+    requested_source = str(data_source or "data").strip().lower()
+    if (
+        (requested_source == "filtered" and not availability["filteredAvailable"])
+        or (requested_source == "imputed" and not availability["imputedAvailable"])
+    ):
+        requested_source = "data"
+    frame, _, meta = _analysis_frame(kind, data_source=requested_source)
     tab_normalized = str(tab).lower()
     available_identifiers = (
         _heatmap_identifier_options(frame)
@@ -549,6 +722,8 @@ def single_protein_options(
                 "conditionCount": 0,
                 "identifier": resolved_identifier,
                 "availableIdentifiers": available_identifiers,
+                "dataSource": requested_source,
+                **availability,
             }
         key_col = _heatmap_key_column_for_identifier(frame, identifier=resolved_identifier)
     else:
@@ -572,6 +747,8 @@ def single_protein_options(
         "conditionCount": len(conditions),
         "identifier": resolved_identifier,
         "availableIdentifiers": available_identifiers,
+        "dataSource": requested_source,
+        **availability,
     }
 
 
@@ -581,6 +758,7 @@ def single_protein_lineplot_table(
     conditions: list[str],
     include_id: bool = False,
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> pd.DataFrame:
     table, _ = _lineplot_long_table(
         kind,
@@ -588,8 +766,19 @@ def single_protein_lineplot_table(
         conditions,
         include_id=include_id,
         identifier=identifier,
+        data_source=data_source,
     )
-    result = table[["Feature", "Sample", "Condition", "Value"]].copy()
+    columns = ["Feature", "Sample", "Condition", "Value"]
+    for column in (
+        "SampleCount",
+        "SourceFeatureCount",
+        "SourceFeatures",
+        "Aggregation",
+        "Warning",
+    ):
+        if column in table.columns:
+            columns.append(column)
+    result = table[columns].copy()
     result["Value"] = result["Value"].round(4)
     return result
 
@@ -606,6 +795,7 @@ def single_protein_lineplot_plot(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     table, ordered_samples = _lineplot_long_table(
@@ -614,6 +804,7 @@ def single_protein_lineplot_plot(
         conditions,
         include_id=include_id,
         identifier=identifier,
+        data_source=data_source,
     )
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
@@ -637,7 +828,8 @@ def single_protein_lineplot_plot(
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         workflow = "Gene" if resolved_identifier == "genes" else ("Protein" if kind == "protein" else "Phosphosite")
-        ax.set_title(f"{workflow} expression across samples")
+        suffix = " (per-sample median across mapped source features)" if resolved_identifier == "genes" else ""
+        ax.set_title(f"{workflow} expression across samples{suffix}")
     ax.grid(True, alpha=0.2)
     if legend:
         ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
@@ -655,8 +847,15 @@ def single_protein_boxplot_table(
     protein: str,
     conditions: list[str],
     identifier: str = "workflow",
+    data_source: str = "data",
 ) -> pd.DataFrame:
-    _, _, _, summary_df = _boxplot_data(kind, protein, conditions, identifier=identifier)
+    _, _, _, summary_df = _boxplot_data(
+        kind,
+        protein,
+        conditions,
+        identifier=identifier,
+        data_source=data_source,
+    )
     return summary_df
 
 
@@ -667,52 +866,90 @@ def single_protein_boxplot_plot(
     identifier: str = "workflow",
     outliers: bool = False,
     dots: bool = False,
+    random_seed: int = 69,
     header: bool = True,
     legend: bool = True,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
-    intensities, labels, condition_values, _ = _boxplot_data(
+    intensities, labels, condition_values, summary_df = _boxplot_data(
         kind,
         protein,
         conditions,
         identifier=identifier,
+        data_source=data_source,
     )
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if not intensities:
-        ax.text(0.5, 0.5, "No conditions with >=3 samples", ha="center", va="center")
+        ax.text(0.5, 0.5, "No measured values in the selected conditions", ha="center", va="center")
         ax.axis("off")
         return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
-    color_map = plt.cm.get_cmap("tab20", max(1, len(labels)))
+    color_map = plt.get_cmap("tab20", max(1, len(labels)))
     condition_color = {label: color_map(index) for index, label in enumerate(labels)}
-    box = ax.boxplot(intensities, patch_artist=True, showfliers=outliers)
-    for patch, label in zip(box["boxes"], labels):
-        patch.set_facecolor(condition_color[label])
+    box_positions = [
+        index
+        for index, label in enumerate(labels, start=1)
+        if condition_values[label].size >= 3
+    ]
+    if box_positions:
+        box_labels = [labels[index - 1] for index in box_positions]
+        box = ax.boxplot(
+            [condition_values[label] for label in box_labels],
+            positions=box_positions,
+            patch_artist=True,
+            showfliers=outliers,
+        )
+        for patch, label in zip(box["boxes"], box_labels):
+            patch.set_facecolor(condition_color[label])
 
-    if dots:
-        for index, label in enumerate(labels, start=1):
-            values = condition_values[label]
+    rng = np.random.default_rng(random_seed)
+    for index, label in enumerate(labels, start=1):
+        values = condition_values[label]
+        if values.size < 3:
+            visible_values = values
+        elif dots:
             q1, q3 = np.percentile(values, [25, 75])
             iqr = q3 - q1
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr
-            non_outliers = values[(values >= lower) & (values <= upper)]
-            jitter = np.random.normal(index, 0.05, size=len(non_outliers))
-            ax.scatter(jitter, non_outliers, s=15, alpha=0.7, color=condition_color[label], zorder=3)
+            visible_values = values[(values >= lower) & (values <= upper)]
+        else:
+            continue
+        jitter = rng.normal(index, 0.05, size=len(visible_values))
+        ax.scatter(
+            jitter,
+            visible_values,
+            s=20,
+            alpha=0.8,
+            color=condition_color[label],
+            zorder=3,
+        )
 
     ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_xticklabels(
+        [f"{label}\n(n={condition_values[label].size})" for label in labels],
+        rotation=45,
+        ha="right",
+    )
     ax.set_xlabel("Condition")
     ax.set_ylabel("log2 intensity")
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         label = str(protein).strip() if resolved_identifier == "genes" else _feature_label(protein, kind)
-        ax.set_title(f"Measured {label} intensity values (log2)")
+        if not summary_df.empty and int(summary_df["SourceFeatureCount"].iloc[0]) > 1:
+            source_count = int(summary_df["SourceFeatureCount"].iloc[0])
+            ax.set_title(
+                f"Measured {label} intensity values (log2)\n"
+                f"one median per sample across {source_count} matching source row(s)"
+            )
+        else:
+            ax.set_title(f"Measured {label} intensity values (log2)")
 
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_color[label], lw=4) for label in labels]
@@ -736,6 +973,7 @@ def single_protein_heatmap_table(
     cluster_rows: bool = False,
     cluster_cols: bool = False,
     value_type: str = "log2",
+    data_source: str = "data",
 ) -> pd.DataFrame:
     matrix, _ = _heatmap_matrix(
         kind=kind,
@@ -747,6 +985,7 @@ def single_protein_heatmap_table(
         cluster_cols=cluster_cols,
         value_type=value_type,
         identifier=identifier,
+        data_source=data_source,
     )
     table = matrix.reset_index().rename(columns={"index": "Site"})
     numeric_cols = [col for col in table.columns if col != "Site"]
@@ -770,6 +1009,7 @@ def single_protein_heatmap_plot(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     sns = _get_seaborn()
@@ -783,6 +1023,7 @@ def single_protein_heatmap_plot(
         cluster_cols=cluster_cols,
         value_type=value_type,
         identifier=identifier,
+        data_source=data_source,
     )
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))

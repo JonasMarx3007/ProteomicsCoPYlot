@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast, get_args
 
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import EnrichmentRequest
+from app.schemas.stats import EnrichmentRequest, StatsTestType
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_active_package, get_all_current_datasets
 from app.services.condition_palette_store import build_condition_color_map
@@ -16,10 +16,24 @@ from app.services import single_protein_tools as _single_protein_tools
 from app.services import comparison_tools as _comparison_tools
 from app.services import phospho_tools as _phospho_tools
 from app.services import table_functions as _table_functions
+from app.services.functions import (
+    DATA_SOURCE_CHOICES,
+    _phosprot_values_are_centred,
+    resolve_test_type,
+)
 from app.services.peptide_tools import _extract_id_or_number as _extract_peptide_id
+from app.services.peptide_tools import PROTEASE_LABELS as _PROTEASE_LABELS
 from app.services.peptide_tools import get_peptide_frame
+from app.services.peptide_tools import peptide_modification_counts as _peptide_modification_counts
+from app.services.peptide_tools import peptide_missed_cleavage_summary as _peptide_missed_cleavage_summary
 from app.services.peptide_tools import peptide_overview as _peptide_overview
 from app.services.peptide_tools import peptide_sequence_coverage as _peptide_sequence_coverage
+from app.services.peptide_tools import normalize_protease as _normalize_protease
+
+# The chat layer accepts exactly what the analysis engine accepts, so a request
+# naming an explicit matrix is not silently downgraded to the default one.
+# "data" is the historical alias and resolves per path; see resolve_data_source_choice.
+_AI_DATA_SOURCES: frozenset[str] = frozenset({"data", *DATA_SOURCE_CHOICES})
 
 _WORKFLOW_ENTITY_LABELS: dict[str, tuple[str, str]] = {
     "protein": ("protein", "proteins"),
@@ -59,14 +73,14 @@ _COMPLETENESS_KIND_LABELS: dict[str, tuple[str, str]] = {
     "precursor": ("precursor", "precursors"),
 }
 
-
-def _empty_payload(function_name: str) -> dict[str, Any]:
-    return {
-        "function": function_name,
-        "format": "ai_text",
-        "summary": "",
-        "data": {"text": ""},
-    }
+_STATS_TEST_TYPES = cast(tuple[StatsTestType, ...], get_args(StatsTestType))
+_STATS_TEST_DESCRIPTIONS: dict[StatsTestType, str] = {
+    "unpaired": "unpaired_student_t_test_with_pooled_variance",
+    "unpaired_welch": "unpaired_welch_t_test_with_unequal_variance",
+    "unpaired_moderated": "unpaired_moderated_t_test_with_empirical_bayes_variance_shrinkage",
+    "paired": "paired_student_t_test_on_within_pair_differences",
+    "paired_moderated": "paired_moderated_t_test_on_within_pair_differences_with_empirical_bayes_variance_shrinkage",
+}
 
 
 def _text_payload(function_name: str, text: str) -> dict[str, Any]:
@@ -329,6 +343,20 @@ def _parse_mode_pairs(mode: str | None) -> dict[str, str]:
             continue
         parsed[key_norm] = value_norm
     return parsed
+
+
+def _normalize_stats_test_type(value: object) -> StatsTestType:
+    """Keep AI context dispatch aligned with the statistical API contract."""
+    mode = str(value or "unpaired").strip().lower()
+    try:
+        resolve_test_type(mode)
+    except ValueError:
+        return "unpaired"
+    return cast(StatsTestType, mode)
+
+
+def _stats_test_description(test_type: StatsTestType) -> str:
+    return _STATS_TEST_DESCRIPTIONS[test_type]
 
 
 def _normalize_completeness_kind(workflow: str, mode: str | None = None) -> str:
@@ -725,7 +753,9 @@ def _histogram_data_lines(workflow: str) -> list[str]:
                 "condition": str(condition),
                 "mean": float(values.mean()),
                 "median": float(values.median()),
-                "sd": float(values.std(ddof=0)),
+                # ddof=1 to match every statistical path; the assistant quotes this
+                # to the user alongside numbers the analysis produced.
+                "sd": float(values.std(ddof=1)),
                 "skewness": float(values.skew()),
             }
         )
@@ -733,7 +763,7 @@ def _histogram_data_lines(workflow: str) -> list[str]:
             "histogram_condition_stats|"
             f"condition={_safe_context_text(condition)}|samples={len(condition_columns)}|entity_condition_means={int(values.shape[0])}|"
             f"missing_percent={_fmt_value(missing_percent)}|mean={_fmt_value(values.mean())}|median={_fmt_value(values.median())}|"
-            f"sd={_fmt_value(values.std(ddof=0))}|Q1={_fmt_value(values.quantile(0.25))}|Q3={_fmt_value(values.quantile(0.75))}|"
+            f"sd={_fmt_value(values.std(ddof=1))}|Q1={_fmt_value(values.quantile(0.25))}|Q3={_fmt_value(values.quantile(0.75))}|"
             f"skewness={_fmt_value(values.skew())}"
         )
     if len(summaries) == 2:
@@ -764,8 +794,17 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5) -> list[str]:
     except Exception as exc:
         return [f"abundance_data|status=unavailable|detail={_safe_context_text(exc)}"]
 
+    # `robust_site_median` phosphoproteins are ratios to each site's own median,
+    # not abundances; saying "intensity" here would put that in the answer.
+    centred = _phosprot_values_are_centred(kind)
+    value_label = (
+        "log10_of_mean_ratio_to_site_median_plus_1"
+        if centred
+        else "log10_of_mean_original_scale_intensity_plus_1"
+    )
+    measure_key = "log10_mean_ratio_to_site_median" if centred else "log10_mean_intensity"
     lines = [
-        f"abundance_data|status=available|conditions={len(conditions)}|identifier_column={_safe_context_text(key_column)}|value=log10_of_mean_original_scale_intensity_plus_1"
+        f"abundance_data|status=available|conditions={len(conditions)}|identifier_column={_safe_context_text(key_column)}|value={value_label}"
     ]
     for condition in conditions:
         ranked = mean_intensities[[key_column, condition]].dropna(subset=[condition]).copy()
@@ -774,7 +813,7 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5) -> list[str]:
             lines.append(
                 "abundance_top_entity|"
                 f"condition={_safe_context_text(condition)}|rank={rank}|identifier={_safe_context_text(row[key_column])}|"
-                f"log10_mean_intensity={float(row[condition]):.4f}"
+                f"{measure_key}={float(row[condition]):.4f}"
             )
     return lines
 
@@ -782,7 +821,11 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5) -> list[str]:
 def _correlation_data_lines(workflow: str, *, limit: int = 6) -> list[str]:
     kind = _workflow_kind(workflow)
     try:
-        frame = _plot_images._original_scale_frame(kind)
+        # Must match qc_correlation_plot, which computes Pearson r on log2 values.
+        # Reconstructed linear intensities give a different r for the same samples
+        # (mean 0.87 vs 0.94 on replicate data), so the chat answer would contradict
+        # the figure the user is looking at.
+        frame = _plot_images._log2_qc_frame(kind)
         sample_columns = _plot_images._get_sample_columns(kind, frame)
         meta = _plot_images._metadata_for_kind(kind, frame, sample_columns).copy()
     except Exception as exc:
@@ -987,6 +1030,8 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
                 settings = f"q={imputation.qValue}:adjust_std={imputation.adjustStd}"
             imputation_text = (
                 f"configured:{_safe_context_text(imputation_mode)}:{settings}:"
+                f"seed={imputation.seed}:sample_wise={str(bool(imputation.sampleWise)).lower()}:"
+                f"applied={str(bool(imputation.applied)).lower()}:"
                 f"missing_before={imputation.missingBefore}:missing_after={imputation.missingAfter}"
             )
         lines.append(
@@ -1272,6 +1317,10 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
     method, plot_dim, data_source = _parse_pca_mode(mode)
+    mode_pairs = _parse_mode_pairs(mode)
+    random_state = int(
+        _float_from_mode(mode_pairs, "randomstate", "random_state", default=42.0, minimum=0.0)
+    )
     method_clean = _safe_context_text(method)
 
     lines: list[str] = []
@@ -1279,7 +1328,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
         f"pca_overview|workflow={workflow_key}|entity={entity_plural}|plot_types=static_and_interactive|dimensions=2D_or_3D"
     )
     lines.append(
-        f"pca_active_view|method={method_clean}|plot_dim={plot_dim}|data_source={data_source}"
+        f"pca_active_view|method={method_clean}|plot_dim={plot_dim}|data_source={data_source}|random_state={random_state}"
     )
     lines.append(
         "pca_description|goal=reduce_dimensionality_and_visualize_relationships_between_samples_based_on_measured_entities"
@@ -1295,6 +1344,9 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
     )
     lines.append(
         "pca_projection|benefit=condense_high_dimensional_information_into_few_axes_to_reveal_sample_patterns_clusters_and_trends"
+    )
+    lines.append(
+        "pca_reproducibility|PCA_is_deterministic|UMAP_tSNE_and_KMeans_use_the_exposed_request_local_random_state"
     )
     lines.append(
         "pca_quality_rule|coordinates_and_geometry_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
@@ -1494,6 +1546,9 @@ def peptide_rt_plot(workflow: str = "peptide", mode: str | None = None) -> dict[
     add_line = _bool_from_mode(mode_pairs, "addline", "add_line", default=False)
     header = _bool_from_mode(mode_pairs, "header", default=True)
     bins = int(_float_from_mode(mode_pairs, "bins", default=1000.0, minimum=10.0, maximum=2000.0))
+    random_seed = int(
+        _float_from_mode(mode_pairs, "randomseed", "random_seed", default=69.0, minimum=0.0)
+    )
     width_cm = _float_from_mode(mode_pairs, "widthcm", "width_cm", default=20.0, minimum=5.0, maximum=200.0)
     height_cm = _float_from_mode(mode_pairs, "heightcm", "height_cm", default=15.0, minimum=5.0, maximum=200.0)
     dpi = int(_float_from_mode(mode_pairs, "dpi", default=100.0, minimum=72.0, maximum=2000.0))
@@ -1501,7 +1556,7 @@ def peptide_rt_plot(workflow: str = "peptide", mode: str | None = None) -> dict[
     lines: list[str] = []
     lines.append(f"peptide_rt_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
     lines.append(
-        f"peptide_rt_parameters|method={_safe_context_text(method)}|add_line={'true' if add_line else 'false'}|header={'true' if header else 'false'}|bins={bins}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
+        f"peptide_rt_parameters|method={_safe_context_text(method)}|add_line={'true' if add_line else 'false'}|header={'true' if header else 'false'}|bins={bins}|random_seed={random_seed}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
     )
     lines.append(
         "peptide_rt_general|description=retention_time_agreement_plot_between_predicted_and_observed_retention_times_for_peptide_entries"
@@ -1601,10 +1656,19 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
         "peptide_modification_general|description=bar_plot_of_modified_peptide_counts_per_sample_for_selected_modification_classes"
     )
     lines.append(
-        "peptide_modification_classes|tracked=Carbamylation_Oxidation_Acetylation"
+        "peptide_modification_classes|tracked=Carbamidomethylation,Oxidation,Acetylation"
     )
     lines.append(
-        "peptide_modification_logic|count_rule=for_each_modification_count_sequences_matching_pattern_that_have_non_missing_quantity_per_sample"
+        "peptide_modification_logic|count_unit=distinct_modified_sequence_per_class_per_sample|"
+        "detection_rule=finite_nonzero_quantity|repeated_same_class_within_one_sequence_counts_once"
+    )
+    lines.append(
+        "peptide_modification_identifier_rule|unimod_ids=exact_numeric_identifier_boundary|"
+        "text_names=case_insensitive_whole_term|examples=UniMod:4_does_not_match_UniMod:40_or_UniMod:400"
+    )
+    lines.append(
+        "peptide_modification_overlap_rule|a_sequence_with_multiple_tracked_classes_counts_once_in_each_class|"
+        "class_assignment_total_can_exceed_unique_tracked_modified_peptides"
     )
     lines.append(
         "peptide_modification_metadata_rule|protein_annotation_metadata_with_sample_and_condition_is_required_for_sample_mapping"
@@ -1670,29 +1734,13 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
         return _text_payload("peptide_modification_plot", "\n".join(lines))
 
     filtered = wide[[sequence_col, *annotated_cols]].copy()
-
-    def _mod_count(pattern: str) -> pd.Series:
-        subset = filtered[filtered[sequence_col].astype(str).str.contains(pattern, na=False)].copy()
-        if subset.empty:
-            return pd.Series(0, index=filtered.columns[1:], dtype=float)
-        for column in subset.columns[1:]:
-            subset[column] = subset[column].notna().astype(int)
-        return subset.iloc[:, 1:].sum(axis=0)
-
-    carb = _mod_count("UniMod:4|Carbamidomethyl")
-    oxi = _mod_count("UniMod:35|Oxidation")
-    ace = _mod_count("UniMod:1|Acetyl")
-
-    summary = pd.DataFrame(
-        {
-            "Sample": [str(sample) for sample in annotated_cols],
-            "Carbamylation": [int(carb.get(sample, 0)) for sample in annotated_cols],
-            "Oxidation": [int(oxi.get(sample, 0)) for sample in annotated_cols],
-            "Acetylation": [int(ace.get(sample, 0)) for sample in annotated_cols],
-        }
-    )
-    summary["Total"] = (
-        summary["Carbamylation"].astype(int)
+    summary = _peptide_modification_counts(
+        filtered,
+        sequence_column=sequence_col,
+        sample_columns=annotated_cols,
+    ).reset_index()
+    summary["ClassAssignmentTotal"] = (
+        summary["Carbamidomethylation"].astype(int)
         + summary["Oxidation"].astype(int)
         + summary["Acetylation"].astype(int)
     )
@@ -1714,14 +1762,19 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
     )
     lines.append(
         "peptide_modification_totals|"
-        f"carbamylation={int(summary['Carbamylation'].sum())}|oxidation={int(summary['Oxidation'].sum())}|acetylation={int(summary['Acetylation'].sum())}|total={int(summary['Total'].sum())}"
+        f"carbamidomethylation={int(summary['Carbamidomethylation'].sum())}|"
+        f"oxidation={int(summary['Oxidation'].sum())}|acetylation={int(summary['Acetylation'].sum())}|"
+        f"class_assignment_total={int(summary['ClassAssignmentTotal'].sum())}|"
+        f"unique_tracked_modified_peptides_sample_sum={int(summary['UniqueTrackedModifiedPeptides'].sum())}"
     )
 
     for _, row in summary.iterrows():
         lines.append(
             "peptide_modification_sample|"
             f"condition={_safe_context_text(row['Condition'])}|sample={_safe_context_text(row['Sample'])}|"
-            f"carbamylation={int(row['Carbamylation'])}|oxidation={int(row['Oxidation'])}|acetylation={int(row['Acetylation'])}|total={int(row['Total'])}"
+            f"carbamidomethylation={int(row['Carbamidomethylation'])}|oxidation={int(row['Oxidation'])}|"
+            f"acetylation={int(row['Acetylation'])}|class_assignment_total={int(row['ClassAssignmentTotal'])}|"
+            f"unique_tracked_modified_peptides={int(row['UniqueTrackedModifiedPeptides'])}"
         )
 
     for condition in _condition_order(summary[["Condition"]].copy()):
@@ -1731,7 +1784,11 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
         lines.append(
             "peptide_modification_condition|"
             f"name={_safe_context_text(condition)}|sample_count={int(subset.shape[0])}|"
-            f"carbamylation={int(subset['Carbamylation'].sum())}|oxidation={int(subset['Oxidation'].sum())}|acetylation={int(subset['Acetylation'].sum())}|total={int(subset['Total'].sum())}"
+            f"carbamidomethylation_sample_sum={int(subset['Carbamidomethylation'].sum())}|"
+            f"oxidation_sample_sum={int(subset['Oxidation'].sum())}|"
+            f"acetylation_sample_sum={int(subset['Acetylation'].sum())}|"
+            f"class_assignment_sample_sum={int(subset['ClassAssignmentTotal'].sum())}|"
+            f"unique_tracked_modified_peptides_sample_sum={int(subset['UniqueTrackedModifiedPeptides'].sum())}"
         )
 
     lines.append(
@@ -1757,17 +1814,26 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = N
 
     lines: list[str] = []
     lines.append(f"peptide_missed_cleavage_overview|workflow={workflow_key}|dataset_level=peptide|entity=peptides")
+    try:
+        resolved_protease = _normalize_protease(mode_pairs.get("protease", "trypsin"))
+    except ValueError as exc:
+        lines.append(
+            f"peptide_missed_cleavage_data|status=error|detail={_safe_context_text(exc)}"
+        )
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
     lines.append(
-        f"peptide_missed_cleavage_parameters|include_id={'true' if include_id else 'false'}|text={'true' if show_text else 'false'}|text_size={text_size}|header={'true' if header else 'false'}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
+        f"peptide_missed_cleavage_parameters|include_id={'true' if include_id else 'false'}|text={'true' if show_text else 'false'}|text_size={text_size}|header={'true' if header else 'false'}|protease={resolved_protease}|protease_label={_safe_context_text(_PROTEASE_LABELS[resolved_protease])}|width_cm={_fmt_value(width_cm)}|height_cm={_fmt_value(height_cm)}|dpi={dpi}"
     )
     lines.append(
         "peptide_missed_cleavage_general|description=stacked_bar_distribution_of_missed_cleavage_counts_per_sample_reported_as_percentages"
     )
     lines.append(
-        "peptide_missed_cleavage_logic|count_definition=for_each_peptide_sequence_count_R_plus_K_minus_1_with_lower_bound_zero"
+        "peptide_missed_cleavage_logic|count_definition=internal_cleavable_K_or_R_sites_excluding_the_expected_C_terminal_cut|"
+        "trypsin_blocks_KP_and_RP|trypsin_lysc_cleaves_KP_but_still_blocks_RP"
     )
     lines.append(
-        "peptide_missed_cleavage_logic|sample_assignment=count_is_included_for_a_sample_when_the_peptide_has_non_missing_quantity_in_that_sample"
+        "peptide_missed_cleavage_logic|count_unit=distinct_stripped_sequence_per_sample|"
+        "sample_assignment=finite_nonzero_raw_quantity"
     )
     lines.append(
         "peptide_missed_cleavage_metadata_rule|protein_annotation_metadata_with_sample_and_condition_is_required_for_sample_mapping"
@@ -1823,31 +1889,15 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = N
         )
         return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
 
-    filtered = wide[[seq_col, *annotated_cols]].copy()
-
-    def _rk_count(sequence: str) -> int:
-        seq_text = str(sequence or "")
-        return max(0, seq_text.count("R") + seq_text.count("K") - 1)
-
-    rk_counts = [_rk_count(sequence) for sequence in filtered[seq_col].tolist()]
-    for column in filtered.columns[1:]:
-        presence = filtered[column].notna().tolist()
-        filtered[column] = [rk if flag else pd.NA for rk, flag in zip(rk_counts, presence)]
-
-    plot_data = filtered.melt(id_vars=seq_col, var_name="Sample", value_name="Count").dropna()
-    if plot_data.empty:
+    summary = _peptide_missed_cleavage_summary(
+        wide[[seq_col, *annotated_cols]],
+        sequence_column=seq_col,
+        sample_columns=annotated_cols,
+        protease=resolved_protease,
+    )
+    if summary.empty:
         lines.append("peptide_missed_cleavage_table|status=empty_after_filtering")
         return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
-    plot_data["Count"] = pd.to_numeric(plot_data["Count"], errors="coerce")
-    plot_data = plot_data.dropna(subset=["Count"]).copy()
-    plot_data["Count"] = plot_data["Count"].astype(int)
-    if plot_data.empty:
-        lines.append("peptide_missed_cleavage_table|status=empty_after_numeric_filter")
-        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
-
-    summary = plot_data.groupby(["Sample", "Count"]).size().reset_index(name="Occurrences")
-    summary["Total"] = summary.groupby("Sample")["Occurrences"].transform("sum")
-    summary["Percentage"] = (summary["Occurrences"] / summary["Total"]) * 100.0
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=sample_order, ordered=True)
 
     condition_by_sample = {
@@ -1902,9 +1952,11 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = N
             f"distribution_percent={_safe_context_text(';'.join(distribution_parts))}"
         )
 
-    global_dist = (plot_data["Count"].value_counts(normalize=True).sort_index() * 100.0)
+    global_occurrences = summary.groupby("Count", observed=False)["Occurrences"].sum()
+    global_total = int(global_occurrences.sum())
+    global_dist = (global_occurrences / global_total * 100.0).sort_index()
     lines.append(
-        f"peptide_missed_cleavage_global|total_detected_entries={int(plot_data.shape[0])}"
+        f"peptide_missed_cleavage_global|total_detected_entries={global_total}"
     )
     for count, percent in global_dist.items():
         lines.append(
@@ -2286,7 +2338,7 @@ def stats_volcano_plot(
     if source not in {"volcano", "volcano_control"}:
         source = "volcano"
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
-    if data_source not in {"data", "imputed"}:
+    if data_source not in _AI_DATA_SOURCES:
         data_source = "data"
     condition1 = str(mode_pairs.get("condition1", "")).strip()
     condition2 = str(mode_pairs.get("condition2", "")).strip()
@@ -2295,12 +2347,8 @@ def stats_volcano_plot(
     identifier = str(mode_pairs.get("identifier", "workflow")).strip().lower()
     if identifier not in {"workflow", "genes"}:
         identifier = "workflow"
-    test_type = str(mode_pairs.get("testtype", "unpaired")).strip().lower()
-    if test_type not in {"paired", "unpaired"}:
-        test_type = "unpaired"
-    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
-    if data_source not in {"data", "imputed"}:
-        data_source = "data"
+    test_type = _normalize_stats_test_type(mode_pairs.get("testtype", "unpaired"))
+    is_paired_test, _ = resolve_test_type(test_type)
     use_uncorrected = _bool_from_mode(mode_pairs, "useuncorrected", "use_uncorrected", default=False)
     p_value_threshold = _float_from_mode(
         mode_pairs,
@@ -2343,11 +2391,23 @@ def stats_volcano_plot(
         "volcano_functions|control_variant=volcano_control_uses_same_output_table_structure"
     )
     lines.append(
-        "volcano_formula|log2FC=mean_condition2-mean_condition1"
+        "volcano_formula|log2FC="
+        + (
+            "mean_of_complete_pair_differences_condition2_minus_condition1"
+            if is_paired_test
+            else "mean_condition2_minus_mean_condition1"
+        )
     )
     lines.append(
-        "volcano_testing|supported_tests=unpaired_t_test_or_paired_t_test"
+        f"volcano_testing|selected_test={test_type}|"
+        f"selected_test_description={_stats_test_description(test_type)}|"
+        f"supported_tests={','.join(_STATS_TEST_TYPES)}"
     )
+    if is_paired_test:
+        lines.append(
+            "volcano_pairing|identity=explicit_pair_id_metadata_column|"
+            "requirements=identical_unique_pair_ids_in_both_conditions"
+        )
     lines.append(
         "volcano_multiple_testing|method=benjamini_hochberg_fdr_control"
     )
@@ -2523,25 +2583,23 @@ def stats_volcano_plot(
     return _text_payload("stats_volcano_plot", "\n".join(lines))
 
 
-def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
 
     source = str(mode_pairs.get("source", "volcano")).strip().lower()
-    if source not in {"volcano", "volcano_control"}:
+    if source not in {"volcano", "volcano_control", "anova"}:
         source = "volcano"
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
-    if data_source not in {"data", "imputed"}:
+    if data_source not in _AI_DATA_SOURCES:
         data_source = "data"
     condition1 = str(mode_pairs.get("condition1", "")).strip()
     condition2 = str(mode_pairs.get("condition2", "")).strip()
     condition1_control = str(mode_pairs.get("condition1control", "")).strip()
     condition2_control = str(mode_pairs.get("condition2control", "")).strip()
-    test_type = str(mode_pairs.get("testtype", "unpaired")).strip().lower()
-    if test_type not in {"paired", "unpaired"}:
-        test_type = "unpaired"
+    test_type = _normalize_stats_test_type(mode_pairs.get("testtype", "unpaired"))
     use_uncorrected = _bool_from_mode(mode_pairs, "useuncorrected", "use_uncorrected", default=False)
     p_value_threshold = _float_from_mode(
         mode_pairs,
@@ -2559,6 +2617,27 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
         "fc",
         default=1.0,
         minimum=0.0,
+    )
+    selected_cluster_value = int(
+        _float_from_mode(
+            mode_pairs,
+            "selectedcluster",
+            "selected_cluster",
+            default=0.0,
+            minimum=0.0,
+            maximum=100.0,
+        )
+    )
+    selected_cluster = selected_cluster_value if selected_cluster_value > 0 else None
+    n_clusters = int(
+        _float_from_mode(
+            mode_pairs,
+            "nclusters",
+            "n_clusters",
+            default=4.0,
+            minimum=1.0,
+            maximum=100.0,
+        )
     )
     top_n = int(
         _float_from_mode(
@@ -2591,6 +2670,17 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
     )
     if min_term_size > max_term_size:
         min_term_size, max_term_size = max_term_size, min_term_size
+    adj_p_value_cutoff = _float_from_mode(
+        mode_pairs,
+        "adjpvaluecutoff",
+        "adj_p_value_cutoff",
+        default=0.05,
+        minimum=1e-12,
+        maximum=1.0,
+    )
+    background_mode = str(mode_pairs.get("backgroundmode", "experiment")).strip().lower()
+    if background_mode not in {"experiment", "global"}:
+        background_mode = "experiment"
 
     max_gene_preview = int(
         _float_from_mode(
@@ -2615,38 +2705,57 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
 
     lines: list[str] = []
     lines.append(
-        f"gsea_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|source={source}"
+        f"ora_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|source={source}"
     )
-    lines.append(
-        "gsea_method|basis=volcano_t_test_differential_analysis_with_user_defined_thresholds"
-    )
-    lines.append(
-        "gsea_method|volcano_dependency=upregulated_and_downregulated_gene_clusters_are_derived_from_t_test_and_multiple_testing_settings"
-    )
-    lines.append(
-        "gsea_flow|upregulated_cluster=upregulated_genes_to_enriched_pathways"
-    )
-    lines.append(
-        "gsea_flow|downregulated_cluster=downregulated_genes_to_enriched_pathways"
-    )
-    lines.append(
-        f"gsea_parameters|source={source}|data_source={data_source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}"
-    )
-    lines.append(
-        f"gsea_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
-    )
-    if source == "volcano_control":
+    if source == "anova":
         lines.append(
-            f"gsea_control_comparison|condition1_control={_safe_context_text(condition1_control)}|condition2_control={_safe_context_text(condition2_control)}"
+            "ora_method|test=hypergeometric_over_representation|basis=anova_significance_filter_followed_by_hierarchical_protein_clustering"
+        )
+        lines.append(
+            f"ora_flow|selected_anova_cluster={selected_cluster or 'none'}|cluster_genes_to_enriched_pathways"
+        )
+    else:
+        lines.append(
+            "ora_method|test=hypergeometric_over_representation|basis=volcano_differential_analysis_with_user_defined_thresholds"
+        )
+        lines.append(
+            "ora_method|volcano_dependency=upregulated_and_downregulated_gene_clusters_are_derived_from_the_selected_differential_test_and_multiple_testing_settings|"
+            f"selected_test={test_type}|selected_test_description={_stats_test_description(test_type)}"
+        )
+        lines.append(
+            "ora_flow|upregulated_cluster=upregulated_genes_to_enriched_pathways"
+        )
+        lines.append(
+            "ora_flow|downregulated_cluster=downregulated_genes_to_enriched_pathways"
         )
     lines.append(
-        f"gsea_term_filters|top_terms={top_n}|min_term_size={min_term_size}|max_term_size={max_term_size}"
+        f"ora_parameters|source={source}|data_source={data_source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}|background_mode={background_mode}"
+    )
+    lines.append(
+        f"ora_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
+    )
+    if source == "anova":
+        lines.append(
+            f"ora_anova_parameters|source_locked=anova_cluster|selected_cluster={selected_cluster or 'none'}|n_clusters={n_clusters}|small_clusters=preserved"
+        )
+    if source == "volcano_control":
+        lines.append(
+            f"ora_control_comparison|condition1_control={_safe_context_text(condition1_control)}|condition2_control={_safe_context_text(condition2_control)}"
+        )
+    lines.append(
+        f"ora_term_filters|top_terms={top_n}|min_term_size={min_term_size}|max_term_size={max_term_size}|adj_p_value_cutoff={_fmt_value(adj_p_value_cutoff)}"
     )
 
-    missing_required = not condition1 or not condition2 or (source == "volcano_control" and (not condition1_control or not condition2_control))
+    missing_required = (
+        selected_cluster is None
+        if source == "anova"
+        else not condition1
+        or not condition2
+        or (source == "volcano_control" and (not condition1_control or not condition2_control))
+    )
     if missing_required:
-        lines.append("gsea_data|status=incomplete_parameters")
-        return _text_payload("stats_gsea_plot", "\n".join(lines))
+        lines.append("ora_data|status=incomplete_parameters")
+        return _text_payload("stats_ora_plot", "\n".join(lines))
 
     try:
         payload = EnrichmentRequest(
@@ -2661,14 +2770,66 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
             log2fcThreshold=float(log2fc_threshold),
             testType=test_type,  # type: ignore[arg-type]
             useUncorrected=bool(use_uncorrected),
+            selectedCluster=selected_cluster,
+            nClusters=n_clusters,
+            adjPValueCutoff=float(adj_p_value_cutoff),
             topN=int(top_n),
             minTermSize=int(min_term_size),
             maxTermSize=int(max_term_size),
+            backgroundMode=background_mode,  # type: ignore[arg-type]
         )
         result = _stats_tools.run_enrichment(payload)
     except Exception as exc:
-        lines.append(f"gsea_data|status=error|detail={_safe_context_text(exc)}")
-        return _text_payload("stats_gsea_plot", "\n".join(lines))
+        lines.append(f"ora_data|status=error|detail={_safe_context_text(exc)}")
+        return _text_payload("stats_ora_plot", "\n".join(lines))
+
+    if source == "anova":
+        cluster_genes = [str(value) for value in result.clusterGenes]
+        gene_preview, gene_preview_truncated = _preview_items(cluster_genes, max_gene_preview)
+        cluster_terms = list(result.clusterTerms)
+        lines.append(
+            f"ora_data|status=available|source_used={result.sourceUsed}"
+        )
+        lines.append(
+            f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|tested_terms={result.testedTermCount}|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
+        )
+        lines.append(
+            f"ora_gene_clusters|selected_anova_cluster={result.selectedCluster}|genes={len(cluster_genes)}"
+        )
+        lines.append(
+            f"ora_cluster_genes|cluster={result.selectedCluster}|count={len(cluster_genes)}|preview_count={len(gene_preview)}|preview_truncated={'true' if gene_preview_truncated else 'false'}|genes={_safe_context_text(';'.join(gene_preview))}"
+        )
+        lines.append(
+            f"ora_terms|cluster={result.selectedCluster}|count={len(cluster_terms)}"
+        )
+        if not cluster_terms:
+            lines.append(
+                f"ora_terms_status|cluster={result.selectedCluster}|status=no_terms_for_current_filters"
+            )
+        for index, term in enumerate(cluster_terms, start=1):
+            genes_preview, preview_truncated = _preview_items(
+                [str(value) for value in term.intersectingGenes],
+                max_intersection_preview,
+            )
+            lines.append(
+                "ora_term|"
+                f"cluster={result.selectedCluster}|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
+                f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
+                f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
+                f"intersection_genes_count={len(term.intersectingGenes)}|intersection_genes_preview={_safe_context_text(';'.join(genes_preview))}|"
+                f"intersection_preview_truncated={'true' if preview_truncated else 'false'}"
+            )
+        if result.warnings:
+            lines.append(
+                f"ora_warnings|count={len(result.warnings)}|messages={_safe_context_text(' || '.join(result.warnings))}"
+            )
+        lines.append(
+            "ora_quality_rule|scope=data_driven_with_explicit_thresholds_and_background|claims_allowed_only_when_reporting_the_explicit_metrics_filters_and_background_used"
+        )
+        lines.append(
+            "ora_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+        )
+        return _text_payload("stats_ora_plot", "\n".join(lines))
 
     up_genes = [str(value) for value in result.upGenes]
     down_genes = [str(value) for value in result.downGenes]
@@ -2676,32 +2837,35 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
     down_gene_preview, down_gene_truncated = _preview_items(down_genes, max_gene_preview)
 
     lines.append(
-        f"gsea_data|status=available|source_used={result.sourceUsed}"
+        f"ora_data|status=available|source_used={result.sourceUsed}"
     )
     lines.append(
-        f"gsea_gene_clusters|upregulated_genes={len(up_genes)}|downregulated_genes={len(down_genes)}"
+        f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|tested_terms={result.testedTermCount}|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
     )
     lines.append(
-        f"gsea_cluster_genes|cluster=upregulated|count={len(up_genes)}|preview_count={len(up_gene_preview)}|preview_truncated={'true' if up_gene_truncated else 'false'}|genes={_safe_context_text(';'.join(up_gene_preview))}"
+        f"ora_gene_clusters|upregulated_genes={len(up_genes)}|downregulated_genes={len(down_genes)}"
     )
     lines.append(
-        f"gsea_cluster_genes|cluster=downregulated|count={len(down_genes)}|preview_count={len(down_gene_preview)}|preview_truncated={'true' if down_gene_truncated else 'false'}|genes={_safe_context_text(';'.join(down_gene_preview))}"
+        f"ora_cluster_genes|cluster=upregulated|count={len(up_genes)}|preview_count={len(up_gene_preview)}|preview_truncated={'true' if up_gene_truncated else 'false'}|genes={_safe_context_text(';'.join(up_gene_preview))}"
+    )
+    lines.append(
+        f"ora_cluster_genes|cluster=downregulated|count={len(down_genes)}|preview_count={len(down_gene_preview)}|preview_truncated={'true' if down_gene_truncated else 'false'}|genes={_safe_context_text(';'.join(down_gene_preview))}"
     )
 
     up_terms = list(result.upTerms)
     down_terms = list(result.downTerms)
-    lines.append(f"gsea_terms|cluster=upregulated|count={len(up_terms)}")
-    lines.append(f"gsea_terms|cluster=downregulated|count={len(down_terms)}")
+    lines.append(f"ora_terms|cluster=upregulated|count={len(up_terms)}")
+    lines.append(f"ora_terms|cluster=downregulated|count={len(down_terms)}")
 
     if not up_terms:
-        lines.append("gsea_terms_status|cluster=upregulated|status=no_terms_for_current_filters")
+        lines.append("ora_terms_status|cluster=upregulated|status=no_terms_for_current_filters")
     if not down_terms:
-        lines.append("gsea_terms_status|cluster=downregulated|status=no_terms_for_current_filters")
+        lines.append("ora_terms_status|cluster=downregulated|status=no_terms_for_current_filters")
 
     for index, term in enumerate(up_terms, start=1):
         genes_preview, preview_truncated = _preview_items([str(value) for value in term.intersectingGenes], max_intersection_preview)
         lines.append(
-            "gsea_term|"
+            "ora_term|"
             f"cluster=upregulated|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
             f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
             f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
@@ -2712,7 +2876,7 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
     for index, term in enumerate(down_terms, start=1):
         genes_preview, preview_truncated = _preview_items([str(value) for value in term.intersectingGenes], max_intersection_preview)
         lines.append(
-            "gsea_term|"
+            "ora_term|"
             f"cluster=downregulated|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
             f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
             f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
@@ -2722,17 +2886,17 @@ def stats_gsea_plot(workflow: str = "protein", mode: str | None = None) -> dict[
 
     if result.warnings:
         lines.append(
-            f"gsea_warnings|count={len(result.warnings)}|messages={_safe_context_text(' || '.join(result.warnings))}"
+            f"ora_warnings|count={len(result.warnings)}|messages={_safe_context_text(' || '.join(result.warnings))}"
         )
 
     lines.append(
-        "gsea_quality_rule|scope=data_driven_with_explicit_thresholds|claims_allowed_only_when_reporting_the_explicit_metrics_and_filters_used"
+        "ora_quality_rule|scope=data_driven_with_explicit_thresholds_and_background|claims_allowed_only_when_reporting_the_explicit_metrics_filters_and_background_used"
     )
     lines.append(
-        "gsea_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
+        "ora_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
 
-    return _text_payload("stats_gsea_plot", "\n".join(lines))
+    return _text_payload("stats_ora_plot", "\n".join(lines))
 
 
 def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
@@ -2746,6 +2910,9 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
     value_type = str(mode_pairs.get("valuetype", mode_pairs.get("value_type", "z"))).strip().lower()
     if value_type not in {"log2", "z"}:
         value_type = "z"
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in _AI_DATA_SOURCES:
+        data_source = "data"
     remove_empty = _bool_from_mode(mode_pairs, "removeempty", "remove_empty", default=True)
     include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
     header = _bool_from_mode(mode_pairs, "header", default=True)
@@ -2777,7 +2944,7 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
         f"pathway_heatmap_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}"
     )
     lines.append(
-        f"pathway_heatmap_selection|pathway={_safe_context_text(pathway)}|value_type={'z_score' if value_type == 'z' else 'log2'}|remove_empty={'true' if remove_empty else 'false'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|cluster_rows={'true' if cluster_rows else 'false'}|cluster_cols={'true' if cluster_cols else 'false'}"
+        f"pathway_heatmap_selection|pathway={_safe_context_text(pathway)}|data_source={data_source}|value_type={'z_score' if value_type == 'z' else 'log2'}|remove_empty={'true' if remove_empty else 'false'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|cluster_rows={'true' if cluster_rows else 'false'}|cluster_cols={'true' if cluster_cols else 'false'}"
     )
     if selected_conditions:
         condition_preview, condition_truncated = _preview_items(selected_conditions, max_condition_preview)
@@ -2789,13 +2956,19 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
     lines.append(
         "pathway_heatmap_value_mode|log2=log2_intensities|z_score=row_wise_standardization_per_gene_across_selected_samples"
     )
+    lines.append(
+        "pathway_heatmap_gene_aggregation|unit=gene|duplicate_features=per_sample_median_ignoring_missing|all_missing=missing|source_feature_count=reported"
+    )
 
     if not pathway:
         lines.append("pathway_heatmap_data|status=incomplete_parameters|detail=pathway_not_selected")
         return _text_payload("stats_pathway_heatmap_plot", "\n".join(lines))
 
     try:
-        source_used, frame, metadata, warnings = _stats_tools._stats_source(kind)  # type: ignore[attr-defined]
+        source_used, frame, metadata, warnings = _stats_tools._stats_source(  # type: ignore[attr-defined]
+            kind,
+            data_source=data_source,
+        )
     except Exception as exc:
         lines.append(f"pathway_heatmap_data|status=error|detail={_safe_context_text(exc)}")
         return _text_payload("stats_pathway_heatmap_plot", "\n".join(lines))
@@ -2834,35 +3007,25 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
         if not sample_columns:
             raise ValueError("No selected samples are available in the current dataset.")
 
-        value_frame = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
-        gene_to_row: dict[str, pd.Series] = {}
-        for idx, gene_value in frame[gene_column].items():
-            tokens = [token.strip() for token in str(gene_value or "").split(";") if token.strip()]
-            for token in tokens:
-                key = token.lower()
-                if key not in gene_to_row and idx in value_frame.index:
-                    gene_to_row[key] = value_frame.loc[idx]
-
-        matrix_rows: list[pd.Series] = []
-        matrix_index: list[str] = []
-        all_missing_rows = 0
-        matched_genes_in_dataset = 0
-        for gene in pathway_genes:
-            key = gene.lower()
-            row = gene_to_row.get(key)
-            if row is None:
-                matrix_rows.append(pd.Series([pd.NA] * len(sample_columns), index=sample_columns))
-                matrix_index.append(gene)
-                continue
-            matched_genes_in_dataset += 1
-            if bool(row.isna().all()):
-                all_missing_rows += 1
-            matrix_rows.append(row)
-            matrix_index.append(gene)
-
-        heatmap_data = pd.DataFrame(matrix_rows, index=matrix_index, columns=sample_columns)
+        heatmap_data, source_feature_counts = _stats_tools._aggregate_pathway_gene_values(
+            frame,
+            gene_column=gene_column,
+            sample_columns=sample_columns,
+            pathway_genes=pathway_genes,
+        )
+        pathway_genes = [str(gene) for gene in heatmap_data.index.tolist()]
+        matched_genes_in_dataset = int((source_feature_counts > 0).sum())
+        all_missing_rows = int(
+            (
+                (source_feature_counts > 0)
+                & heatmap_data.isna().all(axis=1)
+            ).sum()
+        )
         if remove_empty:
             heatmap_data = heatmap_data.dropna(how="all")
+            shown_source_counts = source_feature_counts.loc[heatmap_data.index]
+        else:
+            shown_source_counts = source_feature_counts
         shown_genes = [str(gene) for gene in heatmap_data.index.tolist()]
 
         missing_in_dataset = max(0, len(pathway_genes) - matched_genes_in_dataset)
@@ -2870,6 +3033,10 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
 
         pathway_gene_preview, pathway_gene_preview_truncated = _preview_items(pathway_genes, max_gene_preview)
         shown_gene_preview, shown_gene_preview_truncated = _preview_items(shown_genes, max_gene_preview)
+        shown_count_preview = [
+            f"{gene}:{int(shown_source_counts.loc[gene])}"
+            for gene in shown_gene_preview
+        ]
 
         lines.append(
             f"pathway_heatmap_data|status=available|source_used={source_used}|gene_column={_safe_context_text(gene_column)}|pathway_gene_count={len(pathway_genes)}|shown_gene_count={len(shown_genes)}|matched_gene_count={matched_genes_in_dataset}|missing_in_dataset_count={missing_in_dataset}|removed_due_all_missing_count={removed_due_empty}|sample_count={len(sample_columns)}"
@@ -2879,6 +3046,9 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
         )
         lines.append(
             f"pathway_heatmap_shown_genes|count={len(shown_genes)}|preview_count={len(shown_gene_preview)}|preview_truncated={'true' if shown_gene_preview_truncated else 'false'}|genes={_safe_context_text(';'.join(shown_gene_preview))}"
+        )
+        lines.append(
+            f"pathway_heatmap_source_feature_counts|count={len(shown_genes)}|preview_count={len(shown_count_preview)}|preview_truncated={'true' if shown_gene_preview_truncated else 'false'}|gene_counts={_safe_context_text(';'.join(shown_count_preview))}"
         )
     except Exception as exc:
         lines.append(f"pathway_heatmap_data|status=error|detail={_safe_context_text(exc)}")
@@ -2902,6 +3072,9 @@ def comparison_pearson_correlation(workflow: str = "protein", mode: str | None =
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
 
     mode_raw = str(mode_pairs.get("mode", "Single")).strip().lower()
     if mode_raw in {"condition", "mean"}:
@@ -2929,7 +3102,7 @@ def comparison_pearson_correlation(workflow: str = "protein", mode: str | None =
 
     lines: list[str] = []
     lines.append(
-        f"comparison_pearson_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}"
+        f"comparison_pearson_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|data_source={data_source}"
     )
     lines.append(
         "comparison_pearson_scope|purpose=interactive_view_of_linear_relationships_for_reproducibility_outlier_screening_and_sample_or_condition_comparison"
@@ -2978,6 +3151,7 @@ def comparison_pearson_correlation(workflow: str = "protein", mode: str | None =
             condition2=condition2,
             alias1=alias1,
             alias2=alias2,
+            data_source=data_source,
         ).copy()
     except Exception as exc:
         lines.append(f"comparison_pearson_data|status=error|detail={_safe_context_text(exc)}")
@@ -3045,6 +3219,9 @@ def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) 
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
 
     mode_raw = str(mode_pairs.get("mode", "Single")).strip().lower()
     if mode_raw in {"condition", "mean"}:
@@ -3074,7 +3251,7 @@ def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) 
 
     lines: list[str] = []
     lines.append(
-        f"comparison_venn_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|set_count={set_count}"
+        f"comparison_venn_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|set_count={set_count}|data_source={data_source}"
     )
     lines.append(
         "comparison_venn_scope|purpose=visualize_shared_and_unique_entities_across_samples_or_conditions"
@@ -3083,14 +3260,14 @@ def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) 
         "comparison_venn_functions|single_mode_function=overlap_plot_single|mean_mode_function=overlap_plot_condition"
     )
     lines.append(
-        "comparison_venn_processing|step1=extract_non_missing_and_non_zero_entities|step2=convert_to_sets|step3=render_venn2_or_venn3"
+        "comparison_venn_processing|step1=extract_non_missing_entities_preserving_valid_log2_zeroes|step2=convert_to_sets|step3=render_venn2_or_venn3"
     )
     lines.append(
         "comparison_venn_rule|alias_priority=true|when_alias_is_provided_use_alias_labels_instead_of_raw_sample_or_condition_names"
     )
     if selected_mode == "Single":
         lines.append(
-            "comparison_venn_mode|selected=Single|comparison_level=sample_vs_sample_or_sample_triplet|presence_rule=entity_is_present_if_non_missing_and_non_zero_in_each_selected_sample"
+            "comparison_venn_mode|selected=Single|comparison_level=sample_vs_sample_or_sample_triplet|presence_rule=entity_is_present_if_non_missing_in_each_selected_sample"
         )
     else:
         lines.append(
@@ -3117,6 +3294,7 @@ def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) 
             alias1=alias1,
             alias2=alias2,
             alias3=alias3,
+            data_source=data_source,
         ).copy()
     except Exception as exc:
         lines.append(f"comparison_venn_data|status=error|detail={_safe_context_text(exc)}")
@@ -3638,9 +3816,7 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
         default=1.0,
         minimum=0.0,
     )
-    test_type = str(mode_pairs.get("testtype", "unpaired")).strip().lower()
-    if test_type not in {"paired", "unpaired"}:
-        test_type = "unpaired"
+    test_type = _normalize_stats_test_type(mode_pairs.get("testtype", "unpaired"))
     use_uncorrected = _bool_from_mode(mode_pairs, "useuncorrected", "use_uncorrected", default=False)
     max_hover_sites = int(
         _float_from_mode(
@@ -3658,7 +3834,7 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
         f"phosprot_regulation_overview|workflow={workflow_key}|dataset_level=phospho|entity=phosphoproteins"
     )
     lines.append(
-        "phosprot_regulation_scope|purpose=interactive_protein_level_view_of_differential_phosphorylation_aggregated_from_phosphosite_level_information"
+        "phosprot_regulation_scope|purpose=descriptive_protein_level_view_of_cumulative_significant_phosphosite_log2_fold_change_contributions"
     )
     lines.append(
         "phosprot_regulation_function|plot_function=phosprot_regulation"
@@ -3667,22 +3843,26 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
         f"phosprot_regulation_parameters|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|test_type={test_type}|use_uncorrected={'true' if use_uncorrected else 'false'}|max_hover_sites={max_hover_sites}|show_phosphosites={'true' if show_phosphosites else 'false'}"
     )
     lines.append(
-        "phosprot_regulation_core_steps|step1=compute_phosphosite_log2_fold_changes_between_selected_conditions|step2=perform_statistical_testing_per_site|step3=aggregate_up_and_down_site_contributions_to_protein_level_coordinates"
+        f"phosprot_regulation_testing|selected_test={test_type}|"
+        f"selected_test_description={_stats_test_description(test_type)}"
     )
     lines.append(
-        "phosprot_regulation_coordinate_definition|x_axis=absolute_upregulated_sum_log2|y_axis=absolute_downregulated_sum_log2|point=one_protein"
+        "phosprot_regulation_core_steps|step1=compute_phosphosite_log2_fold_changes_between_selected_conditions|step2=classify_sites_that_pass_the_selected_p_value_and_absolute_log2fc_thresholds|step3=sum_positive_significant_site_log2fc_for_x_and_absolute_negative_significant_site_log2fc_for_y"
     )
     lines.append(
-        "phosprot_regulation_hover_definition|hover_can_include_up_and_down_site_counts_and_site_identifiers_with_optional_truncation"
+        "phosprot_regulation_coordinate_definition|x_axis=cumulative_significant_up_site_log2fc|y_axis=cumulative_significant_down_site_absolute_log2fc|point=one_protein|score_type=descriptive_not_a_protein_level_fold_change"
     )
     lines.append(
-        "phosprot_regulation_table_definition|columns=Protein_group_Upregulated_sites_Downregulated_sites_Upregulated_count_Downregulated_count_Upregulated_sum_Downregulated_sum_x_y_color_val"
+        "phosprot_regulation_hover_definition|hover_can_include_significant_up_and_down_site_counts_identifiers_and_individual_log2fc_values_with_optional_truncation"
     )
     lines.append(
-        "phosprot_regulation_parameter_note|current_variant_does_not_apply_a_significance_cutoff_to_filter_plot_points_threshold_inputs_are_retained_as_parameters_for_the_underlying_computation_context"
+        "phosprot_regulation_table_definition|columns=Protein_group_Upregulated_sites_Downregulated_sites_Upregulated_site_effects_Downregulated_site_effects_Upregulated_count_Downregulated_count_Upregulated_log2FC_sum_Downregulated_log2FC_sum_x_y_color_val"
     )
     lines.append(
-        "phosprot_regulation_interpretation_scope|supports_identifying_proteins_with_strong_up_or_down_site_contributions_and_assessing_balance_between_up_and_down_signals"
+        "phosprot_regulation_parameter_note|only_sites_passing_both_the_selected_p_value_and_absolute_log2fc_thresholds_contribute|proteins_without_significant_sites_are_omitted"
+    )
+    lines.append(
+        "phosprot_regulation_interpretation_scope|supports_descriptive_comparison_of_cumulative_significant_up_and_down_site_effects|does_not_estimate_a_protein_level_fold_change_or_adjust_for_parent_protein_abundance"
     )
     lines.append(
         "phosprot_regulation_quality_rule|general_not_data_specific_for_this_context_do_not_make_dataset_specific_claims_without_explicit_numeric_output_context"
@@ -3699,6 +3879,9 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     entity_singular, entity_plural = _entity_labels_from_stats_kind(kind)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
     identifier = str(mode_pairs.get("identifier", "workflow")).strip().lower()
     if identifier not in {"workflow", "genes"}:
         identifier = "workflow"
@@ -3706,15 +3889,18 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
     selected_conditions = _split_mode_list(mode_pairs.get("conditions", ""))
     outliers = _bool_from_mode(mode_pairs, "outliers", default=False)
     dots = _bool_from_mode(mode_pairs, "dots", default=False)
+    random_seed = int(
+        _float_from_mode(mode_pairs, "randomseed", "random_seed", default=69.0, minimum=0.0)
+    )
     header = _bool_from_mode(mode_pairs, "header", default=True)
     legend = _bool_from_mode(mode_pairs, "legend", default=True)
 
     lines: list[str] = []
     lines.append(
-        f"single_protein_boxplot_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|identifier={identifier}"
+        f"single_protein_boxplot_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|identifier={identifier}|data_source={data_source}"
     )
     lines.append(
-        f"single_protein_boxplot_selection|selected_input={_safe_context_text(selected_protein)}|conditions={_safe_context_text(','.join(selected_conditions)) if selected_conditions else 'all_available'}|outliers={'true' if outliers else 'false'}|dots={'true' if dots else 'false'}|header={'true' if header else 'false'}|legend={'true' if legend else 'false'}"
+        f"single_protein_boxplot_selection|selected_input={_safe_context_text(selected_protein)}|conditions={_safe_context_text(','.join(selected_conditions)) if selected_conditions else 'all_available'}|outliers={'true' if outliers else 'false'}|dots={'true' if dots else 'false'}|random_seed={random_seed}|header={'true' if header else 'false'}|legend={'true' if legend else 'false'}"
     )
     lines.append(
         "single_protein_boxplot_general|description=distribution_of_log2_transformed_intensity_values_for_one_selected_entity_across_conditions"
@@ -3722,6 +3908,10 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
     lines.append(
         "single_protein_boxplot_general|per_condition_processing=for_selected_entity_extract_all_intensity_values_from_replicates_in_each_condition"
     )
+    if identifier == "genes":
+        lines.append(
+            "single_protein_boxplot_gene_aggregation|biological_unit=sample|duplicate_mapped_features=per_sample_median_ignoring_missing|sample_count_and_source_feature_count=reported_separately"
+        )
     lines.append(
         "single_protein_boxplot_general|interpretation_scope=compare_conditions_detect_shifts_outliers_and_distribution_shape_symmetry_spread_skewness"
     )
@@ -3748,6 +3938,7 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
             selected_protein,
             selected_conditions,
             identifier=identifier,
+            data_source=data_source,
         ).copy()
     except Exception as exc:
         lines.append(f"single_protein_boxplot_data|status=error|detail={_safe_context_text(exc)}")
@@ -3764,7 +3955,21 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
     data = table.copy()
     ordered_columns: list[str] = [
         column
-        for column in ["Condition", "N", "Mean", "Median", "Q1", "Q3", "Min", "Max"]
+        for column in [
+            "Condition",
+            "N",
+            "SampleCount",
+            "SourceFeatureCount",
+            "SourceFeatures",
+            "Aggregation",
+            "Warning",
+            "Mean",
+            "Median",
+            "Q1",
+            "Q3",
+            "Min",
+            "Max",
+        ]
         if column in data.columns
     ]
     for column in data.columns:
@@ -3775,7 +3980,17 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
         f"single_protein_boxplot_table_columns|values={_safe_context_text(','.join(ordered_columns))}"
     )
 
-    numeric_hints = {"N", "Mean", "Median", "Q1", "Q3", "Min", "Max"}
+    numeric_hints = {
+        "N",
+        "SampleCount",
+        "SourceFeatureCount",
+        "Mean",
+        "Median",
+        "Q1",
+        "Q3",
+        "Min",
+        "Max",
+    }
     for rank, (_, row) in enumerate(data.iterrows(), start=1):
         row_parts = [f"rank={rank}"]
         for column in ordered_columns:
@@ -3787,7 +4002,7 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
             if column in numeric_hints:
                 try:
                     value_num = float(raw_value)
-                    if column == "N":
+                    if column in {"N", "SampleCount", "SourceFeatureCount"}:
                         row_parts.append(f"{key}={int(round(value_num))}")
                     else:
                         row_parts.append(f"{key}={_fmt_value(value_num)}")
@@ -3805,6 +4020,9 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
     mode_pairs = _parse_mode_pairs(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     entity_singular, entity_plural = _entity_labels_from_stats_kind(kind)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
     identifier = str(mode_pairs.get("identifier", "workflow")).strip().lower()
     if identifier not in {"workflow", "genes"}:
         identifier = "workflow"
@@ -3826,7 +4044,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
 
     lines: list[str] = []
     lines.append(
-        f"single_protein_lineplot_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|identifier={identifier}"
+        f"single_protein_lineplot_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}|identifier={identifier}|data_source={data_source}"
     )
     lines.append(
         f"single_protein_lineplot_selection|proteins={_safe_context_text(','.join(selected_proteins)) if selected_proteins else 'none_selected'}|conditions={_safe_context_text(','.join(selected_conditions)) if selected_conditions else 'all_available'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|legend={'true' if legend else 'false'}"
@@ -3837,6 +4055,10 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
     lines.append(
         "single_protein_lineplot_general|description=each_selected_entity_is_plotted_as_an_independent_trajectory_across_ordered_samples_and_conditions"
     )
+    if identifier == "genes":
+        lines.append(
+            "single_protein_lineplot_gene_aggregation|biological_unit=sample|duplicate_mapped_features=per_sample_median_ignoring_missing|sample_count_and_source_feature_count=reported_separately"
+        )
     lines.append(
         "single_protein_lineplot_axes|x_axis=samples|y_axis=log2_intensity|conditions_define_sample_grouping_and_ordering"
     )
@@ -3870,6 +4092,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
             selected_conditions,
             include_id=include_id,
             identifier=identifier,
+            data_source=data_source,
         ).copy()
     except Exception as exc:
         lines.append(f"single_protein_lineplot_data|status=error|detail={_safe_context_text(exc)}")
@@ -3935,11 +4158,18 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
         if feature_data.empty:
             continue
         values_all = feature_data["Value"].astype(float)
+        count_fields = ""
+        if "SampleCount" in feature_data.columns:
+            count_fields += f"|sample_count={int(pd.to_numeric(feature_data['SampleCount'], errors='coerce').max())}"
+        if "SourceFeatureCount" in feature_data.columns:
+            count_fields += f"|source_feature_count={int(pd.to_numeric(feature_data['SourceFeatureCount'], errors='coerce').max())}"
+        if "SourceFeatures" in feature_data.columns:
+            count_fields += f"|source_features={_safe_context_text(feature_data['SourceFeatures'].iloc[0])}"
         lines.append(
             "single_protein_lineplot_entity_summary|"
             f"entity={_safe_context_text(feature)}|n_values={int(values_all.shape[0])}|"
             f"mean={_fmt_value(values_all.mean())}|median={_fmt_value(values_all.median())}|"
-            f"min={_fmt_value(values_all.min())}|max={_fmt_value(values_all.max())}"
+            f"min={_fmt_value(values_all.min())}|max={_fmt_value(values_all.max())}{count_fields}"
         )
     lines.append(
         f"single_protein_lineplot_final_entities|values={_safe_context_text(';'.join(feature_values))}"
@@ -3951,6 +4181,9 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
 def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _parse_mode_pairs(mode)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
     identifier = str(mode_pairs.get("identifier", "workflow")).strip().lower()
     if identifier not in {"workflow", "genes"}:
         identifier = "workflow"
@@ -3977,7 +4210,7 @@ def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: str 
 
     lines: list[str] = []
     lines.append(
-        f"single_protein_heatmap_overview|workflow={workflow_key}|dataset_level=phospho|entity=phosphosites|identifier={identifier}"
+        f"single_protein_heatmap_overview|workflow={workflow_key}|dataset_level=phospho|entity=phosphosites|identifier={identifier}|data_source={data_source}"
     )
     lines.append(
         f"single_protein_heatmap_selection|protein={_safe_context_text(selected_protein)}|conditions={_safe_context_text(','.join(selected_conditions)) if selected_conditions else 'all_available'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|filter_m1={'true' if filter_m1 else 'false'}|cluster_rows={'true' if cluster_rows else 'false'}|cluster_cols={'true' if cluster_cols else 'false'}|value_type={value_type}"
@@ -4010,6 +4243,7 @@ def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: str 
             cluster_rows=cluster_rows,
             cluster_cols=cluster_cols,
             value_type=value_type,
+            data_source=data_source,
         ).copy()
     except Exception as exc:
         lines.append(f"single_protein_heatmap_data|status=error|detail={_safe_context_text(exc)}")
@@ -4054,7 +4288,7 @@ __all__ = [
     "completeness_missing_value_heatmap",
     "completeness_missing_value_tables",
     "stats_volcano_plot",
-    "stats_gsea_plot",
+    "stats_ora_plot",
     "stats_pathway_heatmap_plot",
     "comparison_pearson_correlation",
     "comparison_venn_diagram",

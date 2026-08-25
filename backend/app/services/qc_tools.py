@@ -5,10 +5,11 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import DataSource, HistogramBin
-from app.schemas.qc import BoxplotPoint, QcSummaryResponse, SampleMetricPoint
+from app.schemas.qc import BoxplotPoint, ConditionCvPoint, QcSummaryResponse, SampleMetricPoint
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import choose_best_source, histogram
+from app.services.functions import choose_best_source, histogram, raw_zero_to_nan
+from app.services.table_functions import qc_cv_table
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -20,6 +21,8 @@ def _best_qc_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, lis
     source, frame = choose_best_source(filtered, log2, raw)
     warnings: list[str] = []
     if source == "raw":
+        if not bool(getattr(annotation, "is_log2_transformed", False)):
+            frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
         warnings.append("Using raw data because filtered/log2 data is unavailable.")
     return source, frame, warnings
 
@@ -45,7 +48,6 @@ def qc_summary(kind: AnnotationKind) -> QcSummaryResponse:
     ]
 
     boxplot_points: list[BoxplotPoint] = []
-    cv_points: list[SampleMetricPoint] = []
     for col in sample_columns:
         values = numeric[col].dropna().values.astype(float)
         if values.size == 0:
@@ -63,10 +65,24 @@ def qc_summary(kind: AnnotationKind) -> QcSummaryResponse:
             )
         )
 
-        mean = float(np.mean(values))
-        std = float(np.std(values))
-        cv = float((std / mean) * 100.0) if mean != 0 else 0.0
-        cv_points.append(SampleMetricPoint(sample=col, value=cv))
+    # Delegate to the same computation the CV plot and CV table use, rather than
+    # keeping a third definition here. The previous local version divided the
+    # standard deviation by the mean *across features within one sample*, on
+    # log2 values -- which is not a coefficient of variation: a CV needs
+    # replicates to vary across, and is only meaningful on a linear scale.
+    cv_frame = qc_cv_table(kind)
+    cv_points = [
+        ConditionCvPoint(
+            condition=str(row["Condition"]),
+            mean=float(row["mean"]),
+            median=float(row["median"]),
+            q1=float(row["Q1"]),
+            q3=float(row["Q3"]),
+            lowerWhisker=float(row["lower_whisker"]),
+            upperWhisker=float(row["upper_whisker"]),
+        )
+        for _, row in cv_frame.iterrows()
+    ] if not cv_frame.empty else []
 
     return QcSummaryResponse(
         kind=kind,

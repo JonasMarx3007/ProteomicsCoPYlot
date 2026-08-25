@@ -4,8 +4,13 @@ import App from "./App";
 import ToolAccessGate from "./components/ToolAccessGate";
 import ViewerPortalGate from "./components/ViewerPortalGate";
 import { initializeAdvancedPlotState, initializeSessionTheme } from "./lib/appSettings";
+import { shouldResetClientStateOnBrowserLoad } from "./lib/datasetAvailability";
+import { clearCopylotClientStorageState } from "./lib/restoreUiState";
 import "./index.css";
 
+if (shouldResetClientStateOnBrowserLoad()) {
+  clearCopylotClientStorageState();
+}
 initializeSessionTheme();
 initializeAdvancedPlotState();
 

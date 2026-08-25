@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import os
 import time
 from collections import deque
@@ -21,6 +23,10 @@ from app.services.tool_access import (
     tool_access_enabled,
     tool_session_authenticated,
 )
+from app.services.request_security import client_address
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/tool/auth", tags=["tool-auth"])
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -44,12 +50,7 @@ def _rate_limit_enabled() -> bool:
 
 
 def _client_key(request: Request) -> str:
-    forwarded = str(request.headers.get("x-forwarded-for", "")).split(",", 1)[0].strip()
-    if forwarded:
-        return forwarded
-    if request.client is not None and request.client.host:
-        return request.client.host
-    return "unknown"
+    return client_address(request)
 
 
 def _enforce_login_rate_limit(request: Request, *, bucket: str) -> None:
@@ -61,22 +62,28 @@ def _enforce_login_rate_limit(request: Request, *, bucket: str) -> None:
     cutoff = now - window_seconds
     key = (_client_key(request), bucket)
     with _RATE_LIMIT_LOCK:
+        stale_keys: list[tuple[str, str]] = []
+        for existing_key, existing_attempts in _RATE_LIMIT_ATTEMPTS.items():
+            while existing_attempts and existing_attempts[0] < cutoff:
+                existing_attempts.popleft()
+            if not existing_attempts:
+                stale_keys.append(existing_key)
+        for stale_key in stale_keys:
+            _RATE_LIMIT_ATTEMPTS.pop(stale_key, None)
         attempts = _RATE_LIMIT_ATTEMPTS.setdefault(key, deque())
-        while attempts and attempts[0] < cutoff:
-            attempts.popleft()
         if len(attempts) >= limit:
             raise HTTPException(status_code=429, detail="Too many login attempts. Please wait and try again.")
         attempts.append(now)
 
 
 @router.get("/status", response_model=ToolAuthStatusResponse)
-async def tool_auth_status_route() -> ToolAuthStatusResponse:
+def tool_auth_status_route() -> ToolAuthStatusResponse:
     enabled = tool_access_enabled()
     return ToolAuthStatusResponse(enabled=enabled, authenticated=tool_session_authenticated())
 
 
 @router.post("/login", response_model=ToolAuthLoginResponse)
-async def tool_auth_login_route(request: Request, payload: ToolAuthLoginRequest) -> ToolAuthLoginResponse:
+def tool_auth_login_route(request: Request, payload: ToolAuthLoginRequest) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="password")
@@ -85,12 +92,16 @@ async def tool_auth_login_route(request: Request, payload: ToolAuthLoginRequest)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Tool access configuration is unavailable")
+        raise HTTPException(
+            status_code=500,
+            detail="Tool access configuration is unavailable. Contact the administrator.",
+        ) from exc
     return ToolAuthLoginResponse(ok=True)
 
 
 @router.post("/link-login", response_model=ToolAuthLoginResponse)
-async def tool_auth_link_login_route(request: Request, payload: ToolAuthLinkLoginRequest) -> ToolAuthLoginResponse:
+def tool_auth_link_login_route(request: Request, payload: ToolAuthLinkLoginRequest) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="link")
@@ -99,11 +110,15 @@ async def tool_auth_link_login_route(request: Request, payload: ToolAuthLinkLogi
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        LOGGER.exception("Tool access configuration is unavailable")
+        raise HTTPException(
+            status_code=500,
+            detail="Tool access configuration is unavailable. Contact the administrator.",
+        ) from exc
     return ToolAuthLoginResponse(ok=True)
 
 
 @router.post("/logout", response_model=ToolAuthLogoutResponse)
-async def tool_auth_logout_route() -> ToolAuthLogoutResponse:
+def tool_auth_logout_route() -> ToolAuthLogoutResponse:
     clear_tool_session_auth()
     return ToolAuthLogoutResponse(ok=True)

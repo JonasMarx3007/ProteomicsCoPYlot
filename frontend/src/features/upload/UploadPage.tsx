@@ -83,7 +83,11 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
   }, [refreshCurrentDatasets]);
 
   useEffect(() => {
-    return subscribeDatasetStateChanged(() => {
+    return subscribeDatasetStateChanged((snapshot) => {
+      if (snapshot) {
+        setCurrent(snapshot);
+        return;
+      }
       refreshCurrentDatasets().catch(() => {
         // keep current state if transient refresh fails
       });

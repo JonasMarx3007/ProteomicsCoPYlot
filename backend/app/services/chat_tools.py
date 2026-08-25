@@ -21,6 +21,7 @@ from app.schemas.chat import (
     OllamaModelManageResponse,
     OllamaModelsResponse,
 )
+from app.services.cloud_ai_consent import require_cloud_ai_consent
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
@@ -79,13 +80,21 @@ _CONTINUATION_USER_PROMPT = (
 )
 _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS = 1800
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-_DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-latest"
+_DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 _DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 _DEFAULT_API_TEMPERATURE = 0.2
 _DEFAULT_API_MAX_TOKENS = 512
 _OPENAI_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 _ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _GEMINI_BASE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
+_CLOUD_MAX_HISTORY_MESSAGES = 12
+_CLOUD_MAX_CONTEXT_CHARS = 96_000
+_CLOUD_MAX_TOTAL_MESSAGE_CHARS = 180_000
+_PROTECTED_CONTEXT_PATTERNS = (
+    re.compile(r"(?i)(?:^|[\s'\"])(?:[a-z]:[\\/]|\\\\|file://)"),
+    re.compile(r"(?i)(?:api[-_ ]?key|authorization|access[-_ ]?token|password)\s*[:=]"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
 
 
 def _coerce_text(value: object) -> str:
@@ -190,11 +199,18 @@ def _resolve_chat_model(payload: OllamaChatRequest, provider: ChatProvider) -> s
 
 
 def _resolve_api_key(payload: OllamaChatRequest, provider: ChatProvider) -> str:
+    """Resolve the provider API key, preferring the server environment.
+
+    A key set on the server never leaves it. A key entered in the interface
+    travels browser -> backend on every request, so it is exposed to anything
+    that logs request bodies and to plain-HTTP deployments. The environment is
+    therefore checked first: configuring the server makes the browser field
+    irrelevant, and a stale or leaked client-side key cannot override it.
+    The field is still accepted, because the UI offers it and removing it would
+    break single-user installs that have no server configuration.
+    """
     if provider == "ollama":
         return ""
-    payload_key = str(payload.apiKey or "").strip()
-    if payload_key:
-        return payload_key
     env_name = {
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
@@ -204,8 +220,14 @@ def _resolve_api_key(payload: OllamaChatRequest, provider: ChatProvider) -> str:
     env_key = str(os.getenv(env_name, "")).strip()
     if env_key:
         return env_key
+    payload_key = str(payload.apiKey or "").strip()
+    if payload_key:
+        return payload_key
     provider_label = {"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Google Gemini"}[provider]
-    raise ValueError(f"{provider_label} API key is required.")
+    raise ValueError(
+        f"{provider_label} API key is required. Set {env_name} on the server, "
+        "or enter a key in the chat settings."
+    )
 
 
 def _resolve_api_temperature(payload: OllamaChatRequest) -> float:
@@ -244,7 +266,46 @@ def _normalize_ollama_endpoint(value: str | None) -> str:
         return ""
     if not text.lower().startswith(("http://", "https://")):
         text = f"http://{text}"
-    return text
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Ollama endpoint must use http or https.")
+    if not parsed.hostname:
+        raise ValueError("Ollama endpoint must include a hostname.")
+    if parsed.username or parsed.password:
+        raise ValueError("Ollama endpoint must not contain embedded credentials.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Ollama endpoint must not contain a query string or fragment.")
+
+    normalized_host = parsed.hostname.lower().rstrip(".")
+    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    configured_values = [
+        str(os.getenv("COPYLOT_OLLAMA_URL", "")).strip(),
+        *str(os.getenv("COPYLOT_OLLAMA_ALLOWED_ENDPOINTS", "")).split(","),
+    ]
+    allowed_origins: set[tuple[str, str, int | None]] = set()
+    for configured in configured_values:
+        configured = configured.strip()
+        if not configured:
+            continue
+        if not configured.lower().startswith(("http://", "https://")):
+            configured = f"http://{configured}"
+        configured_url = urllib.parse.urlsplit(configured)
+        if configured_url.hostname:
+            allowed_origins.add(
+                (
+                    configured_url.scheme.lower(),
+                    configured_url.hostname.lower().rstrip("."),
+                    configured_url.port,
+                )
+            )
+
+    requested_origin = (parsed.scheme.lower(), normalized_host, parsed.port)
+    if normalized_host not in allowed_hosts and requested_origin not in allowed_origins:
+        raise ValueError(
+            "Ollama endpoint override is not allowed. Configure it with "
+            "COPYLOT_OLLAMA_URL or COPYLOT_OLLAMA_ALLOWED_ENDPOINTS."
+        )
+    return urllib.parse.urlunsplit(parsed)
 
 
 def _resolve_model(payload_model: str | None, endpoint_override: str | None = None) -> str:
@@ -785,7 +846,25 @@ def _resolve_gpu_enabled(payload_gpu_enabled: bool | None, endpoint_override: st
     return bool(payload_gpu_enabled)
 
 
-def _build_messages(payload: OllamaChatRequest) -> tuple[str, list[dict[str, str]]]:
+def _validate_cloud_analysis_context(value: str) -> str:
+    context = str(value or "").strip()
+    if len(context) > _CLOUD_MAX_CONTEXT_CHARS:
+        raise ValueError(
+            f"Generated cloud AI context exceeds {_CLOUD_MAX_CONTEXT_CHARS:,} characters. "
+            "Use a more compact evidence profile."
+        )
+    if any(pattern.search(context) for pattern in _PROTECTED_CONTEXT_PATTERNS):
+        raise ValueError(
+            "Generated AI context contains a protected path or credential-like value and was not sent."
+        )
+    return context
+
+
+def _build_messages(
+    payload: OllamaChatRequest,
+    *,
+    cloud_provider: ChatProvider | None = None,
+) -> tuple[str, list[dict[str, str]]]:
     user_message = str(payload.message).strip()
     if not user_message:
         raise ValueError("Chat message cannot be empty.")
@@ -795,15 +874,38 @@ def _build_messages(payload: OllamaChatRequest) -> tuple[str, list[dict[str, str
         for message in supplied
         if str(message.get("role", "")).strip().lower() == "system"
     ]
+    if cloud_provider is not None and supplied_system:
+        raise ValueError(
+            "Cloud chat does not accept unclassified system messages. "
+            "Send generated analysis context through the analysisContext field."
+        )
     dialogue = [
         message
         for message in supplied
         if str(message.get("role", "")).strip().lower() != "system"
     ]
-    combined_system = "\n\n".join([_DEFAULT_SYSTEM_PROMPT, *supplied_system])
+    analysis_context = str(payload.analysisContext or "").strip()
+    if cloud_provider is not None:
+        analysis_context = _validate_cloud_analysis_context(analysis_context)
+        if len(dialogue) > _CLOUD_MAX_HISTORY_MESSAGES:
+            raise ValueError(
+                f"Cloud chat history exceeds {_CLOUD_MAX_HISTORY_MESSAGES} messages. Start a new chat or shorten the history."
+            )
+    combined_system = "\n\n".join(
+        item
+        for item in [_DEFAULT_SYSTEM_PROMPT, analysis_context, *supplied_system]
+        if item
+    )
     messages = [{"role": "system", "content": combined_system}, *dialogue]
     if not messages or messages[-1].get("role") != "user" or str(messages[-1].get("content", "")).strip() != user_message:
         messages.append({"role": "user", "content": user_message})
+    if cloud_provider is not None:
+        total_chars = sum(len(str(item.get("content", ""))) for item in messages)
+        if total_chars > _CLOUD_MAX_TOTAL_MESSAGE_CHARS:
+            raise ValueError(
+                f"Cloud chat payload exceeds {_CLOUD_MAX_TOTAL_MESSAGE_CHARS:,} characters. "
+                "Start a new chat or use a more compact evidence profile."
+            )
     return user_message, messages
 
 
@@ -1167,11 +1269,14 @@ def _gemini_chat_text(
     if system_text:
         request_body["systemInstruction"] = {"parts": [{"text": system_text}]}
     model_path = urllib.parse.quote(model, safe="")
-    endpoint = f"{_GEMINI_BASE_ENDPOINT}/{model_path}:generateContent?{urllib.parse.urlencode({'key': api_key})}"
+    endpoint = f"{_GEMINI_BASE_ENDPOINT}/{model_path}:generateContent"
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(request_body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
         method="POST",
     )
     try:
@@ -1214,9 +1319,10 @@ def _gemini_chat_text(
 def _cloud_chat_text(payload: OllamaChatRequest, provider: ChatProvider) -> tuple[str, str]:
     if provider == "ollama":
         raise ValueError("Internal error: cloud chat requested with provider='ollama'.")
+    require_cloud_ai_consent(provider)
     model = _resolve_chat_model(payload, provider)
     api_key = _resolve_api_key(payload, provider)
-    _, messages = _build_messages(payload)
+    _, messages = _build_messages(payload, cloud_provider=provider)
     temperature = _resolve_api_temperature(payload)
     max_tokens = _resolve_api_max_tokens(payload)
     if provider == "openai":

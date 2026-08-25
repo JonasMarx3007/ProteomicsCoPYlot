@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from app.schemas.analysis import AnalysisVolcanoRequest, AnalysisVolcanoResponse
 from app.schemas.annotation import AnnotationKind
+from app.schemas.qc import FeatureIdentifier
 from app.services.analysis_functions import (
     analysis_boxplot_png,
     analysis_boxplot_table,
@@ -12,6 +15,9 @@ from app.services.analysis_functions import (
     analysis_lineplot_table,
     analysis_volcano_data,
 )
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -30,21 +36,22 @@ def _table_rows(df) -> dict[str, list[dict[str, object]]]:
 
 
 @router.post("/volcano/data", response_model=AnalysisVolcanoResponse)
-async def analysis_volcano_data_route(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoResponse:
+def analysis_volcano_data_route(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoResponse:
     try:
         return analysis_volcano_data(payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load analysis volcano data: {e}") from e
+        LOGGER.exception("Failed to load analysis volcano data")
+        raise HTTPException(status_code=500, detail="Failed to load analysis volcano data.") from e
 
 
 @router.get("/boxplot.png")
-async def analysis_boxplot_route(
+def analysis_boxplot_route(
     kind: AnnotationKind,
     protein: str,
     conditions: str = "",
-    identifier: str = "workflow",
+    identifier: FeatureIdentifier = "workflow",
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
@@ -64,15 +71,16 @@ async def analysis_boxplot_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render analysis boxplot: {e}") from e
+        LOGGER.exception("Failed to render analysis boxplot")
+        raise HTTPException(status_code=500, detail="Failed to render analysis boxplot.") from e
 
 
 @router.get("/boxplot-table")
-async def analysis_boxplot_table_route(
+def analysis_boxplot_table_route(
     kind: AnnotationKind,
     protein: str,
     conditions: str = "",
-    identifier: str = "workflow",
+    identifier: FeatureIdentifier = "workflow",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -86,15 +94,16 @@ async def analysis_boxplot_table_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load analysis boxplot table: {e}") from e
+        LOGGER.exception("Failed to load analysis boxplot table")
+        raise HTTPException(status_code=500, detail="Failed to load analysis boxplot table.") from e
 
 
 @router.get("/lineplot.png")
-async def analysis_lineplot_route(
+def analysis_lineplot_route(
     kind: AnnotationKind,
     proteins: str = "",
     conditions: str = "",
-    identifier: str = "workflow",
+    identifier: FeatureIdentifier = "workflow",
     includeId: bool = False,
     widthCm: float = 20,
     heightCm: float = 10,
@@ -116,15 +125,16 @@ async def analysis_lineplot_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to render analysis lineplot: {e}") from e
+        LOGGER.exception("Failed to render analysis lineplot")
+        raise HTTPException(status_code=500, detail="Failed to render analysis lineplot.") from e
 
 
 @router.get("/lineplot-table")
-async def analysis_lineplot_table_route(
+def analysis_lineplot_table_route(
     kind: AnnotationKind,
     proteins: str = "",
     conditions: str = "",
-    identifier: str = "workflow",
+    identifier: FeatureIdentifier = "workflow",
     includeId: bool = False,
 ) -> dict[str, list[dict[str, object]]]:
     try:
@@ -140,4 +150,5 @@ async def analysis_lineplot_table_route(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load analysis lineplot table: {e}") from e
+        LOGGER.exception("Failed to load analysis lineplot table")
+        raise HTTPException(status_code=500, detail="Failed to load analysis lineplot table.") from e

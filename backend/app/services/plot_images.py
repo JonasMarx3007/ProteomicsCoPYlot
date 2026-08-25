@@ -14,12 +14,16 @@ from app.services.annotation_store import get_annotation
 from app.services.condition_palette_store import build_condition_color_map
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
+    _phosprot_values_are_centred,
+    resolve_feature_scaling,
+    abundance_axis_label,
     analysis_data_source,
     choose_best_source,
     extract_sample_id as _extract_id_or_number,
     impute_values_with_diagnostics,
     inverse_log2_transform_data,
     qqnorm_plot_data,
+    raw_zero_to_nan,
 )
 
 
@@ -139,6 +143,10 @@ def _imputation_source(kind: AnnotationKind):
     filtered = annotation.filtered_data if annotation is not None else None
     log2 = annotation.log2_data if annotation is not None else None
     source_name, frame = choose_best_source(filtered, log2, raw)
+    if source_name == "raw" and not bool(
+        getattr(annotation, "is_log2_transformed", False)
+    ):
+        frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
     return source_name, frame
 
 
@@ -148,12 +156,14 @@ def _original_scale_frame(kind: AnnotationKind):
     if annotation is None:
         return raw
 
-    sample_columns = [c for c in annotation.metadata["sample"].tolist() if c in annotation.log2_data.columns]
-    if not sample_columns:
+    if bool(getattr(annotation, "is_log2_transformed", False)):
+        transformed = annotation.log2_data if not annotation.log2_data.empty else raw
+        sample_columns = [
+            c for c in annotation.metadata["sample"].tolist() if c in transformed.columns
+        ]
+        if sample_columns:
+            return inverse_log2_transform_data(transformed, sample_columns)
         return raw
-
-    if annotation.is_log2_transformed:
-        return inverse_log2_transform_data(annotation.log2_data, sample_columns)
     return annotation.source_data.copy()
 
 
@@ -164,7 +174,9 @@ def _distribution_frame(kind: AnnotationKind):
         return annotation.log2_data.copy()
     if annotation is not None and not annotation.filtered_data.empty:
         return annotation.filtered_data.copy()
-    return raw
+    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
+        return raw
+    return raw_zero_to_nan(raw, _get_sample_columns(kind, raw))
 
 
 def _peptide_file_column(frame: pd.DataFrame) -> str:
@@ -187,17 +199,12 @@ def _peptide_sequence_column(frame: pd.DataFrame) -> str:
     raise ValueError("Peptide dataset is missing a stripped-sequence column.")
 
 
-def _peptide_quantity_column(frame: pd.DataFrame) -> str:
-    if "Precursor.Quantity" in frame.columns:
-        return "Precursor.Quantity"
-    for column in frame.columns:
-        normalized = str(column).strip().lower()
-        if "quantity" in normalized:
-            return str(column)
-    numeric_cols = frame.select_dtypes(include=[np.number]).columns.astype(str).tolist()
-    if numeric_cols:
-        return numeric_cols[0]
-    raise ValueError("Peptide dataset is missing a usable quantity column.")
+def _peptide_quantity_column(frame: pd.DataFrame, requested: str | None = None) -> str:
+    # Kept as a private compatibility alias for AI/report callers. The actual
+    # policy lives in one shared in-app resolver.
+    from app.services.peptide_quantity import resolve_peptide_quantity_column
+
+    return resolve_peptide_quantity_column(frame, requested=requested)
 
 
 def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
@@ -212,9 +219,14 @@ def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.Data
 def _coverage_frame(kind: AnnotationKind):
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
-    if annotation is not None and not annotation.source_data.empty:
-        return annotation.source_data.copy()
-    return raw
+    frame = (
+        annotation.source_data.copy()
+        if annotation is not None and not annotation.source_data.empty
+        else raw
+    )
+    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
+        return frame
+    return raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
 
 
 def _log2_qc_frame(kind: AnnotationKind):
@@ -224,7 +236,9 @@ def _log2_qc_frame(kind: AnnotationKind):
         return annotation.log2_data.copy()
     if annotation is not None and not annotation.filtered_data.empty:
         return annotation.filtered_data.copy()
-    return raw
+    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
+        return raw
+    return raw_zero_to_nan(raw, _get_sample_columns(kind, raw))
 
 
 def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
@@ -1230,21 +1244,24 @@ def _imputation_density_histogram_spec(
     return bin_edges, weights
 
 
-def distribution_qqnorm_plot(kind: AnnotationKind, advanced: dict[str, Any] | None = None) -> bytes:
+def distribution_qqnorm_plot(
+    kind: AnnotationKind,
+    random_seed: int = 187,
+    advanced: dict[str, Any] | None = None,
+) -> bytes:
     plt = _get_plt()
     frame = _distribution_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
 
-    data_values = frame[sample_columns].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+    data_values = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     values_vector = data_values.values.flatten()
-    values_vector = values_vector[~np.isnan(values_vector)]
-    values_vector = values_vector[values_vector > 0]
+    values_vector = values_vector[np.isfinite(values_vector)]
     if values_vector.size == 0:
-        raise ValueError("No positive numeric values available for QQ norm plot.")
+        raise ValueError("No numeric values available for QQ norm plot.")
 
-    qq_data = qqnorm_plot_data(values_vector, max_points=100_000)
+    qq_data = qqnorm_plot_data(values_vector, max_points=100_000, seed=random_seed)
     points = qq_data["points"]
     fit_line = qq_data["fitLine"]
 
@@ -1275,13 +1292,14 @@ def qc_coverage_plot(
     summary: bool = False,
     text: bool = False,
     text_size: int = 9,
+    random_seed: int = 187,
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
-    frame = _coverage_frame(kind).replace(0, np.nan)
+    frame = _coverage_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -1319,7 +1337,7 @@ def qc_coverage_plot(
             edgecolor="black",
         )
 
-        rng = np.random.default_rng(187)
+        rng = np.random.default_rng(random_seed)
         for i, cond in enumerate(condition_summary["condition"].tolist()):
             cond_values = sample_summary.loc[sample_summary["condition"] == cond, "Value"].to_numpy(dtype=float)
             jitter = rng.uniform(-0.2, 0.2, size=len(cond_values))
@@ -1499,6 +1517,7 @@ def qc_peptide_coverage_plot(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict[str, Any] | None = None,
+    quantity_column: str | None = None,
 ) -> bytes:
     from matplotlib.patches import Rectangle
 
@@ -1511,7 +1530,7 @@ def qc_peptide_coverage_plot(
     frame = get_peptide_frame()
     file_col = _peptide_file_column(frame)
     seq_col = _peptide_sequence_column(frame)
-    quantity_col = _peptide_quantity_column(frame)
+    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
     meta = _peptide_coverage_metadata(frame, include_id=include_id)
 
     pivot = frame.pivot_table(
@@ -1789,13 +1808,13 @@ def qc_cv_plot(
     from matplotlib.patches import Patch
 
     plt = _get_plt()
-    frame = _original_scale_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
 
     meta = _metadata_for_kind(kind, frame, sample_columns)
-    numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
+    numeric = raw_zero_to_nan(frame, sample_columns)[sample_columns]
     valid_conditions: list[str] = []
     cv_data: list[np.ndarray] = []
     for condition in meta["condition"].astype(str).dropna().unique().tolist():
@@ -1887,32 +1906,48 @@ def qc_cv_plot(
 
 def _pca_feature_matrix(numeric: pd.DataFrame, *, n_components: int) -> pd.DataFrame:
     complete = numeric.dropna()
-    if complete.shape[0] >= n_components:
-        return complete
+    if complete.shape[0] < n_components:
+        raise ValueError(
+            "PCA cannot be computed because only "
+            f"{complete.shape[0]} of {numeric.shape[0]} features are complete across all samples; "
+            "the missingness is too high. Run Imputation successfully and select 'Imputed Data' "
+            "in the PCA controls, or impute the matrix before calling a PCA function."
+        )
+    return complete
 
-    sample_count = int(numeric.shape[1])
-    observed_counts = numeric.notna().sum(axis=1)
-    candidate_thresholds = sorted(
-        {
-            min(sample_count, max(2, int(np.ceil(sample_count * fraction))))
-            for fraction in (0.8, 0.5, 0.2)
-        }
-        | {2},
-        reverse=True,
+
+def qc_pca_feature_summary(
+    kind: AnnotationKind,
+    data_source: str = "data",
+    plot_dim: str = "2D",
+) -> dict[str, object]:
+    """How many features the PCA projection is actually built from.
+
+    Dimensionality reduction drops any feature with a missing value, so the
+    projection can rest on a small and abundance-biased subset without that
+    being visible anywhere. Surfaced so the UI can state it.
+    """
+    _, frame, _, _ = analysis_data_source(kind, data_source=data_source)
+    sample_columns = _get_sample_columns(kind, frame)
+    if len(sample_columns) < 2:
+        raise ValueError("At least two sample columns are required for dimensionality reduction.")
+
+    numeric = (
+        frame[sample_columns]
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
     )
-
-    for min_present in candidate_thresholds:
-        candidate = numeric.loc[observed_counts >= min_present].copy()
-        if candidate.shape[0] < n_components:
-            continue
-        row_means = candidate.mean(axis=1)
-        candidate = candidate.T.fillna(row_means).T
-        if candidate.shape[0] >= n_components and not candidate.isna().any().any():
-            return candidate
-
-    raise ValueError(
-        "No sufficiently observed feature rows are available for dimensionality reduction."
-    )
+    n_components = 3 if str(plot_dim).upper() == "3D" else 2
+    total = int(numeric.shape[0])
+    complete = int(numeric.dropna().shape[0])
+    complete_matrix = numeric.dropna()
+    variable = int((complete_matrix.var(axis=1) > 0).sum()) if not complete_matrix.empty else 0
+    return {
+        "featuresTotal": total,
+        "featuresComplete": complete,
+        "featuresUsed": variable,
+        "featuresRequired": n_components,
+    }
 
 
 def _pca_projection(
@@ -1925,6 +1960,7 @@ def _pca_projection(
     tsne_perplexity: float = 30.0,
     tsne_learning_rate: float = 200.0,
     random_state: int = 42,
+    scaling: str = "auto",
 ) -> tuple[pd.DataFrame, np.ndarray | None, str]:
     _, frame, _, _ = analysis_data_source(kind, data_source=data_source)
     sample_columns = _get_sample_columns(kind, frame)
@@ -1951,13 +1987,14 @@ def _pca_projection(
     x_centered = x - x.mean(axis=0, keepdims=True)
     x_std = x_centered.std(axis=0, keepdims=True)
     x_std[x_std == 0] = 1.0
-    x_scaled = x_centered / x_std
+    resolved_scaling = resolve_feature_scaling(scaling, method=method_key)
+    projection_input = x_centered if resolved_scaling == "centered" else x_centered / x_std
 
     explained: np.ndarray | None = None
     axis_prefix = "PC"
 
     if method_key == "pca":
-        u, s, _ = np.linalg.svd(x_centered, full_matrices=False)
+        u, s, _ = np.linalg.svd(projection_input, full_matrices=False)
         scores = u[:, :n_components] * s[:n_components]
         explained = (s ** 2) / max(float(np.sum(s ** 2)), 1e-12) * 100.0
         axis_prefix = "PC"
@@ -1974,7 +2011,7 @@ def _pca_projection(
             min_dist=max(0.0, float(umap_min_dist)),
             random_state=int(random_state),
         )
-        scores = reducer.fit_transform(x_scaled)
+        scores = reducer.fit_transform(projection_input)
         axis_prefix = "UMAP"
     elif method_key in {"t-sne", "tsne", "t_sne"}:
         try:
@@ -1994,7 +2031,7 @@ def _pca_projection(
             random_state=int(random_state),
             method="barnes_hut",
         )
-        scores = tsne.fit_transform(x_scaled)
+        scores = tsne.fit_transform(projection_input)
         axis_prefix = "t-SNE"
     else:
         raise ValueError("Unsupported dimensionality-reduction method. Use PCA, UMAP, or t-SNE.")
@@ -2072,6 +2109,7 @@ def qc_pca_plot(
     dbscan_eps: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
+    scaling: str = "auto",
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
@@ -2090,6 +2128,7 @@ def qc_pca_plot(
         tsne_perplexity=tsne_perplexity,
         tsne_learning_rate=tsne_learning_rate,
         random_state=random_state,
+        scaling=scaling,
     )
     n_components = 3 if str(plot_dim).upper() == "3D" else 2
     component_cols = [f"{axis_prefix}{i + 1}" for i in range(n_components)]
@@ -2221,6 +2260,7 @@ def qc_pca_interactive_html(
     dbscan_eps: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
+    scaling: str = "auto",
     width_cm: float = 20,
     height_cm: float = 10,
     advanced: dict[str, Any] | None = None,
@@ -2236,6 +2276,7 @@ def qc_pca_interactive_html(
         tsne_perplexity=tsne_perplexity,
         tsne_learning_rate=tsne_learning_rate,
         random_state=random_state,
+        scaling=scaling,
     )
     plot_3d = str(plot_dim).upper() == "3D"
     n_components = 3 if plot_3d else 2
@@ -2398,7 +2439,7 @@ def _abundance_key_column(frame: pd.DataFrame, workflow: str, kind: AnnotationKi
 def _abundance_mean_intensities(
     kind: AnnotationKind,
 ) -> tuple[pd.DataFrame, list[str], str, str]:
-    frame = _original_scale_frame(kind).replace(0, np.nan)
+    frame = _original_scale_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError("No sample columns available for abundance plot.")
@@ -2411,6 +2452,7 @@ def _abundance_mean_intensities(
     if not sample_columns:
         raise ValueError("No sample columns available for abundance plot.")
 
+    frame = raw_zero_to_nan(frame, sample_columns)
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
     unique_conditions = meta["condition"].astype(str).dropna().unique().tolist()
     if not unique_conditions:
@@ -2508,7 +2550,7 @@ def qc_abundance_plot(
         )
 
     ax.set_xlabel(f"{workflow} Rank")
-    ax.set_ylabel(f"log10 {workflow} Intensity")
+    ax.set_ylabel(abundance_axis_label(workflow, _phosprot_values_are_centred(kind)))
     if header:
         ax.set_title(f"Abundance plot - {workflow}")
     else:
@@ -2572,7 +2614,7 @@ def qc_abundance_interactive_html(
         showlegend=legend,
         title=f"Abundance plot - {workflow}" if header else None,
         xaxis_title=f"{workflow} Rank",
-        yaxis_title=f"log10 {workflow} Intensity",
+        yaxis_title=abundance_axis_label(workflow, _phosprot_values_are_centred(kind)),
     )
     fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
     return _plotly_html(fig)
@@ -2599,7 +2641,7 @@ def qc_correlation_plot(
         has_scipy = False
 
     plt = _get_plt()
-    frame = _original_scale_frame(kind)
+    frame = _log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
         raise ValueError("At least two sample columns are required for correlation plot.")

@@ -22,6 +22,7 @@ type Props = {
   onApplyUiState: (state: Record<string, unknown>) => void;
   onQuickSave: () => Promise<void>;
   onQuickSaveAs: () => Promise<void>;
+  onPortableSave: () => Promise<void>;
   onOpenStateFile: (() => Promise<File | null>) | null;
   currentSaveFileName: string | null;
 };
@@ -46,6 +47,7 @@ export default function RestorePage({
   onApplyUiState,
   onQuickSave,
   onQuickSaveAs,
+  onPortableSave,
   onOpenStateFile,
   currentSaveFileName,
 }: Props) {
@@ -85,6 +87,20 @@ export default function RestorePage({
       setInfo("Save state written to the selected file.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to export save state.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePortableSave() {
+    try {
+      setBusy(true);
+      setError(null);
+      setInfo(null);
+      await onPortableSave();
+      setInfo("Portable save state written without local dataset paths.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export portable save state.");
     } finally {
       setBusy(false);
     }
@@ -136,6 +152,7 @@ export default function RestorePage({
       const response: RestoreImportResponse = await importRestoreState(stateFile, replacements);
       if (!response.ok) {
         setMissingFiles(response.missingFiles ?? []);
+        setWarnings(response.warnings ?? []);
         setInfo("Some saved dataset paths are missing. Upload the listed files to finish restore.");
         return;
       }
@@ -181,6 +198,18 @@ export default function RestorePage({
           >
             {busy ? "Working..." : "Save State As..."}
           </button>
+          <button
+            type="button"
+            onClick={handlePortableSave}
+            disabled={busy}
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? "Working..." : "Save Portable State..."}
+          </button>
+        </div>
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Regular save states include local dataset paths for same-machine restore. Use a portable save
+          before sharing: paths are omitted, so the recipient must upload the referenced datasets when restoring.
         </div>
       </section>
 
@@ -189,6 +218,10 @@ export default function RestorePage({
         <p className="mt-1 text-sm text-slate-600">
           Upload a save state file to restore datasets, annotations, and UI state.
         </p>
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Save states are compatibility snapshots. Older files remain usable; settings they contain are restored,
+          while newer options missing from the file use today&apos;s defaults.
+        </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
           <input
             type="file"

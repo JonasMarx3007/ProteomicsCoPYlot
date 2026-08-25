@@ -13,7 +13,14 @@ umap-learn
 seaborn
 matplotlib-venn
 plotly
-pyinstaller
+statsmodels
 Pillow
+# statsmodels is required, not optional: functions.py imports it for the
+# Benjamini-Hochberg correction and falls back to a local implementation when it
+# is absent, so leaving it out silently changes which code computes your FDR.
+#
+# pyinstaller is not listed here. It is a build tool, and the Windows and macOS
+# packaging scripts install it themselves.
+#
 # External runtime prerequisite for AI mode:
 # - Install Ollama separately (https://ollama.com), not via pip.

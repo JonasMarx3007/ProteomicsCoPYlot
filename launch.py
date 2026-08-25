@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import re
 import sys
@@ -9,6 +10,54 @@ import webbrowser
 from pathlib import Path
 
 _PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in _TRUTHY_VALUES
+
+
+def _host_is_loopback(host: str) -> bool:
+    """Return whether a bind host is unambiguously local to this machine."""
+    value = str(host or "").strip().lower().rstrip(".")
+    if value == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        # Hostnames other than localhost may resolve to a network interface and
+        # are therefore treated as non-loopback unless the operator opts in.
+        return False
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return bool(address.is_loopback)
+
+
+def _validate_network_binding(host: str, *, allow_unsafe_public: bool) -> None:
+    """Fail closed before exposing the application on a network interface."""
+    if _host_is_loopback(host):
+        return
+
+    authentication_enabled = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED") or _truthy_env(
+        "COPYLOT_VIEWER_PORTAL_ENABLED"
+    )
+    session_isolation = _truthy_env("COPYLOT_SESSION_ISOLATION")
+    if authentication_enabled and session_isolation:
+        return
+    if allow_unsafe_public:
+        print(
+            "WARNING: starting Proteomics CoPYlot on a non-loopback interface without "
+            "authenticated session isolation. Server-local path APIs remain blocked for "
+            "remote clients, but the remaining API is publicly reachable.",
+            file=sys.stderr,
+        )
+        return
+    raise ValueError(
+        f"Refusing to bind Proteomics CoPYlot to non-loopback host '{host}' without "
+        "authentication and session isolation. Enable COPYLOT_TOOL_ACCESS_ENABLED=1 "
+        "or COPYLOT_VIEWER_PORTAL_ENABLED=1 together with COPYLOT_SESSION_ISOLATION=1, "
+        "or pass --allow-unsafe-public to acknowledge the risk explicitly."
+    )
 
 
 def _project_root() -> Path:
@@ -223,6 +272,11 @@ def main() -> None:
     parser.add_argument("--project", default="")
     parser.add_argument("--list-projects", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--allow-unsafe-public",
+        action="store_true",
+        help="Allow an unauthenticated non-loopback bind after printing a security warning.",
+    )
     args, unknown_args = parser.parse_known_args()
 
     explicit_project = ""
@@ -263,6 +317,13 @@ def main() -> None:
     _ensure_backend_on_path(project_root, bundle_root)
     _set_frontend_dist_env(project_root, bundle_root)
     _set_viewer_env(project_root, bundle_root, args)
+    try:
+        _validate_network_binding(
+            args.host,
+            allow_unsafe_public=args.allow_unsafe_public,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if not args.no_browser:
         _open_browser_later(f"http://{args.host}:{args.port}")
@@ -272,7 +333,14 @@ def main() -> None:
 
     # Use direct app object import so bundled onefile executables do not rely on
     # uvicorn's dynamic string import resolution at runtime.
-    uvicorn.run(fastapi_app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(
+        fastapi_app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        server_header=False,
+        forwarded_allow_ips=str(os.getenv("COPYLOT_TRUSTED_PROXY_IPS", "127.0.0.1")),
+    )
 
 
 if __name__ == "__main__":

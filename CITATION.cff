@@ -1,0 +1,127 @@
+cff-version: "1.2.0"
+message: "If you use Proteomics CoPYlot, please cite this software and the methods it builds on."
+title: "Proteomics CoPYlot"
+type: "software"
+version: "1.0.1"
+date-released: "2026-07-28"
+license: "GPL-3.0-only"
+repository-code: "https://github.com/JonasMarx3007/ProteomicsCoPYlot"
+authors:
+  - family-names: "Marx"
+    given-names: "Jonas"
+references:
+  - type: "article"
+    title: "Linear models and empirical Bayes methods for assessing differential expression in microarray experiments"
+    journal: "Statistical Applications in Genetics and Molecular Biology"
+    year: 2004
+    volume: 3
+    doi: "10.2202/1544-6115.1027"
+    notes: "Empirical Bayes variance shrinkage used by the moderated t-test."
+    authors:
+      - family-names: "Smyth"
+        given-names: "Gordon K."
+
+  - type: "article"
+    title: "limma powers differential expression analyses for RNA-sequencing and microarray studies"
+    journal: "Nucleic Acids Research"
+    year: 2015
+    volume: 43
+    issue: 7
+    doi: "10.1093/nar/gkv007"
+    notes: "Source of the squeezeVar, fitFDist and normalizeQuantiles implementations."
+    authors:
+      - family-names: "Ritchie"
+        given-names: "Matthew E."
+      - family-names: "Phipson"
+        given-names: "Belinda"
+      - family-names: "Wu"
+        given-names: "Di"
+      - family-names: "Hu"
+        given-names: "Yifang"
+      - family-names: "Law"
+        given-names: "Charity W."
+      - family-names: "Shi"
+        given-names: "Wei"
+      - family-names: "Smyth"
+        given-names: "Gordon K."
+
+  - type: "article"
+    title: "The Perseus computational platform for comprehensive analysis of (prote)omics data"
+    journal: "Nature Methods"
+    year: 2016
+    volume: 13
+    issue: 9
+    doi: "10.1038/nmeth.3901"
+    notes: "Downshifted-normal imputation model and its defaults."
+    authors:
+      - family-names: "Tyanova"
+        given-names: "Stefka"
+      - family-names: "Temu"
+        given-names: "Tikira"
+      - family-names: "Sinitcyn"
+        given-names: "Pavel"
+      - family-names: "Carlson"
+        given-names: "Arthur"
+      - family-names: "Hein"
+        given-names: "Marco Y."
+      - family-names: "Geiger"
+        given-names: "Tamar"
+      - family-names: "Mann"
+        given-names: "Matthias"
+      - family-names: "Cox"
+        given-names: "Jürgen"
+
+  - type: "article"
+    title: "Variance stabilization applied to microarray data calibration and to the quantification of differential expression"
+    journal: "Bioinformatics"
+    year: 2002
+    volume: 18
+    doi: "10.1093/bioinformatics/18.suppl_1.S96"
+    notes: "VSN normalization, delegated to the Bioconductor vsn package."
+    authors:
+      - family-names: "Huber"
+        given-names: "Wolfgang"
+      - family-names: "von Heydebreck"
+        given-names: "Anja"
+      - family-names: "Sültmann"
+        given-names: "Holger"
+      - family-names: "Poustka"
+        given-names: "Annemarie"
+      - family-names: "Vingron"
+        given-names: "Martin"
+
+  - type: "article"
+    title: "Controlling the false discovery rate: a practical and powerful approach to multiple testing"
+    journal: "Journal of the Royal Statistical Society: Series B"
+    year: 1995
+    volume: 57
+    issue: 1
+    doi: "10.1111/j.2517-6161.1995.tb02031.x"
+    notes: "Multiple-testing correction applied to every adjusted p-value."
+    authors:
+      - family-names: "Benjamini"
+        given-names: "Yoav"
+      - family-names: "Hochberg"
+        given-names: "Yosef"
+
+  - type: "article"
+    title: "An atlas of substrate specificities for the human serine/threonine kinome"
+    journal: "Nature"
+    year: 2023
+    volume: 613
+    issue: 7945
+    doi: "10.1038/s41586-022-05575-3"
+    notes: "Kinase-substrate specificity atlas underlying the serine/threonine KSEA input."
+    authors:
+      - family-names: "Johnson"
+        given-names: "Jared L."
+
+  - type: "article"
+    title: "The intrinsic substrate specificity of the human tyrosine kinome"
+    journal: "Nature"
+    year: 2024
+    doi: "10.1038/s41586-024-07407-y"
+    notes: "Kinase-substrate specificity atlas underlying the tyrosine KSEA input."
+    authors:
+      - family-names: "Yaron-Barir"
+        given-names: "Tomer M."

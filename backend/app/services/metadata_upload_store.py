@@ -215,9 +215,16 @@ def _normalize_metadata_frame(frame: pd.DataFrame) -> pd.DataFrame | None:
     if not non_sample_columns:
         return None
     condition_col = column_map.get("condition", non_sample_columns[0])
+    pair_col = column_map.get("pair_id")
 
-    out = normalized[[sample_col, condition_col]].copy()
-    out.columns = ["sample", "condition"]
+    selected_columns = [sample_col, condition_col]
+    if pair_col and pair_col not in selected_columns:
+        selected_columns.append(pair_col)
+    out = normalized[selected_columns].copy()
+    rename_map = {sample_col: "sample", condition_col: "condition"}
+    if pair_col and pair_col != condition_col:
+        rename_map[pair_col] = "pair_id"
+    out = out.rename(columns=rename_map)
     out["sample"] = (
         out["sample"]
         .where(pd.notna(out["sample"]), "")
@@ -232,7 +239,21 @@ def _normalize_metadata_frame(frame: pd.DataFrame) -> pd.DataFrame | None:
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
     )
+    if "pair_id" in out.columns:
+        out["pair_id"] = (
+            out["pair_id"].where(pd.notna(out["pair_id"]), "").astype(str).str.strip()
+        )
     out = out[(out["sample"] != "") & (out["condition"] != "")]
+    if "pair_id" in out.columns and out["sample"].duplicated(keep=False).any():
+        duplicates = (
+            out.loc[out["sample"].duplicated(keep=False), "sample"]
+            .drop_duplicates()
+            .tolist()
+        )
+        raise ValueError(
+            "Metadata with pair_id must contain each sample exactly once. "
+            f"Duplicates: {', '.join(duplicates)}."
+        )
     out = out.drop_duplicates(subset=["sample"], keep="first").reset_index(drop=True)
     if out.empty:
         return None
@@ -285,6 +306,20 @@ def _combine_profiles(
         + merged["condition_right"].astype(str).str.strip()
     )
     merged = merged[(merged["condition"] != "-") & (merged["condition"] != "")]
+    pair_columns = [column for column in ("pair_id_left", "pair_id_right", "pair_id") if column in merged]
+    if len(pair_columns) == 2:
+        left_pairs = merged[pair_columns[0]].astype(str).str.strip()
+        right_pairs = merged[pair_columns[1]].astype(str).str.strip()
+        conflicts = (left_pairs != "") & (right_pairs != "") & (left_pairs != right_pairs)
+        if conflicts.any():
+            samples = merged.loc[conflicts, "sample"].astype(str).tolist()
+            raise ValueError(
+                "Combined metadata profiles contain conflicting pair_id values for: "
+                f"{', '.join(samples)}."
+            )
+        merged["pair_id"] = left_pairs.where(left_pairs != "", right_pairs)
+    elif len(pair_columns) == 1 and pair_columns[0] != "pair_id":
+        merged["pair_id"] = merged[pair_columns[0]].astype(str).str.strip()
     merged["_right_condition_order"] = (
         merged["condition_right"].astype(str).map(right_condition_order)
     )
@@ -292,7 +327,10 @@ def _combine_profiles(
         ["_left_condition_order", "_right_condition_order", "_left_order"],
         kind="stable",
     )
-    out = merged[["sample", "condition"]].drop_duplicates(subset=["sample"], keep="first")
+    output_columns = ["sample", "condition"]
+    if "pair_id" in merged.columns:
+        output_columns.append("pair_id")
+    out = merged[output_columns].drop_duplicates(subset=["sample"], keep="first")
     return out.reset_index(drop=True)
 
 
@@ -518,6 +556,80 @@ def get_uploaded_metadata(
     return state.get(kind)
 
 
+def _frame_with_pair_ids(
+    frame: pd.DataFrame,
+    pair_ids_by_sample: dict[str, str],
+) -> pd.DataFrame:
+    updated = frame.copy()
+    column_map = {str(column).strip().lower(): column for column in updated.columns}
+    sample_col = next(
+        (column_map[alias] for alias in SAMPLE_COLUMN_ALIASES if alias in column_map),
+        updated.columns[0] if len(updated.columns) >= 2 else None,
+    )
+    if sample_col is None:
+        return updated
+
+    pair_col = column_map.get("pair_id", "pair_id")
+    if pair_col not in updated.columns:
+        updated[pair_col] = ""
+    normalized_samples = (
+        updated[sample_col]
+        .where(pd.notna(updated[sample_col]), "")
+        .astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    mapped_pair_ids = normalized_samples.map(pair_ids_by_sample)
+    matched = mapped_pair_ids.notna()
+    updated.loc[matched, pair_col] = mapped_pair_ids.loc[matched].astype(str)
+    return updated
+
+
+def update_uploaded_metadata_pair_ids(
+    kind: MetadataAnnotationKind,
+    pair_ids_by_sample: dict[str, str],
+    *,
+    package_name: str | None = None,
+    profile_name: str | None = None,
+) -> bool:
+    resolved_package = _ensure_package(package_name)
+    resolved_profile = _normalize_profile_name(profile_name, resolved_package)
+    state = _profile_state(
+        profile_name=resolved_profile,
+        package_name=resolved_package,
+    )
+    active_stored = state.get(kind)
+    if active_stored is None:
+        return False
+
+    target_profiles = (
+        active_stored.source_profiles
+        if active_stored.auto_generated and active_stored.source_profiles
+        else (resolved_profile,)
+    )
+    changed = False
+    for target_profile in target_profiles:
+        target_state = _profile_state(
+            profile_name=target_profile,
+            package_name=resolved_package,
+        )
+        target_stored = target_state.get(kind)
+        if target_stored is None:
+            continue
+        updated_frame = _frame_with_pair_ids(target_stored.frame, pair_ids_by_sample)
+        if updated_frame.equals(target_stored.frame):
+            continue
+        target_stored.frame = updated_frame
+        changed = True
+        invalidate_runtime_cache(
+            f"metadata:{resolved_package}:{target_profile}:{kind}:pairing-updated"
+        )
+
+    if changed:
+        _regenerate_combined_profiles(resolved_package, kind)
+    return changed
+
+
 def clear_uploaded_metadata(
     kind: MetadataAnnotationKind,
     *,
@@ -570,6 +682,20 @@ def reset_all_uploaded_metadata(*, all_sessions: bool = False) -> None:
     if all_sessions:
         _METADATA_SESSIONS.clear()
     else:
-        _METADATA_SESSIONS[get_session_id()] = _new_session_state()
+        _METADATA_SESSIONS.pop(get_session_id(), None)
     invalidate_runtime_cache("metadata:reset-all")
+
+
+def snapshot_metadata_session_state() -> _MetadataSessionState | None:
+    """Detach-safe reference used before the session entry is atomically replaced."""
+    return _METADATA_SESSIONS.get(get_session_id())
+
+
+def restore_metadata_session_state(snapshot: _MetadataSessionState | None) -> None:
+    session_id = get_session_id()
+    if snapshot is None:
+        _METADATA_SESSIONS.pop(session_id, None)
+    else:
+        _METADATA_SESSIONS[session_id] = snapshot
+    invalidate_runtime_cache("metadata:transaction-restored")
 

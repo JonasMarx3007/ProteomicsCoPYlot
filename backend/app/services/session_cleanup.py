@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import os
+import time
+from threading import RLock
+
+from app.services.annotation_store import reset_all_annotations
+from app.services.condition_palette_store import reset_condition_palettes
+from app.services.cloud_ai_consent import clear_cloud_ai_consent
+from app.services.dataset_store import reset_all_datasets
+from app.services.metadata_upload_store import reset_all_uploaded_metadata
+from app.services.peptide_metadata_store import clear_peptide_metadata
+from app.services.session_context import reset_session_id, set_session_id
+from app.services.tool_access import clear_tool_session_auth
+from app.services.viewer_portal import clear_viewer_session_auth
+
+_LOCK = RLock()
+_LAST_SEEN: dict[str, float] = {}
+_DEFAULT_IDLE_SECONDS = 24 * 60 * 60
+_DEFAULT_MAX_SESSIONS = 128
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def _discard_session(session_id: str) -> None:
+    token = set_session_id(session_id)
+    try:
+        clear_tool_session_auth()
+        clear_cloud_ai_consent()
+        clear_viewer_session_auth(reset_data=False)
+        reset_all_annotations()
+        reset_all_uploaded_metadata()
+        reset_all_datasets()
+        reset_condition_palettes()
+        clear_peptide_metadata()
+    finally:
+        reset_session_id(token)
+
+
+def expire_idle_session(session_id: str) -> bool:
+    now = time.monotonic()
+    idle_seconds = _positive_env_int("COPYLOT_SESSION_IDLE_SECONDS", _DEFAULT_IDLE_SECONDS)
+    with _LOCK:
+        last_seen = _LAST_SEEN.get(session_id)
+        if last_seen is None or now - last_seen <= idle_seconds:
+            return False
+        _LAST_SEEN.pop(session_id, None)
+    _discard_session(session_id)
+    return True
+
+
+def touch_and_cleanup_sessions(session_id: str) -> list[str]:
+    now = time.monotonic()
+    idle_seconds = _positive_env_int("COPYLOT_SESSION_IDLE_SECONDS", _DEFAULT_IDLE_SECONDS)
+    max_sessions = _positive_env_int("COPYLOT_MAX_SESSIONS", _DEFAULT_MAX_SESSIONS)
+    with _LOCK:
+        _LAST_SEEN[session_id] = now
+        expired = {
+            existing
+            for existing, last_seen in _LAST_SEEN.items()
+            if existing != session_id and now - last_seen > idle_seconds
+        }
+        remaining = sorted(
+            (
+                (last_seen, existing)
+                for existing, last_seen in _LAST_SEEN.items()
+                if existing != session_id and existing not in expired
+            ),
+            key=lambda item: item[0],
+        )
+        overflow = max(0, len(_LAST_SEEN) - len(expired) - max_sessions)
+        expired.update(existing for _, existing in remaining[:overflow])
+        for existing in expired:
+            _LAST_SEEN.pop(existing, None)
+
+    for existing in sorted(expired):
+        _discard_session(existing)
+    return sorted(expired)

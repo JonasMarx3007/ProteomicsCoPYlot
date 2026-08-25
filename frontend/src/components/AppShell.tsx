@@ -1,20 +1,25 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
 import type { SidebarSection } from "../lib/types";
 import type {
   ChatMessage,
   ChatProvider,
+  CloudAiConsentStatus,
   ModelCapabilityResponse,
   ModelContextTier,
   ModuleContextResponse,
 } from "../lib/types";
 import {
+  CloudAiConsentRequiredError,
+  getCloudAiConsentStatus,
   getAiModuleContext,
   getModelCapability,
   getOllamaGpuStatus,
   getOllamaModels,
   installOllamaModel,
   removeOllamaModel,
+  grantCloudAiConsent,
+  revokeCloudAiConsent,
   streamChatMessage,
 } from "../lib/api";
 import { subscribeDatasetStateChanged } from "../lib/datasetEvents";
@@ -36,6 +41,7 @@ type AppShellProps = {
 
 const CHAT_READY_MESSAGE = "AI chat is ready. Ask me about your data, plots, or next analysis steps.";
 const MAX_MODEL_HISTORY_MESSAGES = 8;
+const CHAT_INPUT_MAX_CHARS = 32_000;
 const DEFAULT_DEV_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
 const DEFAULT_DEV_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
 const API_PROVIDER_DEFAULT_MODELS: Record<Exclude<ChatProvider, "ollama">, string> = {
@@ -205,6 +211,10 @@ export default function AppShell({
   const [modelCapability, setModelCapability] = useState<ModelCapabilityResponse | null>(null);
   const [modelCapabilityError, setModelCapabilityError] = useState<string | null>(null);
   const [aiSettingsExpanded, setAiSettingsExpanded] = useState(false);
+  const [cloudConsentStatus, setCloudConsentStatus] = useState<CloudAiConsentStatus | null>(null);
+  const [cloudConsentDialogOpen, setCloudConsentDialogOpen] = useState(false);
+  const [cloudConsentBusy, setCloudConsentBusy] = useState(false);
+  const [cloudConsentError, setCloudConsentError] = useState<string | null>(null);
   const [gpuEligible, setGpuEligible] = useState(false);
   const [gpuEnabled, setGpuEnabled] = useState(false);
   const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
@@ -228,7 +238,7 @@ export default function AppShell({
     selectedContextTier
   );
 
-  function resetChatForModelChange() {
+  const resetChatForModelChange = useCallback(() => {
     setChatMessages([{ role: "assistant", content: CHAT_READY_MESSAGE }]);
     setChatInput("");
     setChatError(null);
@@ -236,14 +246,14 @@ export default function AppShell({
     setModelCapabilityError(null);
     contextCacheRef.current = {};
     contextPendingRef.current = {};
-  }
+  }, []);
 
-  function applyChatModelList(
+  const applyChatModelList = useCallback((
     available: string[],
     selectedModel: string | null,
     warnings: string[],
     preferredModel = ""
-  ) {
+  ) => {
     const preferred = preferredModel.trim();
     setChatModels(available);
     setChatModel((current) => {
@@ -272,7 +282,7 @@ export default function AppShell({
     } else {
       setChatModelError(null);
     }
-  }
+  }, [resetChatForModelChange]);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -300,6 +310,10 @@ export default function AppShell({
       setModelCapability(null);
       setModelCapabilityError(null);
       setAiSettingsExpanded(false);
+      setCloudConsentStatus(null);
+      setCloudConsentDialogOpen(false);
+      setCloudConsentBusy(false);
+      setCloudConsentError(null);
       return;
     }
     if (chatProvider !== "ollama") {
@@ -336,7 +350,31 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, chatProvider, chatOllamaEndpointActive]);
+  }, [aiEnabled, chatProvider, chatOllamaEndpointActive, applyChatModelList]);
+
+  useEffect(() => {
+    if (!aiEnabled || usingOllama) {
+      setCloudConsentStatus(null);
+      setCloudConsentDialogOpen(false);
+      setCloudConsentError(null);
+      return;
+    }
+    let cancelled = false;
+    void getCloudAiConsentStatus(chatProvider)
+      .then((status) => {
+        if (cancelled) return;
+        setCloudConsentStatus(status);
+        setCloudConsentError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCloudConsentStatus(null);
+        setCloudConsentError(err instanceof Error ? err.message : "Cloud consent status unavailable.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aiEnabled, chatProvider, usingOllama]);
 
   useEffect(() => {
     if (!aiEnabled || !selectedChatModel) {
@@ -441,12 +479,12 @@ export default function AppShell({
     };
   }, [aiEnabled, chatProvider, chatOllamaEndpointActive]);
 
-  async function fetchModuleContext(
+  const fetchModuleContext = useCallback(async (
     requestedModuleKey: string,
     requestedWorkflowScope: string,
     requestedContextMode: string,
     forceRefresh = false
-  ): Promise<ModuleContextResponse | null> {
+  ): Promise<ModuleContextResponse | null> => {
     if (!aiEnabled || !requestedModuleKey) return null;
     const requestKey = contextRequestKey(
       requestedModuleKey,
@@ -480,7 +518,7 @@ export default function AppShell({
       });
     contextPendingRef.current[requestKey] = nextPromise;
     return nextPromise;
-  }
+  }, [aiEnabled, selectedContextTier]);
 
   useEffect(() => {
     if (!aiEnabled || !moduleKey) {
@@ -495,7 +533,7 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier, activeContextRequestKey]);
+  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier, activeContextRequestKey, fetchModuleContext]);
 
   useEffect(() => {
     if (!aiEnabled) return undefined;
@@ -504,7 +542,7 @@ export default function AppShell({
       if (!moduleKey) return;
       void fetchModuleContext(moduleKey, workflowScope, contextMode, true);
     });
-  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier]);
+  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier, fetchModuleContext]);
 
   async function sendChatMessage() {
     const message = chatInput.trim();
@@ -521,6 +559,22 @@ export default function AppShell({
     if (!usingOllama && !chatApiKey.trim()) {
       setChatError("No API key provided. Add your API key in AI settings first.");
       return;
+    }
+    if (!usingOllama) {
+      setCloudConsentBusy(true);
+      try {
+        const status = await getCloudAiConsentStatus(chatProvider);
+        setCloudConsentStatus(status);
+        if (!status.granted) {
+          setCloudConsentDialogOpen(true);
+          return;
+        }
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : "Cloud consent status unavailable.");
+        return;
+      } finally {
+        setCloudConsentBusy(false);
+      }
     }
 
     const nextUserMessage: ChatMessage = { role: "user", content: message };
@@ -557,9 +611,7 @@ export default function AppShell({
         }
       }
 
-      const historyForModel: ChatMessage[] = contextPrompt
-        ? [{ role: "system", content: contextPrompt }, ...historyForModelBase]
-        : historyForModelBase;
+      const historyForModel: ChatMessage[] = historyForModelBase;
       const parsedTemperature = Number(chatApiTemperature);
       const parsedMaxTokens = Number(chatApiMaxTokens);
 
@@ -574,6 +626,7 @@ export default function AppShell({
           temperature: usingOllama ? undefined : Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
           maxTokens: usingOllama ? undefined : Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : undefined,
           ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
+          analysisContext: contextPrompt || undefined,
         },
         (chunk) => {
           setChatMessages((current) => {
@@ -596,17 +649,62 @@ export default function AppShell({
         setChatRemoteModel(response.model || chatRemoteModel);
       }
     } catch (err) {
+      const consentRequired = err instanceof CloudAiConsentRequiredError;
+      if (consentRequired) {
+        setCloudConsentStatus(err.status);
+        setCloudConsentDialogOpen(true);
+        setChatInput(message);
+      }
       setChatMessages((current) => {
         const next = [...current];
         const last = next[next.length - 1];
         if (last && last.role === "assistant" && !String(last.content ?? "").trim()) {
           next.pop();
         }
+        if (consentRequired) {
+          const lastUser = next[next.length - 1];
+          if (lastUser?.role === "user" && lastUser.content === message) {
+            next.pop();
+          }
+        }
         return next;
       });
-      setChatError(err instanceof Error ? err.message : "Failed to load chatbot response");
+      if (!consentRequired) {
+        setChatError(err instanceof Error ? err.message : "Failed to load chatbot response");
+      }
     } finally {
       setChatLoading(false);
+    }
+  }
+
+  async function confirmCloudConsent() {
+    const status = cloudConsentStatus;
+    if (!status || status.provider !== chatProvider || usingOllama) return;
+    setCloudConsentBusy(true);
+    setCloudConsentError(null);
+    try {
+      const granted = await grantCloudAiConsent(chatProvider, status.disclosureVersion);
+      setCloudConsentStatus(granted);
+      setCloudConsentDialogOpen(false);
+      await sendChatMessage();
+    } catch (err) {
+      setCloudConsentError(err instanceof Error ? err.message : "Failed to confirm cloud AI consent.");
+    } finally {
+      setCloudConsentBusy(false);
+    }
+  }
+
+  async function revokeCurrentCloudConsent() {
+    if (usingOllama) return;
+    setCloudConsentBusy(true);
+    setCloudConsentError(null);
+    try {
+      const status = await revokeCloudAiConsent(chatProvider);
+      setCloudConsentStatus(status);
+    } catch (err) {
+      setCloudConsentError(err instanceof Error ? err.message : "Failed to revoke cloud AI consent.");
+    } finally {
+      setCloudConsentBusy(false);
     }
   }
 
@@ -877,6 +975,22 @@ export default function AppShell({
                           <div className="text-[11px] text-slate-500">
                             API key is used only for this session request flow and is not saved as a local model.
                           </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                            <div>
+                              Cloud context consent: {cloudConsentStatus?.granted ? "granted" : "required before sending"}
+                            </div>
+                            {cloudConsentStatus?.granted ? (
+                              <button
+                                type="button"
+                                onClick={() => void revokeCurrentCloudConsent()}
+                                disabled={cloudConsentBusy || chatLoading}
+                                className="mt-1 font-semibold text-slate-800 underline disabled:text-slate-400"
+                              >
+                                Revoke consent
+                              </button>
+                            ) : null}
+                            {cloudConsentError ? <div className="mt-1 text-red-700">{cloudConsentError}</div> : null}
+                          </div>
                         </>
                       )}
                     </div>
@@ -953,6 +1067,7 @@ export default function AppShell({
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
+                maxLength={CHAT_INPUT_MAX_CHARS}
                 rows={4}
                 placeholder="Ask about this analysis..."
                 className="w-full resize-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -968,6 +1083,7 @@ export default function AppShell({
                 onClick={() => void sendChatMessage()}
                 disabled={
                   chatLoading ||
+                  cloudConsentBusy ||
                   !chatInput.trim() ||
                   !selectedChatModel ||
                   (!usingOllama && !chatApiKey.trim())
@@ -990,6 +1106,67 @@ export default function AppShell({
             </button>
           ) : null}
         </>
+      ) : null}
+
+      {cloudConsentDialogOpen && cloudConsentStatus ? (
+        <div
+          className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cloud-ai-consent-title"
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
+            <h2 id="cloud-ai-consent-title" className="text-lg font-bold text-slate-900">
+              Send analysis context to {cloudConsentStatus.providerLabel}?
+            </h2>
+            <p className="mt-2 text-sm text-slate-700">{cloudConsentStatus.notice}</p>
+            <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <div className="font-semibold text-amber-900">Sent</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-amber-900">
+                  {cloudConsentStatus.transmitted.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                <div className="font-semibold text-emerald-900">Not attached</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4 text-emerald-900">
+                  {cloudConsentStatus.excluded.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            </div>
+            {cloudConsentError ? <div className="mt-3 text-sm text-red-700">{cloudConsentError}</div> : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCloudConsentDialogOpen(false);
+                  setChatProvider("ollama");
+                  resetChatForModelChange();
+                }}
+                disabled={cloudConsentBusy}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Use Ollama
+              </button>
+              <button
+                type="button"
+                onClick={() => setCloudConsentDialogOpen(false)}
+                disabled={cloudConsentBusy}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmCloudConsent()}
+                disabled={cloudConsentBusy}
+                className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:bg-slate-400"
+              >
+                {cloudConsentBusy ? "Confirming..." : "Confirm and send"}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       <div

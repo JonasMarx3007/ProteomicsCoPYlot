@@ -2,6 +2,7 @@ import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getViewerAuthStatus, loginViewer, loginViewerQr, logoutViewer } from "../lib/api";
+import { fragmentCredential, removeCredentialQuery } from "../lib/accessTokens";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "../lib/appMode";
 import type { ViewerAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
@@ -13,10 +14,6 @@ type Props = {
 
 type GatePhase = "checking" | "ready" | "error";
 let viewerPortalResetOnLoadAttempted = false;
-const VIEWER_PORTAL_AUTH_ENABLED = (() => {
-  const raw = String(import.meta.env.VITE_VIEWER_PORTAL_AUTH ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-})();
 
 function modeLabel() {
   return IS_AI_MODE ? "Viewer AI" : "Viewer";
@@ -29,19 +26,17 @@ export default function ViewerPortalGate({ children }: Props) {
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [qrToken] = useState(readQrToken);
 
   function readQrToken(): string {
     try {
-      const hash = window.location.hash.startsWith("#")
-        ? window.location.hash.slice(1)
-        : window.location.hash;
-      const hashParams = new URLSearchParams(hash);
-      const hashToken = hashParams.get("qr")?.trim() || hashParams.get("qrToken")?.trim() || "";
-      if (hashToken) {
-        return hashToken;
+      const names = ["qr", "qrToken"] as const;
+      const next = removeCredentialQuery(window.location.href, names);
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (next !== current) {
+        window.history.replaceState(null, document.title, next);
       }
-      const params = new URLSearchParams(window.location.search);
-      return params.get("qr")?.trim() || params.get("qrToken")?.trim() || "";
+      return fragmentCredential(window.location.hash, names);
     } catch {
       return "";
     }
@@ -65,7 +60,7 @@ export default function ViewerPortalGate({ children }: Props) {
   }
 
   const refreshStatus = useCallback(async () => {
-    if (!IS_VIEWER_MODE || !VIEWER_PORTAL_AUTH_ENABLED) {
+    if (!IS_VIEWER_MODE) {
       setPhase("ready");
       setStatus({
         enabled: false,
@@ -98,8 +93,12 @@ export default function ViewerPortalGate({ children }: Props) {
   }, []);
 
   useEffect(() => {
-    const qrToken = readQrToken();
-    if (IS_VIEWER_MODE && VIEWER_PORTAL_AUTH_ENABLED && qrToken) {
+    refreshStatus().catch(() => {});
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (phase !== "ready" || !status?.enabled) return;
+    if (qrToken) {
       viewerPortalResetOnLoadAttempted = true;
       setPhase("checking");
       setStatusError(null);
@@ -114,13 +113,8 @@ export default function ViewerPortalGate({ children }: Props) {
           setStatusError(error instanceof Error ? error.message : "Viewer QR login failed.");
           setPhase("error");
         });
-      return;
     }
-
-    refreshStatus().catch(() => {
-      // refreshStatus already updates component state on errors.
-    });
-  }, [refreshStatus]);
+  }, [phase, qrToken, refreshStatus, status?.enabled]);
 
   const requiresLogin = useMemo(() => {
     if (!IS_VIEWER_MODE) return false;

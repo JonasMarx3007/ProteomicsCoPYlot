@@ -85,19 +85,20 @@ def _best_distribution_source(kind: AnnotationKind) -> tuple[DataSource, pd.Data
     return "raw", raw_frame, warnings
 
 
-def _persist_imputation_settings(
+def _persist_imputation_result(
     payload: ImputationRunRequest,
     *,
     sample_columns: list[str],
     missing_before: int,
     missing_after: int,
+    imputed_data: pd.DataFrame,
 ) -> None:
     annotation = get_annotation(payload.kind)
     if annotation is None:
         return
     imputation_info = AnnotationImputationInfo(
         mode=payload.method,
-        applied=False,
+        applied=True,
         qValue=payload.qValue,
         adjustStd=payload.adjustStd,
         downShift=payload.downShift,
@@ -121,6 +122,7 @@ def _persist_imputation_settings(
         warnings=annotation.warnings,
         log2_auto_detected=getattr(annotation, "log2_auto_detected", False),
         imputation=imputation_info,
+        imputed_data=imputed_data,
     )
 
 
@@ -154,11 +156,12 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         diagnostics.after_imputed,
         bins=30,
     )
-    _persist_imputation_settings(
+    _persist_imputation_result(
         payload,
         sample_columns=sample_columns,
         missing_before=diagnostics.missing_before,
         missing_after=diagnostics.missing_after,
+        imputed_data=diagnostics.imputed_data,
     )
 
     return ImputationResultResponse(

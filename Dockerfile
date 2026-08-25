@@ -32,6 +32,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# VSN normalization is delegated to the reference Bioconductor implementation.
+# Debian bookworm ships R 4.2, which corresponds to Bioconductor 3.16. Install
+# the heavy dependencies from Debian binaries and compile only `vsn` itself.
+# The final probe makes the image build fail instead of silently hiding VSN in
+# the UI when R or the package installation is incomplete.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        r-base-core \
+        r-base-dev \
+        r-cran-biocmanager \
+        r-bioc-affy \
+        r-bioc-biobase \
+        r-bioc-limma \
+        r-cran-ggplot2 \
+    && Rscript -e 'BiocManager::install("vsn", version = "3.16", ask = FALSE, update = FALSE, dependencies = FALSE)' \
+    && Rscript -e 'stopifnot(requireNamespace("vsn", quietly = TRUE)); cat(as.character(packageVersion("vsn")))' \
+    && apt-get purge -y --auto-remove r-base-dev \
+    && rm -rf /var/lib/apt/lists/* /tmp/downloaded_packages
+
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/backend/requirements.txt
 
@@ -42,11 +61,17 @@ COPY launch_tool.py /app/launch_tool.py
 COPY launch_viewer.py /app/launch_viewer.py
 COPY viewer_config.json /app/viewer_config.json
 COPY proteomicscopylot/example_data /app/proteomicscopylot/example_data
-RUN mkdir -p /app/data /app/viewer_data
+RUN mkdir -p /app/data /app/viewer_data /app/local
 COPY data/db /app/data/db
 COPY data/report /app/data/report
 
 COPY --from=frontend-build /build/frontend/dist /app/frontend_dist
+
+RUN groupadd --system --gid 10001 copylot \
+    && useradd --system --uid 10001 --gid copylot --home-dir /app --shell /usr/sbin/nologin copylot \
+    && chown -R copylot:copylot /app
+
+USER copylot
 
 EXPOSE 10000
 

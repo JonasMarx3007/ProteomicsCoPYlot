@@ -16,7 +16,14 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def session_isolation_enabled() -> bool:
-    return _truthy_env("COPYLOT_SESSION_ISOLATION", "0")
+    """Whether each browser session gets its own datasets, annotations and caches.
+
+    Defaults on. With it off every request resolves to the session id "global", so
+    two browsers on the same machine share one state: the second reads and can
+    overwrite the first one's uploaded data. That is only ever safe for a
+    single-user desktop run, so it has to be asked for rather than assumed.
+    """
+    return _truthy_env("COPYLOT_SESSION_ISOLATION", "1")
 
 
 def session_cookie_name() -> str:
@@ -52,9 +59,12 @@ def get_session_id() -> str:
     return _SESSION_ID_CTX.get()
 
 
+def get_browser_session_id() -> str:
+    """Return the request's browser ID even when dataset isolation is disabled."""
+    return _SESSION_ID_CTX.get()
+
+
 def set_session_id(session_id: str) -> Token[str]:
-    if not session_isolation_enabled():
-        return _SESSION_ID_CTX.set("global")
     return _SESSION_ID_CTX.set(normalize_session_id(session_id))
 
 

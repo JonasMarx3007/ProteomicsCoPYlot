@@ -1,12 +1,12 @@
 {
   "credentials": [
     {
-      "password": "replace-with-strong-password",
+      "password_pbkdf2_sha256": "600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
       "project": "GRK_project",
       "label": "GRK Project"
     },
     {
-      "password": "replace-with-another-strong-password",
+      "password_pbkdf2_sha256": "600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
       "project": "TKI_project",
       "label": "TKI Project"
     }

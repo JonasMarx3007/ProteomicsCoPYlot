@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import os
 import shutil
 import tempfile
@@ -10,7 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 import pandas as pd
 
-from app.schemas.annotation import AnnotationFilterConfig
+from app.schemas.annotation import AnnotationFilterConfig, AnnotationKind
 from app.schemas.dataset import (
     ActiveMetadataProfileRequest,
     ActiveDatasetPackageRequest,
@@ -58,6 +60,11 @@ from app.services.metadata_upload_store import (
     rename_package as rename_metadata_package,
     set_active_profile as set_active_metadata_profile,
 )
+from app.services.peptide_metadata_store import clear_peptide_metadata
+from app.services.upload_limits import ensure_upload_size
+
+LOGGER = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -228,6 +235,7 @@ def _ensure_profile_annotation_for_kind(
         filter_mode=filter_config.mode,
         filter_method=filter_config.method,
         min_percentage=filter_config.minPercentage,
+        normalization=filter_config.normalization,
     )
     save_annotation(
         kind=kind,
@@ -263,14 +271,19 @@ def _ensure_selected_profile_annotations(
 
 
 @router.post("/upload", response_model=DatasetPreviewResponse)
-async def upload_dataset(
+def upload_dataset(
     file: UploadFile = File(...),
-    kind: Literal["protein", "phospho", "phosprot"] = Form(...),
+    # AnnotationKind is exactly this set; spelling it out again lets the two drift.
+    kind: AnnotationKind = Form(...),
     package_name: str | None = Form(default=None, alias="packageName"),
     source_path: str | None = Form(default=None, alias="sourcePath"),
 ) -> DatasetPreviewResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Dataset")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
     normalized_source_path = str(source_path or "").strip() or None
     safe_name = Path(file.filename).name
@@ -289,9 +302,11 @@ async def upload_dataset(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to store uploaded file: {e}") from e
+        LOGGER.exception("Failed to store uploaded file")
+        raise HTTPException(status_code=500, detail="Failed to store uploaded file.") from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
+        LOGGER.exception("Failed to parse uploaded dataset")
+        raise HTTPException(status_code=400, detail="Failed to parse uploaded dataset.") from e
 
     _resolve_target_package(package_name)
 
@@ -305,7 +320,7 @@ async def upload_dataset(
 
 
 @router.post("/table-path", response_model=DatasetPreviewResponse)
-async def set_table_path(payload: TableDatasetPathRequest) -> DatasetPreviewResponse:
+def set_table_path(payload: TableDatasetPathRequest) -> DatasetPreviewResponse:
     path_text = payload.path.strip()
     if not path_text:
         raise HTTPException(status_code=400, detail="Path must not be empty")
@@ -317,7 +332,8 @@ async def set_table_path(payload: TableDatasetPathRequest) -> DatasetPreviewResp
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}") from e
+        LOGGER.exception("Failed to parse dataset from local path")
+        raise HTTPException(status_code=400, detail="Failed to parse dataset file.") from e
 
     _resolve_target_package(payload.packageName)
 
@@ -335,22 +351,27 @@ async def set_table_path(payload: TableDatasetPathRequest) -> DatasetPreviewResp
 
 
 @router.post("/peptide-path", response_model=PeptidePathResponse)
-async def set_peptide_path(payload: PeptidePathRequest) -> PeptidePathResponse:
+def set_peptide_path(payload: PeptidePathRequest) -> PeptidePathResponse:
     if not payload.path.strip():
         raise HTTPException(status_code=400, detail="Path must not be empty")
 
     _resolve_target_package(payload.packageName)
     stored = save_peptide_path(payload.path)
+    clear_peptide_metadata(active_package_only=True)
     return _peptide_response(stored)
 
 
 @router.post("/peptide-file", response_model=PeptidePathResponse)
-async def upload_peptide_file(
+def upload_peptide_file(
     file: UploadFile = File(...),
     package_name: str | None = Form(default=None, alias="packageName"),
 ) -> PeptidePathResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Peptide dataset")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
 
     _resolve_target_package(package_name)
 
@@ -361,12 +382,11 @@ async def upload_peptide_file(
         with target.open("wb") as handle:
             shutil.copyfileobj(file.file, handle)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to store peptide file: {e}",
-        ) from e
+        LOGGER.exception("Failed to store peptide file")
+        raise HTTPException(status_code=500, detail="Failed to store peptide file.") from e
 
     stored = save_peptide_path(str(target.resolve()))
+    clear_peptide_metadata(active_package_only=True)
     # Keep the displayed dataset filename user-friendly (original selected file name),
     # while path points to the stored absolute temp file.
     stored.filename = safe_name
@@ -374,12 +394,12 @@ async def upload_peptide_file(
 
 
 @router.get("/current", response_model=CurrentDatasetsResponse)
-async def get_current_datasets() -> CurrentDatasetsResponse:
+def get_current_datasets() -> CurrentDatasetsResponse:
     return _current_datasets_response()
 
 
 @router.get("/packages", response_model=DatasetPackagesResponse)
-async def get_dataset_packages() -> DatasetPackagesResponse:
+def get_dataset_packages() -> DatasetPackagesResponse:
     return DatasetPackagesResponse(
         activePackage=get_active_package(),
         availablePackages=list_packages(include_empty=_include_empty_packages()),
@@ -387,7 +407,7 @@ async def get_dataset_packages() -> DatasetPackagesResponse:
 
 
 @router.post("/packages/create", response_model=CurrentDatasetsResponse)
-async def create_dataset_package_route(payload: DatasetPackageCreateRequest) -> CurrentDatasetsResponse:
+def create_dataset_package_route(payload: DatasetPackageCreateRequest) -> CurrentDatasetsResponse:
     name = payload.packageName.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Package name must not be empty.")
@@ -399,7 +419,7 @@ async def create_dataset_package_route(payload: DatasetPackageCreateRequest) -> 
 
 
 @router.post("/packages/rename", response_model=CurrentDatasetsResponse)
-async def rename_dataset_package_route(payload: DatasetPackageRenameRequest) -> CurrentDatasetsResponse:
+def rename_dataset_package_route(payload: DatasetPackageRenameRequest) -> CurrentDatasetsResponse:
     old_name = payload.oldName.strip()
     new_name = payload.newName.strip()
     if not old_name or not new_name:
@@ -414,15 +434,18 @@ async def rename_dataset_package_route(payload: DatasetPackageRenameRequest) -> 
 
 
 @router.post("/active", response_model=CurrentDatasetsResponse)
-async def set_active_dataset_package(payload: ActiveDatasetPackageRequest) -> CurrentDatasetsResponse:
-    if not payload.packageName.strip():
+def set_active_dataset_package(payload: ActiveDatasetPackageRequest) -> CurrentDatasetsResponse:
+    package_name = payload.packageName.strip()
+    if not package_name:
         raise HTTPException(status_code=400, detail="Package name must not be empty.")
-    set_active_package(payload.packageName)
+    if _viewer_mode_enabled() and package_name not in list_packages(include_empty=True):
+        raise HTTPException(status_code=404, detail="Dataset package is not available.")
+    set_active_package(package_name)
     return _current_datasets_response()
 
 
 @router.post("/metadata/profiles/create", response_model=CurrentDatasetsResponse)
-async def create_metadata_profile_route(payload: MetadataProfileCreateRequest) -> CurrentDatasetsResponse:
+def create_metadata_profile_route(payload: MetadataProfileCreateRequest) -> CurrentDatasetsResponse:
     name = payload.profileName.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Metadata profile name must not be empty.")
@@ -434,7 +457,7 @@ async def create_metadata_profile_route(payload: MetadataProfileCreateRequest) -
 
 
 @router.post("/metadata/profiles/rename", response_model=CurrentDatasetsResponse)
-async def rename_metadata_profile_route(payload: MetadataProfileRenameRequest) -> CurrentDatasetsResponse:
+def rename_metadata_profile_route(payload: MetadataProfileRenameRequest) -> CurrentDatasetsResponse:
     old_name = payload.oldName.strip()
     new_name = payload.newName.strip()
     if not old_name or not new_name:
@@ -448,10 +471,12 @@ async def rename_metadata_profile_route(payload: MetadataProfileRenameRequest) -
 
 
 @router.post("/metadata/profiles/active", response_model=CurrentDatasetsResponse)
-async def set_active_metadata_profile_route(payload: ActiveMetadataProfileRequest) -> CurrentDatasetsResponse:
+def set_active_metadata_profile_route(payload: ActiveMetadataProfileRequest) -> CurrentDatasetsResponse:
     profile_name = payload.profileName.strip()
     if not profile_name:
         raise HTTPException(status_code=400, detail="Metadata profile name must not be empty.")
+    if _viewer_mode_enabled() and profile_name not in list_metadata_profiles():
+        raise HTTPException(status_code=404, detail="Metadata profile is not available.")
     previous_profile = get_active_metadata_profile()
     try:
         set_active_metadata_profile(profile_name)

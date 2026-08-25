@@ -27,8 +27,7 @@
   start_paths <- unique(c(
     if (nzchar(explicit_root)) explicit_root else character(),
     dirname(.script_path()),
-    getwd(),
-    "C:/PythonProject/ProteomicsCoPYlot"
+    getwd()
   ))
   roots <- unique(unlist(lapply(start_paths, .parent_paths), use.names = FALSE))
   candidates <- unique(c(
@@ -94,20 +93,20 @@ cat("Phospho protein example:", phospho_protein_id, "\n")
 # Protein
 
 # Completeness
-fig <- missing_value_plot(data, meta)
-fig <- missing_value_heatmap(data, meta, id = FALSE)
-print(missing_protein_table(data, meta, id = FALSE))
-print(missing_sample_table(data, meta, id = FALSE))
+fig <- missing_value_plot(data, meta, data_scale = "log2")
+fig <- missing_value_heatmap(data, meta, id = FALSE, data_scale = "log2")
+print(missing_protein_table(data, meta, id = FALSE, data_scale = "log2"))
+print(missing_sample_table(data, meta, id = FALSE, data_scale = "log2"))
 
 # QC Pipeline
-fig <- coverage_plot(data, meta, id = FALSE)
-fig <- coverage_plot_summary(data, meta)
+fig <- coverage_plot(data, meta, id = FALSE, data_scale = "log2")
+fig <- coverage_plot_summary(data, meta, data_scale = "log2")
 fig <- histo_int(data, meta)
 fig <- boxplot_int(data, meta)
-fig <- cov_plot(org_data, meta)
+fig <- cov_plot(org_data, meta, data_scale = "linear")
 fig <- pca_plot(data, meta)
-fig <- abundance_plot(org_data, meta, workflow = "Protein")
-fig <- corr_plot(org_data, meta, id = FALSE)
+fig <- abundance_plot(org_data, meta, workflow = "Protein", data_scale = "linear")
+fig <- corr_plot(org_data, meta, id = FALSE, data_scale = "linear")
 
 # Volcano Plot
 volcano_data <- volcano_data_f(data, meta, "WT", "GRK", workflow = "Protein")
@@ -121,7 +120,7 @@ fig <- compare_prot_line(data, meta, conditions, c(protein_id), workflow = "Prot
 
 # Comparison
 fig <- correlation_xy_intensity(data, meta, "WT", "GRK")
-fig <- overlap_plot_condition(data_by_protein, meta, "WT", "GRK")
+fig <- overlap_plot_condition(data_by_protein, meta, "WT", "GRK", data_scale = "log2")
 
 # Phospho
 
@@ -132,20 +131,20 @@ fig <- sty_plot(data3)
 fig <- phossite_dist(data4, cutoff = 0.01)
 
 # Completeness
-fig <- missing_value_plot(data3, meta2)
-fig <- missing_value_heatmap(data3, meta2, id = FALSE)
-print(missing_protein_table(data3, meta2, id = FALSE))
-print(missing_sample_table(data3, meta2, id = FALSE))
+fig <- missing_value_plot(data3, meta2, data_scale = "log2")
+fig <- missing_value_heatmap(data3, meta2, id = FALSE, data_scale = "log2")
+print(missing_protein_table(data3, meta2, id = FALSE, data_scale = "log2"))
+print(missing_sample_table(data3, meta2, id = FALSE, data_scale = "log2"))
 
 # QC Pipeline
-fig <- coverage_plot(data3, meta2, id = FALSE)
-fig <- coverage_plot_summary(data3, meta2)
+fig <- coverage_plot(data3, meta2, id = FALSE, data_scale = "log2")
+fig <- coverage_plot_summary(data3, meta2, data_scale = "log2")
 fig <- histo_int(data3, meta2)
 fig <- boxplot_int(data3, meta2)
-fig <- cov_plot(org_data3, meta2)
+fig <- cov_plot(org_data3, meta2, data_scale = "linear")
 fig <- pca_plot(data3, meta2)
-fig <- abundance_plot(org_data3, meta2, workflow = "Phosphosite")
-fig <- corr_plot(org_data3, meta2, id = FALSE)
+fig <- abundance_plot(org_data3, meta2, workflow = "Phosphosite", data_scale = "linear")
+fig <- corr_plot(org_data3, meta2, id = FALSE, data_scale = "linear")
 
 # Volcano Plot
 volcano_data <- volcano_data_f(data3, meta2, "WT", "GRK", workflow = "Phosphosite")
@@ -160,25 +159,25 @@ fig <- phossite_on_prot_regulation(data3, meta2, phospho_protein_id, conditions 
 
 # Comparison
 fig <- correlation_xy_intensity(data3, meta2, "WT", "GRK")
-fig <- overlap_plot_condition(data3_by_site, meta2, "WT", "GRK")
+fig <- overlap_plot_condition(data3_by_site, meta2, "WT", "GRK", data_scale = "log2")
 
 # Phosphoprotein
 
 # Completeness
-fig <- missing_value_plot(data4, meta2)
-fig <- missing_value_heatmap(data4, meta2, id = FALSE)
-print(missing_protein_table(data4, meta2, id = FALSE))
-print(missing_sample_table(data4, meta2, id = FALSE))
+fig <- missing_value_plot(data4, meta2, data_scale = "log2")
+fig <- missing_value_heatmap(data4, meta2, id = FALSE, data_scale = "log2")
+print(missing_protein_table(data4, meta2, id = FALSE, data_scale = "log2"))
+print(missing_sample_table(data4, meta2, id = FALSE, data_scale = "log2"))
 
 # QC Pipeline
-fig <- coverage_plot(data4, meta2, id = FALSE)
-fig <- coverage_plot_summary(data4, meta2)
+fig <- coverage_plot(data4, meta2, id = FALSE, data_scale = "log2")
+fig <- coverage_plot_summary(data4, meta2, data_scale = "log2")
 fig <- histo_int(data4, meta2)
 fig <- boxplot_int(data4, meta2)
-fig <- cov_plot(org_data4, meta2)
+fig <- cov_plot(org_data4, meta2, data_scale = "linear")
 fig <- pca_plot(data4, meta2)
-fig <- abundance_plot(org_data4, meta2, workflow = "Phosphoprotein")
-fig <- corr_plot(org_data4, meta2, id = FALSE)
+fig <- abundance_plot(org_data4, meta2, workflow = "Phosphoprotein", data_scale = "linear")
+fig <- corr_plot(org_data4, meta2, id = FALSE, data_scale = "linear")
 
 # Volcano Plot
 volcano_data <- volcano_data_f(data4, meta2, "WT", "GRK", workflow = "Phosphoprotein")
@@ -192,4 +191,4 @@ fig <- compare_prot_line(data4, meta2, conditions, c(phosphoprotein_id), workflo
 
 # Comparison
 fig <- correlation_xy_intensity(data4, meta2, "WT", "GRK")
-fig <- overlap_plot_condition(data4_by_phosprot, meta2, "WT", "GRK")
+fig <- overlap_plot_condition(data4_by_phosprot, meta2, "WT", "GRK", data_scale = "log2")

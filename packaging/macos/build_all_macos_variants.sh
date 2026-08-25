@@ -119,7 +119,6 @@ build_binary() {
       --add-data "data/report:data/report" \
       --add-data "proteomicscopylot/example_data:proteomicscopylot/example_data" \
       --add-data "viewer_config.json:." \
-      --add-data "viewer_data:viewer_data" \
       "$entry_point"
   )
 }

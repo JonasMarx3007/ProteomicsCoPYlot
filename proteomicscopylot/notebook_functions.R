@@ -1,3 +1,11 @@
+.copylot_source_file <- tryCatch(sys.frame(1)$ofile, error = function(e) "")
+.copylot_source_dir <- if (is.null(.copylot_source_file) || !nzchar(.copylot_source_file)) {
+  ""
+} else {
+  dirname(normalizePath(.copylot_source_file, mustWork = FALSE))
+}
+rm(.copylot_source_file)
+
 .require_pkg <- function(package) {
   if (!requireNamespace(package, quietly = TRUE)) {
     stop(
@@ -6,6 +14,28 @@
       call. = FALSE
     )
   }
+}
+
+.with_local_seed <- function(seed, callback) {
+  seed <- suppressWarnings(as.integer(seed))
+  if (length(seed) != 1L || is.na(seed) || seed < 0L) {
+    stop("Random seed must be one non-negative integer.", call. = FALSE)
+  }
+
+  old_kind <- RNGkind()
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+
+  set.seed(seed)
+  callback()
 }
 
 .plot_result <- function() {
@@ -56,10 +86,75 @@
   )
 }
 
+.variance_and_count <- function(values) {
+  # Per-row variance and observed count for one independent group.
+  list(
+    variance = apply(values, 1, stats::var, na.rm = TRUE),
+    count = rowSums(!is.na(values))
+  )
+}
+
 .numeric_matrix <- function(data, columns) {
   m <- as.matrix(data[, columns, drop = FALSE])
   storage.mode(m) <- "numeric"
   m
+}
+
+.require_complete_clustering_matrix <- function(matrix, context = "heatmap") {
+  matrix <- as.matrix(matrix)
+  storage.mode(matrix) <- "numeric"
+  finite <- is.finite(matrix)
+  if (all(finite)) return(matrix)
+
+  rows <- nrow(matrix)
+  columns <- ncol(matrix)
+  complete_rows <- if (rows) sum(rowSums(finite) == columns) else 0L
+  missing_values <- sum(!finite)
+  stop(
+    paste0(
+      tools::toTitleCase(context),
+      " clustering cannot be computed because the selected matrix contains ",
+      missing_values,
+      " missing or non-finite value(s); only ",
+      complete_rows,
+      " of ",
+      rows,
+      " features are complete across all ",
+      columns,
+      " samples. Impute the matrix before calling this function, or disable row and ",
+      "column clustering. The data was not changed automatically."
+    ),
+    call. = FALSE
+  )
+}
+
+.raw_zero_to_na <- function(data, columns) {
+  output <- data
+  for (column in intersect(as.character(columns), names(output))) {
+    values <- suppressWarnings(as.numeric(output[[column]]))
+    values[!is.finite(values) | values == 0] <- NA_real_
+    output[[column]] <- values
+  }
+  output
+}
+
+.prepare_intensity_data <- function(data, sample_columns, data_scale = "log2") {
+  # Shared public missingness contract: transformed zero is observed (linear
+  # abundance 1), whereas linear/raw zero is a non-detection. Annotation
+  # sample_columns are copied without coercion.
+  data_scale <- tolower(trimws(as.character(data_scale)))
+  if (length(data_scale) != 1L || !data_scale %in% c("log2", "linear")) {
+    stop("data_scale must be 'log2' or 'linear'.", call. = FALSE)
+  }
+
+  output <- data
+  for (column in intersect(as.character(sample_columns), names(output))) {
+    values <- suppressWarnings(as.numeric(output[[column]]))
+    values[!is.finite(values)] <- NA_real_
+    if (data_scale == "linear") values[values == 0] <- NA_real_
+    output[[column]] <- values
+  }
+  output
 }
 
 .sample_meta <- function(meta, id = TRUE, newline = FALSE, zero_based = FALSE) {
@@ -201,7 +296,23 @@ extract_number <- function(s) {
 }
 
 number_to_str <- function(value) {
-  if (is.numeric(value)) as.character(value) else ""
+  # Render a number the same way in every pipeline. Both packages used to
+  # delegate to the language's own conversion, and those disagree: `as.character`
+  # drops a trailing `.0` and switches to scientific notation past a width
+  # threshold, Python's `str` does neither, so `1.0` and `1000000.0` came out as
+  # different text from the two products. The contract is now explicit -- whole
+  # numbers carry no decimal point, and nothing below 1e15 is rendered in
+  # scientific notation.
+  if (!is.numeric(value) || length(value) != 1L) return("")
+  number <- as.numeric(value)
+  if (is.nan(number)) return("NaN")
+  if (is.na(number)) return("")
+  if (is.infinite(number)) return(if (number > 0) "Inf" else "-Inf")
+  if (number == trunc(number) && abs(number) < 1e15) {
+    return(format(number, scientific = FALSE, trim = TRUE))
+  }
+  # formatC pads to a fixed width; trim so the text matches Python's %.10g.
+  trimws(formatC(number, format = "g", digits = 10))
 }
 
 make_columns_unique <- function(df) {
@@ -280,8 +391,8 @@ read_data <- function(file) {
   rename_cols(df)
 }
 
-strip_sample_measurement_suffix <- function(x) {
-  text <- trimws(as.character(x))
+strip_sample_measurement_suffix <- function(value) {
+  text <- trimws(as.character(value))
   sample_name <- sub("^.*[\\\\/]", "", text, perl = TRUE)
 
   suffixes <- c(
@@ -327,11 +438,76 @@ strip_sample_measurement_suffix <- function(x) {
   ))
 }
 
-extract_id_or_number <- function(x) {
-  original <- trimws(as.character(x))
+extract_sample_id <- function(value) {
+  original <- trimws(as.character(value))
   sample_name <- strip_sample_measurement_suffix(original)
   m <- gregexpr("[0-9]+", sample_name)[[1]]
   if (m[1] < 0) original else tail(regmatches(sample_name, list(m))[[1]], 1)
+}
+
+extract_id_or_number <- function(x) {
+  extract_sample_id(x)
+}
+
+.paired_sample_columns <- function(meta, condition1, condition2) {
+  if (identical(as.character(condition1), as.character(condition2))) {
+    stop("Paired tests require two different conditions.", call. = FALSE)
+  }
+  if (!"pair_id" %in% names(meta)) {
+    stop(
+      "Paired tests require a 'pair_id' metadata column with one stable subject ",
+      "identifier per sample.",
+      call. = FALSE
+    )
+  }
+  duplicate_samples <- unique(as.character(meta$sample[duplicated(as.character(meta$sample))]))
+  if (length(duplicate_samples)) {
+    stop(
+      "Paired tests require each sample to appear once in metadata. Duplicates: ",
+      paste(duplicate_samples, collapse = ", "), ".",
+      call. = FALSE
+    )
+  }
+
+  samples_by_id <- function(condition) {
+    rows <- meta[as.character(meta$condition) == as.character(condition), c("sample", "pair_id")]
+    if (!nrow(rows)) {
+      stop("Condition '", condition, "' does not have any annotated samples.", call. = FALSE)
+    }
+
+    samples <- as.character(rows$sample)
+    ids <- trimws(ifelse(is.na(rows$pair_id), "", as.character(rows$pair_id)))
+    samples <- samples[nzchar(ids)]
+    ids <- ids[nzchar(ids)]
+    duplicate_ids <- unique(ids[duplicated(ids)])
+    if (length(duplicate_ids)) {
+      details <- vapply(sort(duplicate_ids), function(id) {
+        paste0(id, ": ", paste(samples[ids == id], collapse = ", "))
+      }, character(1))
+      stop(
+        "Paired tests require unique pair IDs within condition '", condition,
+        "'. Duplicates: ", paste(details, collapse = "; "), ".",
+        call. = FALSE
+      )
+    }
+    stats::setNames(samples, ids)
+  }
+
+  left <- samples_by_id(condition1)
+  right <- samples_by_id(condition2)
+  ids <- names(left)[names(left) %in% names(right)]
+  if (length(ids) < 2) {
+    stop("Paired tests require at least two matched pair IDs.", call. = FALSE)
+  }
+  list(condition1 = unname(left[ids]), condition2 = unname(right[ids]))
+}
+
+.paired_test_enabled <- function(value) {
+  mode <- tolower(trimws(as.character(value)))
+  if (!mode %in% c("paired", "unpaired")) {
+    stop("paired must be 'Paired' or 'Unpaired'.", call. = FALSE)
+  }
+  mode == "paired"
 }
 
 log2_transform_data <- function(data, meta) {
@@ -350,12 +526,75 @@ inverse_log2_transform_data <- function(data, meta) {
   output
 }
 
+# Refuse metadata that names a sample more than once. A sample listed twice is
+# counted twice by every group-wise mean and variance, which roughly halves the
+# standard error while leaving the fold change untouched -- so nothing looks
+# wrong and only the p-values move, downward.
+.validate_meta_samples <- function(meta) {
+  if (!is.data.frame(meta) || !"sample" %in% names(meta)) {
+    return(invisible(meta))
+  }
+  samples <- trimws(as.character(meta$sample))
+  repeated <- unique(samples[duplicated(samples)])
+  if (length(repeated)) {
+    stop(sprintf(
+      paste0("Metadata lists %d sample(s) more than once: %s%s. ",
+             "Each sample must appear exactly once; a repeated sample is counted ",
+             "twice and deflates every p-value."),
+      length(repeated),
+      paste(utils::head(repeated, 10), collapse = ", "),
+      if (length(repeated) > 10) ", and more" else ""
+    ))
+  }
+  invisible(meta)
+}
+
+# Reject a threshold that is not a meaningful quantity. A filter that keeps
+# nothing is a legitimate answer to a strict request, so only impossible values
+# are refused: a percentage outside 0-100, or a negative count. Those cannot
+# describe any completeness requirement, and used to pass silently -- a negative
+# count returned the whole matrix unfiltered.
+.validate_filter_thresholds <- function(num, method, percentage) {
+  if (identical(method, "percentage")) {
+    value <- suppressWarnings(as.numeric(percentage))
+    if (length(value) != 1L || is.na(value)) {
+      stop(sprintf("Minimum completeness percentage must be a number, got '%s'.",
+                   paste(percentage, collapse = ", ")), call. = FALSE)
+    }
+    if (value < 0 || value > 100) {
+      stop(sprintf("Minimum completeness percentage must be between 0 and 100, got %g.", value),
+           call. = FALSE)
+    }
+    return(invisible(NULL))
+  }
+
+  value <- suppressWarnings(as.numeric(num))
+  if (length(value) != 1L || is.na(value) || value != as.integer(value)) {
+    stop(sprintf("Minimum valid values must be a whole number, got '%s'.",
+                 paste(num, collapse = ", ")), call. = FALSE)
+  }
+  if (value < 0) {
+    stop(sprintf("Minimum valid values must be zero or greater, got %d.", as.integer(value)),
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 filter_data <- function(data, meta, num, filterops = "per group", method = "at_least_n", percentage = 70) {
+  .validate_meta_samples(meta)
   method <- tolower(trimws(method))
   filterops <- gsub("_", " ", tolower(trimws(filterops)))
   if (!method %in% c("at_least_n", "percentage")) {
     stop("Filter method must be 'at_least_n' or 'percentage'.", call. = FALSE)
   }
+  # An unrecognised scope used to fall through to the `any` branch, silently
+  # applying the most permissive filter of the three: a misspelling retained
+  # features present in only one condition, which is what `per_group` exists to
+  # exclude.
+  if (!filterops %in% c("per group", "in at least one group", "overall")) {
+    stop("Filter scope must be 'per_group', 'in_at_least_one_group' or 'overall'.", call. = FALSE)
+  }
+  .validate_filter_thresholds(num, method, percentage)
   if (filterops == "overall") {
     valid <- rowSums(!is.na(data[, meta$sample, drop = FALSE]))
     rows_to_keep <- if (method == "percentage") valid / length(meta$sample) >= percentage / 100 else valid >= num
@@ -372,7 +611,12 @@ filter_data <- function(data, meta, num, filterops = "per group", method = "at_l
   data[rows_to_keep, , drop = FALSE]
 }
 
-transform_phosprot <- function(data, meta, mode = "sum_mean_impute") {
+transform_phosprot <- function(
+    data,
+    meta,
+    mode = "robust_site_median",
+    data_scale = "linear"
+) {
   required <- c("UPD_seq", "PTM_localization", "Protein_group", "Gene_group", "PTM_Collapse_key")
   missing <- setdiff(required, names(data))
   if (length(missing)) {
@@ -387,74 +631,146 @@ transform_phosprot <- function(data, meta, mode = "sum_mean_impute") {
   }
 
   samples <- as.character(meta$sample)
+  if (!length(samples)) {
+    stop("`meta` must contain at least one sample", call. = FALSE)
+  }
+  duplicate_samples <- unique(samples[duplicated(samples)])
+  if (length(duplicate_samples)) {
+    stop(
+      "`meta.sample` contains duplicate names: ",
+      paste(duplicate_samples, collapse = ", "),
+      call. = FALSE
+    )
+  }
   missing_samples <- setdiff(samples, names(data))
   if (length(missing_samples)) {
     stop("`meta.sample` contains names not found in data", call. = FALSE)
   }
+
+  data_scale <- tolower(trimws(as.character(data_scale)))
+  if (!data_scale %in% c("linear", "log2")) {
+    stop("data_scale must be 'linear' or 'log2'.", call. = FALSE)
+  }
+  data$Protein_group <- as.character(data$Protein_group)
 
   bad <- tapply(data$Gene_group, data$Protein_group, function(x) length(unique(na.omit(x)))) > 1
   if (any(bad)) {
     stop("Each Protein_group must map to exactly one Gene_group.", call. = FALSE)
   }
 
-  working_data <- data
-  if (mode == "sum_mean_impute") {
-    for (condition in unique(meta$condition)) {
-      columns <- samples[meta$condition == condition]
-      for (column in columns) {
-        mean_value <- mean(
-          suppressWarnings(as.numeric(working_data[[column]])),
-          na.rm = TRUE
-        )
-        working_data[[column]][is.na(working_data[[column]])] <- mean_value
-      }
-    }
+  if (data_scale == "log2") {
+    log2_data <- data
+    log2_data[samples] <- lapply(log2_data[samples], function(x) suppressWarnings(as.numeric(x)))
+    linear_data <- inverse_log2_transform_data(log2_data, meta)
+  } else {
+    linear_data <- .raw_zero_to_na(data, samples)
+    log2_data <- log2_transform_data(linear_data, meta)
   }
 
-  sum_fun <- switch(mode,
-    sum_mean_impute = function(x) sum(as.numeric(x), na.rm = TRUE),
-    sum_propagate_na = function(x) if (any(is.na(as.numeric(x)))) NA_real_ else sum(as.numeric(x)),
-    sum_ignore_na = function(x) sum(as.numeric(x), na.rm = TRUE),
-    mean = function(x) mean(as.numeric(x), na.rm = TRUE),
-    stop("mode must be 'sum_mean_impute', 'sum_propagate_na', 'sum_ignore_na', or 'mean'", call. = FALSE))
-
-  groups <- split(seq_len(nrow(working_data)), working_data$Protein_group)
+  log2_matrix <- .numeric_matrix(log2_data, samples)
+  linear_matrix <- .numeric_matrix(linear_data, samples)
+  log2_matrix[!is.finite(log2_matrix)] <- NA_real_
+  linear_matrix[!is.finite(linear_matrix)] <- NA_real_
+  eligible <- rowSums(is.finite(log2_matrix)) > 0
+  group_names <- unique(data$Protein_group)
+  groups <- split(seq_len(nrow(data)), factor(data$Protein_group, levels = group_names))
   rows <- lapply(names(groups), function(group_name) {
     indices <- groups[[group_name]]
+    eligible_indices <- indices[eligible[indices]]
+    eligible_count <- length(eligible_indices)
+    observed <- if (eligible_count) {
+      colSums(is.finite(log2_matrix[eligible_indices, , drop = FALSE]))
+    } else {
+      setNames(rep(0, length(samples)), samples)
+    }
+    coverage <- if (eligible_count) observed / eligible_count else rep(NA_real_, length(samples))
+
     row <- list(
       Phosphoprotein = group_name,
-      Gene_group = working_data$Gene_group[indices[1]],
+      Gene_group = data$Gene_group[indices[1]],
       site_num = length(indices),
+      site_num_eligible = eligible_count,
       PTM_Collapse_keys = paste(
-        sort(unique(na.omit(as.character(working_data$PTM_Collapse_key[indices])))),
+        sort(unique(na.omit(as.character(data$PTM_Collapse_key[indices])))),
         collapse = ";"
       ),
       PTM_localization = paste(
-        na.omit(as.character(working_data$PTM_localization[indices])),
+        na.omit(as.character(data$PTM_localization[indices])),
         collapse = ";"
       ),
       UPD_seq = paste(
-        sort(unique(na.omit(as.character(working_data$UPD_seq[indices])))),
+        sort(unique(na.omit(as.character(data$UPD_seq[indices])))),
         collapse = ";"
       )
     )
 
-    for (sample in samples) {
-      row[[sample]] <- sum_fun(working_data[[sample]][indices])
+    if (mode == "robust_site_median") {
+      values <- if (eligible_count) log2_matrix[eligible_indices, , drop = FALSE] else matrix(NA_real_, 0, length(samples))
+      if (eligible_count) {
+        centres <- apply(values, 1, median, na.rm = TRUE)
+        values <- sweep(values, 1, centres, "-")
+      }
+      required <- max(1L, ceiling(eligible_count * 0.5))
+      for (sample_index in seq_along(samples)) {
+        sample_values <- values[, sample_index]
+        row[[samples[sample_index]]] <- if (observed[sample_index] >= required) {
+          median(sample_values, na.rm = TRUE)
+        } else {
+          NA_real_
+        }
+      }
+    } else {
+      sum_fun <- switch(mode,
+        sum_propagate_na = function(x) if (any(is.na(x))) NA_real_ else sum(x),
+        sum_ignore_na = function(x) if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE),
+        mean = function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE),
+        stop(
+          "mode must be 'robust_site_median', 'sum_propagate_na', 'sum_ignore_na', or 'mean'",
+          call. = FALSE
+        )
+      )
+      for (sample_index in seq_along(samples)) {
+        row[[samples[sample_index]]] <- if (eligible_count) {
+          sum_fun(linear_matrix[eligible_indices, sample_index])
+        } else {
+          NA_real_
+        }
+      }
+    }
+
+    row$site_observed_min <- min(observed)
+    row$site_observed_mean <- mean(observed)
+    row$site_coverage_min <- if (all(is.na(coverage))) NA_real_ else min(coverage, na.rm = TRUE)
+    row$site_coverage_mean <- if (all(is.na(coverage))) NA_real_ else mean(coverage, na.rm = TRUE)
+    row$site_complete_samples <- if (eligible_count) sum(observed == eligible_count) else 0L
+    for (sample_index in seq_along(samples)) {
+      row[[paste0("site_observed__", samples[sample_index])]] <- observed[sample_index]
+      row[[paste0("site_coverage__", samples[sample_index])]] <- coverage[sample_index]
     }
     row
   })
 
-  as.data.frame(do.call(rbind, lapply(rows, as.data.frame)), check.names = FALSE, stringsAsFactors = FALSE)
+  output <- as.data.frame(
+    do.call(rbind, lapply(rows, as.data.frame)),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  numeric_columns <- c(
+    "site_num", "site_num_eligible", samples,
+    "site_observed_min", "site_observed_mean", "site_coverage_min",
+    "site_coverage_mean", "site_complete_samples",
+    paste0("site_observed__", samples), paste0("site_coverage__", samples)
+  )
+  output[numeric_columns] <- lapply(output[numeric_columns], function(x) as.numeric(as.character(x)))
+  output
 }
 
-qqnorm_plot <- function(data, meta) {
+qqnorm_plot <- function(data, meta, seed = 187) {
   values <- as.vector(.numeric_matrix(data, meta$sample))
-  values <- values[is.finite(values) & values > 0]
+  values <- values[is.finite(values)]
 
   if (length(values) > 100000) {
-    set.seed(187)
-    values <- sample(values, 100000)
+    values <- .with_local_seed(seed, function() sample(values, 100000))
   }
 
   qqnorm(
@@ -471,17 +787,18 @@ qqnorm_plot <- function(data, meta) {
   .plot_result()
 }
 
-impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=FALSE, seed=69, method="quantile", down_shift=1.8, width=0.3) {
+# Reference: the downshifted-normal model and its defaults follow Perseus
+# (Tyanova et al. 2016, doi:10.1038/nmeth.3901).
+impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TRUE, seed=1337, method="quantile", down_shift=1.8, width=0.3) {
+  .validate_meta_samples(meta)
   method <- tolower(trimws(method))
   if (method == "normal") method <- "quantile"
   if (!method %in% c("quantile", "numerical")) {
     stop("Imputation method must be 'quantile' or 'numerical'.", call. = FALSE)
   }
-  set.seed(seed)
   samples <- as.character(meta$sample)
   output <- data
   values <- .numeric_matrix(data, samples)
-  values[values == 0] <- NA_real_
   missing_mask <- is.na(values)
 
   complete_values <- as.vector(values[rowSums(missing_mask) == 0, , drop = FALSE])
@@ -543,35 +860,41 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=FA
     return(.plot_result())
   }
 
-  for (column_index in seq_along(samples)) {
-    number_missing <- sum(missing_mask[, column_index])
-    if (!number_missing) next
+  values <- .with_local_seed(seed, function() {
+    for (column_index in seq_along(samples)) {
+      number_missing <- sum(missing_mask[, column_index])
+      if (!number_missing) next
 
-    if (sample_wise) {
-      sample_sd <- sd(values[, column_index], na.rm = TRUE)
-      if (method == "numerical") {
-        draw_center <- mean(values[, column_index], na.rm = TRUE) - down_shift * sample_sd
-        draw_sd <- sample_sd * width
+      if (sample_wise) {
+        sample_sd <- sd(values[, column_index], na.rm = TRUE)
+        if (method == "numerical") {
+          draw_center <- mean(values[, column_index], na.rm = TRUE) - down_shift * sample_sd
+          draw_sd <- sample_sd * width
+        } else {
+          draw_center <- quantile(values[, column_index], q, na.rm = TRUE)
+          # adj_std must scale the draw here exactly as it does in the global
+          # branch below; without it the setting is inert in sample-wise mode and
+          # the spread is always the full SD.
+          draw_sd <- sample_sd * adj_std
+        }
       } else {
-        draw_center <- quantile(values[, column_index], q, na.rm = TRUE)
-        draw_sd <- sample_sd
+        if (method == "numerical") {
+          draw_center <- mean_value - down_shift * sd_value
+          draw_sd <- sd_value * width
+        } else {
+          draw_center <- quantile_value
+          draw_sd <- sd_value * adj_std
+        }
       }
-    } else {
-      if (method == "numerical") {
-        draw_center <- mean_value - down_shift * sd_value
-        draw_sd <- sd_value * width
-      } else {
-        draw_center <- quantile_value
-        draw_sd <- sd_value * adj_std
-      }
+
+      values[missing_mask[, column_index], column_index] <- rnorm(
+        number_missing,
+        mean = draw_center,
+        sd = draw_sd
+      )
     }
-
-    values[missing_mask[, column_index], column_index] <- rnorm(
-      number_missing,
-      mean = draw_center,
-      sd = draw_sd
-    )
-  }
+    values
+  })
 
   if (ret == 3) {
     non_imputed <- values[!missing_mask]
@@ -609,6 +932,9 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=FA
 }
 
 # QC FUNCTIONS
+# A `seed` parameter used to sit before `data_scale` here, accepted but never
+# read, in the positional slot the pip package uses for `data_scale`. A
+# positional call therefore set a different parameter in each package.
 coverage_plot <- function(
     data,
     meta,
@@ -620,9 +946,10 @@ coverage_plot <- function(
     height = 10,
     dpi = 300,
     text = FALSE,
-    text_size = 9
+    text_size = 9,
+    data_scale = "log2"
 ) {
-  data[data == 0] <- NA
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = id, newline = TRUE)
   renamed_data <- .rename_samples(data, meta)
 
@@ -736,9 +1063,11 @@ coverage_plot_summary <- function(
     height = 10,
     dpi = 300,
     text = FALSE,
-    text_size = 9
+    text_size = 9,
+    seed = 69,
+    data_scale = "log2"
 ) {
-  data[data == 0] <- NA
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = TRUE, newline = TRUE)
   renamed_data <- .rename_samples(data, meta)
 
@@ -800,16 +1129,17 @@ coverage_plot_summary <- function(
     length = 0.05
   )
 
-  set.seed(69)
-  for (i in seq_along(condition_values)) {
-    points(
-      jitter(rep(mids[i], length(condition_values[[i]])), amount = 0.08),
-      condition_values[[i]],
-      pch = 16,
-      col = rgb(0, 0, 0, 0.7),
-      cex = 0.75
-    )
-  }
+  .with_local_seed(seed, function() {
+    for (i in seq_along(condition_values)) {
+      points(
+        jitter(rep(mids[i], length(condition_values[[i]])), amount = 0.08),
+        condition_values[[i]],
+        pch = 16,
+        col = rgb(0, 0, 0, 0.7),
+        cex = 0.75
+      )
+    }
+  })
 
   if (!is.null(redline)) {
     plot_range <- par("usr")
@@ -1101,7 +1431,28 @@ boxplot_int_single <- function(data, meta, outliers=FALSE, id=TRUE, header=TRUE,
   .plot_result()
 }
 
-cov_plot <- function(data, meta, outliers=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width_cm=20, height_cm=10, dpi=100, text=FALSE, text_size=9) {
+cov_plot <- function(data, meta, outliers=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width_cm=20, height_cm=10, dpi=100, text=FALSE, text_size=9, data_scale=NULL) {
+  if (is.null(data_scale)) {
+    stop(
+      "cov_plot requires data_scale='linear'; coefficient of variation is not meaningful on log2-transformed intensities.",
+      call. = FALSE
+    )
+  }
+  if (length(data_scale) != 1L) {
+    stop("data_scale must be 'linear' for cov_plot.", call. = FALSE)
+  }
+  normalized_scale <- tolower(trimws(as.character(data_scale)))
+  if (!identical(normalized_scale, "linear")) {
+    if (identical(normalized_scale, "log2")) {
+      stop(
+        "cov_plot requires linear intensities; inverse-transform log2 data before plotting and pass data_scale='linear'.",
+        call. = FALSE
+      )
+    }
+    stop("data_scale must be 'linear' for cov_plot.", call. = FALSE)
+  }
+
+  data <- .prepare_intensity_data(data, meta$sample, normalized_scale)
   valid_conditions <- character()
   cv_data <- list()
 
@@ -1203,15 +1554,70 @@ minimum_enclosing_ellipse <- function(points, tol=1e-3) {
   )
 }
 
-pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=20, height_cm=10, dpi=100, plot_colors=NULL, plot_3d=FALSE, add_ellipses=FALSE) {
-  expression_matrix <- .numeric_matrix(data, meta$sample)
-  complete_rows <- rowSums(!is.finite(expression_matrix)) == 0
-  transposed_expression <- t(expression_matrix[complete_rows, , drop = FALSE])
-  nonzero_variance <- apply(transposed_expression, 2, var) > 0
-  transposed_expression <- transposed_expression[, nonzero_variance, drop = FALSE]
-
+.prepare_pca_matrix <- function(data, meta, plot_3d=FALSE) {
+  expression_matrix <- .numeric_matrix(data, as.character(meta$sample))
   n_components <- if (plot_3d) 3 else 2
-  pca <- prcomp(transposed_expression, rank. = n_components)
+  if (ncol(expression_matrix) < n_components) {
+    stop(sprintf("PCA needs at least %d samples for this projection.", n_components), call. = FALSE)
+  }
+
+  complete_rows <- rowSums(!is.finite(expression_matrix)) == 0
+  complete_matrix <- expression_matrix[complete_rows, , drop = FALSE]
+  if (nrow(complete_matrix) < n_components) {
+    stop(
+      sprintf(
+        paste0(
+          "PCA cannot be computed because only %d of %d features are complete across all samples; ",
+          "the missingness is too high. Impute the data before calling the PCA function."
+        ),
+        nrow(complete_matrix),
+        nrow(expression_matrix)
+      ),
+      call. = FALSE
+    )
+  }
+
+  transposed_expression <- t(complete_matrix)
+  feature_variance <- apply(transposed_expression, 2, var)
+  variable_features <- is.finite(feature_variance) & feature_variance > 0
+  transposed_expression <- transposed_expression[, variable_features, drop = FALSE]
+  if (ncol(transposed_expression) < n_components) {
+    stop(
+      sprintf(
+        "PCA needs at least %d complete, non-constant features; only %d remain after filtering.",
+        n_components,
+        ncol(transposed_expression)
+      ),
+      call. = FALSE
+    )
+  }
+  list(matrix = transposed_expression, n_components = n_components)
+}
+
+resolve_feature_scaling <- function(scaling = "auto", method = "PCA") {
+  # `centered` subtracts each feature's mean across samples and stops there, so a
+  # feature contributes in proportion to its variance. `unit_variance` also
+  # divides by the standard deviation, giving every feature equal weight.
+  #
+  # `auto` keeps each method's established default: PCA on the centred matrix,
+  # UMAP and t-SNE on unit-variance features because both read distances and are
+  # sensitive to feature scale. The two answer different questions, so a run that
+  # mixes them without saying which was used is not reproducible.
+  requested <- tolower(trimws(as.character(scaling %||% "auto")))
+  if (requested %in% c("centered", "centred")) return("centered")
+  if (requested %in% c("unit_variance", "scaled")) return("unit_variance")
+  if (requested != "auto") {
+    stop("Unsupported scaling. Choose 'auto', 'centered', or 'unit_variance'.", call. = FALSE)
+  }
+  if (tolower(trimws(as.character(method %||% "PCA"))) == "pca") "centered" else "unit_variance"
+}
+
+pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=20, height_cm=10, dpi=100, plot_colors=NULL, plot_3d=FALSE, add_ellipses=FALSE, scaling="auto") {
+  prepared <- .prepare_pca_matrix(data, meta, plot_3d = plot_3d)
+  transposed_expression <- prepared$matrix
+  n_components <- prepared$n_components
+  unit_variance <- resolve_feature_scaling(scaling, method = "PCA") == "unit_variance"
+  pca <- prcomp(transposed_expression, rank. = n_components, scale. = unit_variance)
   scores <- pca$x[, seq_len(n_components), drop = FALSE]
   explained_variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
 
@@ -1308,13 +1714,9 @@ pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=
 pca_plot_interactive <- function(data, meta, plot_colors=NULL, header=TRUE, legend=TRUE, dot_size=8, plot_3d=FALSE, add_ellipses=FALSE) {
   .require_pkg("plotly")
 
-  expression_matrix <- .numeric_matrix(data, meta$sample)
-  complete_rows <- rowSums(!is.finite(expression_matrix)) == 0
-  transposed_expression <- t(expression_matrix[complete_rows, , drop = FALSE])
-  nonzero_variance <- apply(transposed_expression, 2, var) > 0
-  transposed_expression <- transposed_expression[, nonzero_variance, drop = FALSE]
-
-  n_components <- if (plot_3d) 3 else 2
+  prepared <- .prepare_pca_matrix(data, meta, plot_3d = plot_3d)
+  transposed_expression <- prepared$matrix
+  n_components <- prepared$n_components
   pca <- prcomp(transposed_expression, rank. = n_components)
   explained_variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
 
@@ -1410,8 +1812,20 @@ pca_plot_interactive <- function(data, meta, plot_colors=NULL, header=TRUE, lege
   )
 }
 
-abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, width_cm=20, height_cm=10, dpi=300, legend=TRUE, header=TRUE) {
-  data[data == 0] <- NA
+abundance_axis_label <- function(workflow, centered = FALSE) {
+  # `robust_site_median` phosphoprotein aggregation centres every site on its own
+  # across-sample median, so those values carry a ratio to that median rather
+  # than an intensity. Every other phosprot mode, and both other workflows, hold
+  # real abundances.
+  if (isTRUE(centered)) {
+    paste("log10", workflow, "Ratio to Site Median")
+  } else {
+    paste("log10", workflow, "Intensity")
+  }
+}
+
+abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, width_cm=20, height_cm=10, dpi=300, legend=TRUE, header=TRUE, data_scale="log2", centered=FALSE) {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   key_col <- .workflow_col(workflow)
   conditions <- unique(meta$condition)
   colors <- .plot_colors(length(conditions), plot_colors)
@@ -1434,7 +1848,7 @@ abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, wid
     xlim = c(1, x_max),
     ylim = y_range,
     xlab = paste(workflow, "Rank"),
-    ylab = paste("log10", workflow, "Intensity"),
+    ylab = abundance_axis_label(workflow, centered),
     main = if (header) paste("Abundance plot -", workflow) else "",
     bty = "l"
   )
@@ -1471,13 +1885,15 @@ interactive_abundance_plot <- function(
     condition,
     workflow = "Protein",
     search = NULL,
-    max_ptms = 5
+    max_ptms = 5,
+    data_scale = "log2",
+    centered = FALSE
 ) {
   .require_pkg("plotly")
 
-  data[data == 0] <- NA
   feature_col <- .workflow_col(workflow)
   sample_columns <- meta$sample[meta$condition == condition]
+  data <- .prepare_intensity_data(data, sample_columns, data_scale)
   condition_means <- log10(
     rowMeans(.numeric_matrix(data, sample_columns), na.rm = TRUE) + 1
   )
@@ -1573,12 +1989,13 @@ interactive_abundance_plot <- function(
     fig,
     title = paste0("Abundance plot - ", condition, " (", workflow, ")"),
     xaxis = list(title = paste(workflow, "Rank")),
-    yaxis = list(title = paste("log10", workflow, "Intensity")),
+    yaxis = list(title = abundance_axis_label(workflow, centered)),
     hovermode = "closest"
   )
 }
 
-corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, width=10, height=8, dpi=100) {
+corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, width=10, height=8, dpi=100, data_scale="log2") {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = id)
   renamed_data <- .rename_samples(data, meta)
   correlation_matrix <- cor(
@@ -1676,39 +2093,186 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     label_col,
     paired = "Unpaired",
     uncorrected = FALSE,
-    extras = character()
+    extras = character(),
+    test_type = NULL,
+    control1_columns = NULL,
+    control2_columns = NULL
 ) {
   condition1_columns <- as.character(meta$sample[meta$condition == condition1])
   condition2_columns <- as.character(meta$sample[meta$condition == condition2])
+  if (is.null(test_type)) {
+    is_paired <- .paired_test_enabled(paired)
+    variance <- "pooled"
+  } else {
+    resolved <- resolve_test_type(test_type)
+    is_paired <- resolved$paired
+    variance <- resolved$model
+  }
+  if (is_paired) {
+    paired_columns <- .paired_sample_columns(meta, condition1, condition2)
+    condition1_columns <- paired_columns$condition1
+    condition2_columns <- paired_columns$condition2
+  }
   columns <- unique(c(label_col, condition1_columns, condition2_columns, extras))
   filtered_data <- data[, columns, drop = FALSE]
 
   x_data <- .numeric_matrix(filtered_data, condition1_columns)
   y_data <- .numeric_matrix(filtered_data, condition2_columns)
-  valid <- rowSums(!is.na(x_data)) >= 2 & rowSums(!is.na(y_data)) >= 2
+  if (is_paired) {
+    pair_mask <- is.finite(x_data) & is.finite(y_data)
+    valid <- rowSums(pair_mask) >= 2
+  } else {
+    valid <- rowSums(!is.na(x_data)) >= 2 & rowSums(!is.na(y_data)) >= 2
+  }
+  for (columns in list(control1_columns, control2_columns)) {
+    if (is.null(columns) || !length(columns)) next
+    valid <- valid & rowSums(is.finite(.numeric_matrix(data, as.character(columns)))) >= 2
+  }
+  if (!any(valid)) {
+    stop(
+      if (is_paired) {
+        "No rows have enough paired values for the selected comparison."
+      } else {
+        "No rows have enough replicate values for the selected comparison."
+      },
+      call. = FALSE
+    )
+  }
 
   filtered_data <- filtered_data[valid, , drop = FALSE]
   x_data <- x_data[valid, , drop = FALSE]
   y_data <- y_data[valid, , drop = FALSE]
-  log2fc <- rowMeans(y_data, na.rm = TRUE) - rowMeans(x_data, na.rm = TRUE)
+  if (is_paired) {
+    pair_mask <- is.finite(x_data) & is.finite(y_data)
+    differences <- y_data - x_data
+    differences[!pair_mask] <- NA_real_
+    n_pairs <- rowSums(pair_mask)
+    log2fc <- rowMeans(differences, na.rm = TRUE)
+  } else {
+    log2fc <- rowMeans(y_data, na.rm = TRUE) - rowMeans(x_data, na.rm = TRUE)
+  }
 
+  # Welch and moderated need whole-column arithmetic -- the moderated prior is
+  # fitted across every feature at once -- so they are computed vectorised rather
+  # than through the row-wise path below, which is kept byte-identical for the
+  # pooled and paired cases it already served.
+  # Control components: the control means carry their own uncertainty, which the
+  # two-group standard error below cannot see once their means have been
+  # subtracted. See volcano_data_f_control.
+  control_components <- list()
+  for (columns in list(control1_columns, control2_columns)) {
+    if (is.null(columns) || !length(columns)) next
+    values <- .numeric_matrix(data, as.character(columns))[valid, , drop = FALSE]
+    control_components[[length(control_components) + 1]] <- .variance_and_count(values)
+  }
+
+  vectorised <- variance %in% c("welch", "moderated") || length(control_components)
+  if (vectorised) {
+    counts1 <- rowSums(!is.na(x_data))
+    counts2 <- rowSums(!is.na(y_data))
+    if (!is_paired) {
+      variances1 <- apply(x_data, 1, stats::var, na.rm = TRUE)
+      variances2 <- apply(y_data, 1, stats::var, na.rm = TRUE)
+      if (variance == "moderated") {
+        groups <- c(
+          list(
+            list(variance = variances1, count = counts1),
+            list(variance = variances2, count = counts2)
+          ),
+          control_components
+        )
+        total_count <- Reduce(`+`, lapply(groups, function(part) part$count))
+        residual_dof <- total_count - length(groups)
+        pooled_variance <- Reduce(`+`, lapply(
+          groups,
+          function(part) (part$count - 1) * part$variance
+        )) / pmax(residual_dof, 1e-12)
+        squeezed <- squeeze_variance(pooled_variance, residual_dof)
+        scale <- Reduce(`+`, lapply(groups, function(part) 1 / part$count))
+        standard_error <- sqrt(squeezed$posterior * scale)
+        degrees <- residual_dof +
+          if (is.finite(squeezed$df_prior)) squeezed$df_prior else 1e6
+      } else if (variance == "welch" || length(control_components)) {
+        components <- c(
+          list(
+            list(variance = variances1, count = counts1),
+            list(variance = variances2, count = counts2)
+          ),
+          control_components
+        )
+        propagated <- .satterthwaite(components)
+        standard_error <- propagated$se
+        degrees <- propagated$dof
+      }
+      effect <- log2fc
+    } else {
+      counts <- rowSums(pair_mask)
+      variance_differences <- apply(differences, 1, stats::var, na.rm = TRUE)
+      residual_dof <- counts - 1
+      if (variance == "moderated") {
+        squeezed <- squeeze_variance(variance_differences, residual_dof)
+        paired_variance <- squeezed$posterior
+        prior_dof <- if (is.finite(squeezed$df_prior)) squeezed$df_prior else 1e6
+      } else {
+        paired_variance <- variance_differences
+        prior_dof <- 0
+      }
+      if (length(control_components)) {
+        components <- c(
+          list(list(variance = paired_variance, count = counts)),
+          control_components
+        )
+        propagated <- .satterthwaite(components)
+        standard_error <- propagated$se
+        degrees <- propagated$dof + prior_dof
+      } else {
+        standard_error <- sqrt(paired_variance / counts)
+        degrees <- residual_dof + prior_dof
+      }
+      effect <- log2fc
+    }
+    # Zero standard error keeps its meaning: a non-zero effect is infinitely
+    # significant, an exactly zero one is not significant at all.
+    statistic <- ifelse(
+      is.finite(standard_error) & standard_error != 0,
+      effect / standard_error,
+      ifelse(effect > 0, Inf, ifelse(effect < 0, -Inf, NA_real_))
+    )
+    pvalues <- 2 * stats::pt(abs(statistic), degrees, lower.tail = FALSE)
+    pvalues[!is.finite(pvalues)] <- 1
+  } else {
   pvalues <- vapply(seq_len(nrow(filtered_data)), function(index) {
     values1 <- x_data[index, ]
     values2 <- y_data[index, ]
-    values1 <- values1[is.finite(values1)]
-    values2 <- values2[is.finite(values2)]
 
-    if (paired == "Unpaired") {
-      t.test(values2, values1, var.equal = TRUE)$p.value
+    if (!is_paired) {
+      values1 <- values1[is.finite(values1)]
+      values2 <- values2[is.finite(values2)]
+      # Computed directly rather than via t.test(): t.test() aborts with
+      # "data are essentially constant" on zero- or near-zero-variance rows,
+      # which kills the whole comparison. The Python/backend implementations
+      # return a p-value for those rows, so mirror their arithmetic exactly.
+      n1 <- length(values1)
+      n2 <- length(values2)
+      pooled_var <- ((n1 - 1) * var(values1) + (n2 - 1) * var(values2)) / (n1 + n2 - 2)
+      standard_error <- sqrt(pooled_var * (1 / n1 + 1 / n2))
+      mean_difference <- mean(values2) - mean(values1)
+      if (!is.finite(standard_error) || standard_error == 0) {
+        if (mean_difference == 0) 1 else 0
+      } else {
+        2 * pt(abs(mean_difference / standard_error), n1 + n2 - 2, lower.tail = FALSE)
+      }
     } else {
-      n_pairs <- min(length(values1), length(values2))
-      t.test(
-        values2[seq_len(n_pairs)],
-        values1[seq_len(n_pairs)],
-        paired = TRUE
-      )$p.value
+      complete <- is.finite(values1) & is.finite(values2)
+      pair_differences <- values2[complete] - values1[complete]
+      if (all(pair_differences == pair_differences[1])) {
+        if (pair_differences[1] == 0) 1 else 0
+      } else {
+        t.test(pair_differences, mu = 0)$p.value
+      }
     }
   }, numeric(1))
+  }
 
   adjusted_pvalues <- if (uncorrected) pvalues else p.adjust(pvalues, "BH")
   output_columns <- c(label_col, extras[extras %in% names(filtered_data)])
@@ -1716,7 +2280,25 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   output$log2FC <- log2fc
   output$pval <- pvalues
   output$adj_pval <- adjusted_pvalues
+  # Marks rows whose significance comes from absent within-group variation rather
+  # than effect size. The p-value is unchanged and correct.
+  output$zero_variance <- constant_within_group(x_data) | constant_within_group(y_data)
+  if (is_paired) output$n_pairs <- as.integer(n_pairs)
   output
+}
+
+.resolve_volcano_label_column <- function(data, workflow, label_column = NULL) {
+  if (!is.null(label_column)) {
+    label_column <- as.character(label_column)
+    if (length(label_column) != 1L || !label_column %in% names(data)) {
+      stop(
+        paste0("label_column '", paste(label_column, collapse = ""), "' was not found in data."),
+        call. = FALSE
+      )
+    }
+    return(label_column)
+  }
+  .workflow_col(workflow)
 }
 
 volcano_data_f <- function(
@@ -1728,9 +2310,17 @@ volcano_data_f <- function(
     in_log2fc = 1,
     workflow = "Protein",
     paired = "Unpaired",
-    uncorrected = FALSE
+    uncorrected = FALSE,
+    test_type = NULL,
+    label_column = NULL,
+    # These two follow `label_column` so the first eleven positional slots
+    # match the pip package, which reaches the same analysis through
+    # `volcano_data_f_control`.
+    control1_columns = NULL,
+    control2_columns = NULL
 ) {
-  label_col <- .workflow_col(workflow)
+  .validate_meta_samples(meta)
+  label_col <- .resolve_volcano_label_column(data, workflow, label_column)
   extra_columns <- if (workflow == "Phosphoprotein") {
     intersect(c("site_num", "PTM_Collapse_keys"), names(data))
   } else {
@@ -1745,7 +2335,10 @@ volcano_data_f <- function(
     label_col,
     paired,
     uncorrected,
-    extra_columns
+    extra_columns,
+    test_type,
+    control1_columns,
+    control2_columns
   )
   output$significance <- ifelse(
     output$adj_pval < in_pval & output$log2FC > in_log2fc,
@@ -1760,7 +2353,8 @@ volcano_data_f <- function(
   output
 }
 
-volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE) {
+volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL) {
+  .validate_meta_samples(meta)
   condition1_columns <- meta$sample[meta$condition == condition1]
   condition2_columns <- meta$sample[meta$condition == condition2]
   control1_columns <- meta$sample[meta$condition == condition1_control]
@@ -1780,7 +2374,12 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
     "-"
   )
 
-  volcano_data_f(
+  # Subtracting each control mean shifts a row by a constant, which leaves the
+  # test groups' own variance untouched -- so the two-group standard error inside
+  # volcano_data_f omits the uncertainty of the control means entirely. On a
+  # complete null that produced a 12.75% false-positive rate against a nominal 5%.
+  # The control groups are propagated as additional independent components.
+  output <- volcano_data_f(
     normalized_data,
     meta,
     condition1,
@@ -1789,8 +2388,13 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
     in_log2fc,
     workflow,
     paired,
-    uncorrected
+    uncorrected,
+    test_type = test_type,
+    control1_columns = control1_columns,
+    control2_columns = control2_columns,
+    label_column = label_column
   )
+  output
 }
 
 .volcano_label_col <- function(volcano_df) {
@@ -1998,6 +2602,7 @@ anova_data_f <- function(
     workflow = "Protein",
     uncorrected = FALSE
 ) {
+  .validate_meta_samples(meta)
   label_col <- .workflow_col(workflow)
   conditions <- conditions %||% unique(na.omit(meta$condition))
   if (length(conditions) < 2) {
@@ -2018,7 +2623,10 @@ anova_data_f <- function(
   }))
 
   extra_columns <- if (workflow == "Phosphoprotein") {
-    intersect(c("site_num", "PTM_Collapse_keys"), names(data))
+    c(
+      head(intersect(c("Gene_group", "GeneNames"), names(data)), 1),
+      intersect(c("site_num", "PTM_Collapse_keys"), names(data))
+    )
   } else {
     character()
   }
@@ -2027,6 +2635,9 @@ anova_data_f <- function(
     unique(c(label_col, sample_columns, extra_columns)),
     drop = FALSE
   ]
+  if (!nrow(output)) {
+    stop("No rows have enough replicate values for ANOVA.", call. = FALSE)
+  }
 
   f_statistics <- numeric(nrow(output))
   pvalues <- numeric(nrow(output))
@@ -2056,6 +2667,14 @@ anova_data_f <- function(
     )
   }
 
+  # Rows where the F test is undefined (zero within-group variance) yield NaN.
+  # Drop them rather than carrying all-NA rows into the result, and so they do
+  # not count towards the BH denominator. Matches the Python implementations.
+  computable <- is.finite(pvalues)
+  output <- output[computable, , drop = FALSE]
+  f_statistics <- f_statistics[computable]
+  pvalues <- pvalues[computable]
+
   output$f_statistic <- f_statistics
   output$pval <- pvalues
   output$adj_pval <- if (uncorrected) pvalues else p.adjust(pvalues, "BH")
@@ -2075,7 +2694,16 @@ anova_data_f <- function(
     )
   }
 
-  output[order(output$adj_pval), , drop = FALSE]
+  # Benjamini-Hochberg ties many features to the same adjusted p, so ordering on
+  # it alone leaves the order within those groups to whichever sort the language
+  # happens to use -- the Python package returned a different one. Raw p then the
+  # label makes the order identical across all three pipelines.
+  label_col <- tryCatch(get("_auto_label_col")(output), error = function(e) NULL)
+  if (is.null(label_col)) {
+    output[order(output$adj_pval, output$pval), , drop = FALSE]
+  } else {
+    output[order(output$adj_pval, output$pval, output[[label_col]]), , drop = FALSE]
+  }
 }
 
 anova_cluster_data <- function(
@@ -2087,8 +2715,7 @@ anova_cluster_data <- function(
     only_significant = TRUE,
     cluster_method = "average",
     cluster_metric = "euclidean",
-    cluster_col = "cluster",
-    min_cluster_fraction = 0.05
+    cluster_col = "cluster"
 ) {
   if (n_clusters < 1) {
     stop("n_clusters must be at least 1.", call. = FALSE)
@@ -2104,11 +2731,21 @@ anova_cluster_data <- function(
   } else {
     anova_df
   }
-  if (!nrow(cluster_data)) cluster_data <- anova_df
+  if (!nrow(cluster_data)) {
+    cluster_data[[cluster_col]] <- integer(0)
+    first_column <- names(cluster_data)[1]
+    return(cluster_data[
+      ,
+      c(first_column, cluster_col, setdiff(names(cluster_data), c(first_column, cluster_col))),
+      drop = FALSE
+    ])
+  }
 
   matrix <- .numeric_matrix(cluster_data, sample_columns)
+  if (nrow(matrix) > 1) {
+    .require_complete_clustering_matrix(matrix, "ANOVA")
+  }
   if (z_score) matrix <- .row_zscore(matrix)
-  matrix[!is.finite(matrix)] <- 0
 
   if (nrow(matrix) <= 1) {
     cluster_data[[cluster_col]] <- 1
@@ -2129,27 +2766,6 @@ anova_cluster_data <- function(
   )
   relabeled_clusters <- unname(cluster_map[as.character(ordered_clusters)])
 
-  if (min_cluster_fraction > 0) {
-    minimum_size <- ceiling(length(relabeled_clusters) * min_cluster_fraction)
-    cluster_counts <- table(relabeled_clusters)
-    large_clusters <- as.integer(names(cluster_counts[cluster_counts >= minimum_size]))
-    if (!length(large_clusters)) {
-      large_clusters <- as.integer(names(cluster_counts)[which.max(cluster_counts)])
-    }
-
-    for (cluster in as.integer(names(cluster_counts))) {
-      if (cluster_counts[as.character(cluster)] >= minimum_size) next
-      target <- large_clusters[which.min(abs(large_clusters - cluster))]
-      relabeled_clusters[relabeled_clusters == cluster] <- target
-    }
-
-    cluster_map <- setNames(
-      seq_along(unique(relabeled_clusters)),
-      unique(relabeled_clusters)
-    )
-    relabeled_clusters <- unname(cluster_map[as.character(relabeled_clusters)])
-  }
-
   cluster_data <- cluster_data[row_order, , drop = FALSE]
   cluster_data[[cluster_col]] <- relabeled_clusters
   first_column <- names(cluster_data)[1]
@@ -2160,6 +2776,480 @@ anova_cluster_data <- function(
   ]
   rownames(cluster_data) <- NULL
   cluster_data
+}
+
+# Tukey HSD for every condition pair, following a one-way ANOVA.
+#
+# A significant omnibus F says only that some condition differs; this supplies the
+# pairwise comparisons. Gated on the ANOVA result the way Perseus does it: the BH
+# adjustment on the ANOVA controls error across features, and Tukey controls the
+# family-wise rate across the condition pairs within each feature.
+#
+# Tukey-Kramer is used throughout, so unequal group sizes arising from missing
+# values are handled correctly. Returns one row per feature and condition pair; an
+# empty data frame when fewer than three conditions are present, because with two
+# the omnibus F and the single pairwise comparison test the same hypothesis.
+.TEST_TYPES <- list(
+  unpaired = list(paired = FALSE, model = "pooled"),
+  unpaired_welch = list(paired = FALSE, model = "welch"),
+  unpaired_moderated = list(paired = FALSE, model = "moderated"),
+  paired = list(paired = TRUE, model = "pooled"),
+  paired_moderated = list(paired = TRUE, model = "moderated")
+)
+
+# Return list(paired = , model = ) for a test_type string.
+resolve_test_type <- function(value) {
+  mode <- tolower(trimws(as.character(value)))
+  if (!mode %in% names(.TEST_TYPES)) {
+    stop(
+      paste0("test_type must be one of: ", paste(sort(names(.TEST_TYPES)), collapse = ", "), "."),
+      call. = FALSE
+    )
+  }
+  .TEST_TYPES[[mode]]
+}
+
+variance_model <- function(value) {
+  resolve_test_type(value)$model
+}
+
+# Standard error and Welch-Satterthwaite degrees of freedom for a sum of
+# independent group means. Each component is list(variance = ..., count = ...).
+.satterthwaite <- function(components) {
+  ratios <- lapply(components, function(component) {
+    as.numeric(component$variance) / as.numeric(component$count)
+  })
+  se_squared <- Reduce(`+`, ratios)
+  denominator <- Reduce(
+    `+`,
+    Map(
+      function(ratio, component) {
+        ratio^2 / pmax(as.numeric(component$count) - 1, 1e-12)
+      },
+      ratios,
+      components
+    )
+  )
+  list(se = sqrt(se_squared), dof = se_squared^2 / denominator)
+}
+
+# Invert the trigamma function by Newton iteration (limma::trigammaInverse).
+# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+trigamma_inverse <- function(values) {
+  x <- as.numeric(values)
+  y <- numeric(length(x))
+  big <- x > 1e7
+  small <- x < 1e-6
+  y[big] <- 1 / sqrt(x[big])
+  y[small] <- 1 / x[small]
+  middle <- !(big | small)
+  if (any(middle)) {
+    current <- 0.5 + 1 / x[middle]
+    for (iteration in seq_len(50)) {
+      tri <- trigamma(current)
+      step <- tri * (1 - tri / x[middle]) / psigamma(current, deriv = 2)
+      current <- current + step
+      if (max(-step / current) < 1e-8) break
+    }
+    y[middle] <- current
+  }
+  y
+}
+
+# Method-of-moments scaled inverse chi-square prior (limma::fitFDist).
+# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+fit_variance_prior <- function(variances, dof) {
+  variances <- as.numeric(variances)
+  dof <- as.numeric(dof)
+  usable <- is.finite(variances) & is.finite(dof) & variances > 0 & dof > 0
+  if (sum(usable) < 2) {
+    fallback <- if (any(usable)) mean(variances[usable], na.rm = TRUE) else 1
+    return(list(var_prior = fallback, df_prior = Inf))
+  }
+  observed <- variances[usable]
+  degrees <- dof[usable]
+  transformed <- log(observed) - digamma(degrees / 2) + log(degrees / 2)
+  count <- length(transformed)
+  mean_t <- mean(transformed)
+  excess <- sum((transformed - mean_t)^2) / (count - 1) - mean(trigamma(degrees / 2))
+  if (excess > 0) {
+    df_prior <- 2 * trigamma_inverse(excess)
+    var_prior <- exp(mean_t + digamma(df_prior / 2) - log(df_prior / 2))
+  } else {
+    # No excess variability between features: the prior carries all the weight
+    # and every feature gets the same variance.
+    df_prior <- Inf
+    var_prior <- exp(mean_t)
+  }
+  list(var_prior = as.numeric(var_prior), df_prior = as.numeric(df_prior))
+}
+
+# Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
+#
+# This is what makes a moderated t-test worth having at proteomics group sizes: a
+# per-feature variance from n = 3 is a poor estimate, and borrowing strength
+# across features stabilises it. Returns list(posterior = , var_prior = ,
+# df_prior = ).
+# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
+# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
+squeeze_variance <- function(variances, dof) {
+  prior <- fit_variance_prior(variances, dof)
+  variances <- as.numeric(variances)
+  dof <- as.numeric(dof)
+  posterior <- if (!is.finite(prior$df_prior)) {
+    rep(prior$var_prior, length(variances))
+  } else {
+    (dof * variances + prior$df_prior * prior$var_prior) / (dof + prior$df_prior)
+  }
+  list(posterior = posterior, var_prior = prior$var_prior, df_prior = prior$df_prior)
+}
+
+# Shift each sample so all samples share a common median.
+#
+# Operates on log2 values, where a multiplicative loading difference is an
+# additive offset. Samples are re-centred on the grand median rather than on zero
+# so the result stays on a recognisable intensity scale; that choice is a constant
+# shift and does not affect any fold change.
+median_center <- function(values) {
+  matrix_values <- as.matrix(values)
+  storage.mode(matrix_values) <- "numeric"
+  medians <- apply(matrix_values, 2, stats::median, na.rm = TRUE)
+  grand_median <- stats::median(medians, na.rm = TRUE)
+  for (index in seq_along(medians)) {
+    matrix_values[, index] <- matrix_values[, index] - medians[[index]] + grand_median
+  }
+  as.data.frame(matrix_values, check.names = FALSE)
+}
+
+# Force every sample onto a common intensity distribution.
+#
+# Missing values are neither imputed nor allowed to shift a sample's ranks: each
+# sample's observed values are mapped onto their own quantile positions, and the
+# shared reference distribution is read off at those positions. This matches
+# limma::normalizeQuantiles, which interpolates rather than dropping incomplete
+# rows.
+quantile_normalize <- function(values) {
+  matrix_values <- as.matrix(values)
+  storage.mode(matrix_values) <- "numeric"
+  row_count <- nrow(matrix_values)
+  if (!row_count) {
+    return(as.data.frame(matrix_values, check.names = FALSE))
+  }
+
+  # Grid spans the full row count, as limma does, so columns with different
+  # numbers of observed values still land on a common reference curve.
+  grid <- seq(0, 1, length.out = row_count)
+  curves <- list()
+  for (index in seq_len(ncol(matrix_values))) {
+    observed <- sort(matrix_values[, index][!is.na(matrix_values[, index])])
+    if (!length(observed)) next
+    positions <- if (length(observed) > 1) seq(0, 1, length.out = length(observed)) else 0
+    curves[[length(curves) + 1]] <- stats::approx(
+      positions, observed, xout = grid, rule = 2
+    )$y
+  }
+  if (!length(curves)) {
+    return(as.data.frame(matrix_values, check.names = FALSE))
+  }
+  reference <- colMeans(do.call(rbind, curves))
+
+  for (index in seq_len(ncol(matrix_values))) {
+    column <- matrix_values[, index]
+    mask <- !is.na(column)
+    observed <- column[mask]
+    if (!length(observed)) next
+    ranks <- rank(observed, ties.method = "average")
+    positions <- if (length(observed) > 1) (ranks - 1) / (length(observed) - 1) else 0
+    matrix_values[mask, index] <- stats::approx(
+      grid, reference, xout = positions, rule = 2
+    )$y
+  }
+  as.data.frame(matrix_values, check.names = FALSE)
+}
+
+# Apply a global normalization to the sample columns of a log2 matrix.
+#
+# Always global. Normalising within conditions would remove exactly the
+# differences the downstream tests are looking for.
+#
+# VSN is delegated to Bioconductor vsn rather than reimplemented: a Python port
+# matched the reference on well-conditioned data but diverged by up to 2.2 log2
+# units on wide-dynamic-range input, because vsn's profile likelihood is flat and
+# multimodal. `linear_source` supplies the untransformed intensities vsn models;
+# without it they are reconstructed as 2^log2, which perturbs the input at machine
+# epsilon and can shift the fit.
+# References: quantile normalization follows limma::normalizeQuantiles (Ritchie
+# et al. 2015, doi:10.1093/nar/gkv007); VSN is delegated to Bioconductor vsn
+# (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
+# Resolve the columns to normalize from a metadata frame or a column list.
+# Every other public function takes a metadata frame as its second argument, so
+# normalize_data(data, meta, ...) is the call people write. That used to resolve
+# to no columns and return the input unchanged, which is indistinguishable from a
+# successful normalization.
+.normalization_sample_columns <- function(data, meta) {
+  if (is.data.frame(meta)) {
+    if (!"sample" %in% names(meta)) {
+      stop("Metadata must contain a 'sample' column naming the columns to normalize.")
+    }
+    requested <- as.character(meta$sample)
+  } else {
+    requested <- as.character(meta)
+  }
+
+  present <- requested[requested %in% names(data)]
+  missing <- requested[!requested %in% names(data)]
+  if (!length(present)) {
+    stop(sprintf(
+      "None of the requested sample columns are in the data, so nothing would be normalized. Requested: %s.",
+      if (length(requested)) paste(utils::head(requested, 6), collapse = ", ") else "(nothing)"
+    ))
+  }
+  if (length(missing)) {
+    stop(sprintf(
+      paste0("%d requested sample column(s) are not in the data: %s. ",
+             "Normalizing only the rest would silently change the reference distribution."),
+      length(missing), paste(utils::head(missing, 6), collapse = ", ")
+    ))
+  }
+  present
+}
+
+normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
+  resolved <- tolower(trimws(as.character(method %||% "none")))
+  if (resolved %in% c("", "none")) {
+    return(data)
+  }
+  present <- .normalization_sample_columns(data, meta)
+
+  numeric_values <- .numeric_matrix(data, present)
+  normalized <- if (resolved == "median") {
+    median_center(numeric_values)
+  } else if (resolved == "quantile") {
+    quantile_normalize(numeric_values)
+  } else if (resolved == "vsn") {
+    .require_pkg("vsn")
+    linear <- if (is.null(linear_source)) {
+      2^numeric_values
+    } else {
+      .numeric_matrix(linear_source, present)
+    }
+    fit <- vsn::vsn2(as.matrix(linear), verbose = FALSE)
+    as.data.frame(vsn::predict(fit, newdata = as.matrix(linear)), check.names = FALSE)
+  } else {
+    stop("method must be one of: none, median, quantile, vsn.", call. = FALSE)
+  }
+
+  output <- data
+  for (column in present) {
+    output[[column]] <- as.numeric(normalized[[column]])
+  }
+  output
+}
+
+# Map extracted id -> name, refusing to guess when two names share an id.
+#
+# The id is only the *last* number in a name, so a run set following the common
+# date_cellline_condition_replicate convention collapses every condition onto the
+# same handful of ids: 20240110_HeLa_ctrl_01.raw and 20240110_HeLa_treat_01.raw
+# are both "01". Resolving that by first-wins drops one whole condition, and
+# renaming data columns to the id produces duplicate column labels that later
+# select silently as the wrong sample.
+sample_id_map <- function(names) {
+  mapping <- list()
+  collisions <- list()
+  for (name in names) {
+    text <- as.character(name)
+    sample_id <- extract_sample_id(text)
+    if (!is.null(mapping[[sample_id]]) && mapping[[sample_id]] != text) {
+      existing <- collisions[[sample_id]] %||% mapping[[sample_id]]
+      collisions[[sample_id]] <- unique(c(existing, text))
+      next
+    }
+    mapping[[sample_id]] <- text
+  }
+  if (length(collisions)) {
+    detail <- vapply(
+      sort(names(collisions)),
+      function(key) {
+        paste0(
+          paste(sprintf("'%s'", sort(collisions[[key]])), collapse = " and "),
+          " both reduce to '", key, "'"
+        )
+      },
+      character(1)
+    )
+    stop(
+      paste0(
+        "Sample names cannot be matched by number because they are ambiguous: ",
+        paste(detail, collapse = "; "),
+        ". Sample matching falls back to the last number in a name, so names that ",
+        "differ only before that number are indistinguishable. Either use sample ",
+        "names in the annotation that match the run names exactly, or rename the ",
+        "runs so the trailing number is unique."
+      ),
+      call. = FALSE
+    )
+  }
+  mapping
+}
+
+# TRUE per row where every observed replicate in the group holds one value.
+#
+# Such a row has no measured within-group variation, so the standard error
+# collapses and the t-statistic explodes: a fold change of 0.05 can reach
+# p = 2e-54 and outrank every genuine effect at the top of a volcano. The p-value
+# itself is correct; what the flag marks is that the significance comes from
+# absent variation rather than effect size. Values reported at a detection floor,
+# rounded exports and imputation filling one value across replicates all produce
+# it.
+#
+# Tested with min == max rather than variance == 0, which is exact regardless of
+# floating-point representation: 14.05 repeated three times has a variance of
+# 4.7e-30, not 0, so a zero test would miss it.
+constant_within_group <- function(values) {
+  matrix_values <- as.matrix(values)
+  storage.mode(matrix_values) <- "numeric"
+  counts <- rowSums(is.finite(matrix_values))
+  low <- suppressWarnings(apply(matrix_values, 1, min, na.rm = TRUE))
+  high <- suppressWarnings(apply(matrix_values, 1, max, na.rm = TRUE))
+  counts > 0 & is.finite(low) & is.finite(high) & low == high
+}
+
+# Mean across a condition's replicates, blanked where too few were observed.
+#
+# rowMeans(na.rm = TRUE) skips missing values silently, so a condition mean
+# resting on one replicate is plotted and correlated at the same weight as a
+# fully observed one. Measured on 2000 features with 30% poor coverage, the
+# single-replicate means were off by 0.28 log2 on average and 1.21 at worst
+# against the same features' fully observed means.
+#
+# min_present is the smallest number of observations a mean may rest on. The
+# default of 1 reports every mean, which is the long-standing behaviour and keeps
+# previously generated results reproducible. Pass 2 or more to require that a mean
+# rest on enough replicates to carry spread information.
+#
+# Returns list(mean = , count = ) so the caller can report how many features were
+# excluded rather than dropping them silently.
+condition_mean <- function(data, columns, min_present = 1) {
+  values <- .numeric_matrix(data, as.character(columns))
+  counts <- rowSums(!is.na(values))
+  means <- rowMeans(values, na.rm = TRUE)
+  means[counts < as.integer(min_present)] <- NA_real_
+  list(mean = means, count = counts)
+}
+
+anova_posthoc_data <- function(
+    anova_df,
+    meta,
+    in_pval = 0.05,
+    only_significant = TRUE,
+    label_col = NULL
+) {
+  if (is.null(label_col)) label_col <- get("_auto_label_col")(anova_df)
+
+  conditions <- unique(na.omit(as.character(meta$condition)))
+  condition_columns <- list()
+  for (condition in conditions) {
+    columns <- intersect(
+      as.character(meta$sample[as.character(meta$condition) == condition]),
+      names(anova_df)
+    )
+    if (length(columns)) condition_columns[[condition]] <- columns
+  }
+  if (length(condition_columns) < 3) {
+    return(anova_df[0, c(label_col), drop = FALSE])
+  }
+
+  posthoc_data <- if (only_significant && "adj_pval" %in% names(anova_df)) {
+    anova_df[anova_df$adj_pval < in_pval, , drop = FALSE]
+  } else {
+    anova_df
+  }
+  if (!nrow(posthoc_data)) {
+    return(anova_df[0, c(label_col), drop = FALSE])
+  }
+
+  names_used <- names(condition_columns)
+  group_values <- lapply(condition_columns, function(columns) {
+    .numeric_matrix(posthoc_data, columns)
+  })
+  counts <- lapply(group_values, function(m) rowSums(!is.na(m)))
+  means <- lapply(group_values, function(m) rowMeans(m, na.rm = TRUE))
+
+  # Pooled within-group variance across every condition, as the ANOVA itself uses.
+  sum_squares <- rep(0, nrow(posthoc_data))
+  for (condition in names_used) {
+    values <- group_values[[condition]]
+    variances <- apply(values, 1, function(row) stats::var(row, na.rm = TRUE))
+    variances[!is.finite(variances)] <- 0
+    sum_squares <- sum_squares + ifelse(
+      counts[[condition]] > 1,
+      (counts[[condition]] - 1) * variances,
+      0
+    )
+  }
+  total_n <- Reduce(`+`, counts)
+  df_resid <- total_n - length(names_used)
+  mse <- ifelse(df_resid > 0, sum_squares / df_resid, NA_real_)
+
+  labels <- as.character(posthoc_data[[label_col]])
+  anova_adj <- if ("adj_pval" %in% names(posthoc_data)) {
+    as.numeric(posthoc_data$adj_pval)
+  } else {
+    rep(NA_real_, nrow(posthoc_data))
+  }
+
+  frames <- list()
+  for (first in seq_len(length(names_used) - 1)) {
+    for (second in seq(first + 1, length(names_used))) {
+      left <- names_used[[first]]
+      right <- names_used[[second]]
+      n_left <- counts[[left]]
+      n_right <- counts[[right]]
+      standard_error <- sqrt(mse / 2 * (1 / n_left + 1 / n_right))
+      difference <- means[[right]] - means[[left]]
+      q_statistic <- abs(difference) / standard_error
+      pvalues <- stats::ptukey(
+        q_statistic,
+        nmeans = length(names_used),
+        df = df_resid,
+        lower.tail = FALSE
+      )
+      pvalues[!is.finite(q_statistic) | !(df_resid > 0)] <- NA_real_
+      usable <- is.finite(pvalues) & n_left >= 2 & n_right >= 2
+      if (!any(usable)) next
+      frames[[length(frames) + 1]] <- data.frame(
+        label = labels[usable],
+        comparison = paste(right, "vs", left),
+        group1 = left,
+        group2 = right,
+        log2FC = difference[usable],
+        n_group1 = as.integer(n_left[usable]),
+        n_group2 = as.integer(n_right[usable]),
+        q_statistic = q_statistic[usable],
+        tukey_pval = pvalues[usable],
+        significance = ifelse(
+          pvalues[usable] < in_pval,
+          "Significant",
+          "Not significant"
+        ),
+        anova_adj_pval = anova_adj[usable],
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    }
+  }
+
+  if (!length(frames)) {
+    return(anova_df[0, c(label_col), drop = FALSE])
+  }
+  output <- do.call(rbind, frames)
+  names(output)[1] <- label_col
+  output <- output[order(output$tukey_pval, output[[label_col]], output$comparison), , drop = FALSE]
+  rownames(output) <- NULL
+  output
 }
 
 assign("_auto_label_col", function(frame) {
@@ -2222,15 +3312,23 @@ anova_plot <- function(
   } else {
     anova_df
   }
-  if (!nrow(plot_data)) plot_data <- anova_df
+  if (!nrow(plot_data)) {
+    plot.new()
+    title("ANOVA heatmap")
+    text(0.5, 0.5, "No rows passed the ANOVA threshold.")
+    return(.plot_result())
+  }
 
   raw_matrix <- .numeric_matrix(plot_data, sample_columns)
+  if ((cluster_rows && nrow(raw_matrix) > 1) ||
+      (cluster_samples && ncol(raw_matrix) > 1)) {
+    .require_complete_clustering_matrix(raw_matrix, "ANOVA heatmap")
+  }
   rownames(raw_matrix) <- as.character(plot_data[[label_col]])
   missing_mask <- !is.finite(raw_matrix)
   matrix <- if (z_score) .row_zscore(raw_matrix) else raw_matrix
   matrix[!is.finite(matrix)] <- NA
   cluster_matrix <- matrix
-  cluster_matrix[!is.finite(cluster_matrix)] <- 0
 
   row_hclust <- NULL
   column_hclust <- NULL
@@ -2411,12 +3509,14 @@ anova_plot_cluster <- function(
   }
 
   matrix <- .numeric_matrix(anova_cluster_df, sample_columns)
+  if (cluster_samples && ncol(matrix) > 1) {
+    .require_complete_clustering_matrix(matrix, "ANOVA cluster heatmap")
+  }
   rownames(matrix) <- as.character(anova_cluster_df[[label_col]])
   missing_mask <- !is.finite(matrix)
   if (z_score) matrix <- .row_zscore(matrix)
   matrix[!is.finite(matrix)] <- NA
   cluster_matrix <- matrix
-  cluster_matrix[!is.finite(cluster_matrix)] <- 0
 
   column_hclust <- NULL
   if (cluster_samples && ncol(matrix) > 1) {
@@ -2535,58 +3635,246 @@ anova_plot_cluster <- function(
   .plot_result()
 }
 
-different_genes <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, workflow="Gene", paired="Unpaired", uncorrected=FALSE) {
-  output <- .volcano_stats(
+.is_phosphoprotein_workflow <- function(workflow) {
+  workflow_key <- gsub("[^a-z0-9]", "", tolower(as.character(workflow)))
+  workflow_key %in% c("phosprot", "phosphoprotein", "phosphoproteome")
+}
+
+.different_gene_tokens <- function(values, split_groups) {
+  keep <- !is.na(values)
+  if (is.numeric(values)) keep <- keep & is.finite(values)
+  values <- trimws(as.character(values[keep]))
+  values <- values[nzchar(values)]
+  if (!length(values)) return(character())
+  tokens <- if (split_groups) {
+    unlist(strsplit(values, ";", fixed = TRUE), use.names = FALSE)
+  } else {
+    sub(";.*$", "", values)
+  }
+  sort(unique(trimws(tokens[nzchar(trimws(tokens))])))
+}
+
+.different_genes_from_volcano <- function(volcano_data, key_col, split_groups) {
+  required <- c(key_col, "significance")
+  missing <- setdiff(required, names(volcano_data))
+  if (length(missing)) {
+    stop(
+      paste0(
+        "Volcano output is missing required ORA columns: ",
+        paste(sort(missing), collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+  list(
+    Upregulated = .different_gene_tokens(
+      volcano_data[[key_col]][volcano_data$significance == "Upregulated"],
+      split_groups
+    ),
+    Downregulated = .different_gene_tokens(
+      volcano_data[[key_col]][volcano_data$significance == "Downregulated"],
+      split_groups
+    ),
+    Background = .different_gene_tokens(volcano_data[[key_col]], split_groups)
+  )
+}
+
+different_genes <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, workflow="Gene", paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
+  prefer_group <- .is_phosphoprotein_workflow(workflow)
+  candidates <- if (prefer_group) c("Gene_group", "GeneNames") else "GeneNames"
+  key_col <- candidates[candidates %in% names(data)][1]
+  if (is.na(key_col)) {
+    stop("different_genes requires GeneNames or Gene_group.", call. = FALSE)
+  }
+  split_groups <- prefer_group
+
+  output <- volcano_data_f(
     data,
     meta,
     condition1,
     condition2,
-    "GeneNames",
-    paired,
-    uncorrected
+    in_pval = in_pval,
+    in_log2fc = in_log2fc,
+    workflow = workflow,
+    paired = paired,
+    uncorrected = uncorrected,
+    test_type = test_type,
+    label_column = key_col
   )
+  .different_genes_from_volcano(output, key_col, split_groups)
+}
 
-  list(
-    Upregulated = sub(
-      ";.*$",
-      "",
-      output$GeneNames[
-        output$adj_pval < in_pval & output$log2FC > in_log2fc
-      ]
-    ),
-    Downregulated = sub(
-      ";.*$",
-      "",
-      output$GeneNames[
-        output$adj_pval < in_pval & output$log2FC < -in_log2fc
-      ]
-    )
+different_genes_control <- function(
+    data,
+    meta,
+    condition1,
+    condition2,
+    condition1_control,
+    condition2_control,
+    in_pval = 0.05,
+    in_log2fc = 1,
+    workflow = "Gene",
+    paired = "Unpaired",
+    uncorrected = FALSE,
+    test_type = NULL
+) {
+  prefer_group <- .is_phosphoprotein_workflow(workflow)
+  candidates <- if (prefer_group) c("Gene_group", "GeneNames") else "GeneNames"
+  key_col <- candidates[candidates %in% names(data)][1]
+  if (is.na(key_col)) {
+    stop("different_genes_control requires GeneNames or Gene_group.", call. = FALSE)
+  }
+  output <- volcano_data_f_control(
+    data,
+    meta,
+    condition1,
+    condition2,
+    condition1_control,
+    condition2_control,
+    in_pval = in_pval,
+    in_log2fc = in_log2fc,
+    workflow = workflow,
+    paired = paired,
+    uncorrected = uncorrected,
+    test_type = test_type,
+    label_column = key_col
+  )
+  .different_genes_from_volcano(output, key_col, prefer_group)
+}
+
+.empty_enrichment_frame <- function() {
+  data.frame(
+    source = character(0), term_id = character(0), term_name = character(0),
+    term_size = integer(0), intersection_size = integer(0),
+    p_value = numeric(0), adj_p_value = numeric(0), stringsAsFactors = FALSE
   )
 }
 
-enrichment_analysis <- function(gene_list, top_n=10, min_num=20, max_num=300) {
-  .require_pkg("gprofiler2")
-  genes <- gene_list[nzchar(gene_list)]
-  if (!length(genes)) return(NULL)
+enrichment_data <- function(
+  gene_list,
+  top_n=10,
+  min_num=20,
+  max_num=300,
+  background=NULL,
+  background_mode="experiment",
+  adj_p_value_cutoff=0.05,
+  workflow="Protein"
+) {
+  # The over-representation table behind `enrichment_analysis`. Split out so the
+  # numbers can be read, exported and compared across the three pipelines;
+  # `enrichment_analysis` draws exactly this frame, so the figure and the table
+  # cannot drift apart. Returns a zero-row frame rather than NULL when nothing
+  # passes, so callers can treat the result as a table unconditionally.
+  background_mode <- match.arg(background_mode, c("experiment", "global"))
+  split_groups <- .is_phosphoprotein_workflow(workflow)
+  genes <- .different_gene_tokens(gene_list, split_groups)
+  if (!length(genes)) return(.empty_enrichment_frame())
+  if (min_num > max_num) {
+    stop("min_num cannot be larger than max_num.", call. = FALSE)
+  }
 
-  result <- gprofiler2::gost(
-    genes,
-    organism = "hsapiens",
-    sources = c("GO:BP", "GO:CC", "GO:MF"),
-    correction_method = "g_SCS"
-  )$result
-  result <- result[
-    result$term_size >= min_num & result$term_size <= max_num,
-    ,
-    drop = FALSE
-  ]
-  result <- head(result[order(result$p_value), ], top_n)
+  db <- load_go_db()
+  term_genes <- strsplit(as.character(db$genes), ";", fixed = TRUE)
+  term_genes <- lapply(term_genes, function(values) {
+    sort(unique(trimws(values[nzchar(trimws(values))])))
+  })
+  annotated <- sort(unique(unlist(term_genes, use.names = FALSE)))
+  if (background_mode == "experiment") {
+    if (is.null(background)) {
+      stop(
+        "Provide the tested-gene background, or set background_mode='global'.",
+        call. = FALSE
+      )
+    }
+    submitted_background <- .different_gene_tokens(background, split_groups)
+    missing <- setdiff(genes, submitted_background)
+    if (length(missing)) {
+      stop(
+        paste0(
+          "Every query gene must be included in the experiment background. Missing: ",
+          paste(head(missing, 10), collapse = ", "),
+          "."
+        ),
+        call. = FALSE
+      )
+    }
+    effective_background <- intersect(submitted_background, annotated)
+  } else {
+    effective_background <- annotated
+  }
+  if (!length(effective_background)) return(.empty_enrichment_frame())
+
+  query <- intersect(genes, effective_background)
+  if (!length(query)) return(.empty_enrichment_frame())
+  effective_terms <- lapply(term_genes, intersect, y = effective_background)
+  term_sizes <- lengths(effective_terms)
+  eligible <- which(term_sizes >= min_num & term_sizes <= max_num)
+  if (!length(eligible)) return(.empty_enrichment_frame())
+
+  intersection_sizes <- vapply(
+    effective_terms[eligible],
+    function(term) length(intersect(query, term)),
+    integer(1)
+  )
+  # A term sharing no gene with the query has p = 1 by construction and is never
+  # reported, so it is not a test. Counting it in the Benjamini-Hochberg
+  # denominator inflated every reported adjusted p -- by 3.4x on a 4000-gene
+  # background -- and made the packages disagree with the web app, which corrects
+  # over tested terms only.
+  tested <- intersection_sizes > 0
+  eligible <- eligible[tested]
+  intersection_sizes <- intersection_sizes[tested]
+  if (!length(eligible)) return(.empty_enrichment_frame())
+  p_values <- stats::phyper(
+    intersection_sizes - 1,
+    term_sizes[eligible],
+    length(effective_background) - term_sizes[eligible],
+    length(query),
+    lower.tail = FALSE
+  )
+  result <- data.frame(
+    source = db$ontology[eligible],
+    term_id = db$term[eligible],
+    term_name = db$description[eligible],
+    term_size = term_sizes[eligible],
+    intersection_size = intersection_sizes,
+    p_value = p_values,
+    adj_p_value = stats::p.adjust(p_values, method = "BH"),
+    stringsAsFactors = FALSE
+  )
+  # intersection_size > 0 holds for every row now; only the cutoff remains.
+  result <- result[result$adj_p_value <= adj_p_value_cutoff, , drop = FALSE]
+  result <- head(result[order(result$adj_p_value, result$p_value), ], top_n)
+  result
+}
+
+enrichment_analysis <- function(
+  gene_list,
+  top_n=10,
+  min_num=20,
+  max_num=300,
+  background=NULL,
+  background_mode="experiment",
+  adj_p_value_cutoff=0.05,
+  workflow="Protein"
+) {
+  result <- enrichment_data(
+    gene_list = gene_list,
+    top_n = top_n,
+    min_num = min_num,
+    max_num = max_num,
+    background = background,
+    background_mode = background_mode,
+    adj_p_value_cutoff = adj_p_value_cutoff,
+    workflow = workflow
+  )
   if (!nrow(result)) return(NULL)
 
   hits <- result$intersection_size / result$term_size * 100
   colors <- colorRampPalette(c("#2166ac", "white", "#b2182b"))(100)
   color_index <- cut(
-    -log10(result$p_value),
+    -log10(pmax(result$adj_p_value, .Machine$double.xmin)),
     breaks = 100,
     include.lowest = TRUE,
     labels = FALSE
@@ -2603,7 +3891,14 @@ enrichment_analysis <- function(gene_list, top_n=10, min_num=20, max_num=300) {
     yaxt = "n",
     xlab = "Hits (%)",
     ylab = "",
-    main = "Gene Set Enrichment Analysis"
+    main = paste0(
+      "GO Enrichment (ORA)\n",
+      if (background_mode == "experiment") {
+        "tested-gene background"
+      } else {
+        "global annotated background"
+      }
+    )
   )
   axis(2, seq_len(nrow(result)), result$term_name, las = 2, cex.axis = 0.65)
   mtext("GO Term", side = 2, line = 10)
@@ -2612,11 +3907,73 @@ enrichment_analysis <- function(gene_list, top_n=10, min_num=20, max_num=300) {
 }
 
 load_go_db <- function() {
+  configured <- trimws(Sys.getenv("COPYLOT_GO_DB", unset = ""))
+  candidates <- c(
+    if (nzchar(configured)) configured else character(),
+    if (nzchar(.copylot_source_dir)) {
+      file.path(.copylot_source_dir, "data", "all_go_terms_genes.csv")
+    } else {
+      character()
+    },
+    if (nzchar(.copylot_source_dir)) {
+      file.path(.copylot_source_dir, "..", "data", "db", "all_go_terms_genes.csv")
+    } else {
+      character()
+    },
+    file.path(getwd(), "data", "db", "all_go_terms_genes.csv")
+  )
+  existing <- candidates[file.exists(candidates)]
+  if (!length(existing)) {
+    stop(
+      "Could not find all_go_terms_genes.csv. Set COPYLOT_GO_DB or install the packaged database.",
+      call. = FALSE
+    )
+  }
   read.csv(
-    file.path(getwd(), "data", "db", "all_go_terms_genes.csv"),
+    existing[1],
     check.names = FALSE,
     stringsAsFactors = FALSE
   )
+}
+
+.aggregate_pathway_gene_values <- function(data, gene_column, sample_columns, pathway_genes) {
+  genes <- trimws(as.character(pathway_genes))
+  genes <- genes[nzchar(genes) & !duplicated(tolower(genes))]
+  gene_tokens <- lapply(as.character(data[[gene_column]]), function(value) {
+    if (is.na(value) || !nzchar(trimws(value))) return(character())
+    unique(tolower(trimws(strsplit(value, ";", fixed = TRUE)[[1]])))
+  })
+
+  heatmap_data <- matrix(
+    NA_real_,
+    nrow = length(genes),
+    ncol = length(sample_columns),
+    dimnames = list(genes, sample_columns)
+  )
+  source_counts <- integer(length(genes))
+  names(source_counts) <- genes
+
+  for (gene_index in seq_along(genes)) {
+    matching_rows <- which(vapply(
+      gene_tokens,
+      function(tokens) tolower(genes[gene_index]) %in% tokens,
+      logical(1)
+    ))
+    source_counts[gene_index] <- length(matching_rows)
+    if (!length(matching_rows)) next
+
+    for (sample_index in seq_along(sample_columns)) {
+      sample <- sample_columns[sample_index]
+      if (!sample %in% names(data)) next
+      values <- suppressWarnings(as.numeric(data[[sample]][matching_rows]))
+      values[!is.finite(values)] <- NA_real_
+      if (any(!is.na(values))) {
+        heatmap_data[gene_index, sample_index] <- median(values, na.rm = TRUE)
+      }
+    }
+  }
+
+  list(data = heatmap_data, source_feature_count = source_counts)
 }
 
 proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsize=c(12,8), cmap_name="plasma", remove_empty=TRUE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="z", header=TRUE, id=TRUE) {
@@ -2637,26 +3994,15 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
   }
   meta_filtered <- .sample_meta(meta_filtered, id = id, newline = TRUE)
 
-  heatmap_data <- matrix(
-    NA_real_,
-    nrow = length(genes),
-    ncol = nrow(meta_filtered),
-    dimnames = list(genes, meta_filtered$new_sample)
+  aggregated <- .aggregate_pathway_gene_values(
+    data,
+    gene_column = "GeneNames",
+    sample_columns = as.character(meta_filtered$sample),
+    pathway_genes = genes
   )
-  lower_gene_names <- tolower(data$GeneNames)
-  for (gene_index in seq_along(genes)) {
-    matching_rows <- which(lower_gene_names == tolower(genes[gene_index]))
-    if (!length(matching_rows)) next
-
-    for (sample_index in seq_len(nrow(meta_filtered))) {
-      sample <- meta_filtered$sample[sample_index]
-      if (sample %in% names(data)) {
-        heatmap_data[gene_index, sample_index] <- as.numeric(
-          data[matching_rows[1], sample]
-        )
-      }
-    }
-  }
+  heatmap_data <- aggregated$data
+  colnames(heatmap_data) <- meta_filtered$new_sample
+  source_feature_counts <- aggregated$source_feature_count
 
   if (remove_empty) {
     heatmap_data <- heatmap_data[
@@ -2664,6 +4010,7 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
       ,
       drop = FALSE
     ]
+    source_feature_counts <- source_feature_counts[rownames(heatmap_data)]
   }
   if (!nrow(heatmap_data)) {
     stop("No matching gene data available for the selected pathway.", call. = FALSE)
@@ -2681,8 +4028,27 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
     stop("value_type must be 'z' or 'log2'", call. = FALSE)
   }
 
-  cluster_data <- heatmap_data
-  cluster_data[!is.finite(cluster_data)] <- 0
+  if (value_type == "z") {
+    informative <- rowSums(is.finite(heatmap_data)) > 0
+    heatmap_data <- heatmap_data[informative, , drop = FALSE]
+    source_feature_counts <- source_feature_counts[rownames(heatmap_data)]
+  }
+  if (!nrow(heatmap_data)) {
+    stop("No informative pathway rows remain after heatmap transformation.", call. = FALSE)
+  }
+
+  rownames(heatmap_data) <- paste0(
+    rownames(heatmap_data),
+    " (n=",
+    as.integer(source_feature_counts[rownames(heatmap_data)]),
+    ")"
+  )
+
+  cluster_data <- NULL
+  if ((cluster_rows && nrow(heatmap_data) > 1) ||
+      (cluster_cols && ncol(heatmap_data) > 1)) {
+    cluster_data <- .require_complete_clustering_matrix(heatmap_data, "pathway heatmap")
+  }
   if (cluster_rows && nrow(heatmap_data) > 1) {
     order <- hclust(dist(cluster_data), method = "average")$order
     heatmap_data <- heatmap_data[order, , drop = FALSE]
@@ -2700,7 +4066,7 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
       pathway,
       " (",
       if (value_type == "z") "Z-transformed" else "log2 Intensities",
-      ")"
+      "; median across mapped features)"
     ),
     ylab = if (header) "Protein / Gene" else "",
     labels = header,
@@ -2814,131 +4180,162 @@ convert_to_centered <- function(seq) {
   paste0("_", left_tail, modified_residue, right_tail, "_")
 }
 
-convert_to_centered <- function(seq) {
-  if (!is.character(seq) || !grepl("*", seq, fixed = TRUE)) return(seq)
-
-  star_index <- regexpr("*", seq, fixed = TRUE)[1]
-  if (star_index == 1) return(seq)
-
-  modified_residue <- toupper(substr(seq, star_index - 1, star_index - 1))
-  clean_sequence <- paste0(
-    substr(seq, 1, star_index - 2),
-    modified_residue,
-    substr(seq, star_index + 1, nchar(seq))
-  )
-  modified_position <- star_index - 1
-  left <- substr(clean_sequence, 1, modified_position - 1)
-  right <- substr(clean_sequence, modified_position + 1, nchar(clean_sequence))
-
-  left_tail <- if (nchar(left) >= 6) {
-    substr(left, nchar(left) - 5, nchar(left))
-  } else {
-    paste0(strrep("_", 6 - nchar(left)), left)
-  }
-  right_tail <- if (nchar(right) >= 6) {
-    substr(right, 1, 6)
-  } else {
-    paste0(right, strrep("_", 6 - nchar(right)))
-  }
-
-  paste0("_", left_tail, modified_residue, right_tail, "_")
+.ksea_format_volcano <- function(volcano_df) {
+  names(volcano_df)[names(volcano_df) == "PTM_Collapse_key"] <- "UPD_seq"
+  volcano_df$UPD_seq <- vapply(volcano_df$UPD_seq, convert_to_centered, character(1))
+  columns <- c("UPD_seq", "log2FC", "pval", "adj_pval", "significance")
+  if ("n_pairs" %in% names(volcano_df)) columns <- c(columns, "n_pairs")
+  columns <- c(columns, "neg_log10_adj_pval")
+  volcano_df[, columns, drop = FALSE]
 }
 
-ksea_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE) {
-  output <- .volcano_stats(
-    data,
-    meta,
-    condition1,
-    condition2,
-    "UPD_seq",
-    paired,
-    uncorrected
+ksea_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
+  .validate_meta_samples(meta)
+  if (!"UPD_seq" %in% names(data)) {
+    stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
+  }
+  working <- data
+  working$PTM_Collapse_key <- working$UPD_seq
+  output <- volcano_data_f(
+    working, meta, condition1, condition2,
+    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type
   )
-  output$UPD_seq <- vapply(output$UPD_seq, convert_to_centered, character(1))
-  output$significance <- ifelse(
-    output$adj_pval < in_pval & output$log2FC > in_log2fc,
+  .ksea_format_volcano(output)
+}
+
+ksea_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
+  .validate_meta_samples(meta)
+  if (!"UPD_seq" %in% names(data)) {
+    stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
+  }
+  working <- data
+  working$PTM_Collapse_key <- working$UPD_seq
+  output <- volcano_data_f_control(
+    working, meta, condition1, condition2,
+    condition1_control, condition2_control,
+    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type
+  )
+  .ksea_format_volcano(output)
+}
+
+.phosprot_regulation_data <- function(site_results, in_pval, in_log2fc, max_hover_sites, show_phosphosites) {
+  site_results$significance <- ifelse(
+    site_results$adj_pval < in_pval & site_results$log2FC > in_log2fc,
     "Upregulated",
     ifelse(
-      output$adj_pval < in_pval & output$log2FC < -in_log2fc,
+      site_results$adj_pval < in_pval & site_results$log2FC < -in_log2fc,
       "Downregulated",
       "Not significant"
     )
   )
-  output$neg_log10_adj_pval <- -log10(output$adj_pval)
-  output
-}
-
-phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE) {
-  .require_pkg("plotly")
-
-  site_results <- .volcano_stats(
-    data,
-    meta,
-    condition1,
-    condition2,
-    "PTM_Collapse_key",
-    paired,
-    uncorrected,
-    "Protein_group"
+  significant_results <- site_results[
+    site_results$significance != "Not significant",
+    ,
+    drop = FALSE
+  ]
+  protein_groups <- split(
+    seq_len(nrow(significant_results)),
+    significant_results$Protein_group,
+    drop = TRUE
   )
 
-  all_samples <- c(
-    meta$sample[meta$condition == condition1],
-    meta$sample[meta$condition == condition2]
-  )
-  protein_groups <- split(seq_len(nrow(site_results)), site_results$Protein_group)
-
-  truncate_sites <- function(sites) {
+  truncate_items <- function(items) {
     if (!show_phosphosites) return("")
-    if (length(sites) <= max_hover_sites) return(paste(sites, collapse = ";"))
+    if (length(items) <= max_hover_sites) return(paste(items, collapse = ";"))
 
     paste0(
-      paste(head(sites, max_hover_sites), collapse = ";"),
-      ";... (+", length(sites) - max_hover_sites, " more)"
+      paste(head(items, max_hover_sites), collapse = ";"),
+      ";... (+", length(items) - max_hover_sites, " more)"
     )
   }
 
   collapsed <- lapply(names(protein_groups), function(protein) {
     rows <- protein_groups[[protein]]
-    group <- site_results[rows, , drop = FALSE]
-    down_sites <- as.character(group$PTM_Collapse_key[group$log2FC < 0])
-    up_sites <- as.character(group$PTM_Collapse_key[group$log2FC > 0])
-
-    down_values <- data[
-      data$PTM_Collapse_key %in% down_sites,
-      all_samples,
-      drop = FALSE
-    ]
-    up_values <- data[
-      data$PTM_Collapse_key %in% up_sites,
-      all_samples,
-      drop = FALSE
-    ]
-    down_sum_raw <- sum(.numeric_matrix(down_values, all_samples), na.rm = TRUE)
-    up_sum_raw <- sum(.numeric_matrix(up_values, all_samples), na.rm = TRUE)
+    group <- significant_results[rows, , drop = FALSE]
+    down <- group[group$significance == "Downregulated", , drop = FALSE]
+    up <- group[group$significance == "Upregulated", , drop = FALSE]
+    down_sites <- as.character(down$PTM_Collapse_key)
+    up_sites <- as.character(up$PTM_Collapse_key)
+    # paste0 recycles its scalar parts against a zero-length vector, so an empty
+    # site list produced the string " ()" rather than nothing. The pip package
+    # yields an empty character vector here.
+    down_effects <- if (length(down_sites)) {
+      paste0(down_sites, " (", sprintf("%.4g", down$log2FC), ")")
+    } else {
+      character(0)
+    }
+    up_effects <- if (length(up_sites)) {
+      paste0(up_sites, " (", sprintf("%+.4g", up$log2FC), ")")
+    } else {
+      character(0)
+    }
 
     data.frame(
       Protein_group = protein,
-      Downregulated_sites = truncate_sites(down_sites),
-      Upregulated_sites = truncate_sites(up_sites),
+      Downregulated_sites = truncate_items(down_sites),
+      Upregulated_sites = truncate_items(up_sites),
+      Downregulated_site_effects = truncate_items(down_effects),
+      Upregulated_site_effects = truncate_items(up_effects),
       Downregulated_count = length(down_sites),
       Upregulated_count = length(up_sites),
-      Downregulated_sum = if (down_sum_raw > 0) log2(down_sum_raw) else 0,
-      Upregulated_sum = if (up_sum_raw > 0) log2(up_sum_raw) else 0,
+      Downregulated_log2FC_sum = -sum(down$log2FC),
+      Upregulated_log2FC_sum = sum(up$log2FC),
       stringsAsFactors = FALSE
     )
   })
-  collapsed <- do.call(rbind, collapsed)
-  collapsed$x <- abs(collapsed$Upregulated_sum)
-  collapsed$y <- abs(collapsed$Downregulated_sum)
+  if (length(collapsed)) {
+    collapsed <- do.call(rbind, collapsed)
+  } else {
+    collapsed <- data.frame(
+      Protein_group = character(),
+      Downregulated_sites = character(),
+      Upregulated_sites = character(),
+      Downregulated_site_effects = character(),
+      Upregulated_site_effects = character(),
+      Downregulated_count = integer(),
+      Upregulated_count = integer(),
+      Downregulated_log2FC_sum = numeric(),
+      Upregulated_log2FC_sum = numeric(),
+      stringsAsFactors = FALSE
+    )
+  }
+  collapsed$x <- collapsed$Upregulated_log2FC_sum
+  collapsed$y <- collapsed$Downregulated_log2FC_sum
   collapsed$color_val <- collapsed$x - collapsed$y
+  collapsed
+}
+
+phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL) {
+  .validate_meta_samples(meta)
+  # The per-protein table behind `phosprot_regulation`, with the same signature
+  # as the pip package's function of this name. Split out so the numbers can be
+  # read, exported and compared across the three pipelines; `phosprot_regulation`
+  # plots exactly this frame. `x` is the cumulative log2FC of significant
+  # up-sites, `y` the absolute cumulative log2FC of significant down-sites, and
+  # proteins with no significant site are absent.
+  site_results <- .volcano_stats(
+    data, meta, condition1, condition2, "PTM_Collapse_key",
+    paired, uncorrected, "Protein_group", test_type
+  )
+  collapsed <- .phosprot_regulation_data(
+    site_results, in_pval, in_log2fc, max_hover_sites, show_phosphosites
+  )
+  collapsed
+}
+
+phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL) {
+  .require_pkg("plotly")
+  collapsed <- phosprot_regulation_data(
+    data, meta, condition1, condition2, in_pval, in_log2fc,
+    paired, uncorrected, max_hover_sites, show_phosphosites, test_type
+  )
 
   hover_text <- paste0(
     "Protein group: ", collapsed$Protein_group,
     "<br>Upregulated count: ", collapsed$Upregulated_count,
     "<br>Downregulated count: ", collapsed$Downregulated_count,
-    "<br>Upregulated sites: ", collapsed$Upregulated_sites,
-    "<br>Downregulated sites: ", collapsed$Downregulated_sites
+    "<br>Upregulated site effects: ", collapsed$Upregulated_site_effects,
+    "<br>Downregulated site effects: ", collapsed$Downregulated_site_effects
   )
 
   fig <- plotly::plot_ly(
@@ -2960,10 +4357,10 @@ phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05
 
   plotly::layout(
     fig,
-    title = "Protein-level Phosphosite Regulation",
-    xaxis = list(title = "Absolute Upregulated Sum (log2)"),
-    yaxis = list(title = "Absolute Downregulated Sum (log2)"),
-    coloraxis = list(colorbar = list(title = "Up - Down")),
+    title = "Cumulative Significant Phosphosite Regulation by Protein",
+    xaxis = list(title = "Cumulative Significant Up-Site log2FC"),
+    yaxis = list(title = "Cumulative Significant Down-Site |log2FC|"),
+    coloraxis = list(colorbar = list(title = "Up score - Down score")),
     template = "plotly_white"
   )
 }
@@ -2976,7 +4373,8 @@ rt_vs_pred_rt_plot <- function(
     header = TRUE,
     width = 8,
     height = 6,
-    dpi = 100
+    dpi = 100,
+    seed = 69
 ) {
   data <- read_data(data_path)
   if (!all(c("Predicted.RT", "RT") %in% names(data))) {
@@ -2993,8 +4391,8 @@ rt_vs_pred_rt_plot <- function(
 
   if (method == "Scatter Plot") {
     if (nrow(data) > 100000) {
-      set.seed(69)
-      data <- data[sample(nrow(data), 100000), , drop = FALSE]
+      selected <- .with_local_seed(seed, function() sample(nrow(data), 100000))
+      data <- data[selected, , drop = FALSE]
     }
     plot(
       data$Predicted.RT,
@@ -3069,20 +4467,24 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
   )
 
   samples <- intersect(meta$new_sample, names(wide_data))
+  # UniMod ids must not match longer ids by prefix: "UniMod:4" would otherwise
+  # also count UniMod:40-49 and UniMod:4xx. The lookahead needs perl = TRUE.
   modifications <- c(
-    Carbamylation = "UniMod:4|Carbamidomethyl",
-    Oxidation = "UniMod:35|Oxidation",
-    Acetylation = "UniMod:1|Acetyl"
+    Carbamidomethylation = "(?i)UniMod:4(?!\\d)|(?<![A-Za-z])Carbamidomethyl(?:ation)?(?![A-Za-z])",
+    Oxidation = "(?i)UniMod:35(?!\\d)|(?<![A-Za-z])Oxidation(?![A-Za-z])",
+    Acetylation = "(?i)UniMod:1(?!\\d)|(?<![A-Za-z])Acetyl(?:ation)?(?![A-Za-z])"
   )
   counts <- sapply(modifications, function(pattern) {
-    rows <- grepl(pattern, rownames(wide_data))
-    colSums(!is.na(wide_data[rows, samples, drop = FALSE]))
+    rows <- grepl(pattern, rownames(wide_data), perl = TRUE)
+    values <- as.matrix(wide_data[rows, samples, drop = FALSE])
+    suppressWarnings(storage.mode(values) <- "numeric")
+    colSums(is.finite(values) & values != 0)
   })
   counts <- t(counts)
   keep <- rowSums(counts) > 0
   counts <- counts[keep, , drop = FALSE]
   modification_colors <- c(
-    Carbamylation = "blue",
+    Carbamidomethylation = "blue",
     Oxidation = "red",
     Acetylation = "green"
   )
@@ -3119,7 +4521,35 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
   .plot_result()
 }
 
-missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size=8, header=TRUE, width=10, height=6, dpi=100) {
+.PROTEASE_LABELS <- c(trypsin = "Trypsin", trypsin_lysc = "Trypsin / Lys-C")
+
+.normalize_protease <- function(value = "trypsin") {
+  key <- tolower(trimws(as.character(value)[1]))
+  key <- gsub("[-/]", "_", key)
+  key <- gsub("__", "_", key)
+  if (key %in% c("trypsin_lysc", "trypsin_lys_c", "trypsinlysc")) return("trypsin_lysc")
+  if (identical(key, "trypsin")) return("trypsin")
+  stop("Protease must be 'trypsin' or 'trypsin_lysc'.", call. = FALSE)
+}
+
+# A missed cleavage is a cleavable residue that is neither the C-terminal
+# residue -- that one is the expected cut site -- nor blocked by a following
+# proline. Trypsin is blocked at both K-P and R-P; a trypsin/Lys-C mix still
+# cleaves K-P because Lys-C is not proline-inhibited, while R-P stays blocked
+# because trypsin is the only activity cutting R. The lookaheads need perl=TRUE
+# and are equivalent to the Python implementations.
+.count_missed_cleavages <- function(sequences, protease = "trypsin") {
+  pattern <- if (.normalize_protease(protease) == "trypsin_lysc") {
+    "K(?=.)|R(?=[^P])"
+  } else {
+    "[KR](?=[^P])"
+  }
+  matches <- gregexpr(pattern, toupper(as.character(sequences)), perl = TRUE)
+  vapply(matches, function(m) if (m[1] == -1L) 0L else length(m), integer(1))
+}
+
+missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size=8, header=TRUE, protease="trypsin", width=10, height=6, dpi=100) {
+  resolved_protease <- .normalize_protease(protease)
   data <- sanitize_dataframe(read_data(data2_path))
   file_col <- grep("file", names(data), ignore.case = TRUE, value = TRUE)[1]
   sequence_col <- grep(
@@ -3147,10 +4577,7 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
   )
 
   samples <- intersect(meta$new_sample, names(wide_data))
-  missed_cleavages <- pmax(
-    0,
-    nchar(gsub("[^RK]", "", rownames(wide_data))) - 1
-  )
+  missed_cleavages <- .count_missed_cleavages(rownames(wide_data), resolved_protease)
   cleavage_levels <- sort(unique(missed_cleavages))
 
   percentages <- sapply(samples, function(sample) {
@@ -3178,7 +4605,11 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     border = NA,
     ylim = c(0, 100),
     ylab = "Percentage of peptides with missed cleavage (%)",
-    main = if (header) "Missed cleavages per sample" else ""
+    main = if (header) {
+      paste0("Missed cleavages per sample (", .PROTEASE_LABELS[[resolved_protease]], ")")
+    } else {
+      ""
+    }
   )
 
   if (text && "1" %in% rownames(percentages)) {
@@ -3325,7 +4756,26 @@ compare_prot_line <- function(data, meta, conditions, inputs, id=TRUE, header=TR
   values <- .numeric_matrix(filtered_data, ordered_samples)
   labels <- as.character(filtered_data[[key_col]])
   if (workflow == "Protein") labels <- sub(";.*$", "", labels)
-  colors <- .plot_colors(nrow(filtered_data), plot_colors)
+  unique_labels <- unique(labels)
+  aggregated_values <- matrix(
+    NA_real_,
+    nrow = length(unique_labels),
+    ncol = ncol(values),
+    dimnames = list(unique_labels, colnames(values))
+  )
+  for (label_index in seq_along(unique_labels)) {
+    matching <- labels == unique_labels[label_index]
+    for (sample_index in seq_len(ncol(values))) {
+      observed <- values[matching, sample_index]
+      observed <- observed[is.finite(observed)]
+      if (length(observed)) {
+        aggregated_values[label_index, sample_index] <- median(observed)
+      }
+    }
+  }
+  values <- aggregated_values
+  labels <- unique_labels
+  colors <- .plot_colors(length(labels), plot_colors)
 
   .set_notebook_plot_size(width, height, units = "in")
   old_par <- .set_plot_margins(legend = legend, rotated_labels = TRUE)
@@ -3363,9 +4813,9 @@ compare_prot_line <- function(data, meta, conditions, inputs, id=TRUE, header=TR
   .plot_result()
 }
 
-boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width=8, height=6, dpi=100) {
+boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width=8, height=6, dpi=100, seed=69) {
   protein_data <- if (protein %in% rownames(data)) {
-    data[protein, , drop = FALSE]
+    data[which(rownames(data) == protein), , drop = FALSE]
   } else {
     data[data[[1]] == protein, , drop = FALSE]
   }
@@ -3375,18 +4825,23 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
 
   conditions <- unique(meta$condition)
   intensities <- lapply(conditions, function(condition) {
-    columns <- meta$sample[meta$condition == condition]
-    values <- as.numeric(protein_data[1, columns])
+    columns <- as.character(meta$sample[meta$condition == condition])
+    sample_matrix <- .numeric_matrix(protein_data, columns)
+    values <- vapply(seq_along(columns), function(sample_index) {
+      observed <- sample_matrix[, sample_index]
+      observed <- observed[is.finite(observed)]
+      if (length(observed)) median(observed) else NA_real_
+    }, numeric(1))
     values[is.finite(values)]
   })
-  keep <- lengths(intensities) >= 3
+  keep <- lengths(intensities) > 0
   intensities <- intensities[keep]
   conditions <- conditions[keep]
 
   .set_notebook_plot_size(width, height, units = "in")
   if (!length(intensities)) {
     plot.new()
-    text(0.5, 0.5, "No conditions with >=3 samples")
+    text(0.5, 0.5, "No measured values in the selected conditions")
     return(.plot_result())
   }
 
@@ -3394,41 +4849,74 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
   old_par <- .set_plot_margins(legend = legend)
   on.exit(par(old_par), add = TRUE)
 
-  boxplot(
-    intensities,
-    names = conditions,
-    col = colors,
-    border = "black",
-    outline = outliers,
-    medcol = "firebrick",
-    medlwd = 2,
+  all_values <- unlist(intensities, use.names = FALSE)
+  y_limits <- range(all_values, finite = TRUE)
+  if (diff(y_limits) == 0) y_limits <- y_limits + c(-0.5, 0.5)
+  plot(
+    NA,
+    xlim = c(0.5, length(conditions) + 0.5),
+    ylim = y_limits,
+    xaxt = "n",
+    xlab = "Condition",
     ylab = "log2 Intensity",
     main = if (header) {
-      paste("Measured", sub(";.*$", "", protein), "intensity values (log2)")
+      source_suffix <- if (nrow(protein_data) > 1) {
+        paste0("\none median per sample across ", nrow(protein_data), " matching source row(s)")
+      } else {
+        ""
+      }
+      paste0("Measured ", sub(";.*$", "", protein), " intensity values (log2)", source_suffix)
     } else {
       ""
     }
   )
+  axis(
+    1,
+    seq_along(conditions),
+    paste0(conditions, "\n(n=", lengths(intensities), ")"),
+    las = 2
+  )
 
-  if (dots) {
-    set.seed(69)
+  box_positions <- which(lengths(intensities) >= 3)
+  if (length(box_positions)) {
+    boxplot(
+      intensities[box_positions],
+      at = box_positions,
+      add = TRUE,
+      axes = FALSE,
+      col = colors[box_positions],
+      border = "black",
+      outline = outliers,
+      medcol = "firebrick",
+      medlwd = 2
+    )
+  }
+
+  .with_local_seed(seed, function() {
     for (i in seq_along(intensities)) {
       values <- intensities[[i]]
-      quartiles <- quantile(values, c(0.25, 0.75))
-      iqr <- diff(quartiles)
-      non_outliers <- values[
-        values >= quartiles[1] - 1.5 * iqr &
-          values <= quartiles[2] + 1.5 * iqr
-      ]
+      if (length(values) < 3) {
+        visible_values <- values
+      } else if (dots) {
+        values <- intensities[[i]]
+        quartiles <- quantile(values, c(0.25, 0.75))
+        iqr <- diff(quartiles)
+        visible_values <- values[
+          values >= quartiles[1] - 1.5 * iqr &
+            values <= quartiles[2] + 1.5 * iqr
+        ]
+      } else {
+        next
+      }
       points(
-        jitter(rep(i, length(non_outliers)), amount = 0.05),
-        non_outliers,
+        jitter(rep(i, length(visible_values)), amount = 0.05),
+        visible_values,
         pch = 16,
-        cex = 0.75,
-        col = grDevices::adjustcolor(colors[i], alpha.f = 0.7)
+        cex = 0.8,
+        col = grDevices::adjustcolor(colors[i], alpha.f = 0.8)
       )
     }
-  }
+  })
 
   if (legend) {
     legend(
@@ -3486,8 +4974,17 @@ phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id
     stop("value_type must be 'log2' or 'z'", call. = FALSE)
   }
 
-  cluster_data <- heatmap_data
-  cluster_data[!is.finite(cluster_data)] <- 0
+  heatmap_data[!is.finite(heatmap_data)] <- NA_real_
+  heatmap_data <- heatmap_data[rowSums(is.finite(heatmap_data)) > 0, , drop = FALSE]
+  if (!nrow(heatmap_data)) {
+    stop("No informative phosphosite rows remain after heatmap transformation.", call. = FALSE)
+  }
+
+  cluster_data <- NULL
+  if ((cluster_rows && nrow(heatmap_data) > 1) ||
+      (cluster_cols && ncol(heatmap_data) > 1)) {
+    cluster_data <- .require_complete_clustering_matrix(heatmap_data, "phosphosite heatmap")
+  }
   if (cluster_rows && nrow(heatmap_data) > 1) {
     row_order <- hclust(dist(cluster_data), method = "average")$order
     heatmap_data <- heatmap_data[row_order, , drop = FALSE]
@@ -3610,7 +5107,7 @@ sty_plot <- function(data) {
   .plot_result()
 }
 
-phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange") {
+phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", seed=69) {
   meta <- .sample_meta(meta, id = FALSE)
   renamed_data <- .rename_samples(data, meta)
 
@@ -3661,23 +5158,24 @@ phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE,
     length = 0.04
   )
 
-  set.seed(69)
-  for (i in seq_along(conditions)) {
-    points(
-      jitter(rep(mids[1, i], length(class_values[[i]])), amount = 0.04),
-      class_values[[i]],
-      pch = 16,
-      cex = 0.7,
-      col = grDevices::adjustcolor("black", alpha.f = 0.7)
-    )
-    points(
-      jitter(rep(mids[2, i], length(not_class_values[[i]])), amount = 0.04),
-      not_class_values[[i]],
-      pch = 16,
-      cex = 0.7,
-      col = grDevices::adjustcolor("black", alpha.f = 0.7)
-    )
-  }
+  .with_local_seed(seed, function() {
+    for (i in seq_along(conditions)) {
+      points(
+        jitter(rep(mids[1, i], length(class_values[[i]])), amount = 0.04),
+        class_values[[i]],
+        pch = 16,
+        cex = 0.7,
+        col = grDevices::adjustcolor("black", alpha.f = 0.7)
+      )
+      points(
+        jitter(rep(mids[2, i], length(not_class_values[[i]])), amount = 0.04),
+        not_class_values[[i]],
+        pch = 16,
+        cex = 0.7,
+        col = grDevices::adjustcolor("black", alpha.f = 0.7)
+      )
+    }
+  })
 
   if (legend) {
     legend(
@@ -3859,7 +5357,10 @@ kinase_tree_data_pval <- function(data_st, data_tnc) {
   }
 
   adjusted_pvalue <- as.numeric(combined_data[["Adjusted p-value"]])
-  adjusted_pvalue[adjusted_pvalue == 0] <- NA_real_
+  adjusted_pvalue[is.finite(adjusted_pvalue)] <- pmax(
+    adjusted_pvalue[is.finite(adjusted_pvalue)],
+    1e-300
+  )
 
   data.frame(
     `Gene Name` = combined_data[["Gene Name"]],
@@ -3979,15 +5480,18 @@ correlation_xy_intensity_single <- function(data, sample1, sample2, alias1=NULL,
   .plot_result()
 }
 
-correlation_xy_intensity <- function(data, meta, condition1, condition2, alias1=NULL, alias2=NULL, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=TRUE) {
+correlation_xy_intensity <- function(data, meta, condition1, condition2, alias1=NULL, alias2=NULL, color="blue", dot_size=60, width_cm=20, height_cm=12, dpi=300, show_header=TRUE, min_present=1) {
   condition1_samples <- meta$sample[meta$condition == condition1]
   condition2_samples <- meta$sample[meta$condition == condition2]
   if (!length(condition1_samples) || !length(condition2_samples)) {
     stop("One or both conditions have no associated samples.", call. = FALSE)
   }
 
-  mean1 <- rowMeans(.numeric_matrix(data, condition1_samples), na.rm = TRUE)
-  mean2 <- rowMeans(.numeric_matrix(data, condition2_samples), na.rm = TRUE)
+  # min_present = 1 (the default) reports every mean. Raise it to drop means that
+  # rest on fewer replicates than that, which would otherwise be plotted at the
+  # same weight as a fully observed one.
+  mean1 <- condition_mean(data, condition1_samples, min_present = min_present)$mean
+  mean2 <- condition_mean(data, condition2_samples, min_present = min_present)$mean
   valid <- is.finite(mean1) & is.finite(mean2)
   if (!any(valid)) {
     stop("No overlapping proteins with intensity in both conditions.", call. = FALSE)
@@ -4044,7 +5548,10 @@ correlation_xy_intensity <- function(data, meta, condition1, condition2, alias1=
     cat.cex = 1,
     cat.col = colors,
     main = if (show_header) "Overlap" else NULL,
-    main.cex = 1.3
+    main.cex = 1.3,
+    # Without this the package writes a futile.logger file into the user's
+    # working directory on every call, one per venn drawn.
+    disable.logging = TRUE
   )
 
   grid::grid.newpage()
@@ -4062,19 +5569,23 @@ overlap_plot_single <- function(
     dpi = 300,
     labels = NULL,
     colors = NULL,
-    show_header = TRUE
+    show_header = TRUE,
+    data_scale = "log2"
 ) {
   .set_notebook_plot_size(width, height, units = "in")
 
+  samples <- c(sample1, sample2, sample3)
+  data <- .prepare_intensity_data(data, samples[!is.na(samples)], data_scale)
+
   sets <- list(
-    rownames(data)[!is.na(data[[sample1]]) & data[[sample1]] != 0],
-    rownames(data)[!is.na(data[[sample2]]) & data[[sample2]] != 0]
+    rownames(data)[!is.na(data[[sample1]])],
+    rownames(data)[!is.na(data[[sample2]])]
   )
   default_labels <- c(sample1, sample2)
 
   if (!is.null(sample3)) {
     sets[[3]] <- rownames(data)[
-      !is.na(data[[sample3]]) & data[[sample3]] != 0
+      !is.na(data[[sample3]])
     ]
     default_labels <- c(default_labels, sample3)
   }
@@ -4099,14 +5610,14 @@ overlap_plot_condition <- function(
     dpi = 300,
     labels = NULL,
     colors = NULL,
-    show_header = TRUE
+    show_header = TRUE,
+    data_scale = "log2"
 ) {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
+
   get_set <- function(condition) {
     samples <- meta$sample[meta$condition == condition]
-    present <- rowSums(
-      !is.na(data[, samples, drop = FALSE]) &
-        data[, samples, drop = FALSE] != 0
-    ) > 0
+    present <- rowSums(!is.na(data[, samples, drop = FALSE])) > 0
     rownames(data)[present]
   }
 
@@ -4176,10 +5687,11 @@ missing_value_plot <- function(
     width = 7.87,
     height = 3.94,
     dpi = 300,
-    color = "blue"
+    color = "blue",
+    data_scale = "log2"
 ) {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   intensity_matrix <- .numeric_matrix(data, meta$sample)
-  intensity_matrix[intensity_matrix == 0] <- NA
   missing_counts <- rowSums(is.na(intensity_matrix))
   missing_counts <- missing_counts[missing_counts < length(meta$sample)]
 
@@ -4223,7 +5735,10 @@ missing_value_plot_prec <- function(
     "Precursor.Id",
     "File.Name",
     "Precursor.Quantity",
-    function(values) values[1]
+    # max matches missing_value_plot_pep below. Taking the first value depended
+    # on input row order, and the raw-zero conversion runs immediately after, so
+    # which duplicate won decided whether a precursor read as detected.
+    max
   )
   names(wide_data) <- vapply(
     names(wide_data),
@@ -4232,6 +5747,7 @@ missing_value_plot_prec <- function(
   )
   samples <- vapply(meta$sample, extract_id_or_number, character(1))
   sample_columns <- intersect(samples, names(wide_data))
+  wide_data <- .raw_zero_to_na(wide_data, sample_columns)
   missing_counts <- rowSums(is.na(wide_data[, sample_columns, drop = FALSE]))
 
   .set_notebook_plot_size(width, height, units = "in")
@@ -4279,6 +5795,7 @@ missing_value_plot_pep <- function(
 
   samples <- vapply(meta$sample, extract_id_or_number, character(1))
   sample_columns <- intersect(samples, names(wide_data))
+  wide_data <- .raw_zero_to_na(wide_data, sample_columns)
   missing_counts <- rowSums(is.na(wide_data[, sample_columns, drop = FALSE]))
 
   .set_notebook_plot_size(width, height, units = "in")
@@ -4300,9 +5817,10 @@ missing_value_heatmap <- function(
     header = TRUE,
     width = 20,
     height = 10,
-    dpi = 300
+    dpi = 300,
+    data_scale = "log2"
 ) {
-  data[data == 0] <- NA
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = id)
   renamed_data <- .rename_samples(data, meta)
   samples <- intersect(meta$new_sample, names(renamed_data))
@@ -4329,8 +5847,8 @@ missing_value_heatmap <- function(
   .plot_result()
 }
 
-missing_protein_table <- function(data, meta, id = TRUE) {
-  data[data == 0] <- NA
+missing_protein_table <- function(data, meta, id = TRUE, data_scale = "log2") {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   sample_meta <- .sample_meta(meta, id = id, newline = FALSE)
   renamed_data <- .rename_samples(data, sample_meta)
   sample_columns <- intersect(sample_meta$new_sample, names(renamed_data))
@@ -4347,8 +5865,8 @@ missing_protein_table <- function(data, meta, id = TRUE) {
   output
 }
 
-missing_sample_table <- function(data, meta, id = TRUE) {
-  data[data == 0] <- NA
+missing_sample_table <- function(data, meta, id = TRUE, data_scale = "log2") {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   sample_meta <- .sample_meta(meta, id = id, newline = FALSE)
   renamed_data <- .rename_samples(data, sample_meta)
   sample_columns <- intersect(sample_meta$new_sample, names(renamed_data))
@@ -4368,8 +5886,8 @@ missing_value_outlier <- function(df, thld = 50) {
   as.character(df$Sample[df$`%_missing_values` > thld])
 }
 
-all_miss_val <- function(data, meta) {
+all_miss_val <- function(data, meta, data_scale = "log2") {
+  data <- .prepare_intensity_data(data, meta$sample, data_scale)
   intensity_matrix <- .numeric_matrix(data, meta$sample)
-  intensity_matrix[intensity_matrix == 0] <- NA
   round(mean(is.na(intensity_matrix)) * 100, 2)
 }

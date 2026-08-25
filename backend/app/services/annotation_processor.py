@@ -12,6 +12,7 @@ from app.services.functions import (
     build_metadata_from_conditions,
     filter_data,
     log2_transform_data,
+    normalize_data,
     use_existing_log2_data,
 )
 
@@ -43,22 +44,48 @@ class Log2ScaleDetection:
     reason: str
 
 
+# "log2" as a token, so a run dated `log2024` is not read as a scale marker.
+_LOG2_NAME = re.compile(r"(?<![a-z0-9])log2(?![0-9])", re.IGNORECASE)
+
+
 def detect_log2_transformed(
     data: pd.DataFrame,
     sample_columns: list[str],
 ) -> Log2ScaleDetection:
-    """Classify scale using only confirmed measurement/sample columns."""
+    """Classify scale using only confirmed measurement/sample columns.
+
+    A column name is weak evidence: it is trusted only when *every* selected
+    column carries the marker, and never over a clear contradiction from the
+    values themselves. One oddly named column used to decide for the whole
+    dataset, which skipped the log2 transform and turned a two-fold change into
+    a fold change of several hundred thousand.
+    """
     selected_columns = [str(column) for column in sample_columns if str(column) in data.columns]
     if not selected_columns:
         return Log2ScaleDetection(None, "no matching sample columns were available")
 
-    explicit_log2 = [column for column in selected_columns if "log2" in column.lower()]
-    if explicit_log2:
+    named_log2 = [column for column in selected_columns if _LOG2_NAME.search(column)]
+    names_agree = len(named_log2) == len(selected_columns)
+
+    value_detection = _value_scale_detection(data, selected_columns)
+    if names_agree:
+        if value_detection.is_log2_transformed is False:
+            return Log2ScaleDetection(
+                None,
+                "every selected sample column is named as log2 but the values are on a "
+                f"linear-intensity scale ({value_detection.reason}); state the scale explicitly",
+            )
         return Log2ScaleDetection(
             True,
-            f"{len(explicit_log2)} selected sample column name(s) explicitly indicate log2 values",
+            f"all {len(named_log2)} selected sample column names indicate log2 values",
         )
+    return value_detection
 
+
+def _value_scale_detection(
+    data: pd.DataFrame,
+    selected_columns: list[str],
+) -> Log2ScaleDetection:
     numeric = data[selected_columns].apply(pd.to_numeric, errors="coerce")
     usable: list[np.ndarray] = []
     for column in selected_columns:
@@ -111,6 +138,75 @@ def detect_log2_transformed(
     )
 
 
+_NORMALIZATION_LABELS = {
+    "none": "No normalization was applied.",
+    "median": (
+        "Median centering was applied globally to the log2 values before filtering: each "
+        "sample was shifted onto a common median."
+    ),
+    "quantile": (
+        "Quantile normalization was applied globally to the log2 values before filtering: "
+        "every sample was mapped onto a common intensity distribution."
+    ),
+}
+
+
+def _vsn_label() -> str:
+    """Name the reference implementation and its version, for the Methods section."""
+    try:
+        from app.services.r_vsn import vsn_reference_version
+
+        version = vsn_reference_version()
+    except Exception:  # noqa: BLE001 - reporting only
+        version = None
+    suffix = f" version {version}" if version else ""
+    return (
+        "VSN was applied globally, replacing the plain log2 transform. It is computed by the "
+        f"Bioconductor 'vsn' package{suffix} rather than a reimplementation. Note that the vsn "
+        "fit can be sensitive to tiny changes in the input on some datasets, so re-running it "
+        "on data exported and re-imported through a text format may not reproduce it exactly."
+    )
+
+
+def _normalization_warning(normalization: str) -> str:
+    """State the normalization in the annotation output so the report records it."""
+    key = str(normalization or "none").strip().lower()
+    if key == "vsn":
+        return _vsn_label()
+    message = _NORMALIZATION_LABELS.get(key, f"Normalization '{key}' was applied.")
+    if key == "none":
+        message += (
+            " Sample loading and instrument drift are therefore uncorrected unless the upload "
+            "was already normalized upstream (for example MaxLFQ or PG.Normalised)."
+        )
+    return message
+
+
+def prepare_normalized_log2_data(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+    is_log2_transformed: bool,
+    normalization: str,
+) -> pd.DataFrame:
+    """Create the one canonical analysis matrix used by every annotation path.
+
+    VSN models linear intensities and is sensitive to machine-epsilon changes in
+    its input, so linear uploads are passed through unchanged as its source.
+    For already-log2 uploads there is no original linear matrix to preserve.
+    """
+    if is_log2_transformed:
+        log2_data = use_existing_log2_data(data, sample_columns)
+    else:
+        log2_data = log2_transform_data(data, sample_columns)
+
+    return normalize_data(
+        log2_data,
+        sample_columns,
+        normalization,
+        linear_source=None if is_log2_transformed else data,
+    )
+
+
 def resolve_log2_state(
     data: pd.DataFrame,
     sample_columns: list[str],
@@ -131,6 +227,62 @@ def resolve_log2_state(
         f"selected sample column(s): {detection.reason}."
     )
     return detection.is_log2_transformed, True, warning
+
+
+def _unparseable_sample_columns(
+    data: pd.DataFrame,
+    sample_columns: list[str],
+    *,
+    threshold: float = 0.2,
+) -> list[tuple[str, int, int]]:
+    """Sample columns where text that looks like data does not parse as a number.
+
+    `pd.to_numeric(errors="coerce")` turns anything unparseable into NaN, and
+    every later stage reads NaN as "not detected". A blank or a documented
+    placeholder really is missing, so those are ignored; a value carrying digits
+    that still fails to parse is a measurement being lost. A column exported with
+    a European decimal comma loses every value this way, and the sample then
+    looks fully undetected rather than unreadable.
+
+    Returns (column, lost, total non-blank) for columns losing more than
+    `threshold` of their non-blank entries.
+    """
+    placeholders = {"", "na", "n/a", "nan", "-", "--", "null", "none", "filtered", "#div/0!", "#n/a"}
+    findings: list[tuple[str, int, int]] = []
+    for column in sample_columns:
+        if column not in data.columns:
+            continue
+        raw = data[column]
+        if raw.dtype.kind in "fiub":
+            continue  # already numeric; nothing was parsed from text
+        text = raw.astype(str).str.strip()
+        considered = text[~text.str.lower().isin(placeholders)]
+        if considered.empty:
+            continue
+        coerced = pd.to_numeric(considered, errors="coerce")
+        # Only count entries that carried a digit: a stray label is not a
+        # measurement, but "1234,5" or "1,234.5" is.
+        lost = int((coerced.isna() & considered.str.contains(r"\d", regex=True)).sum())
+        if lost and lost / len(considered) > threshold:
+            findings.append((str(column), lost, int(len(considered))))
+    return findings
+
+
+def _unmatched_metadata_samples(
+    data: pd.DataFrame,
+    metadata: pd.DataFrame,
+    matched_samples: list[str],
+) -> list[str]:
+    """Metadata sample names that name no column in the loaded dataset."""
+    column_map = {str(c).strip().lower(): str(c).strip() for c in metadata.columns}
+    sample_col = _resolve_sample_column(column_map, metadata.columns)
+    if sample_col is None:
+        return []
+    submitted = _clean_string_series(metadata[sample_col]).apply(
+        lambda value: re.sub(r"\.0$", "", value)
+    )
+    matched = set(matched_samples)
+    return sorted({name for name in submitted if name and name not in matched})
 
 
 def normalize_uploaded_metadata(
@@ -187,7 +339,59 @@ def normalize_uploaded_metadata(
 
     data_columns = set(str(c) for c in data.columns)
     cleaned = cleaned[cleaned["sample"].isin(data_columns)]
-    cleaned = cleaned.drop_duplicates(subset=["sample"], keep="first").reset_index(drop=True)
+    if "pair_id" in cleaned.columns and cleaned["sample"].duplicated(keep=False).any():
+        duplicates = (
+            cleaned.loc[cleaned["sample"].duplicated(keep=False), "sample"]
+            .drop_duplicates()
+            .tolist()
+        )
+        raise ValueError(
+            "Metadata with pair_id must contain each sample exactly once. "
+            f"Duplicates: {', '.join(duplicates)}."
+        )
+    # A sample repeated with the same values says the same thing twice and is
+    # dropped. A sample repeated with *different* values is a contradiction: the
+    # file states two incompatible facts, and keeping the first let row order
+    # decide which condition a sample belongs to, and so which group it was
+    # tested in. The pair_id branch above already refuses the same shape.
+    conflicting: list[str] = []
+    for sample, rows in cleaned.groupby("sample", sort=False):
+        if len(rows) < 2:
+            continue
+        for column in rows.columns:
+            if column == "sample":
+                continue
+            values = rows[column].astype(str).drop_duplicates().tolist()
+            if len(values) > 1:
+                conflicting.append(f"{sample} ({column}: {', '.join(values)})")
+                break
+    if conflicting:
+        raise ValueError(
+            "Metadata assigns a sample to more than one value. Each sample must "
+            "appear exactly once. Conflicts: "
+            f"{'; '.join(conflicting[:10])}."
+        )
+
+    # An identically repeated row used to be dropped silently. It says the same
+    # thing twice, so the annotation is unaffected -- but a metadata file that
+    # repeats a sample was assembled wrong, and the same slip made against a
+    # hand-built frame in the notebook packages doubles that sample's weight and
+    # roughly halves the standard error. Reporting it here keeps the three
+    # implementations to one rule: a sample appears once, or you hear about it.
+    repeated = (
+        cleaned.loc[cleaned["sample"].duplicated(keep=False), "sample"]
+        .drop_duplicates()
+        .tolist()
+    )
+    if repeated:
+        raise ValueError(
+            f"Metadata lists {len(repeated)} sample(s) more than once: "
+            f"{', '.join(repeated[:10])}"
+            f"{', and more' if len(repeated) > 10 else ''}. "
+            "Each sample must appear exactly once; remove the duplicate rows."
+        )
+
+    cleaned = cleaned.reset_index(drop=True)
     if cleaned.empty:
         raise ValueError(
             "Uploaded metadata does not match any sample columns in the current dataset."
@@ -278,6 +482,30 @@ def _append_combined_subset_columns(metadata: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _unparseable_warning(unparseable: list[tuple[str, int, int]]) -> str:
+    detail = ", ".join(
+        f"{column} ({lost} of {total})" for column, lost, total in unparseable[:6]
+    )
+    if len(unparseable) > 6:
+        detail += f", and {len(unparseable) - 6} more"
+    return (
+        "Values that look like measurements could not be read as numbers and were "
+        f"treated as missing in: {detail}. A decimal comma or a thousands separator "
+        "does this to a whole column; check the export locale before interpreting "
+        "these samples as undetected."
+    )
+
+
+def _dropped_samples_warning(dropped: list[str], annotated: int, source: str) -> str:
+    preview = ", ".join(dropped[:10])
+    if len(dropped) > 10:
+        preview += f", and {len(dropped) - 10} more"
+    return (
+        f"{len(dropped)} {source} name a sample that is not a column in this dataset "
+        f"and were ignored: {preview}. {annotated} sample(s) were annotated."
+    )
+
+
 def compute_annotation(
     data: pd.DataFrame,
     conditions: list[ConditionAssignment],
@@ -286,6 +514,7 @@ def compute_annotation(
     filter_mode: FilterMode,
     filter_method="at_least_n",
     min_percentage=70.0,
+    normalization: str = "none",
 ) -> AnnotationComputationResult:
     metadata_result = build_metadata_from_conditions(
         data,
@@ -304,10 +533,16 @@ def compute_annotation(
         is_log2_transformed,
     )
 
-    if resolved_log2:
-        log2_data = use_existing_log2_data(data, sample_columns)
-    else:
-        log2_data = log2_transform_data(data, sample_columns)
+    # Normalize before filtering so the log2 frame and the filtered frame that
+    # derives from it both carry it. Modules differ in which one they read
+    # (statistics uses filtered, comparison and single-protein use log2), so
+    # normalizing only one would leave the app internally inconsistent.
+    log2_data = prepare_normalized_log2_data(
+        data,
+        sample_columns,
+        resolved_log2,
+        normalization,
+    )
 
     filtered_data = filter_data(
         log2_data,
@@ -318,11 +553,35 @@ def compute_annotation(
         min_percentage=min_percentage,
     )
 
+    # Both annotation paths must report the same data-quality problems. Wiring
+    # these into only one caller is how a locale-mangled column reached a volcano
+    # plot with an empty warning list.
+    unparseable_columns = _unparseable_sample_columns(data, sample_columns)
+    annotated = {str(sample) for sample in sample_columns}
+    # A name that only differed by surrounding whitespace was matched, not lost,
+    # so it must not be reported as dropped.
+    annotated_stripped = {sample.strip() for sample in annotated}
+    dropped_columns = [
+        str(column)
+        for condition in conditions
+        for column in condition.columns
+        if str(column) not in annotated and str(column).strip() not in annotated_stripped
+    ]
+
     warnings: list[str] = []
+    if unparseable_columns:
+        warnings.append(_unparseable_warning(unparseable_columns))
+    if dropped_columns:
+        warnings.append(
+            _dropped_samples_warning(
+                dropped_columns, len(sample_columns), "assigned column(s)"
+            )
+        )
     if log2_warning:
         warnings.append(log2_warning)
     if auto_detected:
         warnings.append("Metadata was auto-generated from date-like column names.")
+    warnings.append(_normalization_warning(normalization))
 
     return AnnotationComputationResult(
         metadata=metadata,
@@ -343,11 +602,19 @@ def compute_annotation_from_metadata(
     filter_mode: FilterMode,
     filter_method="at_least_n",
     min_percentage=70.0,
+    normalization: str = "none",
 ) -> AnnotationComputationResult:
     normalized_metadata = normalize_uploaded_metadata(data=data, metadata=metadata)
     sample_columns = normalized_metadata["sample"].tolist()
     if not sample_columns:
         raise ValueError("No valid sample columns found in uploaded metadata.")
+
+    # Rows naming a sample the dataset does not have are dropped rather than
+    # rejected, because a shared metadata file legitimately covers more runs than
+    # are loaded. Dropping them silently is the problem: three mistyped names turn
+    # a balanced 6-vs-6 design into 6-vs-3, and every test result changes.
+    unmatched_metadata_samples = _unmatched_metadata_samples(data, metadata, sample_columns)
+    unparseable_columns = _unparseable_sample_columns(data, sample_columns)
 
     resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
         data,
@@ -355,10 +622,12 @@ def compute_annotation_from_metadata(
         is_log2_transformed,
     )
 
-    if resolved_log2:
-        log2_data = use_existing_log2_data(data, sample_columns)
-    else:
-        log2_data = log2_transform_data(data, sample_columns)
+    log2_data = prepare_normalized_log2_data(
+        data,
+        sample_columns,
+        resolved_log2,
+        normalization,
+    )
 
     filtered_data = filter_data(
         log2_data,
@@ -370,8 +639,19 @@ def compute_annotation_from_metadata(
     )
 
     warnings = ["Using uploaded metadata table for annotation."]
+    if unparseable_columns:
+        warnings.append(_unparseable_warning(unparseable_columns))
+    if unmatched_metadata_samples:
+        warnings.append(
+            _dropped_samples_warning(
+                unmatched_metadata_samples,
+                len(sample_columns),
+                "uploaded metadata row(s)",
+            )
+        )
     if log2_warning:
         warnings.append(log2_warning)
+    warnings.append(_normalization_warning(normalization))
 
     return AnnotationComputationResult(
         metadata=normalized_metadata,
