@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getToolAuthStatus, loginTool, loginToolLink, logoutTool } from "../lib/api";
 import { fragmentCredential, removeCredentialQuery } from "../lib/accessTokens";
 import { IS_VIEWER_MODE } from "../lib/appMode";
+import { onceAsync } from "../lib/onceAsync";
 import type { ToolAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
 import PasswordField from "./PasswordField";
@@ -14,7 +15,13 @@ type Props = {
 
 type GatePhase = "checking" | "ready" | "error";
 
-let toolResetOnLoadAttempted = false;
+const resetToolOnLoad = onceAsync(async () => {
+  try {
+    await logoutTool();
+  } catch {
+    // Keep login reachable if logout is unavailable, but wait for it to settle.
+  }
+});
 
 function readToolToken(): string {
   try {
@@ -54,9 +61,9 @@ export default function ToolAccessGate({ children }: Props) {
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [linkToken] = useState(readToolToken);
+  const [linkToken, setLinkToken] = useState(readToolToken);
 
-  const refreshStatus = useCallback(async () => {
+  const refreshStatus = useCallback(async (isCurrent: () => boolean = () => true) => {
     if (IS_VIEWER_MODE) {
       setStatus({ enabled: false, authenticated: true });
       setPhase("ready");
@@ -66,18 +73,14 @@ export default function ToolAccessGate({ children }: Props) {
     setPhase("checking");
     setStatusError(null);
     try {
-      if (!toolResetOnLoadAttempted) {
-        toolResetOnLoadAttempted = true;
-        try {
-          await logoutTool();
-        } catch {
-          // Keep login reachable even if logout endpoint is temporarily unavailable.
-        }
-      }
+      await resetToolOnLoad();
+      if (!isCurrent()) return;
       const next = await getToolAuthStatus();
+      if (!isCurrent()) return;
       setStatus(next);
       setPhase("ready");
     } catch (error) {
+      if (!isCurrent()) return;
       setStatus(null);
       setStatusError(error instanceof Error ? error.message : "Failed to reach tool auth endpoint.");
       setPhase("error");
@@ -85,22 +88,21 @@ export default function ToolAccessGate({ children }: Props) {
   }, []);
 
   useEffect(() => {
-    refreshStatus().catch(() => {});
+    let active = true;
+    refreshStatus(() => active).catch(() => {});
+    return () => { active = false; };
   }, [refreshStatus]);
 
   useEffect(() => {
     if (phase !== "ready" || !status?.enabled) return;
     if (linkToken) {
-      toolResetOnLoadAttempted = true;
+      setLinkToken("");
+      clearToolTokenFromUrl();
       setPhase("checking");
       setStatusError(null);
       loginToolLink(linkToken)
-        .then(() => {
-          clearToolTokenFromUrl();
-          return refreshStatus();
-        })
+        .then(() => refreshStatus())
         .catch((error) => {
-          clearToolTokenFromUrl();
           setStatus(null);
           setStatusError(error instanceof Error ? error.message : "Tool access link failed.");
           setPhase("error");

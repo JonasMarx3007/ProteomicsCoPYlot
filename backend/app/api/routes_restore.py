@@ -6,7 +6,7 @@ import io
 import os
 from datetime import datetime
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -24,6 +24,7 @@ from app.services.restore_state import (
     restore_upload_max_bytes,
 )
 from app.services.annotation_store import reset_all_annotations
+from app.services.request_security import local_path_access_allowed
 from app.services.condition_palette_store import reset_condition_palettes
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
@@ -71,10 +72,12 @@ def export_restore_state(payload: RestoreExportRequest) -> StreamingResponse:
 
 @router.post("/import", response_model=RestoreImportResponse)
 async def import_restore_state(
+    request: Request,
     stateFile: UploadFile = File(...),
     replacementsManifest: str | None = Form(default=None),
     replacements: list[UploadFile] = File(default=[]),
 ) -> RestoreImportResponse:
+    allow_local_paths = local_path_access_allowed(request)
     try:
         upload_limit = restore_upload_max_bytes()
         blob = await stateFile.read(upload_limit + 1)
@@ -86,7 +89,9 @@ async def import_restore_state(
             replacementsManifest,
             replacements,
         )
-        missing = await run_in_threadpool(inspect_missing_files, state, replacement_map)
+        missing = await run_in_threadpool(
+            inspect_missing_files, state, replacement_map, allow_local_paths=allow_local_paths,
+        )
         version_warning = describe_restore_version_warning(state)
     except RestoreStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -120,7 +125,9 @@ async def import_restore_state(
         return JSONResponse(status_code=409, content=payload.model_dump())
 
     try:
-        restored = await run_in_threadpool(apply_restore_state, state, replacement_map)
+        restored = await run_in_threadpool(
+            apply_restore_state, state, replacement_map, allow_local_paths=allow_local_paths,
+        )
     except RestoreStateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

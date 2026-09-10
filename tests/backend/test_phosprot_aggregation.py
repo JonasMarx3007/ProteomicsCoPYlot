@@ -91,7 +91,22 @@ def test_imputed_values_do_not_overwrite_observed_site_coverage() -> None:
 
     assert out.loc[0, "site_observed__s4"] == 1
     assert out.loc[0, "site_coverage__s4"] == pytest.approx(1 / 3)
-    assert np.isnan(out.loc[0, "s4"])
+    assert out.loc[0, "s4"] == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize("implementation", ["backend", "notebook"])
+def test_imputed_sample_without_observations_contributes(implementation) -> None:
+    from proteomicscopylot import notebook_functions as nb
+    collapse = transform_phosprot if implementation == "backend" else nb.transform_phosprot
+    observed = _sites([[1., 2., 3., np.nan], [10., 11., 12., np.nan]])
+    imputed = observed.copy()
+    imputed["s4"] = [4., 13.]
+    out = collapse(imputed, META, data_scale="log2", coverage_data=observed)
+    assert out.loc[0, "s4"] == pytest.approx(1.5)
+    assert out.loc[0, "site_observed__s4"] == 0
+    assert out.loc[0, "site_coverage__s4"] == 0
+    unfilled = collapse(observed, META, data_scale="log2")
+    assert np.isnan(unfilled.loc[0, "s4"])
 
 
 def test_transformed_zero_is_an_observation_but_raw_zero_is_missing() -> None:
@@ -128,8 +143,10 @@ def test_sum_propagate_na_uses_a_fixed_eligible_set_and_exports_coverage() -> No
 
     out = transform_phosprot(data, META, mode="sum_propagate_na")
 
+    # Every mode returns log2 now, so the linear sums 11, 22 and 44 come back as
+    # their logarithms; the propagated NaN is unaffected.
     assert out.loc[0, SAMPLES].to_numpy(dtype=float, na_value=np.nan) == pytest.approx(
-        [11.0, 22.0, np.nan, 44.0], nan_ok=True
+        [np.log2(11.0), np.log2(22.0), np.nan, np.log2(44.0)], nan_ok=True
     )
     assert out.loc[0, "site_num"] == 3
     assert out.loc[0, "site_num_eligible"] == 2
@@ -140,8 +157,9 @@ def test_sum_propagate_na_uses_a_fixed_eligible_set_and_exports_coverage() -> No
 @pytest.mark.parametrize(
     "mode,expected",
     [
-        ("sum_ignore_na", 30.0),
-        ("mean", 30.0),
+        # the linear aggregate is 30.0; every mode now returns log2
+        ("sum_ignore_na", np.log2(30.0)),
+        ("mean", np.log2(30.0)),
     ],
 )
 def test_legacy_non_strict_modes_remain_available(mode: str, expected: float) -> None:

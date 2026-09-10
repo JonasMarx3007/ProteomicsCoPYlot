@@ -17,6 +17,7 @@ from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
     analysis_data_source,
+    choose_best_source,
     filter_data,
     inverse_log2_transform_data,
     log2_transform_data,
@@ -140,11 +141,12 @@ def transform_phosprot(
 
     ``robust_site_median`` centres every site across samples on log2 scale and
     takes the within-protein median when at least half of the fixed eligible
-    site set is observed. The other modes aggregate original-scale values.
+    site set has finite supplied values (including imputed values).
+    The other modes aggregate original-scale values.
     ``data_scale`` states the supplied measurement scale so callers never rely
     on magnitude-based scale guessing. ``coverage_data`` may supply the aligned
-    pre-imputation matrix so diagnostics and coverage thresholds describe real
-    observations rather than filled values.
+    pre-imputation matrix so diagnostics describe real observations rather than
+    filled values. It fixes site eligibility, not per-sample value availability.
     """
     missing = [column for column in _REQUIRED_PHOSPHO_COLUMNS if column not in data.columns]
     if missing:
@@ -240,6 +242,7 @@ def transform_phosprot(
     }
     annotations = data.groupby("Protein_group", as_index=False).agg(annotation_aggregation)
 
+    non_positive_aggregates = 0
     if mode == "robust_site_median":
         numeric = eligible_log2[sample_columns].apply(pd.to_numeric, errors="coerce")
         site_centres = numeric.median(axis=1, skipna=True)
@@ -250,12 +253,14 @@ def transform_phosprot(
             .median()
             .reindex(diagnostics["Protein_group"].astype(str).tolist())
         )
-        observed = observed.reindex(values.index, fill_value=0)
+        available = numeric.notna().assign(
+            Protein_group=eligible_log2["Protein_group"].to_numpy()
+        ).groupby("Protein_group")[sample_columns].sum().reindex(values.index, fill_value=0)
         required = eligible_count.reindex(values.index, fill_value=0).apply(
             lambda count: max(1, int(math.ceil(float(count) * ROBUST_SITE_MIN_FRACTION)))
         )
         for sample in sample_columns:
-            values.loc[observed[sample] < required, sample] = np.nan
+            values.loc[available[sample] < required, sample] = np.nan
         values = values.reset_index()
     else:
         source = linear_source.loc[eligible_index].copy()
@@ -273,6 +278,16 @@ def transform_phosprot(
         values = source.groupby("Protein_group", as_index=False).agg(
             {column: summarizer for column in sample_columns}
         )
+        # These modes aggregate original-scale intensities while
+        # robust_site_median returns log2. Transforming here means every mode
+        # leaves this function on one scale, so the stored frame, the exported
+        # table and the notebook packages all agree; downstream no longer has to
+        # remember which mode produced the values it was handed.
+        aggregated = values[sample_columns].apply(pd.to_numeric, errors="coerce")
+        non_positive_aggregates = int((aggregated <= 0).sum().sum())
+        if non_positive_aggregates:
+            aggregated = aggregated.mask(aggregated <= 0)
+        values[sample_columns] = np.log2(aggregated)
 
     phosprot = annotations.merge(values, on="Protein_group", how="left")
     phosprot = phosprot.merge(diagnostics, on="Protein_group", how="left")
@@ -288,6 +303,7 @@ def transform_phosprot(
         for column in phosprot.columns
         if column.startswith("site_") and column not in {"site_num", "site_num_eligible"}
     ]
+    phosprot.attrs["non_positive_aggregates"] = non_positive_aggregates
     ordered = [
         "Phosphoprotein",
         "Gene_group",
@@ -395,11 +411,14 @@ def aggregate_from_phospho(
     phospho_annotation = _shared_phospho_annotation()
     sample_columns = phospho_annotation.metadata["sample"].astype(str).tolist()
     filtered_source = getattr(phospho_annotation, "filtered_data", None)
-    if filtered_source is not None and not filtered_source.empty:
-        log2_source = filtered_source.copy()
+    # Validate the observed source before looking up imputed values: filtering
+    # must also remain authoritative for the site's coverage diagnostics.
+    selected_source, log2_source = choose_best_source(
+        filtered_source, phospho_annotation.log2_data, phospho_annotation.log2_data,
+    )
+    if selected_source == "filtered":
         source_label = "normalized, filtered, non-imputed phospho data"
     else:
-        log2_source = phospho_annotation.log2_data.copy()
         source_label = "normalized, non-imputed phospho data"
     missing_samples = [sample for sample in sample_columns if sample not in log2_source.columns]
     if missing_samples:
@@ -424,25 +443,23 @@ def aggregate_from_phospho(
         data_scale="log2",
         coverage_data=coverage_source,
     )
-    result_is_log2 = mode == "robust_site_median"
+    # transform_phosprot now returns log2 for every mode, so the frame stored
+    # here, the table exported from it and the notebook packages are all on the
+    # same scale.
+    result_is_log2 = True
 
-    # Aggregated values are log2 transformed downstream, where a non-positive
-    # value becomes NaN with only a RuntimeWarning that no user ever sees. Make
-    # it explicit and counted instead of silent.
+    # A non-positive aggregate cannot be log2 transformed, so transform_phosprot
+    # masks it before taking the log and reports how many it lost. Counting it
+    # here would be wrong now: the values are already log2, where a negative is
+    # an ordinary measurement rather than a problem.
+    non_positive = int(phosprot.attrs.get("non_positive_aggregates", 0))
     non_positive_warning = ""
-    aggregated_columns = [column for column in sample_columns if column in phosprot.columns]
-    if aggregated_columns and not result_is_log2:
-        numeric = phosprot[aggregated_columns].apply(pd.to_numeric, errors="coerce")
-        non_positive = int((numeric <= 0).sum().sum())
-        if non_positive:
-            for column in aggregated_columns:
-                values = pd.to_numeric(phosprot[column], errors="coerce")
-                phosprot[column] = values.mask(values <= 0)
-            non_positive_warning = (
-                f" {non_positive} aggregated value(s) were not positive and were set to"
-                " missing because they cannot be log2 transformed. This points at a scale or"
-                " imputation problem in the phosphosite input rather than at the aggregation."
-            )
+    if non_positive:
+        non_positive_warning = (
+            f" {non_positive} aggregated value(s) were not positive and were set to"
+            " missing because they cannot be log2 transformed. This points at a scale or"
+            " imputation problem in the phosphosite input rather than at the aggregation."
+        )
 
     save_table_dataset(
         filename=f"phosprot_aggregated_{source}_{mode}.csv",

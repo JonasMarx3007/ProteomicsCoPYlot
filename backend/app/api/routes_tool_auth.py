@@ -7,7 +7,7 @@ import time
 from collections import deque
 from threading import RLock
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.schemas.tool_auth import (
     ToolAuthLinkLoginRequest,
@@ -82,13 +82,38 @@ def tool_auth_status_route() -> ToolAuthStatusResponse:
     return ToolAuthStatusResponse(enabled=enabled, authenticated=tool_session_authenticated())
 
 
+from app.services.session_context import (
+    session_cookie_name,
+    session_cookie_secure,
+)
+
+
+def _set_rotated_session_cookie(response: Response, session_id: str) -> None:
+    """Hand the client the post-login session id.
+
+    Authentication mints a new id and binds the grant to it, so the browser has to
+    be told; otherwise it keeps sending the pre-login id and every later request
+    reads as unauthenticated.
+    """
+    response.set_cookie(
+        key=session_cookie_name(),
+        value=session_id,
+        httponly=True,
+        secure=session_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+
+
 @router.post("/login", response_model=ToolAuthLoginResponse)
-def tool_auth_login_route(request: Request, payload: ToolAuthLoginRequest) -> ToolAuthLoginResponse:
+def tool_auth_login_route(
+    request: Request, payload: ToolAuthLoginRequest, response: Response
+) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="password")
     try:
-        authenticate_tool_password(payload.password)
+        rotated = authenticate_tool_password(payload.password)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -97,16 +122,19 @@ def tool_auth_login_route(request: Request, payload: ToolAuthLoginRequest) -> To
             status_code=500,
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
-    return ToolAuthLoginResponse(ok=True)
+    _set_rotated_session_cookie(response, rotated)
+    return ToolAuthLoginResponse(ok=True, sessionId=rotated)
 
 
 @router.post("/link-login", response_model=ToolAuthLoginResponse)
-def tool_auth_link_login_route(request: Request, payload: ToolAuthLinkLoginRequest) -> ToolAuthLoginResponse:
+def tool_auth_link_login_route(
+    request: Request, payload: ToolAuthLinkLoginRequest, response: Response
+) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="link")
     try:
-        authenticate_tool_token(payload.token)
+        rotated = authenticate_tool_token(payload.token)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -115,7 +143,8 @@ def tool_auth_link_login_route(request: Request, payload: ToolAuthLinkLoginReque
             status_code=500,
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
-    return ToolAuthLoginResponse(ok=True)
+    _set_rotated_session_cookie(response, rotated)
+    return ToolAuthLoginResponse(ok=True, sessionId=rotated)
 
 
 @router.post("/logout", response_model=ToolAuthLogoutResponse)

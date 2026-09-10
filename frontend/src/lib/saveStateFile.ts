@@ -3,6 +3,7 @@ export type SaveStateFileHandle = {
   createWritable: () => Promise<{
     write: (data: Blob) => Promise<void>;
     close: () => Promise<void>;
+    abort: () => Promise<void>;
   }>;
   getFile?: () => Promise<File>;
 };
@@ -215,8 +216,11 @@ async function writeBlobToHandle(handle: SaveStateFileHandle, blob: Blob): Promi
   const writable = await handle.createWritable();
   try {
     await writable.write(blob);
-  } finally {
     await writable.close();
+  } catch (error) {
+    // Never commit a partial write. Preserve the original failure if cleanup fails.
+    await writable.abort().catch(() => undefined);
+    throw error;
   }
 }
 
@@ -234,16 +238,12 @@ export async function saveRestoreStateBlob(options: {
   const normalizedName = normalizeFileName(suggestedName);
 
   if (!forcePicker && existingHandle) {
-    try {
-      await writeBlobToHandle(existingHandle, blob);
-      return {
-        fileName: existingHandle.name?.trim() || normalizedName,
-        handle: existingHandle,
-        method: "handle",
-      };
-    } catch {
-      // Fall back to an explicit picker if the old handle is no longer writable.
-    }
+    await writeBlobToHandle(existingHandle, blob);
+    return {
+      fileName: existingHandle.name?.trim() || normalizedName,
+      handle: existingHandle,
+      method: "handle",
+    };
   }
 
   const savePicker = pickerGlobal().showSaveFilePicker;

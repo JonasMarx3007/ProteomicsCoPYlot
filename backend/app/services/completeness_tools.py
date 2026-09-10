@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-import io
+from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
+    cm_to_inch as _cm_to_inch,
+)
+
 import re
 
 import numpy as np
@@ -43,21 +47,8 @@ def _get_sns():
         ) from exc
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
-def _cm_to_inch(value_cm: float) -> float:
-    return max(1.0, float(value_cm) / 2.54)
 
 
 def _feature_label(frame: pd.DataFrame) -> str:

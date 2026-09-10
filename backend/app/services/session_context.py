@@ -64,6 +64,19 @@ def get_browser_session_id() -> str:
     return _SESSION_ID_CTX.get()
 
 
+def rotate_session_id() -> str:
+    """Replace the current session id with a fresh one and return it.
+
+    Used on successful authentication. The id arrives from the client -- a cookie
+    or a header -- so without rotation an attacker who plants a known id in the
+    victim's browser and waits for them to log in can then replay it. Cookies are
+    not origin-isolated, so any host under a shared parent domain can set one.
+    """
+    replacement = new_session_id()
+    _SESSION_ID_CTX.set(replacement)
+    return replacement
+
+
 def set_session_id(session_id: str) -> Token[str]:
     return _SESSION_ID_CTX.set(normalize_session_id(session_id))
 

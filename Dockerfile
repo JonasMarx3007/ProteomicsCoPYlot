@@ -23,7 +23,7 @@ ENV VITE_TOOL_ACCESS_AUTH=${FRONTEND_TOOL_ACCESS_AUTH}
 ENV VITE_RESET_ON_BROWSER_LOAD=${FRONTEND_RESET_ON_BROWSER_LOAD}
 RUN npm run build
 
-FROM python:3.11-bookworm
+FROM python:3.13-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -51,8 +51,8 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove r-base-dev \
     && rm -rf /var/lib/apt/lists/* /tmp/downloaded_packages
 
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --upgrade pip && pip install -r /app/backend/requirements.txt
+COPY backend/requirements-runtime.lock /app/backend/requirements-runtime.lock
+RUN pip install --upgrade pip && pip install -r /app/backend/requirements-runtime.lock
 
 COPY backend /app/backend
 RUN test -f /app/backend/app/services/session_context.py

@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -151,17 +153,102 @@ def test_the_strictest_legitimate_percentage_is_allowed(notebook) -> None:
     assert len(kept) == 20
 
 
-@pytest.mark.parametrize("scope", ["per group", "per_group", "PER_GROUP"])
-def test_scope_spellings_agree_with_the_backend(notebook, scope: str) -> None:
+@pytest.mark.parametrize("mode", ["per group", "per_group", "PER_GROUP"])
+def test_mode_spellings_agree_with_the_backend(notebook, mode: str) -> None:
     import sys
 
     sys.path.insert(0, str(ROOT / "backend"))
     from app.services.functions import filter_data as backend_filter
 
     frame, meta = _frame(20), _meta()
-    from_pip = len(notebook.filter_data(frame.copy(), meta, 2, scope))
-    from_backend = len(backend_filter(frame.copy(), meta, 2, scope))
+    from_pip = len(notebook.filter_data(frame.copy(), meta, 2, mode))
+    from_backend = len(backend_filter(frame.copy(), meta, 2, mode))
     assert from_pip == from_backend, (
-        f"scope {scope!r} kept {from_pip} rows in the package and {from_backend} in the "
+        f"mode {mode!r} kept {from_pip} rows in the package and {from_backend} in the "
         "backend; the same spelling must mean the same thing in both"
     )
+
+
+def _comma_frame(column: str = "s2") -> pd.DataFrame:
+    frame = _frame()
+    frame[column] = [str(round(v, 3)).replace(".", ",") for v in frame[column]]
+    return frame
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["filter_data", "volcano_data_f", "anova_data_f", "impute_values"],
+)
+def test_a_locale_mangled_column_is_refused_not_silently_emptied(notebook, call) -> None:
+    """A decimal comma turns every value in a sample into NaN.
+
+    The sample then reads as fully undetected, survives the completeness filter
+    on the other replicates, and the analysis runs one replicate short with no
+    sign that anything went wrong.
+    """
+    meta = _meta()
+    runners = {
+        "filter_data": lambda f: notebook.filter_data(f, meta, 2),
+        "volcano_data_f": lambda f: notebook.volcano_data_f(f, meta, "a", "b"),
+        "anova_data_f": lambda f: notebook.anova_data_f(f, meta),
+        "impute_values": lambda f: notebook.impute_values(f, meta),
+    }
+    runners[call](_frame())
+    with pytest.raises(ValueError, match="do not parse as numbers"):
+        runners[call](_comma_frame())
+
+
+def test_the_message_names_the_column_and_shows_a_value(notebook) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        notebook.filter_data(_comma_frame(), _meta(), 2)
+    message = str(excinfo.value)
+    assert "s2" in message and "," in message
+
+
+def test_documented_placeholders_are_not_mistaken_for_lost_values(notebook) -> None:
+    frame = _frame()
+    frame["s2"] = frame["s2"].astype(object)
+    frame.loc[:19, "s2"] = "NA"
+    frame.loc[20:39, "s2"] = "Filtered"
+    assert len(notebook.filter_data(frame, _meta(), 2)) > 0
+
+
+def test_a_few_stray_labels_do_not_trip_the_guard(notebook) -> None:
+    """Only a column losing most of its values is a mangled export."""
+    frame = _frame()
+    frame["s2"] = frame["s2"].astype(object)
+    frame.loc[:3, "s2"] = "not detected"
+    assert len(notebook.filter_data(frame, _meta(), 2)) > 0
+
+
+def _partly_comma_frame(fraction: float, column: str = "s2") -> pd.DataFrame:
+    """Mangle only a fraction of one column, as a spreadsheet round-trip would."""
+    frame = _frame(200)
+    values = frame[column].tolist()
+    frame[column] = frame[column].astype(object)
+    for index in range(int(200 * fraction)):
+        frame.loc[index, column] = str(round(values[index], 3)).replace(".", ",")
+    return frame
+
+
+def test_a_partial_loss_is_reported_even_though_it_is_tolerated(notebook) -> None:
+    """The threshold decides whether to refuse, not whether to mention it.
+
+    A thousands separator applied by a spreadsheet mangles only the largest
+    values, so a partial loss deletes a biased sample of the measurements and
+    shifts the comparison. Tolerating it quietly is the silence the guard exists
+    to break.
+    """
+    with pytest.warns(UserWarning, match="do not parse as numbers"):
+        notebook.filter_data(_partly_comma_frame(0.10), _meta(), 2)
+
+
+def test_clean_data_says_nothing(notebook) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        notebook.filter_data(_frame(200), _meta(), 2)
+
+
+def test_a_wholesale_loss_is_still_refused_not_merely_reported(notebook) -> None:
+    with pytest.raises(ValueError, match="do not parse as numbers"):
+        notebook.filter_data(_partly_comma_frame(0.60), _meta(), 2)

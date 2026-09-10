@@ -210,9 +210,7 @@ def paired_sample_columns(
 _TEST_TYPES: dict[str, tuple[bool, str]] = {
     "unpaired": (False, "pooled"),
     "unpaired_welch": (False, "welch"),
-    "unpaired_moderated": (False, "moderated"),
     "paired": (True, "pooled"),
-    "paired_moderated": (True, "moderated"),
 }
 
 
@@ -234,78 +232,6 @@ def variance_model(value) -> str:
     return resolve_test_type(value)[1]
 
 
-def trigamma_inverse(values: np.ndarray) -> np.ndarray:
-    """Invert the trigamma function by Newton iteration (limma::trigammaInverse).
-
-    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-    """
-    x = np.asarray(values, dtype=float)
-    y = np.empty_like(x)
-    big, small = x > 1e7, x < 1e-6
-    y[big] = 1.0 / np.sqrt(x[big])
-    y[small] = 1.0 / x[small]
-    middle = ~(big | small)
-    if np.any(middle):
-        current = 0.5 + 1.0 / x[middle]
-        for _ in range(50):
-            tri = polygamma(1, current)
-            step = tri * (1.0 - tri / x[middle]) / polygamma(2, current)
-            current = current + step
-            if np.max(-step / current) < 1e-8:
-                break
-        y[middle] = current
-    return y
-
-
-def _fit_variance_prior(variances: np.ndarray, dof: np.ndarray) -> tuple[float, float]:
-    """Method-of-moments scaled inverse chi-square prior (limma::fitFDist)."""
-    variances = np.asarray(variances, dtype=float)
-    dof = np.asarray(dof, dtype=float)
-    usable = np.isfinite(variances) & np.isfinite(dof) & (variances > 0) & (dof > 0)
-    if int(usable.sum()) < 2:
-        fallback = float(np.nanmean(variances[usable])) if usable.any() else 1.0
-        return fallback, float("inf")
-    observed, degrees = variances[usable], dof[usable]
-    transformed = np.log(observed) - digamma(degrees / 2.0) + np.log(degrees / 2.0)
-    count = transformed.size
-    mean_t = float(np.mean(transformed))
-    excess = float(np.sum((transformed - mean_t) ** 2) / (count - 1)) - float(
-        np.mean(polygamma(1, degrees / 2.0))
-    )
-    if excess > 0:
-        df_prior = float(2.0 * trigamma_inverse(np.array([excess]))[0])
-        var_prior = float(np.exp(mean_t + digamma(df_prior / 2.0) - np.log(df_prior / 2.0)))
-    else:
-        # No excess variability between features: the prior carries all the
-        # weight and every feature gets the same variance.
-        df_prior = float("inf")
-        var_prior = float(np.exp(mean_t))
-    return var_prior, df_prior
-
-
-def squeeze_variance(
-    variances: np.ndarray,
-    dof: np.ndarray,
-) -> tuple[np.ndarray, float, float]:
-    """Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
-
-    This is what makes a moderated t-test worth having at proteomics group sizes:
-    a per-feature variance from n=3 is a poor estimate, and borrowing strength
-    across features stabilises it. Returns (posterior variances, prior variance,
-    prior degrees of freedom).
-
-    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-    """
-    var_prior, df_prior = _fit_variance_prior(variances, dof)
-    variances = np.asarray(variances, dtype=float)
-    dof = np.asarray(dof, dtype=float)
-    if not np.isfinite(df_prior):
-        posterior = np.full_like(variances, var_prior, dtype=float)
-    else:
-        posterior = (dof * variances + df_prior * var_prior) / (dof + df_prior)
-    return posterior, var_prior, df_prior
 
 
 def paired_t_test(differences: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -381,7 +307,11 @@ def raw_zero_to_nan(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFra
     out = data.copy()
     present = [column for column in sample_columns if column in out.columns]
     if present:
-        out[present] = out[present].apply(pd.to_numeric, errors="coerce").replace(0, np.nan)
+        out[present] = (
+            out[present]
+            .apply(pd.to_numeric, errors="coerce")
+            .replace([np.inf, -np.inf, 0], np.nan)
+        )
     return out
 
 
@@ -393,7 +323,22 @@ def log2_transform_data(data: pd.DataFrame, sample_columns: list[str]) -> pd.Dat
 
 
 def use_existing_log2_data(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    selected = data[sample_columns].copy().apply(pd.to_numeric, errors="coerce")
+    """Take an upload that is already on the log2 scale, as measurement columns.
+
+    Non-finite values are missing, not observed. An upload can carry -inf: log2 of
+    a zero, which is what the deprecated collapse variants write for a Spectronaut
+    non-detection. `filter_data` counts with `notna()`, so an -inf survives the
+    completeness filter as though it were a measurement and then yields an
+    infinite fold change. The notebook package has always coerced these; the web
+    app did not, so a file this application produced could corrupt an analysis
+    without the user ever leaving it.
+    """
+    selected = (
+        data[sample_columns]
+        .copy()
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+    )
     remaining = [col for col in data.columns if col not in sample_columns]
     return pd.concat([selected, data[remaining]], axis=1)
 
@@ -424,8 +369,8 @@ def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
     Missing values are neither imputed nor allowed to shift a sample's ranks:
     each sample's observed values are mapped onto their own quantile positions,
     and the shared reference distribution is read off at those positions. This
-    matches limma::normalizeQuantiles, which interpolates rather than dropping
-    incomplete rows.
+    interpolates rather than dropping incomplete rows, so a feature missing in
+    one sample still contributes everywhere it was measured.
     """
     from scipy.stats import rankdata
 
@@ -434,8 +379,8 @@ def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
     if row_count == 0:
         return numeric
 
-    # Grid spans the full row count, as limma does, so columns with different
-    # numbers of observed values still land on a common reference curve.
+    # Grid spans the full row count so columns with different numbers of
+    # observed values still land on a common reference curve.
     grid = np.linspace(0.0, 1.0, row_count)
     curves = []
     for column in numeric.columns:
@@ -518,8 +463,8 @@ def normalize_data(
     round-tripped input. Passing the untransformed upload keeps the result
     reproducible against a direct vsn2() call on the same file.
 
-    References: quantile normalization follows limma::normalizeQuantiles (Ritchie
-    et al. 2015, doi:10.1093/nar/gkv007); VSN is delegated to the Bioconductor vsn package
+    References: quantile normalization follows the method of Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185;
+    VSN is delegated to the Bioconductor vsn package
     (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
     """
     resolved = str(method or "none").strip().lower()
@@ -588,6 +533,30 @@ def _validate_filter_thresholds(
         raise ValueError(f"Minimum valid values must be zero or greater, got {value}.")
 
 
+def _validate_meta_samples(metadata: pd.DataFrame) -> None:
+    """Refuse metadata that names a sample more than once.
+
+    A sample listed twice is counted twice by every group-wise mean and variance,
+    which roughly halves the standard error while leaving the fold change
+    untouched -- so nothing looks wrong and only the p-values move, downward. The
+    upload path already rejects this, but restore and direct service calls reach
+    here without passing through it, and the notebook packages have refused it
+    since they gained the same guard.
+    """
+    if not isinstance(metadata, pd.DataFrame) or "sample" not in metadata.columns:
+        return
+    samples = metadata["sample"].astype(str).str.strip()
+    repeated = samples[samples.duplicated(keep=False)].drop_duplicates().tolist()
+    if repeated:
+        raise ValueError(
+            f"Metadata lists {len(repeated)} sample(s) more than once: "
+            f"{', '.join(repeated[:10])}"
+            f"{', and more' if len(repeated) > 10 else ''}. "
+            "Each sample must appear exactly once; a repeated sample is counted "
+            "twice and deflates every p-value."
+        )
+
+
 def filter_data(
     data: pd.DataFrame,
     metadata: pd.DataFrame,
@@ -596,6 +565,7 @@ def filter_data(
     method="at_least_n",
     min_percentage=70.0,
 ) -> pd.DataFrame:
+    _validate_meta_samples(metadata)
     sample_columns = metadata["sample"].tolist()
     data_selected = data[sample_columns].copy()
     method = str(method or "at_least_n").strip().lower()
@@ -634,7 +604,15 @@ def choose_best_source(
     log2_df: pd.DataFrame | None,
     raw_df: pd.DataFrame,
 ) -> tuple[DataSource, pd.DataFrame]:
-    if filtered_df is not None and not filtered_df.empty:
+    # Filtering preserves columns even when no rows pass. Only None or the
+    # legacy schema-less placeholder means that no filtered matrix exists.
+    if filtered_df is not None and len(filtered_df.columns) > 0:
+        if filtered_df.empty:
+            raise ValueError(
+                "No features passed the selected filter. Adjust the filter in "
+                "Data > Annotation and generate annotation again to continue. "
+                "Unfiltered data has not been substituted."
+            )
         return "filtered", filtered_df.copy()
     if log2_df is not None and not log2_df.empty:
         return "log2", log2_df.copy()
@@ -902,11 +880,12 @@ def analysis_data_source(kind, data_source="auto"):
 
     if requested_source == "filtered":
         filtered = getattr(annotation, "filtered_data", None)
-        if not isinstance(filtered, pd.DataFrame) or filtered.empty:
+        if not isinstance(filtered, pd.DataFrame) or len(filtered.columns) == 0:
             raise ValueError(
                 f"Filtered {kind} data is not available. Generate annotation/filtering first."
             )
-        return "filtered", filtered.copy(), annotation.metadata.copy(), []
+        source_used, frame = choose_best_source(filtered, None, raw)
+        return source_used, frame, annotation.metadata.copy(), []
 
     source_used, base_frame = choose_best_source(
         annotation.filtered_data,

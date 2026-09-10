@@ -15,11 +15,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.schemas.external import PeptideCollapseRequest
 from app.services.external_functions import (
     peptideCollapse,
-    peptideCollapse_fixed,
-    peptideCollapse_old,
-    process_and_export,
 )
-from app.services.external_tools import COLLAPSE_VERSIONS
 
 RUNS = ["run1", "run2"]
 PEPTIDES = [
@@ -58,8 +54,20 @@ def _quantities(frame: pd.DataFrame) -> np.ndarray:
     return frame[columns].to_numpy(dtype=float, na_value=np.nan).ravel()
 
 
+def _upload(**data):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    return TestClient(app).post(
+        "/api/external/peptide-collapse/upload",
+        files={"file": ("x.tsv", io.BytesIO(b"placeholder"), "text/tab-separated-values")},
+        data={"cutoff": "0.0", **data},
+    )
+
+
 def test_the_missing_value_sentinel_becomes_nan_not_negative_infinity() -> None:
-    values = _quantities(_collapse(peptideCollapse_fixed, _table(0.0)))
+    values = _quantities(_collapse(peptideCollapse, _table(0.0)))
     assert not np.isinf(values).any(), (
         "log2(0) leaked through as -inf; filter_data counts -inf as an observation, "
         "so the row survives filtering and then yields an infinite fold change"
@@ -68,74 +76,81 @@ def test_the_missing_value_sentinel_becomes_nan_not_negative_infinity() -> None:
 
 
 def test_a_genuine_intensity_of_one_is_not_deleted() -> None:
-    values = _quantities(_collapse(peptideCollapse_fixed, _table(1.0)))
+    values = _quantities(_collapse(peptideCollapse, _table(1.0)))
     assert not np.isnan(values).any(), "a real measurement of 1.0 was dropped as if it were a sentinel"
     assert 0.0 in [round(float(v), 6) for v in values]
 
 
 def test_a_filtered_cell_does_not_crash_the_collapse() -> None:
-    values = _quantities(_collapse(peptideCollapse_fixed, _table("Filtered")))
+    values = _quantities(_collapse(peptideCollapse, _table("Filtered")))
     assert np.isnan(values).sum() == 1
     assert not np.isinf(values).any()
 
 
-def test_clean_data_is_unchanged_by_the_fix() -> None:
-    table = _table(1500.0)
-    before = _quantities(_collapse(peptideCollapse, table))
-    after = _quantities(_collapse(peptideCollapse_fixed, table))
-    assert np.array_equal(before, after, equal_nan=True), (
-        "the fixed variant must be inert on data that carries no sentinels"
+
+@pytest.mark.parametrize("version", ["fixed", "newest", "legacy", "bogus"])
+def test_removed_version_parameter_is_rejected(version) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PeptideCollapseRequest(inputPath="x.tsv", collapseVersion=version)
+    response = _upload(collapseVersion=version)
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
+def test_upload_runs_corrected_collapse_without_version() -> None:
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/external/peptide-collapse/upload",
+            files={"file": ("x.tsv", _table(0.0).to_csv(sep="\t", index=False).encode(), "text/tab-separated-values")},
+        )
+    assert response.status_code == 200, response.text
+    result = pd.read_csv(io.StringIO(response.text), sep="\t")
+    values = _quantities(result)
+    assert not np.isinf(values).any()
+    assert np.isnan(values).sum() == 1
+
+
+def test_local_json_route_uses_the_same_corrected_output(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    source = tmp_path / "input.tsv"
+    _table(0.0).to_csv(source, sep="\t", index=False)
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        response = client.post(
+            "/api/external/peptide-collapse/run", json={"inputPath": str(source)}
+        )
+        rejected = client.post(
+            "/api/external/peptide-collapse/run",
+            json={"inputPath": str(source), "collapseVersion": "newest"},
+        )
+    assert rejected.status_code == 422
+    assert response.status_code == 200, response.text
+    assert response.json()["success"]
+    assert "collapseVersion" not in response.json()
+    result = pd.read_csv(response.json()["outputPath"], sep="\t")
+    expected = _collapse(peptideCollapse, _table(0.0))
+    pd.testing.assert_frame_equal(result, expected, check_dtype=False)
+
+
+def test_clean_data_has_expected_log2_quantities() -> None:
+    values = _quantities(_collapse(peptideCollapse, _table(1500.0)))
+    np.testing.assert_allclose(
+        np.sort(values), np.sort(np.log2([1000, 2000, 4000, 1500, 2000, 4000]))
     )
 
 
-@pytest.mark.parametrize("bad", [0.0, "Filtered"])
-def test_the_older_variants_still_show_the_defect_they_are_kept_for(bad) -> None:
-    try:
-        values = _quantities(_collapse(peptideCollapse, _table(bad)))
-    except TypeError:
-        return
-    assert np.isinf(values).any() or np.isnan(values).sum() == 0
-
-
-def test_every_selectable_version_maps_to_a_distinct_implementation() -> None:
-    assert COLLAPSE_VERSIONS == {
-        "fixed": peptideCollapse_fixed,
-        "newest": peptideCollapse,
-        "legacy": peptideCollapse_old,
-    }
-    assert len(set(COLLAPSE_VERSIONS.values())) == 3
-
-
-def test_the_fixed_variant_is_the_default_everywhere() -> None:
-    assert PeptideCollapseRequest(inputPath="x.tsv").collapseVersion == "fixed"
-    assert COLLAPSE_VERSIONS["fixed"] is peptideCollapse_fixed
-    import inspect
-
-    default = inspect.signature(process_and_export).parameters["collapse_func"].default
-    assert default is peptideCollapse_fixed
-
-
-def test_the_fixed_variant_keeps_every_site_by_default() -> None:
-    import inspect
-
-    default = inspect.signature(peptideCollapse_fixed).parameters["cutoff"].default
-    assert default == 0.0, (
-        "peptideCollapse_fixed must default to cutoff 0.0. The schema, the API and "
-        "the UI all pass 0, so a 0.75 in the signature would never take effect and "
-        "would misdescribe what the function does"
-    )
-    assert PeptideCollapseRequest(inputPath="x.tsv").cutoff == 0.0
-    assert inspect.signature(process_and_export).parameters["cutoff"].default == 0
-
-
-def test_an_explicit_class_one_cutoff_still_filters() -> None:
+def test_default_cutoff_keeps_all_sites_and_explicit_cutoff_filters() -> None:
     table = _table(1500.0)
-    everything = _collapse(peptideCollapse_fixed, table)
+    table.loc[table["PG.Genes"] == "GENEA", "EG.PTMAssayProbability"] = 0.5
+    everything = _collapse(peptideCollapse, table)
     with contextlib.redirect_stdout(io.StringIO()):
-        class_one = peptideCollapse_fixed(table.copy(), cutoff=0.75)
-    assert len(class_one) <= len(everything)
-
-
-def test_an_unknown_version_is_rejected_rather_than_defaulted() -> None:
-    with pytest.raises(Exception):
-        PeptideCollapseRequest(inputPath="x.tsv", collapseVersion="not_a_version")
+        class_one = peptideCollapse(table.copy(), cutoff=0.75)
+    assert len(everything) == 3
+    assert len(class_one) == 2
+    assert PeptideCollapseRequest(inputPath="x.tsv").cutoff == 0.0

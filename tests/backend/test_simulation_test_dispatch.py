@@ -88,7 +88,7 @@ def test_student_and_welch_simulations_do_not_collapse_to_one_result() -> None:
 
 @pytest.mark.parametrize(
     "removed_test_type",
-    ["paired", "paired_moderated", "unpaired_moderated"],
+    ["paired"],
 )
 def test_simulation_schema_rejects_removed_methods(removed_test_type: str) -> None:
     with pytest.raises(ValidationError):

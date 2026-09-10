@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getViewerAuthStatus, loginViewer, loginViewerQr, logoutViewer } from "../lib/api";
 import { fragmentCredential, removeCredentialQuery } from "../lib/accessTokens";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "../lib/appMode";
+import { onceAsync } from "../lib/onceAsync";
 import type { ViewerAuthStatusResponse } from "../lib/types";
 import AppBrand from "./AppBrand";
 import PasswordField from "./PasswordField";
@@ -13,7 +14,13 @@ type Props = {
 };
 
 type GatePhase = "checking" | "ready" | "error";
-let viewerPortalResetOnLoadAttempted = false;
+const resetViewerOnLoad = onceAsync(async () => {
+  try {
+    await logoutViewer();
+  } catch {
+    // Keep login reachable if logout is unavailable, but wait for it to settle.
+  }
+});
 
 function modeLabel() {
   return IS_AI_MODE ? "Viewer AI" : "Viewer";
@@ -26,7 +33,7 @@ export default function ViewerPortalGate({ children }: Props) {
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [qrToken] = useState(readQrToken);
+  const [qrToken, setQrToken] = useState(readQrToken);
 
   function readQrToken(): string {
     try {
@@ -59,7 +66,7 @@ export default function ViewerPortalGate({ children }: Props) {
     }
   }
 
-  const refreshStatus = useCallback(async () => {
+  const refreshStatus = useCallback(async (isCurrent: () => boolean = () => true) => {
     if (!IS_VIEWER_MODE) {
       setPhase("ready");
       setStatus({
@@ -74,18 +81,14 @@ export default function ViewerPortalGate({ children }: Props) {
     setPhase("checking");
     setStatusError(null);
     try {
-      if (!viewerPortalResetOnLoadAttempted) {
-        viewerPortalResetOnLoadAttempted = true;
-        try {
-          await logoutViewer();
-        } catch {
-          // Keep login page reachable even if logout endpoint is temporarily unavailable.
-        }
-      }
+      await resetViewerOnLoad();
+      if (!isCurrent()) return;
       const next = await getViewerAuthStatus();
+      if (!isCurrent()) return;
       setStatus(next);
       setPhase("ready");
     } catch (error) {
+      if (!isCurrent()) return;
       setStatus(null);
       setStatusError(error instanceof Error ? error.message : "Failed to reach viewer auth endpoint.");
       setPhase("error");
@@ -93,22 +96,21 @@ export default function ViewerPortalGate({ children }: Props) {
   }, []);
 
   useEffect(() => {
-    refreshStatus().catch(() => {});
+    let active = true;
+    refreshStatus(() => active).catch(() => {});
+    return () => { active = false; };
   }, [refreshStatus]);
 
   useEffect(() => {
     if (phase !== "ready" || !status?.enabled) return;
     if (qrToken) {
-      viewerPortalResetOnLoadAttempted = true;
+      setQrToken("");
+      clearQrTokenFromUrl();
       setPhase("checking");
       setStatusError(null);
       loginViewerQr(qrToken)
-        .then(() => {
-          clearQrTokenFromUrl();
-          return refreshStatus();
-        })
+        .then(() => refreshStatus())
         .catch((error) => {
-          clearQrTokenFromUrl();
           setStatus(null);
           setStatusError(error instanceof Error ? error.message : "Viewer QR login failed.");
           setPhase("error");

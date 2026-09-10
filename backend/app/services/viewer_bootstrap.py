@@ -26,6 +26,7 @@ from app.services.dataset_store import save_peptide_path, save_table_dataset, se
 from app.services.functions import impute_values_with_diagnostics
 from app.services.metadata_upload_store import (
     create_profile as create_metadata_profile,
+    list_profiles as list_metadata_profiles,
     save_uploaded_metadata,
     set_active_profile as set_active_metadata_profile,
 )
@@ -207,9 +208,10 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 first_declared_profile = profile_name
             try:
                 create_metadata_profile(profile_name, package_name=package_name)
-            except ValueError:
-                # Profile already exists in this package; continue.
-                pass
+            except ValueError as exc:
+                if profile_name not in list_metadata_profiles(package_name=package_name):
+                    result.warnings.append(f"{package_name}:{profile_name}: {exc}")
+                    continue
             except Exception as exc:
                 LOGGER.exception(
                     "Viewer metadata profile creation failed for %s:%s",
