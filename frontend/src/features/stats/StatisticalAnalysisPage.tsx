@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
+import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
 import PaginatedTable from "../../components/PaginatedTable";
 import PairingEditor from "../../components/PairingEditor";
 import {
@@ -21,7 +22,7 @@ import {
   removeVolcanoReportEntry,
 } from "../../lib/reportState";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
-import { getActiveAdvancedPlotSettingsJson, getAdvancedPlotMode } from "../../lib/appSettings";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type {
@@ -45,39 +46,7 @@ import type {
   SummaryVolcanoEntry,
 } from "../../lib/types";
 
-/**
- * Design and variance model in one field. "Unpaired" and "Paired" keep their
- * original meaning (pooled Student's t) so saved reports are unaffected.
- *
- * Moderated shares variance information across features (limma's empirical
- * Bayes), which is what makes small replicate numbers usable: at n=3 it
- * recovered 306 true positives against 14 for pooled on simulated data, with
- * FDR still controlled.
- */
-const TEST_TYPE_OPTIONS = [
-  { value: "unpaired", label: "Unpaired (Student's t)" },
-  { value: "unpaired_welch", label: "Unpaired (Welch, unequal variance)" },
-  { value: "unpaired_moderated", label: "Unpaired (moderated t)" },
-  { value: "paired", label: "Paired" },
-  { value: "paired_moderated", label: "Paired (moderated t)" },
-];
-
-const TEST_TYPE_VALUES = TEST_TYPE_OPTIONS.map((option) => option.value);
-const SIMULATION_TEST_TYPE_OPTIONS = [
-  { value: "unpaired", label: "Unpaired (Student's t)" },
-  { value: "unpaired_welch", label: "Unpaired (Welch, unequal variance)" },
-];
-
-/**
- * Restore a persisted test type, validating against the options actually
- * offered. Checking against a hardcoded pair here silently reset every value
- * added later, so a saved "moderated t" selection came back as Student's t and
- * the plot was regenerated with a different test than the user chose.
- */
-function restoreTestType(value: unknown): StatsTestType {
-  const text = String(value ?? "unpaired").trim();
-  return (TEST_TYPE_VALUES.includes(text) ? text : "unpaired") as StatsTestType;
-}
+import { TEST_TYPE_OPTIONS, SIMULATION_TEST_TYPE_OPTIONS, restoreTestType } from "../../lib/statisticalTests";
 
 function restoreSimulationTestType(value: unknown): SimulationTestType {
   return value === "unpaired_welch" ? "unpaired_welch" : "unpaired";
@@ -111,7 +80,7 @@ function formatEffectiveSampleSize(minimum: number, maximum: number): string {
 }
 
 function isPairedTestType(value: StatsTestType): boolean {
-  return value === "paired" || value === "paired_moderated";
+  return value === "paired";
 }
 
 type Props = {
@@ -120,27 +89,6 @@ type Props = {
   advancedPlotOptions?: ReactNode;
 };
 
-function currentAdvancedPlotSignal(): string {
-  return `${getAdvancedPlotMode() ? "1" : "0"}:${getActiveAdvancedPlotSettingsJson()}`;
-}
-
-function useAdvancedPlotSignal(): string {
-  const [signal, setSignal] = useState(() => currentAdvancedPlotSignal());
-
-  useEffect(() => {
-    const refresh = () => setSignal(currentAdvancedPlotSignal());
-    window.addEventListener("copylot:advancedPlotModeChanged", refresh);
-    window.addEventListener("copylot:advancedPlotSettingsChanged", refresh);
-    window.addEventListener("storage", refresh);
-    return () => {
-      window.removeEventListener("copylot:advancedPlotModeChanged", refresh);
-      window.removeEventListener("copylot:advancedPlotSettingsChanged", refresh);
-      window.removeEventListener("storage", refresh);
-    };
-  }, []);
-
-  return signal;
-}
 
 export default function StatisticalAnalysisPage({ activeTab, onContextModeChange, advancedPlotOptions }: Props) {
   const { kindOptions } = useCurrentDatasetsSnapshot();
@@ -189,10 +137,11 @@ function removeSourceUsageWarnings(warnings: string[] | undefined): string[] {
 }
 
 function SelectField({ label, value, onChange, options, disabled = false }: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[]; disabled?: boolean }) {
+  const fieldId = useId();
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500">
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <select id={fieldId} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500">
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -229,6 +178,7 @@ function NumberField({
   validate?: (value: number) => string | null;
   onValidationError?: (message: string | null) => void;
 }) {
+  const fieldId = useId();
   const [draft, setDraft] = useState(() => formatNumberInputValue(value));
 
   useEffect(() => {
@@ -254,8 +204,8 @@ function NumberField({
 
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <input id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -288,6 +238,7 @@ function TextareaField({
   rows?: number;
   placeholder?: string;
 }) {
+  const fieldId = useId();
   const [draft, setDraft] = useState(value);
 
   useEffect(() => {
@@ -300,8 +251,8 @@ function TextareaField({
 
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <textarea
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <textarea id={fieldId}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
@@ -332,6 +283,7 @@ function MultiSelect({ values, onChange, options }: { values: string[]; onChange
   return (
     <select
       multiple
+      id="pathway-conditions"
       value={values}
       onChange={(e) => onChange(Array.from(e.target.selectedOptions).map((option) => option.value))}
       className="min-h-36 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -349,7 +301,7 @@ function Notice({ error, warnings }: { error: string | null; warnings?: string[]
   if (!error && (!warnings || warnings.length === 0)) return null;
   return (
     <div className="mt-4 space-y-3">
-      {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+      {error ? <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
       {warnings && warnings.length > 0 ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{warnings.join(" ")}</div> : null}
     </div>
   );
@@ -390,7 +342,7 @@ function PlotFrame({ title, url, height }: { title: string; url: string; height:
           Open Plot
         </a>
       </div>
-      <iframe src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height: resolvedHeight }} />
+      <iframe sandbox="allow-scripts allow-downloads" src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height: resolvedHeight }} />
     </section>
   );
 }
@@ -503,6 +455,7 @@ function OraProvenanceSection({ result }: { result: EnrichmentResultResponse }) 
         <div className="text-sm text-slate-700">Terms in search space: <span className="font-medium text-slate-900">{result.testedTermCount}</span></div>
       </div>
       <div className="mt-3 break-all text-xs text-slate-600">GO database SHA-256: {result.databaseSha256}</div>
+      <OraTermCounts counts={result.termCounts} />
     </SectionCard>
   );
 }
@@ -1006,6 +959,8 @@ function oraExportRows(
     upstreamCorrectionMethod: result.upstreamCorrectionMethod,
     databaseSha256: result.databaseSha256,
     testedTermCount: result.testedTermCount,
+    ...result.termCounts[String(context.direction ?? "cluster")],
+    correctionScope: ORA_CORRECTION_SCOPE,
     ...context,
     ...term,
   }));
@@ -2227,7 +2182,7 @@ function PathwayHeatmapPanel({
           />
         </div>
         <div className="mt-4">
-          <label className="mb-2 block text-sm font-medium text-slate-700">Conditions</label>
+          <label htmlFor="pathway-conditions" className="mb-2 block text-sm font-medium text-slate-700">Conditions</label>
           <MultiSelect values={selectedConditions} onChange={setSelectedConditions} options={conditionOptions(options)} />
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">

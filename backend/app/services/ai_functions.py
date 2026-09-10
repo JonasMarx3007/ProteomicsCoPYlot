@@ -77,9 +77,7 @@ _STATS_TEST_TYPES = cast(tuple[StatsTestType, ...], get_args(StatsTestType))
 _STATS_TEST_DESCRIPTIONS: dict[StatsTestType, str] = {
     "unpaired": "unpaired_student_t_test_with_pooled_variance",
     "unpaired_welch": "unpaired_welch_t_test_with_unequal_variance",
-    "unpaired_moderated": "unpaired_moderated_t_test_with_empirical_bayes_variance_shrinkage",
     "paired": "paired_student_t_test_on_within_pair_differences",
-    "paired_moderated": "paired_moderated_t_test_on_within_pair_differences_with_empirical_bayes_variance_shrinkage",
 }
 
 
@@ -2791,7 +2789,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
             f"ora_data|status=available|source_used={result.sourceUsed}"
         )
         lines.append(
-            f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|tested_terms={result.testedTermCount}|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
+            f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|search_space_terms={result.testedTermCount}|per_query_counts={result.termCounts}|correction_scope=BH per query across overlapping size-eligible terms before cutoff and topN|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
         )
         lines.append(
             f"ora_gene_clusters|selected_anova_cluster={result.selectedCluster}|genes={len(cluster_genes)}"
@@ -2840,7 +2838,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
         f"ora_data|status=available|source_used={result.sourceUsed}"
     )
     lines.append(
-        f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|tested_terms={result.testedTermCount}|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
+        f"ora_background|mode={result.backgroundMode}|organism={_safe_context_text(result.organism)}|submitted_size={result.backgroundSize}|annotated_size={result.annotatedBackgroundSize}|search_space_terms={result.testedTermCount}|per_query_counts={result.termCounts}|correction_scope=BH per query across overlapping size-eligible terms before cutoff and topN|upstream_correction={_safe_context_text(result.upstreamCorrectionMethod)}|term_correction={_safe_context_text(result.correctionMethod)}|database_sha256={result.databaseSha256}"
     )
     lines.append(
         f"ora_gene_clusters|upregulated_genes={len(up_genes)}|downregulated_genes={len(down_genes)}"

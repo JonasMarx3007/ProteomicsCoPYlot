@@ -530,28 +530,98 @@ def _validate_meta_samples(meta):
     return meta
 
 
-def filter_data(data, meta, num, filterops="per group", method="at_least_n", percentage=70):
+_VALUE_PLACEHOLDERS = {
+    "", "na", "n/a", "nan", "-", "--", "null", "none", "filtered", "#div/0!", "#n/a",
+}
+
+
+def _validate_sample_values(data, meta, threshold=0.2):
+    """Refuse sample columns whose values do not parse as numbers.
+
+    Every stage coerces with ``errors="coerce"``, which turns unparseable text
+    into NaN, and NaN reads as "not detected" from then on. A column exported
+    from a locale that writes 19,436 for 19.436 loses every value this way: the
+    sample survives the completeness filter on the strength of the other
+    replicates and the analysis quietly runs one replicate short.
+
+    Blanks and documented placeholders really are missing, so they are ignored.
+    Only entries carrying a digit count as a lost measurement -- a stray text
+    label is not one. The web app catches this when annotations are applied; the
+    notebook packages take a hand-built frame, which is where the slip happens.
+    """
+    if not isinstance(data, pd.DataFrame) or not isinstance(meta, pd.DataFrame):
+        return data
+    if "sample" not in meta.columns:
+        return data
+
+    findings = []
+    for column in meta["sample"].astype(str).tolist():
+        if column not in data.columns:
+            continue
+        raw = data[column]
+        if raw.dtype.kind in "fiub":
+            continue
+        text = raw.astype(str).str.strip()
+        considered = text[~text.str.lower().isin(_VALUE_PLACEHOLDERS)]
+        if considered.empty:
+            continue
+        coerced = pd.to_numeric(considered, errors="coerce")
+        unreadable = coerced.isna() & considered.str.contains("[0-9]", regex=True)
+        lost = int(unreadable.sum())
+        if not lost:
+            continue
+        example = str(considered[unreadable].iloc[0])
+        if lost / len(considered) > threshold:
+            findings.append((column, lost, int(len(considered)), example))
+        else:
+            # Below the threshold this is more likely a few odd cells than a
+            # mangled export, so it is not worth refusing the frame -- but it is
+            # still measurements turning into NaN, and saying nothing was the
+            # same silence the threshold exists to break.
+            warnings.warn(
+                f"Sample column {column!r} lost {lost} of {len(considered)} values that "
+                f"carry digits but do not parse as numbers (e.g. {example!r}). They "
+                "become NaN and read as 'not detected' from here on.",
+                stacklevel=3,
+            )
+
+    if findings:
+        detail = "; ".join(
+            f"{column} lost {lost} of {total} values (e.g. {example!r})"
+            for column, lost, total, example in findings
+        )
+        raise ValueError(
+            f"{len(findings)} sample column(s) carry values that do not parse as "
+            f"numbers: {detail}. This usually means a decimal comma from a "
+            "locale-specific export. Every unparseable value becomes NaN, so the "
+            "sample would be treated as fully undetected rather than unreadable."
+        )
+    return data
+
+
+def filter_data(data, meta, num, mode="per group", method="at_least_n", percentage=70):
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     meta = meta.copy()
     meta['id'] = meta['sample'].apply(extract_id_or_number)
 
     annotated_columns = meta['sample'].tolist()
     data_filtered = data[annotated_columns].copy()
     method = str(method).strip().lower()
-    filterops = str(filterops).strip().lower().replace("_", " ")
+    mode = str(mode).strip().lower().replace("_", " ")
     if method not in {"at_least_n", "percentage"}:
         raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
-    # An unrecognised scope used to fall through to the `any` branch, silently
+    # An unrecognised mode used to fall through to the `any` branch, silently
     # applying the most permissive filter of the three: a misspelling retained
     # features present in only one condition, which is what `per_group` exists
     # to exclude.
-    if filterops not in {"per group", "in at least one group", "overall"}:
+    if mode not in {"per group", "in at least one group", "overall"}:
         raise ValueError(
-            "Filter scope must be 'per_group', 'in_at_least_one_group' or 'overall'."
+            "Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'."
         )
     _validate_filter_thresholds(num, method, percentage)
 
-    if filterops == "overall":
+    if mode == "overall":
         valid = data_filtered.notna().sum(axis=1)
         if method == "percentage":
             rows_to_keep = valid / len(annotated_columns) >= percentage / 100
@@ -567,7 +637,7 @@ def filter_data(data, meta, num, filterops="per group", method="at_least_n", per
                 mask[cond] = valid / len(cols) >= percentage / 100
             else:
                 mask[cond] = valid >= num
-        rows_to_keep = mask.all(axis=1) if filterops == "per group" else mask.any(axis=1)
+        rows_to_keep = mask.all(axis=1) if mode == "per group" else mask.any(axis=1)
 
     return data.loc[rows_to_keep]
 
@@ -577,13 +647,19 @@ def transform_phosprot(
     meta: pd.DataFrame,
     mode: str = "robust_site_median",
     data_scale: str = "linear",
+    coverage_data: pd.DataFrame | None = None,
 ):
     """Collapse phosphosites to one phosphoprotein value per sample.
 
     ``robust_site_median`` works on log2 values after centring every site by its
     across-sample median and requires at least 50% of the fixed eligible sites.
-    Other modes aggregate original-scale intensities. ``data_scale`` describes
-    the supplied sample columns and may be ``"linear"`` or ``"log2"``.
+    The other modes aggregate original-scale intensities and the result is log2
+    transformed afterwards, so every mode returns log2 values and the fold
+    changes computed from them are comparable. ``data_scale`` describes the
+    supplied sample columns and may be ``"linear"`` or ``"log2"``.
+    Pass aligned pre-imputation ``coverage_data`` for observed-site diagnostics
+    and eligibility. The 50% threshold counts finite supplied values, including
+    imputed values. Without coverage_data, diagnostics describe the input only.
     """
     required_cols = [
         "UPD_seq",
@@ -657,7 +733,17 @@ def transform_phosprot(
             .replace([np.inf, -np.inf], np.nan)
         )
 
-    numeric = log2_source[sample_cols].apply(pd.to_numeric, errors="coerce")
+    diagnostic_source = log2_source
+    if coverage_data is not None:
+        if not coverage_data.index.equals(data.index):
+            raise ValueError("coverage_data must have exactly the same row index as data.")
+        if not {"Protein_group", *sample_cols}.issubset(coverage_data.columns):
+            raise ValueError("coverage_data is missing required columns.")
+        if not coverage_data["Protein_group"].astype(str).equals(data["Protein_group"]):
+            raise ValueError("coverage_data Protein_group values must align exactly with data.")
+        diagnostic_source = (coverage_data if resolved_scale == "log2" else
+                             log2_transform_data(_raw_zero_to_nan(coverage_data, sample_cols), meta))
+    numeric = diagnostic_source[sample_cols].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
     eligible_mask = numeric.notna().any(axis=1)
     eligible_log2 = log2_source.loc[eligible_mask].copy()
     groups = data["Protein_group"].astype(str)
@@ -691,8 +777,11 @@ def transform_phosprot(
         centred["Protein_group"] = eligible_log2["Protein_group"].astype(str).to_numpy()
         values = centred.groupby("Protein_group", sort=False)[sample_cols].median().reindex(group_order)
         required = eligible_count.apply(lambda count: max(1, int(math.ceil(float(count) * 0.5))))
+        available = eligible_numeric.notna().assign(
+            Protein_group=eligible_log2["Protein_group"].to_numpy()
+        ).groupby("Protein_group")[sample_cols].sum().reindex(group_order, fill_value=0)
         for sample in sample_cols:
-            values.loc[observed[sample] < required, sample] = np.nan
+            values.loc[available[sample] < required, sample] = np.nan
         values = values.reset_index()
     else:
         eligible_index = eligible_log2.index
@@ -711,6 +800,24 @@ def transform_phosprot(
         values = source.groupby("Protein_group", as_index=False).agg(
             {column: summarizer for column in sample_cols}
         )
+        # These modes aggregate original-scale intensities, so their result is
+        # linear while robust_site_median returns log2. Everything downstream --
+        # volcano_data_f above all -- labels its output "log2FC" unconditionally,
+        # so a linear frame yields a "log2FC" that is really a difference of raw
+        # intensities, in the thousands. Transform here so every mode returns the
+        # same scale, matching what the web app does downstream.
+        aggregated = values[sample_cols].apply(pd.to_numeric, errors="coerce")
+        non_positive = int((aggregated <= 0).sum().sum())
+        if non_positive:
+            aggregated = aggregated.mask(aggregated <= 0)
+            warnings.warn(
+                f"{non_positive} aggregated value(s) were not positive and were set to "
+                "missing because they cannot be log2 transformed. This points at a "
+                "scale or imputation problem in the phosphosite input rather than at "
+                "the aggregation.",
+                stacklevel=2,
+            )
+        values[sample_cols] = np.log2(aggregated)
 
     diagnostics = pd.DataFrame({
         "Protein_group": group_order,
@@ -778,10 +885,17 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
     If you need linear values for another workflow, impute first and
     inverse-transform afterwards -- not the other way round.
 
+    For phosphoprotein workflows, impute phosphosites before transform_phosprot,
+    never the collapsed phosphoprotein matrix. Keep the non-imputed site matrix
+    for independent coverage checks, and aggregate with data_scale="log2".
+    This generic helper cannot infer the
+    biological dataset level from an arbitrary dataframe.
+
     Reference: the downshifted-normal model and its defaults follow Perseus (Tyanova et
     al. 2016, doi:10.1038/nmeth.3901).
     """
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     method = str(method).strip().lower()
     if method == "normal":
         method = "quantile"
@@ -2023,11 +2137,12 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     """Differential abundance between two conditions.
 
     `test_type` selects the design and variance model together: "unpaired",
-    "unpaired_welch", "unpaired_moderated", "paired" or "paired_moderated". When
+    "unpaired_welch" or "paired". When
     it is omitted the older `paired` argument is used, so existing calls keep
     their behaviour.
     """
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     if test_type is None:
         is_paired = paired_test_enabled(paired)
         variance = "pooled"
@@ -2075,16 +2190,6 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         if variance == "welch":
             # Unequal variances: no pooling, Welch-Satterthwaite degrees of freedom.
             se, dfree = _satterthwaite([(var1, n1), (var2, n2)])
-        elif variance == "moderated":
-            # Equal-variance model with the pooled variance shrunk toward a prior
-            # fitted across all features (limma's empirical Bayes). At n=3 a
-            # per-feature variance is a poor estimate; borrowing strength across
-            # features is what recovers usable power.
-            residual_dof = (n1 + n2) - 2.0
-            pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / np.maximum(residual_dof, 1e-12)
-            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
-            se = np.sqrt(posterior * (1.0 / n1 + 1.0 / n2))
-            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
         else:
             pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
             se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
@@ -2100,19 +2205,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         arr_x = arr_x[valid_paired]
         arr_y = arr_y[valid_paired]
         diffs = diffs[valid_paired]
-        if variance == "moderated":
-            counts = np.sum(np.isfinite(diffs), axis=1).astype(float)
-            mean_diff = np.nanmean(diffs, axis=1)
-            var_diff = np.nanvar(diffs, axis=1, ddof=1)
-            residual_dof = counts - 1.0
-            posterior, _, df_prior = squeeze_variance(var_diff, residual_dof)
-            se = np.sqrt(posterior / counts)
-            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
-            t_stat = _guarded_t_statistic(mean_diff, se)
-            pvals = 2 * t.sf(np.abs(t_stat), dfree)
-            n_diff = counts
-        else:
-            mean_diff, n_diff, pvals = paired_t_test(diffs)
+        mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
 
     # statsmodels' BH propagates NaN to *every* entry, so a single undefined
@@ -2157,6 +2250,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     is omitted, the legacy `paired` argument remains authoritative.
     """
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     if test_type is None:
         is_paired = paired_test_enabled(paired)
         variance = "pooled"
@@ -2236,20 +2330,9 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
         groups = [(var1, n1), (var2, n2)]
         groups.extend(_variance_and_count(control) for control in control_arrays)
-        if variance == "moderated":
-            total_n = sum(count for _, count in groups)
-            residual_dof = total_n - float(len(groups))
-            pooled_var = sum(
-                (count - 1.0) * variance_values
-                for variance_values, count in groups
-            ) / np.maximum(residual_dof, 1e-12)
-            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
-            se = np.sqrt(posterior * sum(1.0 / count for _, count in groups))
-            dfree = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
-        else:
-            # With controls, pooled and Welch both propagate four independent
-            # group means with a Satterthwaite approximation, matching the web.
-            se, dfree = _satterthwaite(groups)
+        # With controls, pooled and Welch both propagate four independent
+        # group means with a Satterthwaite approximation, matching the web.
+        se, dfree = _satterthwaite(groups)
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
     else:
@@ -2269,18 +2352,9 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         # Same reasoning: the within-pair spread paired_t_test sees is unchanged
         # by the control subtraction, so propagate the control means explicitly.
         difference_variance = np.nanvar(diffs, axis=1, ddof=1)
-        if variance == "moderated":
-            residual_dof = n_diff.astype(float) - 1.0
-            difference_variance, _, df_prior = squeeze_variance(
-                difference_variance, residual_dof
-            )
-        else:
-            df_prior = 0.0
         components = [(difference_variance, n_diff.astype(float))]
         components.extend(_variance_and_count(control) for control in control_arrays)
         se, dfree = _satterthwaite(components)
-        if variance == "moderated":
-            dfree = dfree + (df_prior if np.isfinite(df_prior) else 1e6)
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
 
@@ -2469,6 +2543,7 @@ def volcano_plot_h(volcano_df, condition1, condition2,
 
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     if workflow == "Protein":
         label_col = "ProteinNames"
     elif workflow == "Phosphosite":
@@ -2618,9 +2693,7 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
 _TEST_TYPES = {
     "unpaired": (False, "pooled"),
     "unpaired_welch": (False, "welch"),
-    "unpaired_moderated": (False, "moderated"),
     "paired": (True, "pooled"),
-    "paired_moderated": (True, "moderated"),
 }
 
 
@@ -2636,83 +2709,6 @@ def variance_model(value):
     return resolve_test_type(value)[1]
 
 
-def trigamma_inverse(values):
-    """Invert the trigamma function by Newton iteration (limma::trigammaInverse).
-
-    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-    """
-    from scipy.special import polygamma
-
-    x = np.asarray(values, dtype=float)
-    y = np.empty_like(x)
-    big, small = x > 1e7, x < 1e-6
-    y[big] = 1.0 / np.sqrt(x[big])
-    y[small] = 1.0 / x[small]
-    middle = ~(big | small)
-    if np.any(middle):
-        current = 0.5 + 1.0 / x[middle]
-        for _ in range(50):
-            tri = polygamma(1, current)
-            step = tri * (1.0 - tri / x[middle]) / polygamma(2, current)
-            current = current + step
-            if np.max(-step / current) < 1e-8:
-                break
-        y[middle] = current
-    return y
-
-
-def fit_variance_prior(variances, dof):
-    """Method-of-moments scaled inverse chi-square prior (limma::fitFDist).
-
-    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-    """
-    from scipy.special import digamma, polygamma
-
-    variances = np.asarray(variances, dtype=float)
-    dof = np.asarray(dof, dtype=float)
-    usable = np.isfinite(variances) & np.isfinite(dof) & (variances > 0) & (dof > 0)
-    if int(usable.sum()) < 2:
-        fallback = float(np.nanmean(variances[usable])) if usable.any() else 1.0
-        return fallback, float("inf")
-    observed, degrees = variances[usable], dof[usable]
-    transformed = np.log(observed) - digamma(degrees / 2.0) + np.log(degrees / 2.0)
-    count = transformed.size
-    mean_t = float(np.mean(transformed))
-    excess = float(np.sum((transformed - mean_t) ** 2) / (count - 1)) - float(
-        np.mean(polygamma(1, degrees / 2.0))
-    )
-    if excess > 0:
-        df_prior = float(2.0 * trigamma_inverse(np.array([excess]))[0])
-        var_prior = float(np.exp(mean_t + digamma(df_prior / 2.0) - np.log(df_prior / 2.0)))
-    else:
-        # No excess variability between features: the prior carries all the
-        # weight and every feature gets the same variance.
-        df_prior = float("inf")
-        var_prior = float(np.exp(mean_t))
-    return var_prior, df_prior
-
-
-def squeeze_variance(variances, dof):
-    """Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
-
-    This is what makes a moderated t-test worth having at proteomics group sizes:
-    a per-feature variance from n=3 is a poor estimate, and borrowing strength
-    across features stabilises it. Returns (posterior variances, prior variance,
-    prior degrees of freedom).
-
-    Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-    (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-    """
-    var_prior, df_prior = fit_variance_prior(variances, dof)
-    variances = np.asarray(variances, dtype=float)
-    dof = np.asarray(dof, dtype=float)
-    if not np.isfinite(df_prior):
-        posterior = np.full_like(variances, var_prior, dtype=float)
-    else:
-        posterior = (dof * variances + df_prior * var_prior) / (dof + df_prior)
-    return posterior, var_prior, df_prior
 
 
 def median_center(values):
@@ -2734,15 +2730,15 @@ def quantile_normalize(values):
     Missing values are neither imputed nor allowed to shift a sample's ranks:
     each sample's observed values are mapped onto their own quantile positions,
     and the shared reference distribution is read off at those positions. This
-    matches limma::normalizeQuantiles, which interpolates rather than dropping
-    incomplete rows.
+    interpolates rather than dropping incomplete rows, so a feature missing in
+    one sample still contributes everywhere it was measured.
     """
     numeric = values.apply(pd.to_numeric, errors="coerce")
     row_count = int(numeric.shape[0])
     if row_count == 0:
         return numeric
 
-    # Grid spans the full row count, as limma does, so columns with different
+    # Grid spans the full row count so columns with different
     # numbers of observed values still land on a common reference curve.
     grid = np.linspace(0.0, 1.0, row_count)
     curves = []
@@ -2818,8 +2814,8 @@ def normalize_data(data, meta, method="none", linear_source=None):
     and multimodal. It is available in the R package and the web app; from this
     package, use one of those.
 
-    References: quantile normalization follows limma::normalizeQuantiles (Ritchie et al.
-    2015, doi:10.1093/nar/gkv007); VSN is delegated to the Bioconductor vsn package
+    References: quantile normalization follows the method of Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185;
+    VSN is delegated to the Bioconductor vsn package
     (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
     """
     resolved = str(method or "none").strip().lower()
@@ -3907,6 +3903,7 @@ def ksea_data_f(data, meta, condition1, condition2,
                 paired="Unpaired", uncorrected=False, test_type=None):
     """Prepare standard Volcano results for KSEA, matching the web pipeline."""
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     if "UPD_seq" not in data.columns:
         raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
     working = data.copy()
@@ -3925,6 +3922,7 @@ def ksea_data_f_control(data, meta, condition1, condition2,
                         paired="Unpaired", uncorrected=False, test_type=None):
     """Prepare corrected Control Volcano results for KSEA."""
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     if "UPD_seq" not in data.columns:
         raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
     working = data.copy()
@@ -3954,6 +3952,7 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
     down-sites, and proteins with no significant site are absent.
     """
     _validate_meta_samples(meta)
+    _validate_sample_values(data, meta)
     """Collapse significant phosphosite Volcano results by phosphoprotein."""
     label_col = "PTM_Collapse_key"
     required = {label_col, "Protein_group"}
@@ -4942,8 +4941,7 @@ def ksea_volcano(
         pval_thresh=0.1,
         header=True,
         condition1=None,
-        condition2=None,
-        GRK=False
+        condition2=None
 ):
     df = pd.concat([data_st, data_tnc], ignore_index=True)
     if "Log₂(Frequency Factor)" not in df.columns or "Adjusted p-value" not in df.columns:
@@ -4962,15 +4960,8 @@ def ksea_volcano(
     df["Regulation"] = df.apply(classify, axis=1)
     df["color"] = df["Regulation"].map({"Upregulated": "red", "Downregulated": "blue", "Not significant": "lightgrey"})
 
-    is_grk = df["Kinase"].str.contains(r'\bGRK\d*\b', case=False, na=False)
-    df_grk = df[is_grk] if GRK else pd.DataFrame(columns=df.columns)
-    df_non_grk = df[~is_grk]
-
-    df_non_grk["line_color"] = "black"
-    df_non_grk["line_width"] = 0.5
-    if GRK:
-        df_grk["line_color"] = "yellow"
-        df_grk["line_width"] = 2
+    df["line_color"] = "black"
+    df["line_width"] = 0.5
 
     title = f"KSEA Volcano Plot: {condition1} vs. {condition2}" if header and condition1 and condition2 else (
         "KSEA Volcano Plot" if header else "")
@@ -4978,8 +4969,8 @@ def ksea_volcano(
 
     fig = go.Figure()
 
-    for reg in df_non_grk["Regulation"].unique():
-        sub = df_non_grk[df_non_grk["Regulation"] == reg]
+    for reg in df["Regulation"].unique():
+        sub = df[df["Regulation"] == reg]
         fig.add_trace(go.Scatter(
             x=sub["Log₂(Frequency Factor)"],
             y=sub["neg_log10_pval"],
@@ -4992,21 +4983,6 @@ def ksea_volcano(
             name=reg,
             text=sub["Kinase"],
             hovertemplate="Kinase: %{text}<br>Log₂(Frequency Factor): %{x}<br>-log₁₀(p-value): %{y}<br>Regulation: " + reg + "<extra></extra>"
-        ))
-
-    if GRK and not df_grk.empty:
-        fig.add_trace(go.Scatter(
-            x=df_grk["Log₂(Frequency Factor)"],
-            y=df_grk["neg_log10_pval"],
-            mode="markers",
-            marker=dict(
-                color=df_grk["color"],
-                line=dict(color=df_grk["line_color"], width=df_grk["line_width"]),
-                size=12
-            ),
-            name="GRK",
-            text=df_grk["Kinase"],
-            hovertemplate="Kinase: %{text}<br>Log₂(Frequency Factor): %{x}<br>-log₁₀(p-value): %{y}<br>Regulation: %{marker.color}<extra></extra>"
         ))
 
     fig.add_hline(y=-np.log10(pval_thresh), line_dash="dash", line_color="green")

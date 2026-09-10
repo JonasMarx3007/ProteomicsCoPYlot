@@ -7,6 +7,8 @@ from fastapi import UploadFile
 _DEFAULT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
 _DEFAULT_UPLOAD_MAX_CELLS = 50_000_000
+_DEFAULT_UPLOAD_MAX_FRAME_BYTES = 1024 * 1024 * 1024
+_DEFAULT_UPLOAD_MAX_COLUMNS = 20_000
 
 
 def upload_max_bytes() -> int:
@@ -101,4 +103,63 @@ def ensure_table_within_cell_budget(rows: int, columns: int, *, label: str = "Up
             f"{label} expands to {rows:,} rows x {columns:,} columns "
             f"({cells:,} cells), above the {budget:,} cell limit. "
             "Filter or split the table before uploading."
+        )
+
+
+def upload_max_frame_bytes() -> int:
+    """Budget for the materialised table, in bytes.
+
+    Rows x columns measures the table's shape, and memory does not care about
+    shape. A file of 200 cells holding 2 MiB of text each is 200 cells against a
+    50,000,000 budget and still costs hundreds of megabytes. Counting bytes is
+    the one bound that does not depend on which dimension a file chose to grow.
+    """
+    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_FRAME_BYTES", "")).strip()
+    if not raw:
+        return _DEFAULT_UPLOAD_MAX_FRAME_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_UPLOAD_MAX_FRAME_BYTES
+    return max(1, parsed)
+
+
+def upload_max_columns() -> int:
+    """Column cap for a parsed table.
+
+    A frame carries per-column overhead that no byte count of the data sees, so a
+    file of one row and 300,000 columns is cheap by every other measure and still
+    expensive to hold. No proteomics report has more columns than it has samples
+    plus a handful of annotations.
+    """
+    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_COLUMNS", "")).strip()
+    if not raw:
+        return _DEFAULT_UPLOAD_MAX_COLUMNS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_UPLOAD_MAX_COLUMNS
+    return max(1, parsed)
+
+
+def ensure_frame_bytes_within_budget(nbytes: int, *, label: str = "Upload") -> None:
+    """Reject a table whose materialised size exceeds the byte budget."""
+    budget = upload_max_frame_bytes()
+    measured = max(0, int(nbytes))
+    if measured > budget:
+        raise ValueError(
+            f"{label} expands to {measured / 1048576:,.0f} MB in memory, above the "
+            f"{budget / 1048576:,.0f} MB limit. A small file can still expand a long "
+            "way if its cells hold large text. Filter or split the table before uploading."
+        )
+
+
+def ensure_columns_within_budget(columns: int, *, label: str = "Upload") -> None:
+    """Reject a table with more columns than any real report carries."""
+    budget = upload_max_columns()
+    measured = max(0, int(columns))
+    if measured > budget:
+        raise ValueError(
+            f"{label} has {measured:,} columns, above the {budget:,} column limit. "
+            "Check the file is a report table and not a transposed or malformed export."
         )

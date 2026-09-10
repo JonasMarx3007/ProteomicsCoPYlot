@@ -28,11 +28,15 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            backend/requirements-runtime.lock
+            backend/requirements.lock
 
-      - name: Audit Python runtime dependencies
+      - name: Audit locked Python dependencies
         run: |
           python -m pip install --upgrade pip pip-audit
-          python -m pip_audit --requirement backend/requirements.txt
+          python -m pip_audit --requirement backend/requirements-runtime.lock
+          python -m pip_audit --requirement backend/requirements.lock
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

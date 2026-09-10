@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import SelectField from "../../components/SelectField";
+import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
+import { compactMap, compactTextElement } from "../../lib/plotSerialization";
+import SummaryCard from "../../components/SummaryCard";
+import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
+import { useId, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getCompletenessTables, getPeptideQuantityOptions, getQcPlotOptions, isAbortError } from "../../lib/api";
-import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -32,27 +36,6 @@ type AdvancedPlotState = Partial<Record<CompletenessTab, AdvancedPlotSettings>>;
 
 function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
-}
-
-function compactMap(value: Record<string, string> | undefined): Record<string, string> | undefined {
-  const entries = Object.entries(value ?? {})
-    .map(([key, val]) => [key.trim(), val.trim()] as const)
-    .filter(([key, val]) => key && val);
-  return entries.length ? Object.fromEntries(entries) : undefined;
-}
-
-function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
-  if (!value) return undefined;
-  const text = value.text?.trim();
-  const next = {
-    ...(text ? { text } : {}),
-    ...(value.size && value.size > 0 ? { size: value.size } : {}),
-    ...(value.xOffset ? { xOffset: value.xOffset } : {}),
-    ...(value.yOffset ? { yOffset: value.yOffset } : {}),
-    ...(value.bold ? { bold: true } : {}),
-    ...(value.italic ? { italic: true } : {}),
-  };
-  return Object.keys(next).length ? next : undefined;
 }
 
 function compactAdvancedSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
@@ -759,135 +742,6 @@ function OptionsLayout({
   );
 }
 
-function SizeRow({
-  dpi,
-  heightCm,
-  widthCm,
-  onDpiChange,
-  onHeightChange,
-  onWidthChange,
-}: {
-  dpi: number;
-  heightCm: number;
-  widthCm: number;
-  onDpiChange: (value: number) => void;
-  onHeightChange: (value: number) => void;
-  onWidthChange: (value: number) => void;
-}) {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
-      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
-    </div>
-  );
-}
-
-function Checkbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      {label}
-    </label>
-  );
-}
-
-function NumericField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
-
-  const commit = () => {
-    const normalized = displayedValue.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(null);
-      return;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed)) {
-      setDraft(null);
-      return;
-    }
-    onChange(parsed);
-    setDraft(null);
-  };
-
-  return (
-    <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        value={displayedValue}
-        onChange={(e) => {
-          const normalized = e.target.value.replace(",", ".");
-          setDraft(normalized);
-          const parsed = Number(normalized);
-          if (Number.isFinite(parsed)) {
-            onChange(parsed);
-          }
-        }}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-      />
-    </div>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: string[];
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-      >
-        {placeholder ? <option value="">{placeholder}</option> : null}
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 function ColorField({
   label,
   value,
@@ -897,24 +751,16 @@ function ColorField({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const fieldId = useId();
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <input id={fieldId}
         type="color"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="h-10 w-full rounded-xl border border-slate-300 bg-white px-1 py-1"
       />
-    </div>
-  );
-}
-
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-sm font-semibold text-slate-900">{value}</div>
     </div>
   );
 }
@@ -972,22 +818,4 @@ function PreviewTable({
       </table>
     </div>
   );
-}
-
-function collectColumns(rows: Record<string, unknown>[]): string[] {
-  const seen = new Set<string>();
-  rows.forEach((row) => {
-    Object.keys(row).forEach((key) => seen.add(key));
-  });
-  return Array.from(seen);
-}
-
-function rowsToCsv(rows: Record<string, unknown>[], columns: string[]): string {
-  if (rows.length === 0 || columns.length === 0) return "";
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const lines = [
-    columns.join(","),
-    ...rows.map((row) => columns.map((column) => escape(row[column])).join(",")),
-  ];
-  return lines.join("\n");
 }

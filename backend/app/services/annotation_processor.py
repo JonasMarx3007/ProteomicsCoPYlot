@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 import re
 
 import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import ConditionAssignment, FilterMode
+from app.services.metadata_upload_store import MAX_MANUAL_METADATA_PROFILES
 from app.services.functions import (
     build_metadata_from_conditions,
     filter_data,
@@ -232,8 +232,6 @@ def resolve_log2_state(
 def _unparseable_sample_columns(
     data: pd.DataFrame,
     sample_columns: list[str],
-    *,
-    threshold: float = 0.2,
 ) -> list[tuple[str, int, int]]:
     """Sample columns where text that looks like data does not parse as a number.
 
@@ -244,8 +242,10 @@ def _unparseable_sample_columns(
     a European decimal comma loses every value this way, and the sample then
     looks fully undetected rather than unreadable.
 
-    Returns (column, lost, total non-blank) for columns losing more than
-    `threshold` of their non-blank entries.
+    Returns (column, lost, total non-blank) for every column losing anything at
+    all. A partial loss is worth reporting rather than tolerating: a spreadsheet
+    that writes 3,115,462.6 mangles only the largest values, so what it deletes
+    is a biased sample of the measurements and shifts the comparison.
     """
     placeholders = {"", "na", "n/a", "nan", "-", "--", "null", "none", "filtered", "#div/0!", "#n/a"}
     findings: list[tuple[str, int, int]] = []
@@ -263,7 +263,12 @@ def _unparseable_sample_columns(
         # Only count entries that carried a digit: a stray label is not a
         # measurement, but "1234,5" or "1,234.5" is.
         lost = int((coerced.isna() & considered.str.contains(r"\d", regex=True)).sum())
-        if lost and lost / len(considered) > threshold:
+        # Reported whenever anything is lost, not only past the threshold. The
+        # threshold was set for the all-or-nothing case a decimal comma produces,
+        # and a partial loss is the one worth telling someone about: a thousands
+        # separator applied by a spreadsheet hits only the largest values, so the
+        # measurements it deletes are a biased sample, not a random one.
+        if lost:
             findings.append((str(column), lost, int(len(considered))))
     return findings
 
@@ -310,7 +315,6 @@ def normalize_uploaded_metadata(
             "Uploaded metadata must contain at least one grouping column besides 'sample'."
         )
 
-    has_explicit_condition = "condition" in column_map
     condition_col = column_map.get("condition", non_sample_columns[0])
     selected = normalized[[sample_col, *non_sample_columns]].copy()
 
@@ -396,19 +400,6 @@ def normalize_uploaded_metadata(
         raise ValueError(
             "Uploaded metadata does not match any sample columns in the current dataset."
         )
-    cleaned = _append_combined_subset_columns(cleaned)
-
-    # If no explicit "condition" was provided but multiple grouping columns exist,
-    # default condition to the mixed first-two-column grouping (e.g. organ-gender).
-    if not has_explicit_condition and len(non_sample_columns) >= 2:
-        first_alias = alias_map[str(non_sample_columns[0])]
-        second_alias = alias_map[str(non_sample_columns[1])]
-        mixed_name = f"{first_alias}-{second_alias}"
-        if mixed_name in cleaned.columns:
-            mixed_values = _clean_string_series(cleaned[mixed_name])
-            if (mixed_values != "").all():
-                cleaned["condition"] = mixed_values
-
     return cleaned
 
 
@@ -445,41 +436,74 @@ def _make_unique_column_alias(raw_name: str, used_aliases: set[str]) -> str:
     return candidate
 
 
-def _append_combined_subset_columns(metadata: pd.DataFrame) -> pd.DataFrame:
+def split_uploaded_metadata_profiles(
+    data: pd.DataFrame,
+    metadata: pd.DataFrame,
+) -> list[tuple[str, pd.DataFrame]]:
+    """Turn each uploaded grouping column into one normalized source profile.
+
+    ``sample`` identifies dataset columns and ``pair_id`` carries pairing
+    structure. Every other column is categorical grouping information. Combined
+    profiles are built later by the bounded metadata-profile store, so this path
+    must not create subset columns itself.
+    """
     if metadata.empty:
-        return metadata
+        raise ValueError("Uploaded metadata is empty.")
 
-    out = metadata.copy()
-    subset_columns = [column for column in out.columns if column != "sample"]
-    # Keep "condition" available for combinations, but place it after explicit
-    # user-provided grouping columns so names like "cells-stimulated" are preferred.
-    if "condition" in subset_columns:
-        subset_columns = [
-            column for column in subset_columns if column != "condition"
-        ] + ["condition"]
-    if len(subset_columns) < 2:
-        return out
+    source = metadata.copy()
+    source.columns = [str(column).strip() for column in source.columns]
+    column_map = {
+        str(column).strip().lower(): str(column).strip()
+        for column in source.columns
+    }
+    sample_col = _resolve_sample_column(column_map, source.columns)
+    if sample_col is None:
+        raise ValueError(
+            "Uploaded metadata must contain a sample column "
+            "(e.g. 'sample' or 'data_column_name')."
+        )
 
-    def _combine_columns(columns: tuple[str, ...]) -> pd.Series:
-        def _combine_row(row: pd.Series) -> str:
-            values = [str(row[column]).strip() for column in columns]
-            if any(not value for value in values):
-                return ""
-            return "-".join(values)
+    sample_key = str(sample_col).strip().lower()
+    pair_col = column_map.get("pair_id")
+    pair_key = str(pair_col).strip().lower() if pair_col is not None else None
+    grouping_columns = [
+        column
+        for column in source.columns
+        if str(column).strip().lower() not in {sample_key, pair_key}
+    ]
+    if not grouping_columns:
+        raise ValueError(
+            "Uploaded metadata must contain at least one grouping column besides "
+            "'sample' and optional 'pair_id'."
+        )
+    if len(grouping_columns) > MAX_MANUAL_METADATA_PROFILES:
+        raise ValueError(
+            f"Uploaded metadata contains {len(grouping_columns)} grouping columns. "
+            f"At most {MAX_MANUAL_METADATA_PROFILES} can be split into metadata profiles."
+        )
 
-        return out.apply(_combine_row, axis=1)
-
-    for size in range(2, len(subset_columns) + 1):
-        for selected in combinations(subset_columns, size):
-            forward_name = "-".join(selected)
-            if forward_name not in out.columns:
-                out[forward_name] = _combine_columns(selected)
-
-            reverse = tuple(reversed(selected))
-            reverse_name = "-".join(reverse)
-            if reverse_name not in out.columns:
-                out[reverse_name] = _combine_columns(reverse)
-    return out
+    used_aliases: set[str] = {"sample"}
+    profiles: list[tuple[str, pd.DataFrame]] = []
+    for grouping_column in grouping_columns:
+        profile_name = _make_unique_column_alias(str(grouping_column), used_aliases)
+        used_aliases.add(profile_name)
+        selected_columns = [sample_col, grouping_column]
+        if pair_col is not None and pair_col not in selected_columns:
+            selected_columns.append(pair_col)
+        profile_input = source[selected_columns].copy()
+        rename_map = {
+            sample_col: "sample",
+            grouping_column: "condition",
+        }
+        if pair_col is not None:
+            rename_map[pair_col] = "pair_id"
+        profile_input = profile_input.rename(columns=rename_map)
+        normalized = normalize_uploaded_metadata(data=data, metadata=profile_input)
+        output_columns = ["sample", "condition"]
+        if "pair_id" in normalized.columns:
+            output_columns.append("pair_id")
+        profiles.append((profile_name, normalized[output_columns].copy()))
+    return profiles
 
 
 def _unparseable_warning(unparseable: list[tuple[str, int, int]]) -> str:

@@ -1,3 +1,7 @@
+import { ColorField, Checkbox } from "../../components/PlotFields";
+import PreviewTable from "../../components/PreviewTable";
+import { collectColumns } from "../../lib/tableData";
+import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getComparisonOptions, getComparisonTable, isAbortError } from "../../lib/api";
 import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
@@ -584,6 +588,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                 />
               ) : (
                 <iframe
+                  sandbox="allow-scripts allow-downloads"
                   key={plotView.url}
                   src={plotView.url}
                   title={plotView.title}
@@ -946,133 +951,6 @@ function NumericField({
       />
     </label>
   );
-}
-
-function ColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
-        type="color"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-2 py-1"
-      />
-    </label>
-  );
-}
-
-function Checkbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-      />
-      {label}
-    </label>
-  );
-}
-
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  if (!rows || rows.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  const columns = collectColumns(rows);
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full divide-y divide-slate-200">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100 bg-white">
-          {rows.map((row, index) => (
-            <tr key={index} className={index % 2 ? "bg-slate-50/40" : "bg-white"}>
-              {columns.map((column) => (
-                <td key={column} className="px-4 py-2 align-top text-sm text-slate-700">
-                  {formatValue(row[column])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function collectColumns(rows: Record<string, unknown>[]) {
-  const keys = new Set<string>();
-  rows.forEach((row) => {
-    Object.keys(row).forEach((key) => keys.add(key));
-  });
-  return Array.from(keys);
-}
-
-function rowsToCsv(rows: Record<string, unknown>[], columns: string[]) {
-  const header = columns.join(",");
-  const body = rows.map((row) =>
-    columns
-      .map((column) => {
-        const raw = row[column];
-        const text = raw == null ? "" : String(raw);
-        if (text.includes(",") || text.includes('"') || text.includes("\n")) {
-          return `"${text.replace(/"/g, '""')}"`;
-        }
-        return text;
-      })
-      .join(",")
-  );
-  return [header, ...body].join("\n");
-}
-
-function formatValue(value: unknown) {
-  if (value == null) return "";
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return String(value);
-    return value.toFixed(4);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }
 
 function cmToIframeHeight(heightCm: number): number {

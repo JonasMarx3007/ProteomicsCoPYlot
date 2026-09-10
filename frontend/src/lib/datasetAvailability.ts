@@ -8,10 +8,10 @@ import {
 import type { AnnotationKind, CurrentDatasetsResponse } from "./types";
 import { IS_VIEWER_MODE } from "./appMode";
 import { subscribeDatasetStateChanged } from "./datasetEvents";
+import { onceAsync } from "./onceAsync";
 
 // Ensure browser-session reset happens once per page load, even if multiple
 // pipeline pages mount/unmount this hook.
-let browserSessionResetAttempted = false;
 const SKIP_BROWSER_SESSION_RESET_ONCE_KEY = "pcopylot.skipBrowserSessionResetOnce.v1";
 const VIEWER_BOOTSTRAP_MAX_RETRIES = 240; // ~120s at 500ms intervals.
 const BROWSER_SESSION_RESET_ENABLED = (() => {
@@ -54,6 +54,11 @@ function hasSkipBrowserSessionResetOnceFlag(): boolean {
 export function shouldResetClientStateOnBrowserLoad(): boolean {
   return BROWSER_SESSION_RESET_ENABLED && !hasSkipBrowserSessionResetOnceFlag();
 }
+
+export const initializeBrowserSession = onceAsync(async () => {
+  const skip = consumeSkipBrowserSessionResetOnceFlag();
+  if (BROWSER_SESSION_RESET_ENABLED && !skip) await resetBrowserSessionState();
+});
 
 export function markSkipBrowserSessionResetOnce(): void {
   try {
@@ -104,6 +109,7 @@ export function useCurrentDatasetsSnapshot() {
         setLoading(true);
       }
       setError(null);
+      await initializeBrowserSession();
       const current = await getCurrentDatasets();
       setDatasets(current);
     } catch (err) {
@@ -120,20 +126,6 @@ export function useCurrentDatasetsSnapshot() {
     let cancelled = false;
 
     async function initialize() {
-      const skipResetOnce = consumeSkipBrowserSessionResetOnceFlag();
-      if (skipResetOnce) {
-        // Treat as completed for this page load so later hook mounts
-        // (e.g., when switching sections) do not unexpectedly reset state.
-        browserSessionResetAttempted = true;
-      }
-      if (BROWSER_SESSION_RESET_ENABLED && !browserSessionResetAttempted && !skipResetOnce) {
-        browserSessionResetAttempted = true;
-        try {
-          await resetBrowserSessionState();
-        } catch {
-          // Keep app usable if reset endpoint is unavailable.
-        }
-      }
       if (cancelled) return;
       await refresh();
     }

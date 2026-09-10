@@ -68,3 +68,5 @@ viewer_data/local/
 viewer_data/projects/
 
 .DS_Store
+frontend/test-results/
+frontend/playwright-report/

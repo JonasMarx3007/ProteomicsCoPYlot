@@ -39,8 +39,8 @@ write_result("filter", data.frame(rows = nrow(filtered)))
 volcano <- volcano_data_f(data, meta, "Ctrl", "Treat", workflow = "Protein")
 write_result("volcano", volcano[, c("ProteinNames", "log2FC", "pval", "adj_pval")])
 
-# Ported 2026-08-05: normalization (A1) and the moderated t-test (A6) previously
-# existed only in the web app, so neither was covered here.
+# Ported 2026-08-05: normalization (A1) previously existed only in the web app,
+# so it was not covered here.
 for (method in c("median", "quantile")) {
   normalized <- normalize_data(data, as.character(meta$sample), method)
   write_result(
@@ -49,7 +49,7 @@ for (method in c("median", "quantile")) {
   )
 }
 
-for (test_type in c("unpaired_welch", "unpaired_moderated")) {
+for (test_type in c("unpaired_welch")) {
   variant <- volcano_data_f(
     data, meta, "Ctrl", "Treat", workflow = "Protein", test_type = test_type
   )
@@ -69,8 +69,7 @@ write_result(
 )
 
 test_types <- c(
-  "unpaired", "unpaired_welch", "unpaired_moderated",
-  "paired", "paired_moderated"
+  "unpaired", "unpaired_welch", "paired"
 )
 for (test_type in test_types) {
   control_variant <- volcano_data_f_control(

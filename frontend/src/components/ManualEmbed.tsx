@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useId, useState } from "react";
+import Modal from "./Modal";
 
 type ManualEmbedProps = {
   pdfPath: string;
@@ -18,44 +19,31 @@ export default function ManualEmbed({
   defaultOpen = false,
 }: ManualEmbedProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const titleId = useId();
   const resolvedHeight = Math.max(420, Math.round(heightPx));
 
-  useEffect(() => {
-    if (!open) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={event => { event.currentTarget.focus(); setOpen(true); }}
         className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
         title={title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
       >
         {buttonLabel}
       </button>
 
       {open ? (
-        <div className="fixed inset-0 z-50">
-          <button
-            type="button"
-            aria-label="Close manual"
-            onClick={() => setOpen(false)}
-            className="absolute inset-0 h-full w-full bg-slate-900/30"
-          />
-          <aside className="absolute right-0 top-0 h-full w-full border-l border-slate-200 bg-white shadow-2xl">
+        <Modal labelledBy={titleId} onClose={() => setOpen(false)} className="max-w-6xl">
+          <div className="bg-white shadow-2xl">
             <div className="flex h-full flex-col">
               <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
                 <div>
                   <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{summaryLabel}</div>
-                  <div className="text-sm font-semibold text-slate-900">{title}</div>
+                  <h2 id={titleId} className="text-sm font-semibold text-slate-900">{title}</h2>
                 </div>
                 <div className="flex items-center gap-2">
                   <a
@@ -91,8 +79,8 @@ export default function ManualEmbed({
                 />
               </div>
             </div>
-          </aside>
-        </div>
+          </div>
+        </Modal>
       ) : null}
     </>
   );

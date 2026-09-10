@@ -5,14 +5,19 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from typing import Annotated
+
+from fastapi import APIRouter, Form, HTTPException, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from app.schemas.external import PeptideCollapseRequest, PeptideCollapseResponse
+from app.schemas.external import (
+    PeptideCollapseRequest,
+    PeptideCollapseResponse,
+)
 from app.services.external_tools import run_peptide_collapse
 from app.services.upload_limits import ensure_upload_size
 
@@ -20,6 +25,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/external", tags=["external"])
+
+
+class PeptideCollapseUpload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: UploadFile
+    cutoff: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 @router.post("/peptide-collapse/run", response_model=PeptideCollapseResponse)
@@ -35,10 +47,9 @@ def run_peptide_collapse_route(payload: PeptideCollapseRequest) -> PeptideCollap
 
 @router.post("/peptide-collapse/upload")
 def upload_peptide_collapse_route(
-    file: UploadFile = File(...),
-    cutoff: float = Form(0.0),
-    collapseVersion: Literal["newest", "legacy"] = Form("newest"),
+    payload: Annotated[PeptideCollapseUpload, Form(media_type="multipart/form-data")],
 ) -> FileResponse:
+    file, cutoff = payload.file, payload.cutoff
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
     try:
@@ -62,7 +73,6 @@ def upload_peptide_collapse_route(
                 inputPath=str(input_path),
                 outputPath=str(output_path),
                 cutoff=cutoff,
-                collapseVersion=collapseVersion,
             )
         )
         if not result.success or not output_path.is_file():

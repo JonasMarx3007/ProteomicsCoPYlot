@@ -41,18 +41,43 @@ ENUM_PROBES = [
     ("/api/plots/phospho/coverage-table", "mode", "NOT_A_MODE", "Summary", {}),
 ]
 
-REJECTION_ONLY_PROBES = [
-    ("/api/plots/comparison/protein/pearson.png", "mode", "NOT_A_MODE"),
-    ("/api/plots/comparison/protein/venn.png", "mode", "NOT_A_MODE"),
-    ("/api/plots/single-protein/protein/heatmap-table", "valueType", "NOT_A_TYPE"),
-    ("/api/plots/stats/protein/pathway-heatmap.png", "valueType", "NOT_A_TYPE"),
+# Companions come from the bundled viewer_config.json the fixture loads, so a
+# probe that needs real conditions, samples or a pathway can still be paired with
+# test_every_valid_value_still_works. Without that pairing an "is it rejected?"
+# probe passes on any non-200 -- including the 422 for a missing companion -- and
+# so cannot tell a rejected enum from an incomplete request.
+WT, GRK = "WT", "GRK"
+SAMPLE_1 = "[6] 20240822_nElute_tims1_JM_HEK293_WP_WT_1_Slot1-61_1_8064.d.PG.Log2Quantity"
+SAMPLE_2 = "[7] 20240822_nElute_tims1_JM_HEK293_WP_WT_2_Slot1-62_1_8065.d.PG.Log2Quantity"
+A_PATHWAY = "mitochondrial genome maintenance"
+
+ENUM_PROBES += [
+    ("/api/plots/comparison/protein/pearson.png", "mode", "NOT_A_MODE", "Single",
+     {"sample1": SAMPLE_1, "sample2": SAMPLE_2}),
+    ("/api/plots/comparison/protein/venn.png", "mode", "NOT_A_MODE", "Single",
+     {"first": SAMPLE_1, "second": SAMPLE_2}),
+    ("/api/plots/single-protein/phospho/heatmap-table", "valueType", "NOT_A_TYPE", "log2",
+     {"protein": "AAAS", "identifier": "genes"}),
+    ("/api/plots/stats/protein/pathway-heatmap.png", "valueType", "NOT_A_TYPE", "z",
+     {"pathway": A_PATHWAY}),
+    ("/api/plots/phospho/phosprot-regulation-table", "testType", "NOT_A_TEST", "unpaired",
+     {"condition1": WT, "condition2": GRK}),
+    ("/api/plots/phospho/ksea-table", "testType", "NOT_A_TEST", "unpaired",
+     {"condition1": WT, "condition2": GRK}),
+    ("/api/plots/stats/protein/ora/up.png", "backgroundMode", "NOT_A_MODE", "experiment",
+     {"condition1": WT, "condition2": GRK}),
+]
+
+# The bundled state sets "peptide_file": "none", so every value of this parameter
+# -- valid or not -- returns the same 400 for the missing dataset and no probe
+# here can tell them apart. Listed separately rather than left among the paired
+# probes so the file does not claim coverage it has not got.
+UNDISCRIMINATED_WITHOUT_A_PEPTIDE_DATASET = [
     ("/api/plots/peptide/rt.png", "method", "NOT_A_METHOD"),
-    ("/api/plots/phospho/phosprot-regulation-table", "testType", "NOT_A_TEST"),
-    ("/api/plots/phospho/ksea-table", "testType", "NOT_A_TEST"),
-    ("/api/plots/stats/protein/ora/up.png", "backgroundMode", "NOT_A_MODE"),
 ]
 
 ENUMERATED_PARAMETER_NAMES = {
+    "direction",
     "plotDim",
     "colorBy",
     "clusterMethod",
@@ -99,12 +124,18 @@ def test_an_unrecognised_enum_value_is_rejected(
 
 @pytest.mark.parametrize(
     ("path", "parameter", "invalid"),
-    REJECTION_ONLY_PROBES,
-    ids=[f"{p.rsplit('/', 1)[-1]}:{n}" for p, n, _ in REJECTION_ONLY_PROBES],
+    UNDISCRIMINATED_WITHOUT_A_PEPTIDE_DATASET,
+    ids=[f"{p.rsplit('/', 1)[-1]}:{n}" for p, n, _ in UNDISCRIMINATED_WITHOUT_A_PEPTIDE_DATASET],
 )
-def test_an_unrecognised_enum_value_is_rejected_without_full_context(
+def test_a_route_without_its_dataset_still_refuses_rather_than_defaulting(
     client, path: str, parameter: str, invalid: str
 ) -> None:
+    """Weak by construction: it cannot separate a rejected enum from a missing dataset.
+
+    Kept because a 200 here would be a real defect, but it is not evidence that
+    the enum is validated. Loading a peptide dataset into the fixture is what
+    would turn this into a paired probe.
+    """
     response = client.get(path, params={parameter: invalid})
     assert response.status_code != 200, (
         f"{path} accepted {parameter}={invalid!r} and returned a result."
@@ -190,7 +221,7 @@ SERVICE_VALIDATED = {
 
 def test_enumerated_route_parameters_are_typed_or_probed() -> None:
     probed = {(path, name) for path, name, _, _, _ in ENUM_PROBES}
-    probed |= {(path, name) for path, name, _ in REJECTION_ONLY_PROBES}
+    probed |= {(path, name) for path, name, _ in UNDISCRIMINATED_WITHOUT_A_PEPTIDE_DATASET}
 
     offenders = [
         (path, name)

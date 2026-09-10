@@ -80,6 +80,18 @@ import { getActiveAdvancedPlotSettingsJson } from "./appSettings";
 import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
 import { normalizePlotSizeParams } from "./plotLimits";
+import { isAnalysisMutation, unsavedAnalysis } from "./unsavedAnalysis";
+
+// Local wrapper only (not a global fetch replacement). A failed/aborted write
+// remains conservatively dirty because the server may already have committed it.
+async function fetch(input: string, init?: RequestInit): Promise<Response> {
+  const finish = isAnalysisMutation(input, init?.method) ? unsavedAnalysis.beginMutation() : null;
+  try {
+    return await globalThis.fetch(input, init);
+  } finally {
+    finish?.();
+  }
+}
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 let DATASET_SCOPE_NONCE = 0;
@@ -646,6 +658,30 @@ export async function createMetadataProfile(
     throw new Error(
       (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
         "Failed to create metadata profile"
+    );
+  }
+  const payload = data as CurrentDatasetsResponse;
+  syncSummaryReportStateWithDatasets(payload);
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged(payload);
+  return payload;
+}
+
+export async function deleteMetadataProfile(
+  profileName: string
+): Promise<CurrentDatasetsResponse> {
+  const response = await fetch(`${API_BASE}/api/datasets/metadata/profiles/delete`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ profileName }),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    throw new Error(
+      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
+        "Failed to delete metadata profile"
     );
   }
   const payload = data as CurrentDatasetsResponse;
@@ -2047,7 +2083,6 @@ export async function renderKseaVolcanoFromFiles(payload: {
   header: boolean;
   condition1: string;
   condition2: string;
-  highlightGrk: boolean;
   annotateHits: boolean;
 }): Promise<string> {
   const form = new FormData();
@@ -2057,7 +2092,6 @@ export async function renderKseaVolcanoFromFiles(payload: {
   form.append("header", String(payload.header));
   form.append("condition1", payload.condition1);
   form.append("condition2", payload.condition2);
-  form.append("highlightGrk", String(payload.highlightGrk));
   form.append("annotateHits", String(payload.annotateHits));
 
   const response = await fetch(`${API_BASE}/api/plots/phospho/ksea-volcano.html`, {
@@ -2186,12 +2220,11 @@ export async function getModelCapability(
 
 export async function runPeptideCollapseFile(
   file: File,
-  options: Pick<PeptideCollapseRequest, "cutoff" | "collapseVersion">
+  options: Pick<PeptideCollapseRequest, "cutoff">
 ): Promise<{ blob: Blob; filename: string }> {
   const form = new FormData();
   form.append("file", file);
   form.append("cutoff", String(options.cutoff));
-  form.append("collapseVersion", options.collapseVersion);
 
   const response = await fetch(`${API_BASE}/api/external/peptide-collapse/upload`, {
     method: "POST",

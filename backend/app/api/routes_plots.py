@@ -20,6 +20,8 @@ from app.schemas.qc import (
 from app.schemas.stats import (
     AnovaRequest,
     EnrichmentRequest,
+    HeatmapValueType,
+    OraDirection,
     SimulationRequest,
     SimulationTestType,
     StatsTestType,
@@ -245,7 +247,7 @@ def stats_anova_route(
 @router.get("/stats/{kind}/ora/{direction}.png")
 def stats_ora_route(
     kind: AnnotationKind,
-    direction: str,
+    direction: OraDirection,
     condition1: str = "",
     condition2: str = "",
     source: str = "volcano",
@@ -300,7 +302,7 @@ def stats_pathway_heatmap_route(
     pathway: str,
     dataSource: str = "data",
     conditions: str = "",
-    valueType: str = "z",
+    valueType: HeatmapValueType = "z",
     includeId: bool = True,
     header: bool = True,
     removeEmpty: bool = True,
@@ -1747,7 +1749,6 @@ def phospho_ksea_uploaded_volcano_route(
     header: bool = Form(True),
     condition1: str = Form(""),
     condition2: str = Form(""),
-    highlightGrk: bool = Form(False),
     annotateHits: bool = Form(False),
     advanced: str = Form(""),
 ) -> HTMLResponse:
@@ -1767,7 +1768,6 @@ def phospho_ksea_uploaded_volcano_route(
                 header=header,
                 condition1=condition1,
                 condition2=condition2,
-                highlight_grk=highlightGrk,
                 annotate_hits=annotateHits,
                 advanced=parse_advanced_plot_settings(advanced),
             )

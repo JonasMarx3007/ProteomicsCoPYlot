@@ -90,6 +90,10 @@ class MetadataProfileRenameRequest(BaseModel):
     newName: str
 
 
+class MetadataProfileDeleteRequest(BaseModel):
+    profileName: str
+
+
 class MetadataProfilesResponse(BaseModel):
     activeMetadataProfile: str
     availableMetadataProfiles: list[str]
