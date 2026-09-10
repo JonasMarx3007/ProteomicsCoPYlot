@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import SummaryCard from "../../components/SummaryCard";
+import { useId, useEffect, useMemo, useState } from "react";
 import { downloadIdTranslation, getCurrentDatasets, runIdTranslation } from "../../lib/api";
 import type {
   AnnotationKind,
@@ -279,10 +280,11 @@ function SelectField({
   options: { value: string; label: string }[];
   disabled?: boolean;
 }) {
+  const fieldId = useId();
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <select id={fieldId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled || options.length === 0}
@@ -299,14 +301,6 @@ function SelectField({
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-sm font-semibold text-slate-900">{value}</div>
-    </div>
-  );
-}
 
 function PreviewTable({
   rows,

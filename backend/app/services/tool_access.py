@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 
 from app.services.password_hashing import validate_password_hash, verify_password
-from app.services.session_context import get_session_id
+from app.services.session_context import get_session_id, rotate_session_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -151,7 +151,20 @@ def validate_tool_access_configuration() -> None:
             raise ValueError("Tool access token still contains the example placeholder.")
 
 
-def authenticate_tool_password(password: str, *, project_root: Path | None = None) -> None:
+def _grant_authenticated_session() -> str:
+    """Bind authentication to a fresh session id, discarding the one the client sent.
+
+    Rotating here is what stops session fixation: the pre-login id never becomes
+    an authenticated one, so planting it achieves nothing.
+    """
+    with _SESSION_LOCK:
+        _SESSION_AUTH.discard(get_session_id())
+        replacement = rotate_session_id()
+        _SESSION_AUTH.add(replacement)
+    return replacement
+
+
+def authenticate_tool_password(password: str, *, project_root: Path | None = None) -> str:
     data = _load_access(project_root)
     candidate = str(password or "")
     pbkdf2_hash = _password_pbkdf2_hash(data)
@@ -161,17 +174,15 @@ def authenticate_tool_password(password: str, *, project_root: Path | None = Non
     )
     if not matches:
         raise ValueError("Invalid tool password.")
-    with _SESSION_LOCK:
-        _SESSION_AUTH.add(get_session_id())
+    return _grant_authenticated_session()
 
 
-def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> None:
+def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> str:
     data = _load_access(project_root)
     digest = _sha256(str(token or ""))
     if not any(secrets.compare_digest(digest, expected) for expected in _token_hashes(data)):
         raise ValueError("Invalid tool access token.")
-    with _SESSION_LOCK:
-        _SESSION_AUTH.add(get_session_id())
+    return _grant_authenticated_session()
 
 
 def clear_tool_session_auth() -> None:

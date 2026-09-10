@@ -1,10 +1,7 @@
+import { resolveSelectedLocalPath } from "../../lib/localFilePath";
 import { useMemo, useState } from "react";
 import { importRestoreState } from "../../lib/api";
 import type { RestoreImportResponse, RestoreMissingFile } from "../../lib/types";
-
-type LocalFile = File & {
-  path?: string;
-};
 
 type RestoreReplacement = {
   packageName: string;
@@ -19,10 +16,10 @@ type SelectedReplacement = {
 };
 
 type Props = {
-  onApplyUiState: (state: Record<string, unknown>) => void;
-  onQuickSave: () => Promise<void>;
-  onQuickSaveAs: () => Promise<void>;
-  onPortableSave: () => Promise<void>;
+  onApplyUiState: (state: Record<string, unknown>, matchesSavedFile?: boolean) => void;
+  onQuickSave: () => Promise<boolean>;
+  onQuickSaveAs: () => Promise<boolean>;
+  onPortableSave: () => Promise<boolean>;
   onOpenStateFile: (() => Promise<File | null>) | null;
   currentSaveFileName: string | null;
 };
@@ -31,17 +28,6 @@ function missingKey(item: RestoreMissingFile): string {
   return `${item.packageName}::${item.kind}`;
 }
 
-function resolveSelectedLocalPath(file: File, inputValue: string): string | null {
-  const localPath = (file as LocalFile).path?.trim();
-  if (localPath) {
-    return localPath;
-  }
-  const raw = inputValue.trim();
-  if (raw && !raw.toLowerCase().includes("fakepath")) {
-    return raw;
-  }
-  return null;
-}
 
 export default function RestorePage({
   onApplyUiState,
@@ -69,7 +55,7 @@ export default function RestorePage({
       setBusy(true);
       setError(null);
       setInfo(null);
-      await onQuickSave();
+      if (!await onQuickSave()) return;
       setInfo("Save state written successfully.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to export save state.");
@@ -83,7 +69,7 @@ export default function RestorePage({
       setBusy(true);
       setError(null);
       setInfo(null);
-      await onQuickSaveAs();
+      if (!await onQuickSaveAs()) return;
       setInfo("Save state written to the selected file.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to export save state.");
@@ -97,7 +83,7 @@ export default function RestorePage({
       setBusy(true);
       setError(null);
       setInfo(null);
-      await onPortableSave();
+      if (!await onPortableSave()) return;
       setInfo("Portable save state written without local dataset paths.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to export portable save state.");
@@ -159,7 +145,10 @@ export default function RestorePage({
 
       setMissingFiles([]);
       setReplacementFiles({});
-      onApplyUiState(response.uiState ?? {});
+      const changedDuringRestore = replacements.length > 0 || (response.warnings ?? []).some(
+        (warning) => !warning.startsWith("Save states are compatibility snapshots:")
+      );
+      onApplyUiState(response.uiState ?? {}, !changedDuringRestore);
       setWarnings(response.warnings ?? []);
       setInfo(
         `Restore complete. Datasets: ${response.restoredDatasets.length}, annotations: ${response.restoredAnnotations.length}. UI state has been rehydrated.`
@@ -208,6 +197,8 @@ export default function RestorePage({
           </button>
         </div>
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Leaving or refreshing starts a new analysis on the next load. The browser asks for confirmation
+          when there are changes since the last saved state. Cancelling keeps the current analysis.
           Regular save states include local dataset paths for same-machine restore. Use a portable save
           before sharing: paths are omitted, so the recipient must upload the referenced datasets when restoring.
         </div>
@@ -226,6 +217,7 @@ export default function RestorePage({
           <input
             type="file"
             accept=".copylotstate,.bin,.json,.gz,application/octet-stream"
+            aria-label="Save state file to restore"
             onChange={(event) => {
               const file = event.target.files?.[0] ?? null;
               setStateFile(file);
@@ -281,6 +273,7 @@ export default function RestorePage({
                   ) : null}
                   <input
                     type="file"
+                    aria-label={`Replacement dataset for ${item.packageName}, ${item.kind}`}
                     onChange={(event) => {
                       const file = event.target.files?.[0] ?? null;
                       setReplacementFiles((prev) => ({

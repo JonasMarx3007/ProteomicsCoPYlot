@@ -1,5 +1,7 @@
 ﻿
 import { useEffect, useMemo, useRef, useState } from "react";
+import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
+import { TEST_TYPE_OPTIONS, restoreTestType } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
 import { buildPlotUrl, getStatisticalOptions, isAbortError, pairingIsReady, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
@@ -260,26 +262,26 @@ export default function AnalysisPage({
     return value === "genes" ? "genes" : "workflow";
   });
   const [volcanoSettings, setVolcanoSettings] = useState<VolcanoSettings>(() => {
-    const testType = asString(persistedVolcano.testType, "unpaired");
+    const testType = restoreTestType(persistedVolcano.testType);
     const pValueMode = asString(persistedVolcano.pValueMode, "corrected");
     return {
       condition1: asString(persistedVolcano.condition1),
       condition2: asString(persistedVolcano.condition2),
-      testType: testType === "paired" ? "paired" : "unpaired",
+      testType,
       pValueThreshold: asNumber(persistedVolcano.pValueThreshold, 0.05),
       log2fcThreshold: asNumber(persistedVolcano.log2fcThreshold, 1),
       pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
     };
   });
   const [volcanoControlSettings, setVolcanoControlSettings] = useState<VolcanoControlSettings>(() => {
-    const testType = asString(persistedVolcanoControl.testType, "unpaired");
+    const testType = restoreTestType(persistedVolcanoControl.testType);
     const pValueMode = asString(persistedVolcanoControl.pValueMode, "corrected");
     return {
       condition1: asString(persistedVolcanoControl.condition1),
       condition2: asString(persistedVolcanoControl.condition2),
       condition1Control: asString(persistedVolcanoControl.condition1Control),
       condition2Control: asString(persistedVolcanoControl.condition2Control),
-      testType: testType === "paired" ? "paired" : "unpaired",
+      testType,
       pValueThreshold: asNumber(persistedVolcanoControl.pValueThreshold, 0.05),
       log2fcThreshold: asNumber(persistedVolcanoControl.log2fcThreshold, 1),
       pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
@@ -1327,6 +1329,8 @@ function OraListTile({
         correctionMethod: result.correctionMethod,
         databaseSha256: result.databaseSha256,
         testedTermCount: result.testedTermCount,
+        ...result.termCounts.query,
+        correctionScope: ORA_CORRECTION_SCOPE,
         adjPValueCutoff,
         minTermSize,
         maxTermSize,
@@ -1463,7 +1467,7 @@ function OraListTile({
       {result ? (
         <div className="mt-3 space-y-3">
           <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-            Genes used: <span className="font-medium text-slate-900">{result.genes.length}</span> | Terms found:{" "}
+            Genes submitted: <span className="font-medium text-slate-900">{result.genes.length}</span> | Displayed terms:{" "}
             <span className="font-medium text-slate-900">{result.terms.length}</span> | Background:{" "}
             <span className="font-medium text-slate-900">{result.backgroundSize}</span> ({result.backgroundMode === "experiment" ? "custom" : "global"}) | Annotated:{" "}
             <span className="font-medium text-slate-900">{result.annotatedBackgroundSize}</span> | Organism:{" "}
@@ -1471,6 +1475,7 @@ function OraListTile({
             <span className="font-medium text-slate-900">{result.correctionMethod}</span> | Terms in search space:{" "}
             <span className="font-medium text-slate-900">{result.testedTermCount}</span>
           </div>
+          <OraTermCounts counts={result.termCounts} />
           <div className="flex flex-wrap gap-2">
             {oraCsvUrl ? (
               <a
@@ -1613,10 +1618,7 @@ function VolcanoBundleControls({
         <SelectField
           label="Test type"
           value={settings.testType}
-          options={[
-            { value: "unpaired", label: "Unpaired" },
-            { value: "paired", label: "Paired" },
-          ]}
+          options={TEST_TYPE_OPTIONS}
           onChange={(value) => onChange({ testType: value as StatsTestType })}
         />
         <SelectField

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from app.services.html_security import GENERATED_HTML_META
+
+from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
+    cm_to_inch as _cm_to_inch,
+)
+
 import logging
 
 import hashlib
-import io
 import os
 import sys
 from functools import lru_cache
@@ -51,7 +57,6 @@ from app.services.functions import (
     paired_test_enabled,
     paired_t_test,
     resolve_test_type,
-    squeeze_variance,
 )
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
@@ -71,17 +76,6 @@ def _get_plotly():
     return go
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
 def _plotly_html(fig) -> str:
@@ -93,6 +87,7 @@ def _plotly_html(fig) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{GENERATED_HTML_META}"
         "<style>"
         f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
@@ -131,8 +126,6 @@ def _plotly_html(fig) -> str:
     )
 
 
-def _cm_to_inch(value_cm: float) -> float:
-    return max(1.0, float(value_cm) / 2.54)
 
 
 def _bh_adjust(pvalues: np.ndarray) -> np.ndarray:
@@ -370,7 +363,22 @@ def _volcano_dataframe(
         cols1, cols2 = paired_sample_columns(metadata, condition1, condition2)
 
     selected_columns = [label_column, *cols1, *cols2]
-    if condition1_control and condition2_control:
+    has_control1 = bool(condition1_control)
+    has_control2 = bool(condition2_control)
+    if has_control1 != has_control2:
+        raise ValueError("Control-corrected volcano analysis requires both control conditions.")
+    if has_control1 and has_control2:
+        control_conditions = [
+            str(condition1).strip(),
+            str(condition1_control).strip(),
+            str(condition2).strip(),
+            str(condition2_control).strip(),
+        ]
+        if len(set(control_conditions)) != len(control_conditions):
+            raise ValueError(
+                "Control-corrected volcano analysis requires four distinct conditions; "
+                "an experimental condition cannot be used as its own control."
+            )
         ctrl1_cols = metadata.loc[metadata["condition"] == condition1_control, "sample"].astype(str).tolist()
         ctrl2_cols = metadata.loc[metadata["condition"] == condition2_control, "sample"].astype(str).tolist()
         if not ctrl1_cols or not ctrl2_cols:
@@ -439,22 +447,7 @@ def _volcano_dataframe(
         control_arrays = [control[valid_pairs] for control in control_arrays]
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
-        if variance == "moderated":
-            # Shrink the variance of the within-pair differences across features.
-            var_diff = np.nanvar(diffs, axis=1, ddof=1)
-            residual_dof = n_diff - 1.0
-            posterior, _, df_prior = squeeze_variance(var_diff, residual_dof)
-            components = [(posterior, n_diff)]
-            components.extend(_variance_and_count(control) for control in control_arrays)
-            if control_arrays:
-                se, dof = _satterthwaite(components)
-            else:
-                se = np.sqrt(posterior / n_diff)
-                dof = residual_dof
-            dof = dof + (df_prior if np.isfinite(df_prior) else 1e6)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                pvals = 2.0 * t.sf(np.abs(log2fc / se), dof)
-        elif control_arrays:
+        if control_arrays:
             # Subtracting the control means shifts each row by a constant, so the
             # within-pair spread that paired_t_test sees is unchanged and the
             # uncertainty of the two control means is missing from it entirely.
@@ -474,22 +467,6 @@ def _volcano_dataframe(
             components = [(var1, n1), (var2, n2)]
             components.extend(_variance_and_count(control) for control in control_arrays)
             se, dof = _satterthwaite(components)
-        elif variance == "moderated":
-            # Equal-variance model with the pooled variance shrunk toward a prior
-            # fitted across all features (limma's empirical Bayes). At n=3 a
-            # per-feature variance is a poor estimate; borrowing strength across
-            # features is what recovers usable power.
-            groups = [(var1, n1), (var2, n2)]
-            groups.extend(_variance_and_count(control) for control in control_arrays)
-            total_n = sum(count for _, count in groups)
-            residual_dof = total_n - float(len(groups))
-            pooled_var = sum(
-                (count - 1.0) * variance_values for variance_values, count in groups
-            ) / np.maximum(residual_dof, 1e-12)
-            posterior, _, df_prior = squeeze_variance(pooled_var, residual_dof)
-            scale = sum(1.0 / count for _, count in groups)
-            se = np.sqrt(posterior * scale)
-            dof = residual_dof + (df_prior if np.isfinite(df_prior) else 1e6)
         elif control_arrays:
             # Same reasoning as the paired branch: the control-adjusted values
             # keep their original within-group variance, so a two-group standard
@@ -1510,7 +1487,10 @@ def _enrichment_terms(
     adj_p_value_cutoff: float | None,
     background: set[str],
     eligible_terms: list[tuple[str, str, str, set[str]]],
+    counts: dict[str, int] | None = None,
 ) -> list[EnrichmentTerm]:
+    if counts is not None:
+        counts.update(searchSpace=len(eligible_terms), overlapTested=0, passingCutoff=0, displayed=0)
     genes = {
         gene.strip()
         for gene in gene_list
@@ -1535,6 +1515,8 @@ def _enrichment_terms(
     ]
     if not tested:
         return []
+    if counts is not None:
+        counts["overlapTested"] = len(tested)
 
     term_sizes = np.asarray([len(term[3]) for term, _ in tested], dtype=int)
     overlap_sizes = np.asarray([len(overlap) for _, overlap in tested], dtype=int)
@@ -1569,6 +1551,8 @@ def _enrichment_terms(
         )
 
     terms.sort(key=lambda term: (term.adjPValue, term.pValue, -term.intersectionSize))
+    if counts is not None:
+        counts.update(passingCutoff=len(terms), displayed=len(terms[:top_n]))
     return terms[:top_n]
 
 
@@ -1586,6 +1570,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         raise ValueError("Minimum term size cannot be larger than maximum term size.")
 
     source_mode = str(payload.source).strip().lower()
+    term_counts: dict[str, dict[str, int]] = {}
     if source_mode == "anova":
         source_used, cluster_genes, tested_genes, warnings = _anova_cluster_genes(payload)
         background = _background_for_mode(payload.backgroundMode, tested_genes)
@@ -1600,6 +1585,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
             payload.adjPValueCutoff,
             effective_background,
             eligible_terms,
+            term_counts.setdefault("cluster", {}),
         )
         species_warning = _species_overlap_warning(tested_genes)
         if species_warning:
@@ -1617,6 +1603,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
             organism=GO_DATABASE_ORGANISM,
             databaseSha256=_go_database_sha256(),
             testedTermCount=len(eligible_terms),
+            termCounts=term_counts,
             upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
             warnings=warnings,
         )
@@ -1647,6 +1634,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         payload.adjPValueCutoff,
         effective_background,
         eligible_terms,
+        term_counts.setdefault("up", {}),
     )
     down_terms = _enrichment_terms(
         down_genes,
@@ -1654,6 +1642,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         payload.adjPValueCutoff,
         effective_background,
         eligible_terms,
+        term_counts.setdefault("down", {}),
     )
     species_warning = _species_overlap_warning(tested_genes)
     if species_warning:
@@ -1673,11 +1662,13 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
         databaseSha256=_go_database_sha256(),
         testedTermCount=len(eligible_terms),
+        termCounts=term_counts,
         warnings=warnings,
     )
 
 
 def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentResultResponse:
+    term_counts: dict[str, dict[str, int]] = {"query": {}}
     if payload.minTermSize > payload.maxTermSize:
         raise ValueError("Minimum term size cannot be larger than maximum term size.")
 
@@ -1715,6 +1706,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         payload.adjPValueCutoff,
         effective_background,
         eligible_terms,
+        term_counts["query"],
     )
 
     warnings: list[str] = []
@@ -1736,6 +1728,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         organism=GO_DATABASE_ORGANISM,
         databaseSha256=_go_database_sha256(),
         testedTermCount=len(eligible_terms),
+        termCounts=term_counts,
         warnings=warnings,
     )
 

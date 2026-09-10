@@ -7,7 +7,7 @@ import time
 from collections import deque
 from threading import RLock
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.schemas.viewer_auth import (
     ViewerAuthLoginRequest,
@@ -109,8 +109,33 @@ def viewer_auth_status_route() -> ViewerAuthStatusResponse:
     )
 
 
+from app.services.session_context import (
+    get_session_id,
+    session_cookie_name,
+    session_cookie_secure,
+)
+
+
+def _set_rotated_session_cookie(response: Response) -> None:
+    """Hand the client the post-login session id.
+
+    Authentication mints a new id and binds the grant to it, so the browser has to
+    be told; otherwise it keeps sending the pre-login id and reads as anonymous.
+    """
+    response.set_cookie(
+        key=session_cookie_name(),
+        value=get_session_id(),
+        httponly=True,
+        secure=session_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+
+
 @router.post("/login", response_model=ViewerAuthLoginResponse)
-def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequest) -> ViewerAuthLoginResponse:
+def viewer_auth_login_route(
+    request: Request, payload: ViewerAuthLoginRequest, response: Response
+) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="password")
@@ -129,7 +154,9 @@ def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequest) -
         LOGGER.exception("Failed to authenticate viewer session")
         raise HTTPException(status_code=500, detail="Failed to authenticate viewer session.") from exc
 
+    _set_rotated_session_cookie(response)
     return ViewerAuthLoginResponse(
+        sessionId=get_session_id(),
         ok=True,
         project=auth.project,
         projectLabel=auth.project_label,
@@ -137,7 +164,9 @@ def viewer_auth_login_route(request: Request, payload: ViewerAuthLoginRequest) -
 
 
 @router.post("/qr-login", response_model=ViewerAuthLoginResponse)
-def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLoginRequest) -> ViewerAuthLoginResponse:
+def viewer_auth_qr_login_route(
+    request: Request, payload: ViewerAuthQrLoginRequest, response: Response
+) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
     _enforce_login_rate_limit(request, bucket="qr")
@@ -156,7 +185,9 @@ def viewer_auth_qr_login_route(request: Request, payload: ViewerAuthQrLoginReque
         LOGGER.exception("Failed to authenticate viewer QR session")
         raise HTTPException(status_code=500, detail="Failed to authenticate viewer QR session.") from exc
 
+    _set_rotated_session_cookie(response)
     return ViewerAuthLoginResponse(
+        sessionId=get_session_id(),
         ok=True,
         project=auth.project,
         projectLabel=auth.project_label,

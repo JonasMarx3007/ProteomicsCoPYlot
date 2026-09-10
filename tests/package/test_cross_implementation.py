@@ -19,9 +19,7 @@ TOLERANCE = 1e-9
 TEST_TYPES = (
     "unpaired",
     "unpaired_welch",
-    "unpaired_moderated",
     "paired",
-    "paired_moderated",
 )
 
 
@@ -160,7 +158,7 @@ def results(tmp_path_factory) -> dict[str, pd.DataFrame]:
         f"volcano_{test_type}": notebook.volcano_data_f(
             frame, meta, "Ctrl", "Treat", workflow="Protein", test_type=test_type
         )[["ProteinNames", "log2FC", "pval", "adj_pval"]]
-        for test_type in ("unpaired_welch", "unpaired_moderated")
+        for test_type in ("unpaired_welch",)
     }
     control_volcano = notebook.volcano_data_f_control(
         frame, meta, "Ctrl", "Treat", "Third", "Third",
@@ -416,7 +414,7 @@ def test_normalization_agrees(results, method: str) -> None:
 
 
 @requires_r
-@pytest.mark.parametrize("test_type", ["unpaired_welch", "unpaired_moderated"])
+@pytest.mark.parametrize("test_type", ["unpaired_welch"])
 def test_volcano_variance_models_agree(results, test_type: str) -> None:
     python_result = results["python"][f"volcano_{test_type}"]
     r_result = results["r"][f"volcano_{test_type}"]
@@ -428,13 +426,6 @@ def test_volcano_variance_models_agree(results, test_type: str) -> None:
             - merged[f"{column}_r"].to_numpy(dtype=float)
         ).max()
         assert difference < TOLERANCE, f"{test_type}: {column} differs by {difference:.2e}"
-
-
-@requires_r
-def test_moderated_recovers_more_than_pooled(results) -> None:
-    pooled = results["python"]["volcano"]["adj_pval"].to_numpy(dtype=float)
-    moderated = results["python"]["volcano_unpaired_moderated"]["adj_pval"].to_numpy(dtype=float)
-    assert (moderated < 0.05).sum() > (pooled < 0.05).sum()
 
 
 @requires_r
@@ -522,8 +513,8 @@ def test_control_volcano_propagates_the_control_uncertainty() -> None:
     )
 
 
-@pytest.mark.parametrize("scope", ["per group", "per_group", "in_at_least_one_group", "overall"])
-def test_valid_filter_scopes_are_still_accepted(scope: str) -> None:
+@pytest.mark.parametrize("mode", ["per group", "per_group", "in_at_least_one_group", "overall"])
+def test_valid_filter_modes_are_still_accepted(mode: str) -> None:
     from proteomicscopylot import notebook_functions
 
     samples = ["A1", "A2", "B1", "B2"]
@@ -537,14 +528,14 @@ def test_valid_filter_scopes_are_still_accepted(scope: str) -> None:
             "B2": [1.0, np.nan],
         }
     )
-    kept = notebook_functions.filter_data(frame, metadata, 2, filterops=scope)
+    kept = notebook_functions.filter_data(frame, metadata, 2, mode=mode)
     assert "complete" in set(kept["ProteinNames"])
-    expected = scope.replace("_", " ") != "per group"
+    expected = mode.replace("_", " ") != "per group"
     assert ("one side only" in set(kept["ProteinNames"])) is expected
 
 
-@pytest.mark.parametrize("scope", ["typo", "perGroup", "per-group", "per  group", ""])
-def test_an_unrecognised_filter_scope_raises_rather_than_defaulting(scope: str) -> None:
+@pytest.mark.parametrize("mode", ["typo", "perGroup", "per-group", "per  group", ""])
+def test_an_unrecognised_filter_mode_raises_rather_than_defaulting(mode: str) -> None:
     from proteomicscopylot import notebook_functions
 
     samples = ["A1", "A2", "B1", "B2"]
@@ -552,8 +543,8 @@ def test_an_unrecognised_filter_scope_raises_rather_than_defaulting(scope: str) 
     frame = pd.DataFrame(
         {"ProteinNames": ["p"], "A1": [1.0], "A2": [1.0], "B1": [1.0], "B2": [1.0]}
     )
-    with pytest.raises(ValueError, match="Filter scope must be"):
-        notebook_functions.filter_data(frame, metadata, 2, filterops=scope)
+    with pytest.raises(ValueError, match="Filter mode must be"):
+        notebook_functions.filter_data(frame, metadata, 2, mode=mode)
 
 
 @requires_r
@@ -741,3 +732,51 @@ def test_missed_cleavages_agree_across_the_packages_for_a_collection() -> None:
     assert completed.returncode == 0, completed.stderr[-300:]
     r_counts = [int(v) for v in completed.stdout.split()]
     assert python_counts == r_counts, f"pip {python_counts} vs R {r_counts}"
+
+
+@requires_r
+def test_paired_constant_and_missing_edges(tmp_path) -> None:
+    from app.services.functions import paired_t_test
+    from scipy.stats import ttest_1samp
+
+    # Binary-exact perturbations survive CSV round trips and trigger R t.test's
+    # near-constant guard without classifying them as exactly zero variance.
+    differences = np.array([
+        [2., 2., 2., 2.],
+        [-2., -2., -2., -2.],
+        [0., 0., 0., 0.],
+        [2., 2. + 2**-49, 2., 2.],
+        [1., 2., 4., 3.],
+        [1., np.nan, 4., 3.],
+        [1., np.nan, np.nan, np.nan],
+    ])
+    samples = [f"{group}{i}" for group in "AB" for i in range(4)]
+    data = pd.DataFrame(np.hstack([np.zeros_like(differences), differences]), columns=samples)
+    data.insert(0, "ProteinNames", [f"P{i}" for i in range(len(data))])
+    meta = pd.DataFrame({"sample": samples, "condition": [s[0] for s in samples],
+                         "pair_id": [s[1:] for s in samples]}).iloc[[3, 1, 0, 2, 6, 4, 7, 5]]
+    data.to_csv(tmp_path / "data.csv", index=False)
+    meta.to_csv(tmp_path / "meta.csv", index=False)
+    script = '''
+      args <- commandArgs(trailingOnly=TRUE)
+      source("proteomicscopylot/notebook_functions.R")
+      data <- read.csv(file.path(args[1], "data.csv"), check.names=FALSE)
+      meta <- read.csv(file.path(args[1], "meta.csv"), check.names=FALSE)
+      result <- volcano_data_f(data, meta, "A", "B", workflow="Protein", test_type="paired")
+      write.csv(result, file.path(args[1], "result.csv"), row.names=FALSE)
+    '''
+    completed = subprocess.run([RSCRIPT, "-e", script, str(tmp_path)], cwd=ROOT,
+                               capture_output=True, text=True, timeout=180)
+    assert completed.returncode == 0, completed.stderr
+    actual = pd.read_csv(tmp_path / "result.csv").set_index("ProteinNames").sort_index()
+    expected = _notebook().volcano_data_f(data, meta, "A", "B", test_type="paired").set_index("ProteinNames").sort_index()
+    assert actual.index.tolist() == expected.index.tolist() == [f"P{i}" for i in range(6)]
+    np.testing.assert_allclose(actual[["log2FC", "pval", "adj_pval", "n_pairs"]],
+                               expected[["log2FC", "pval", "adj_pval", "n_pairs"]], rtol=1e-9, atol=1e-12)
+    _, counts, backend_p = paired_t_test(differences[:6])
+    np.testing.assert_allclose(actual.pval, backend_p, rtol=1e-9, atol=1e-12)
+    np.testing.assert_array_equal(actual.n_pairs, counts)
+    assert actual.pval.iloc[:3].tolist() == [0., 0., 1.]
+    assert 0 < actual.pval.iloc[3] < 1e-30
+    np.testing.assert_allclose(actual.pval.iloc[4:],
+                               [ttest_1samp(row[np.isfinite(row)], 0).pvalue for row in differences[4:6]])

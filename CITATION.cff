@@ -11,39 +11,22 @@ authors:
     given-names: "Jonas"
 references:
   - type: "article"
-    title: "Linear models and empirical Bayes methods for assessing differential expression in microarray experiments"
-    journal: "Statistical Applications in Genetics and Molecular Biology"
-    year: 2004
-    volume: 3
-    doi: "10.2202/1544-6115.1027"
-    notes: "Empirical Bayes variance shrinkage used by the moderated t-test."
+    title: "A comparison of normalization methods for high density oligonucleotide array data based on variance and bias"
+    journal: "Bioinformatics"
+    year: 2003
+    volume: 19
+    issue: 2
+    doi: "10.1093/bioinformatics/19.2.185"
+    notes: "Quantile normalization, the method used by normalize_data(method=\"quantile\")."
     authors:
-      - family-names: "Smyth"
-        given-names: "Gordon K."
-
-  - type: "article"
-    title: "limma powers differential expression analyses for RNA-sequencing and microarray studies"
-    journal: "Nucleic Acids Research"
-    year: 2015
-    volume: 43
-    issue: 7
-    doi: "10.1093/nar/gkv007"
-    notes: "Source of the squeezeVar, fitFDist and normalizeQuantiles implementations."
-    authors:
-      - family-names: "Ritchie"
-        given-names: "Matthew E."
-      - family-names: "Phipson"
-        given-names: "Belinda"
-      - family-names: "Wu"
-        given-names: "Di"
-      - family-names: "Hu"
-        given-names: "Yifang"
-      - family-names: "Law"
-        given-names: "Charity W."
-      - family-names: "Shi"
-        given-names: "Wei"
-      - family-names: "Smyth"
-        given-names: "Gordon K."
+      - family-names: "Bolstad"
+        given-names: "Benjamin M."
+      - family-names: "Irizarry"
+        given-names: "Rafael A."
+      - family-names: "Astrand"
+        given-names: "Magnus"
+      - family-names: "Speed"
+        given-names: "Terence P."
 
   - type: "article"
     title: "The Perseus computational platform for comprehensive analysis of (prote)omics data"

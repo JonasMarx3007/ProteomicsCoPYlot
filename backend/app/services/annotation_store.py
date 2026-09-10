@@ -316,6 +316,7 @@ def update_annotation_pairing(
         log2_auto_detected=stored.log2_auto_detected,
         imputation=stored.imputation,
         imputed_data=getattr(stored, "imputed_data", pd.DataFrame()),
+        phosprot_aggregation=getattr(stored, "phosprot_aggregation", None),
     )
 
 
@@ -395,6 +396,21 @@ def rename_metadata_profile(
     package_profiles[new_key] = package_profiles.pop(old_key)
     invalidate_runtime_cache(
         f"annotation:{resolved_package}:metadata-profile:{old_key}:renamed:{new_key}"
+    )
+
+
+def delete_metadata_profile(
+    profile_name: str,
+    *,
+    package_name: str | None = None,
+) -> None:
+    resolved_package = _ensure_package(package_name)
+    key = str(profile_name or "").strip()
+    if not key:
+        return
+    _annotations_by_package()[resolved_package].pop(key, None)
+    invalidate_runtime_cache(
+        f"annotation:{resolved_package}:metadata-profile:{key}:deleted"
     )
 
 

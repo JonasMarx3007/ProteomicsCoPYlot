@@ -1,3 +1,4 @@
+import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState } from "react";
 import {
   downloadCurrentAnnotationMetadataData,
@@ -453,6 +454,7 @@ export default function SummaryPage({ activeTab }: Props) {
               <h3 className="text-lg font-semibold text-slate-900">Report Preview</h3>
               <div className="mt-4">
                 <iframe
+                  sandbox="allow-scripts allow-downloads"
                   title="Summary Report"
                   srcDoc={reportResult.html}
                   className="w-full rounded-xl border border-slate-200"
@@ -576,13 +578,6 @@ function MetadataTableCard({
   );
 }
 
-function collectColumns(rows: Record<string, unknown>[]): string[] {
-  const seen = new Set<string>();
-  rows.forEach((row) => {
-    Object.keys(row).forEach((key) => seen.add(key));
-  });
-  return Array.from(seen);
-}
 
 function formatCell(value: unknown): string {
   if (value == null) return "";

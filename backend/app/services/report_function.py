@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.html_security import GENERATED_HTML_META
+
 import base64
 import logging
 import json
@@ -140,7 +142,7 @@ def _png_to_html(png_bytes: bytes) -> str:
 def _plotly_to_iframe(plot_html: str, height_px: int = 740) -> str:
     srcdoc = html.escape(plot_html, quote=True)
     return (
-        f"<iframe srcdoc=\"{srcdoc}\" "
+        f"<iframe sandbox='allow-scripts allow-downloads' srcdoc=\"{srcdoc}\" "
         f"style='display:block;width:100%;height:{max(520, int(height_px))}px;border:1px solid #d6d6d6;border-radius:8px;' "
         "loading='lazy'></iframe>"
     )
@@ -459,7 +461,7 @@ _NORMALIZATION_REPORT_LABELS = {
     "median": "Samples were median-centred on the log2 values before filtering.",
     "quantile": (
         "Samples were quantile-normalized on the log2 values before filtering "
-        "(limma::normalizeQuantiles; Ritchie et al. 2015, doi:10.1093/nar/gkv007)."
+        "(Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185)."
     ),
     "vsn": (
         "Variance-stabilizing normalization (VSN, Bioconductor vsn; Huber et al. 2002, "
@@ -474,9 +476,7 @@ _NORMALIZATION_REPORT_LABELS = {
 _TEST_TYPE_REPORT_LABELS = {
     "unpaired": "unpaired two-sample t-test (pooled variance)",
     "unpaired_welch": "unpaired two-sample t-test (Welch, unequal variance)",
-    "unpaired_moderated": "unpaired moderated t-test (empirical Bayes variance shrinkage; Smyth 2004, doi:10.2202/1544-6115.1027)",
     "paired": "paired t-test (pooled variance)",
-    "paired_moderated": "paired moderated t-test (empirical Bayes variance shrinkage; Smyth 2004, doi:10.2202/1544-6115.1027)",
 }
 
 
@@ -538,6 +538,37 @@ def _volcano_block_html(
             )
         )
     return "".join(parts)
+
+
+def _qc_plot_style(settings: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "header": _to_bool(settings.get("header"), True),
+        "legend": _to_bool(settings.get("legend"), True),
+        "width_cm": _to_float(settings.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
+        "dpi": _to_int(settings.get("dpi"), 300, minimum=72, maximum=1200),
+    }
+
+
+def _pca_plot_options(settings: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "header": _to_bool(settings.get("header"), True),
+        "legend": _to_bool(settings.get("legend"), True),
+        "plot_dim": _to_str(settings.get("plotDim"), "2D"),
+        "method": _to_str(settings.get("method"), "PCA"),
+        "add_ellipses": _to_bool(settings.get("addEllipses"), False),
+        "dot_size": _to_int(settings.get("dotSize"), 5, minimum=1, maximum=60),
+        "cluster_method": _to_str(settings.get("clusterMethod"), "None"),
+        "cluster_count": _to_int(settings.get("clusterCount"), 3, minimum=2, maximum=200),
+        "color_by": _to_str(settings.get("colorBy"), "Condition"),
+        "umap_n_neighbors": _to_int(settings.get("umapNNeighbors"), 15, minimum=2, maximum=500),
+        "umap_min_dist": _to_float(settings.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
+        "tsne_perplexity": _to_float(settings.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0),
+        "tsne_learning_rate": _to_float(settings.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0),
+        "dbscan_eps": _to_float(settings.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+        "dbscan_min_samples": _to_int(settings.get("dbscanMinSamples"), 2, minimum=1, maximum=500),
+        "random_state": _to_int(settings.get("randomState"), 42, minimum=0, maximum=10_000_000),
+        "width_cm": _to_float(settings.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
+    }
 
 
 def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
@@ -643,6 +674,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
     html_parts: list[str] = [
         "<!doctype html>",
         "<html><head><meta charset='utf-8'>",
+        GENERATED_HTML_META,
         f"<title>{html.escape(title)}</title>",
         "<style>",
         "body{font-family:Arial,sans-serif;max-width:1300px;margin:0 auto;padding:24px;line-height:1.5;color:#111;}",
@@ -902,11 +934,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             content_html=_safe_png(
                 renderer=lambda: qc_intensity_histogram_plot(
                     kind="protein",
-                    header=_to_bool(protein_hist.get("header"), True),
-                    legend=_to_bool(protein_hist.get("legend"), True),
-                    width_cm=_to_float(protein_hist.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
+                    **_qc_plot_style(protein_hist),
                     height_cm=_to_float(protein_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                    dpi=_to_int(protein_hist.get("dpi"), 300, minimum=72, maximum=1200),
                     advanced=qc_hist_advanced,
                 ),
                 fallback_title="Protein Histogram Plot",
@@ -928,13 +957,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         mode=_to_str(protein_box.get("mode"), "Mean"),
                         outliers=_to_bool(protein_box.get("outliers"), False),
                         include_id=_to_bool(protein_box.get("includeId"), False),
-                        header=_to_bool(protein_box.get("header"), True),
-                        legend=_to_bool(protein_box.get("legend"), True),
+                        **_qc_plot_style(protein_box),
                         text=_to_bool(protein_box.get("text"), False),
                         text_size=_to_int(protein_box.get("textSize"), 9, minimum=6, maximum=24),
-                        width_cm=_to_float(protein_box.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_box.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                        dpi=_to_int(protein_box.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_box_advanced,
                     ),
                     fallback_title="Protein Boxplot",
@@ -964,13 +990,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     renderer=lambda: qc_cv_plot(
                         kind="protein",
                         outliers=_to_bool(protein_cv.get("outliers"), False),
-                        header=_to_bool(protein_cv.get("header"), True),
-                        legend=_to_bool(protein_cv.get("legend"), True),
+                        **_qc_plot_style(protein_cv),
                         text=_to_bool(protein_cv.get("text"), False),
                         text_size=_to_int(protein_cv.get("textSize"), 9, minimum=6, maximum=24),
-                        width_cm=_to_float(protein_cv.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(protein_cv.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                        dpi=_to_int(protein_cv.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_cv_advanced,
                     ),
                     fallback_title="Protein CV Plot",
@@ -1012,33 +1035,11 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     protein_pca_source_html
                     + _safe_plotly(
                         renderer=lambda: qc_pca_interactive_html(
-                        kind="protein",
-                        data_source=protein_pca_data_source,
-                        header=_to_bool(protein_pca.get("header"), True),
-                        legend=_to_bool(protein_pca.get("legend"), True),
-                        plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
-                        method=_to_str(protein_pca.get("method"), "PCA"),
-                        add_ellipses=_to_bool(protein_pca.get("addEllipses"), False),
-                        dot_size=_to_int(protein_pca.get("dotSize"), 5, minimum=1, maximum=60),
-                        cluster_method=_to_str(protein_pca.get("clusterMethod"), "None"),
-                        cluster_count=_to_int(protein_pca.get("clusterCount"), 3, minimum=2, maximum=200),
-                        color_by=_to_str(protein_pca.get("colorBy"), "Condition"),
-                        umap_n_neighbors=_to_int(protein_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
-                        umap_min_dist=_to_float(protein_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
-                        tsne_perplexity=_to_float(
-                            protein_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
-                        ),
-                        tsne_learning_rate=_to_float(
-                            protein_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
-                        ),
-                        dbscan_eps=_to_float(protein_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
-                        dbscan_min_samples=_to_int(
-                            protein_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
-                        ),
-                        random_state=_to_int(protein_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
-                        width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
-                        height_cm=protein_pca_height_cm,
-                        advanced=qc_pca_advanced,
+                            kind="protein",
+                            data_source=protein_pca_data_source,
+                            **_pca_plot_options(protein_pca),
+                            height_cm=protein_pca_height_cm,
+                            advanced=qc_pca_advanced,
                         ),
                         fallback_title="Protein PCA Interactive Plot",
                         warnings=warnings,
@@ -1050,34 +1051,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     protein_pca_source_html
                     + _safe_png(
                         renderer=lambda: qc_pca_plot(
-                        kind="protein",
-                        data_source=protein_pca_data_source,
-                        header=_to_bool(protein_pca.get("header"), True),
-                        legend=_to_bool(protein_pca.get("legend"), True),
-                        plot_dim=_to_str(protein_pca.get("plotDim"), "2D"),
-                        method=_to_str(protein_pca.get("method"), "PCA"),
-                        add_ellipses=_to_bool(protein_pca.get("addEllipses"), False),
-                        dot_size=_to_int(protein_pca.get("dotSize"), 5, minimum=1, maximum=60),
-                        cluster_method=_to_str(protein_pca.get("clusterMethod"), "None"),
-                        cluster_count=_to_int(protein_pca.get("clusterCount"), 3, minimum=2, maximum=200),
-                        color_by=_to_str(protein_pca.get("colorBy"), "Condition"),
-                        umap_n_neighbors=_to_int(protein_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
-                        umap_min_dist=_to_float(protein_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
-                        tsne_perplexity=_to_float(
-                            protein_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
-                        ),
-                        tsne_learning_rate=_to_float(
-                            protein_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
-                        ),
-                        dbscan_eps=_to_float(protein_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
-                        dbscan_min_samples=_to_int(
-                            protein_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
-                        ),
-                        random_state=_to_int(protein_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
-                        width_cm=_to_float(protein_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
-                        height_cm=protein_pca_height_cm,
-                        dpi=_to_int(protein_pca.get("dpi"), 300, minimum=72, maximum=1200),
-                        advanced=qc_pca_advanced,
+                            kind="protein",
+                            data_source=protein_pca_data_source,
+                            **_pca_plot_options(protein_pca),
+                            height_cm=protein_pca_height_cm,
+                            dpi=_to_int(protein_pca.get("dpi"), 300, minimum=72, maximum=1200),
+                            advanced=qc_pca_advanced,
                         ),
                         fallback_title="Protein PCA Plot",
                         warnings=warnings,
@@ -1097,12 +1076,9 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             content_html=_safe_png(
                 renderer=lambda: qc_abundance_plot(
                     kind="protein",
-                    header=_to_bool(protein_abundance.get("header"), True),
-                    legend=_to_bool(protein_abundance.get("legend"), True),
+                    **_qc_plot_style(protein_abundance),
                     condition="All Conditions",
-                    width_cm=_to_float(protein_abundance.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=protein_abundance_height_cm,
-                    dpi=_to_int(protein_abundance.get("dpi"), 300, minimum=72, maximum=1200),
                     advanced=qc_abundance_advanced,
                 ),
                 fallback_title="Protein Abundance Plot",
@@ -1267,11 +1243,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             content_html=_safe_png(
                 renderer=lambda: qc_intensity_histogram_plot(
                     kind="phospho",
-                    header=_to_bool(phospho_hist.get("header"), True),
-                    legend=_to_bool(phospho_hist.get("legend"), True),
-                    width_cm=_to_float(phospho_hist.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
+                    **_qc_plot_style(phospho_hist),
                     height_cm=_to_float(phospho_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                    dpi=_to_int(phospho_hist.get("dpi"), 300, minimum=72, maximum=1200),
                     advanced=qc_hist_advanced,
                 ),
                 fallback_title="Phospho Histogram Plot",
@@ -1293,13 +1266,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         mode=_to_str(phospho_box.get("mode"), "Mean"),
                         outliers=_to_bool(phospho_box.get("outliers"), False),
                         include_id=_to_bool(phospho_box.get("includeId"), False),
-                        header=_to_bool(phospho_box.get("header"), True),
-                        legend=_to_bool(phospho_box.get("legend"), True),
+                        **_qc_plot_style(phospho_box),
                         text=_to_bool(phospho_box.get("text"), False),
                         text_size=_to_int(phospho_box.get("textSize"), 9, minimum=6, maximum=24),
-                        width_cm=_to_float(phospho_box.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(phospho_box.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                        dpi=_to_int(phospho_box.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_box_advanced,
                     ),
                     fallback_title="Phospho Boxplot",
@@ -1329,13 +1299,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     renderer=lambda: qc_cv_plot(
                         kind="phospho",
                         outliers=_to_bool(phospho_cv.get("outliers"), False),
-                        header=_to_bool(phospho_cv.get("header"), True),
-                        legend=_to_bool(phospho_cv.get("legend"), True),
+                        **_qc_plot_style(phospho_cv),
                         text=_to_bool(phospho_cv.get("text"), False),
                         text_size=_to_int(phospho_cv.get("textSize"), 9, minimum=6, maximum=24),
-                        width_cm=_to_float(phospho_cv.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                         height_cm=_to_float(phospho_cv.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
-                        dpi=_to_int(phospho_cv.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_cv_advanced,
                     ),
                     fallback_title="Phospho CV Plot",
@@ -1377,33 +1344,11 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     phospho_pca_source_html
                     + _safe_plotly(
                         renderer=lambda: qc_pca_interactive_html(
-                        kind="phospho",
-                        data_source=phospho_pca_data_source,
-                        header=_to_bool(phospho_pca.get("header"), True),
-                        legend=_to_bool(phospho_pca.get("legend"), True),
-                        plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
-                        method=_to_str(phospho_pca.get("method"), "PCA"),
-                        add_ellipses=_to_bool(phospho_pca.get("addEllipses"), False),
-                        dot_size=_to_int(phospho_pca.get("dotSize"), 5, minimum=1, maximum=60),
-                        cluster_method=_to_str(phospho_pca.get("clusterMethod"), "None"),
-                        cluster_count=_to_int(phospho_pca.get("clusterCount"), 3, minimum=2, maximum=200),
-                        color_by=_to_str(phospho_pca.get("colorBy"), "Condition"),
-                        umap_n_neighbors=_to_int(phospho_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
-                        umap_min_dist=_to_float(phospho_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
-                        tsne_perplexity=_to_float(
-                            phospho_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
-                        ),
-                        tsne_learning_rate=_to_float(
-                            phospho_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
-                        ),
-                        dbscan_eps=_to_float(phospho_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
-                        dbscan_min_samples=_to_int(
-                            phospho_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
-                        ),
-                        random_state=_to_int(phospho_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
-                        width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
-                        height_cm=phospho_pca_height_cm,
-                        advanced=qc_pca_advanced,
+                            kind="phospho",
+                            data_source=phospho_pca_data_source,
+                            **_pca_plot_options(phospho_pca),
+                            height_cm=phospho_pca_height_cm,
+                            advanced=qc_pca_advanced,
                         ),
                         fallback_title="Phospho PCA Interactive Plot",
                         warnings=warnings,
@@ -1415,34 +1360,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     phospho_pca_source_html
                     + _safe_png(
                         renderer=lambda: qc_pca_plot(
-                        kind="phospho",
-                        data_source=phospho_pca_data_source,
-                        header=_to_bool(phospho_pca.get("header"), True),
-                        legend=_to_bool(phospho_pca.get("legend"), True),
-                        plot_dim=_to_str(phospho_pca.get("plotDim"), "2D"),
-                        method=_to_str(phospho_pca.get("method"), "PCA"),
-                        add_ellipses=_to_bool(phospho_pca.get("addEllipses"), False),
-                        dot_size=_to_int(phospho_pca.get("dotSize"), 5, minimum=1, maximum=60),
-                        cluster_method=_to_str(phospho_pca.get("clusterMethod"), "None"),
-                        cluster_count=_to_int(phospho_pca.get("clusterCount"), 3, minimum=2, maximum=200),
-                        color_by=_to_str(phospho_pca.get("colorBy"), "Condition"),
-                        umap_n_neighbors=_to_int(phospho_pca.get("umapNNeighbors"), 15, minimum=2, maximum=500),
-                        umap_min_dist=_to_float(phospho_pca.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
-                        tsne_perplexity=_to_float(
-                            phospho_pca.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0
-                        ),
-                        tsne_learning_rate=_to_float(
-                            phospho_pca.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0
-                        ),
-                        dbscan_eps=_to_float(phospho_pca.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
-                        dbscan_min_samples=_to_int(
-                            phospho_pca.get("dbscanMinSamples"), 2, minimum=1, maximum=500
-                        ),
-                        random_state=_to_int(phospho_pca.get("randomState"), 42, minimum=0, maximum=10_000_000),
-                        width_cm=_to_float(phospho_pca.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
-                        height_cm=phospho_pca_height_cm,
-                        dpi=_to_int(phospho_pca.get("dpi"), 300, minimum=72, maximum=1200),
-                        advanced=qc_pca_advanced,
+                            kind="phospho",
+                            data_source=phospho_pca_data_source,
+                            **_pca_plot_options(phospho_pca),
+                            height_cm=phospho_pca_height_cm,
+                            dpi=_to_int(phospho_pca.get("dpi"), 300, minimum=72, maximum=1200),
+                            advanced=qc_pca_advanced,
                         ),
                         fallback_title="Phospho PCA Plot",
                         warnings=warnings,
@@ -1462,12 +1385,9 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             content_html=_safe_png(
                 renderer=lambda: qc_abundance_plot(
                     kind="phospho",
-                    header=_to_bool(phospho_abundance.get("header"), True),
-                    legend=_to_bool(phospho_abundance.get("legend"), True),
+                    **_qc_plot_style(phospho_abundance),
                     condition="All Conditions",
-                    width_cm=_to_float(phospho_abundance.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
                     height_cm=phospho_abundance_height_cm,
-                    dpi=_to_int(phospho_abundance.get("dpi"), 300, minimum=72, maximum=1200),
                     advanced=qc_abundance_advanced,
                 ),
                 fallback_title="Phospho Abundance Plot",

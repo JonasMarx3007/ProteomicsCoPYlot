@@ -62,8 +62,17 @@ def test_every_normalization_method_round_trips(normalization: str) -> None:
     assert _coerce_filter_config(original.model_dump()).normalization == normalization
 
 
-def test_unknown_normalization_falls_back_rather_than_raising() -> None:
-    assert _coerce_filter_config({"normalization": "loess"}).normalization == "none"
+def test_unknown_normalization_falls_back_but_says_so() -> None:
+    """Restoring is best-effort, but a coercion that changes the analysis must be said.
+
+    Rewriting an unrecognised method to "none" re-runs everything unnormalized
+    and the methods report then states "none" -- a reproducibility claim that is
+    quietly false. Loading approximately is right; loading silently is not.
+    """
+    warnings: list[str] = []
+    restored = _coerce_filter_config({"normalization": "loess"}, warnings)
+    assert restored.normalization == "none"
+    assert any("loess" in w and "not recognised" in w for w in warnings), warnings
 
 
 def test_legacy_state_without_the_field_still_restores() -> None:
@@ -73,21 +82,27 @@ def test_legacy_state_without_the_field_still_restores() -> None:
         "minPercentage": 70.0,
         "mode": "per_group",
     }
-    restored = _coerce_filter_config(legacy)
+    warnings: list[str] = []
+    restored = _coerce_filter_config(legacy, warnings)
     assert restored.normalization == "none"
+    assert warnings == [], "a field that is simply absent is a legacy state file, not an error"
     assert restored.minPresent == 3
     assert restored.mode == "per_group"
 
 
 @pytest.mark.parametrize(
-    "payload,expected",
+    "payload,expected,reported",
     [
-        ({"method": "nonsense"}, "at_least_n"),
-        ({"method": "percentage"}, "percentage"),
+        ({"method": "nonsense"}, "at_least_n", True),
+        ({"method": "percentage"}, "percentage", False),
     ],
 )
-def test_invalid_method_falls_back(payload: dict, expected: str) -> None:
-    assert _coerce_filter_config(payload).method == expected
+def test_invalid_method_falls_back_and_is_reported(
+    payload: dict, expected: str, reported: bool
+) -> None:
+    warnings: list[str] = []
+    assert _coerce_filter_config(payload, warnings).method == expected
+    assert bool(warnings) is reported, warnings
 
 
 @pytest.mark.parametrize(

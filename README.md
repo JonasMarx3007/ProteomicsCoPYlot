@@ -17,7 +17,22 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 - Use optional AI features, backed either by a local Ollama instance or by a cloud provider.
 - Reuse analysis helpers from Python or R notebooks.
 
+For phosphoprotein analysis, missing values can be imputed at the phosphosite level
+before collapsing, never on the collapsed phosphoprotein matrix. Both imputed and
+non-imputed inputs are supported. Keep the original observations alongside imputed
+data to preserve meaningful site-coverage diagnostics. Ordinary protein imputation
+remains available.
+
 ## Quick start
+
+Refreshing the analysis app starts a new analysis. After interaction, the browser
+warns before refresh/close/navigation if analysis data or saved UI settings have
+changed since the last successful save; cancelling leaves the current page intact.
+The browser controls the wording and may suppress the dialog, especially on mobile,
+so save important work explicitly. Native file writes establish the saved baseline
+only after completion. For ordinary downloads, confirm that the file was downloaded;
+otherwise the warning remains active. Failed or uncertain backend writes conservatively
+remain unsaved until saving again. Viewer mode does not reset or show this analysis warning.
 
 Install backend and frontend dependencies on Windows:
 
@@ -49,6 +64,17 @@ See [Installation, Running, and Packaging](docs/INSTALLATION.md) for every suppo
 - **Viewer:** read-only access to datasets configured by `viewer_config.json`.
 - **Viewer portal:** password/session routing to projects under `viewer_data/`.
 - **AI variants:** analysis or viewer modes with a chat surface.
+
+### Metadata profiles
+
+Uploaded annotation metadata must contain a sample column and one to five categorical
+grouping columns. Each grouping column becomes a source metadata profile; `pair_id`, when
+present, is retained as pairing structure rather than treated as a group. CoPYlot creates
+every non-singleton combination of the source profiles automatically, so five grouping
+columns produce 26 derived profiles. A conventional two-column `sample,condition` file
+continues to populate the currently selected profile. Uploads above the five-profile limit
+are rejected before any profile is changed. Deleting a source profile also deletes its
+dependent derived profiles and frees a source-profile slot.
 
 ### AI providers and data handling
 
@@ -91,31 +117,15 @@ Examples:
 - `examples/example.ipynb`
 - `examples/example.R`
 
-Notebook abundance, correlation, coverage, overlap, and completeness helpers
-accept `data_scale="log2"` or `data_scale="linear"` (default: `"log2"`). A zero
-is an observed value on the log2 scale and a non-detection on the linear scale;
-`NA`/`NaN` is missing on both. Pass the scale explicitly when using linear/raw
-matrices. Raw peptide/precursor report helpers and `log2_transform_data()` apply
-the linear zero-to-missing rule at their input boundary.
-
-`histo_int()`, `boxplot_int()`, `pca_plot()` and `correlation_xy_intensity()`
-use whatever matrix they are given as-is. `cov_plot()` computes `CV = sd / mean`,
-which is only meaningful on linear intensities, and therefore requires the
-explicit argument `data_scale="linear"`. Omission and `data_scale="log2"` are
-rejected; inverse-transform log2 data before calling it.
-
-For notebook ORA, `different_genes(..., test_type=...)` selects genes from the
-exact `volcano_data_f()` classifications. `different_genes_control()` does the
-same for the corrected `volcano_data_f_control()` result. Both support
-`unpaired`, `unpaired_welch`, `unpaired_moderated`, `paired`, and
-`paired_moderated`; omitting `test_type` retains the older `paired` argument.
+The Python notebook, R notebook, and UI pipelines support the same core analysis
+workflows. Use the examples above for detailed usage and parameter choices.
 
 The installable package includes:
 
 - `proteomicscopylot/notebook_functions.py`
 - `proteomicscopylot/notebook_functions.R`
 - `proteomicscopylot/example_data/`
-- the Gene Ontology reference table used by `load_go_db()`
+- the Gene Ontology reference table
 
 The Settings page reports whether `Rscript` is available. Detection checks explicit CoPYlot/R environment variables, `PATH`, and common platform installation locations.
 
@@ -180,6 +190,11 @@ npm.cmd --prefix frontend run build
 npm.cmd --prefix frontend run lint
 ```
 
+For a reproducible Python 3.13 reference environment, install
+`backend/requirements.lock` and then install this package editable with
+`--no-deps`. Production Docker builds use the smaller
+`backend/requirements-runtime.lock`; security CI audits both exact locks.
+
 ## Methods and citations
 
 Several analyses re-implement or delegate to published methods. If you use them,
@@ -187,19 +202,16 @@ please cite the original work alongside this software.
 
 | Method | Where it is used | Reference |
 | --- | --- | --- |
-| Empirical Bayes variance shrinkage (moderated *t*-test) | `unpaired_moderated` and `paired_moderated`; `squeeze_variance()`, `fit_variance_prior()`, `trigamma_inverse()` | Smyth (2004), [10.2202/1544-6115.1027](https://doi.org/10.2202/1544-6115.1027); Ritchie *et al.* (2015), [10.1093/nar/gkv007](https://doi.org/10.1093/nar/gkv007) |
-| Quantile normalization | `normalize_data(method="quantile")`, a port of `limma::normalizeQuantiles` | Ritchie *et al.* (2015), [10.1093/nar/gkv007](https://doi.org/10.1093/nar/gkv007) |
-| Downshifted-normal imputation | `impute_values(method="numerical")`, defaults `down_shift=1.8`, `width=0.3` | Tyanova *et al.* (2016), [10.1038/nmeth.3901](https://doi.org/10.1038/nmeth.3901) |
-| Variance-stabilizing normalization | `normalize_data(method="vsn")`, delegated to Bioconductor `vsn` | Huber *et al.* (2002), [10.1093/bioinformatics/18.suppl_1.S96](https://doi.org/10.1093/bioinformatics/18.suppl_1.S96) |
-| Benjamini–Hochberg false discovery rate | every `adj_pval` column | Benjamini & Hochberg (1995), [10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) |
-| Tukey–Kramer post-hoc | `anova_posthoc_data(post_hoc="tukey")` | Tukey (1949), *Biometrics* 5:99–114; Kramer (1956), *Biometrics* 12:307–310 |
-| Kinase–substrate specificity atlases | `ksea_data_f()`, `ksea_volcano()` | Johnson *et al.* (2023), [10.1038/s41586-022-05575-3](https://doi.org/10.1038/s41586-022-05575-3); Yaron-Barir *et al.* (2024), [10.1038/s41586-024-07407-y](https://doi.org/10.1038/s41586-024-07407-y) |
+| Quantile normalization | Normalization across samples | Bolstad *et al.* (2003), [10.1093/bioinformatics/19.2.185](https://doi.org/10.1093/bioinformatics/19.2.185) |
+| Downshifted-normal imputation | Missing-value imputation | Tyanova *et al.* (2016), [10.1038/nmeth.3901](https://doi.org/10.1038/nmeth.3901) |
+| Variance-stabilizing normalization | Normalization delegated to Bioconductor VSN | Huber *et al.* (2002), [10.1093/bioinformatics/18.suppl_1.S96](https://doi.org/10.1093/bioinformatics/18.suppl_1.S96) |
+| Benjamini–Hochberg false discovery rate | Multiple-testing correction | Benjamini & Hochberg (1995), [10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) |
+| Tukey–Kramer post-hoc | Pairwise comparisons after ANOVA | Tukey (1949), *Biometrics* 5:99–114; Kramer (1956), *Biometrics* 12:307–310 |
+| Kinase–substrate specificity atlases | Kinase Library input preparation and result visualization | Johnson *et al.* (2023), [10.1038/s41586-022-05575-3](https://doi.org/10.1038/s41586-022-05575-3); Yaron-Barir *et al.* (2024), [10.1038/s41586-024-07407-y](https://doi.org/10.1038/s41586-024-07407-y) |
 
-Kinase enrichment is not computed here. `ksea_data_f()` prepares the site list
-and `ksea_volcano()` plots the result; the enrichment itself is run in the
-[Kinase Library](https://kinase-library.phosphosite.org), whose output columns
-`Kinase`, `Log₂(Frequency Factor)` and `Adjusted p-value` are what
-`ksea_volcano()` expects as input.
+Kinase enrichment is calculated externally in the
+[Kinase Library](https://kinase-library.phosphosite.org). CoPYlot prepares the
+phosphosite input and visualizes the returned results.
 
 ## License
 

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from app.services.html_security import GENERATED_HTML_META
+
+from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
+    cm_to_inch as _cm_to_inch,
+    cm_to_px as _cm_to_px,
+)
+
 import logging
 
-import io
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -111,25 +118,10 @@ def peptide_modification_counts(
     return counts
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
-def _cm_to_inch(value_cm: float) -> float:
-    return max(1.0, float(value_cm) / 2.54)
 
 
-def _cm_to_px(value_cm: float) -> int:
-    return max(320, int(round((_cm_to_inch(value_cm) * 96.0))))
 
 
 def _plotly_html(fig) -> str:
@@ -141,6 +133,7 @@ def _plotly_html(fig) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{GENERATED_HTML_META}"
         "<style>"
         f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
