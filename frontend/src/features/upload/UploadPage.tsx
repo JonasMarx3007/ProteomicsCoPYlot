@@ -1,3 +1,4 @@
+import { resolveSelectedLocalPath } from "../../lib/localFilePath";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createDatasetPackage,
@@ -26,24 +27,8 @@ type UploadPageProps = {
   readOnly?: boolean;
 };
 
-type LocalFile = File & {
-  path?: string;
-};
-
 const DATASET_MANAGER_VISIBILITY_KEY = "data.datasetManager.visible.v1";
 
-function resolveSelectedLocalPath(file: File, inputValue: string): string | null {
-  const localPath = (file as LocalFile).path?.trim();
-  if (localPath) {
-    return localPath;
-  }
-
-  const raw = inputValue.trim();
-  if (raw && !raw.toLowerCase().includes("fakepath")) {
-    return raw;
-  }
-  return null;
-}
 
 export default function UploadPage({ onDatasetUploaded, readOnly = false }: UploadPageProps) {
   const [kind, setKind] = useState<DatasetKind>("protein");
@@ -242,10 +227,10 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
             Viewer mode is read-only. Data is loaded from <code>viewer_config.json</code>.
           </div>
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
+            <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="preview-dataset-level">
               Dataset level preview
             </label>
-            <select
+            <select id="preview-dataset-level"
               value={kind}
               onChange={(e) => setKind(e.target.value as DatasetKind)}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 lg:max-w-sm"
@@ -286,8 +271,8 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
 
               <div className="mt-4 grid gap-4 lg:grid-cols-3">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Selected dataset</label>
-                <select
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="manager-selected-dataset">Selected dataset</label>
+                <select id="manager-selected-dataset"
                   value={current?.activePackage ?? "Data"}
                   onChange={(event) => handleActivePackageChange(event.target.value)}
                   disabled={packageBusy}
@@ -302,9 +287,9 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">New dataset</label>
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="manager-new-dataset">New dataset</label>
                 <div className="flex gap-2">
-                  <input
+                  <input id="manager-new-dataset"
                     type="text"
                     value={newPackageName}
                     onChange={(event) => setNewPackageName(event.target.value)}
@@ -323,9 +308,9 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Rename selected dataset</label>
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="manager-rename-dataset">Rename selected dataset</label>
                 <div className="flex gap-2">
-                  <input
+                  <input id="manager-rename-dataset"
                     type="text"
                     value={renamePackageName}
                     onChange={(event) => setRenamePackageName(event.target.value)}
@@ -359,7 +344,7 @@ export default function UploadPage({ onDatasetUploaded, readOnly = false }: Uplo
       <CurrentDatasetsPanel current={current} />
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}

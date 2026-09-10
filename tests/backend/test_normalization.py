@@ -296,8 +296,11 @@ def test_phosprot_collapses_normalized_phosphosite_values_once(
         source="non_imputed",
     )
 
-    assert stored["source_data"].loc[0, "s0"] == pytest.approx(6.0)
-    assert stored["source_data"].loc[0, "s1"] == pytest.approx(24.0)
+    # Aggregation returns log2 for every mode, so the linear sums 6 and 24 are
+    # stored as their logarithms and log2_data must reuse them rather than
+    # transform again -- a second log2 here is exactly what "once" rules out.
+    assert stored["source_data"].loc[0, "s0"] == pytest.approx(np.log2(6.0))
+    assert stored["source_data"].loc[0, "s1"] == pytest.approx(np.log2(24.0))
     assert stored["log2_data"].loc[0, "s0"] == pytest.approx(np.log2(6.0))
     assert stored["log2_data"].loc[0, "s1"] == pytest.approx(np.log2(24.0))
     assert stored["filter_config"].normalization == "none"

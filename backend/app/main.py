@@ -1,10 +1,10 @@
 import os
 import sys
 import io
-import ipaddress
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from app.services.html_security import GENERATED_HTML_CSP
 
 from fastapi import FastAPI, Request
 from anyio import to_thread
@@ -28,6 +28,7 @@ from app.api.routes_runtime import router as runtime_router
 from app.api.routes_tool_auth import router as tool_auth_router
 from app.api.routes_viewer_auth import router as viewer_auth_router
 from app.services.session_context import (
+    get_browser_session_id,
     new_session_id,
     normalize_session_id,
     reset_session_id,
@@ -40,7 +41,7 @@ from app.services.session_context import (
 from app.services.session_cleanup import expire_idle_session, touch_and_cleanup_sessions
 from app.services.session_operation_gate import session_operation_scope
 from app.services.temp_cleanup import cleanup_managed_temp_files
-from app.services.request_security import client_address
+from app.services.request_security import local_path_access_allowed
 from app.services.tool_access import (
     tool_access_enabled,
     tool_session_authenticated,
@@ -114,6 +115,7 @@ _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/packages/rename"),
     ("POST", "/api/datasets/metadata/profiles/create"),
     ("POST", "/api/datasets/metadata/profiles/rename"),
+    ("DELETE", "/api/datasets/metadata/profiles/delete"),
     ("POST", "/api/annotations/metadata/upload"),
     ("POST", "/api/annotations/generate"),
     ("PUT", "/api/annotations/pairing"),
@@ -135,7 +137,6 @@ _REMOTE_LOCAL_PATH_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/table-path"),
     ("POST", "/api/datasets/peptide-path"),
     ("POST", "/api/external/peptide-collapse/run"),
-    ("POST", "/api/restore/import"),
 }
 
 
@@ -187,33 +188,7 @@ def _viewer_request_denied(request: Request) -> bool:
 
 def _remote_local_path_request_denied(request: Request) -> bool:
     operation = (request.method.upper(), request.url.path)
-    if operation not in _REMOTE_LOCAL_PATH_EXACT:
-        return False
-
-    address_text = client_address(request).strip()
-    try:
-        address = ipaddress.ip_address(address_text)
-    except ValueError:
-        # ASGI normally supplies an IP address. An unknown/non-IP peer is not
-        # safe evidence that the caller is local, so fail closed.
-        is_loopback = False
-    else:
-        if address.version == 6 and address.ipv4_mapped is not None:
-            address = address.ipv4_mapped
-        is_loopback = bool(address.is_loopback)
-
-    # A remote caller may never select paths on the server, even when the main
-    # API is intentionally exposed or an old deployment still sets the legacy
-    # local-path override.
-    if not is_loopback:
-        return True
-
-    # Preserve the existing protected-mode default for local callers. An admin
-    # may opt local authenticated sessions back in, but the override above can
-    # never make these operations remotely accessible.
-    if not tool_access_enabled() or _truthy_env("COPYLOT_ALLOW_LOCAL_PATH_APIS"):
-        return False
-    return True
+    return operation in _REMOTE_LOCAL_PATH_EXACT and not local_path_access_allowed(request)
 
 
 def _request_policy_response(request: Request) -> JSONResponse | None:
@@ -391,6 +366,22 @@ async def host_allowlist_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+def _sets_session_cookie(response, cookie_name: str) -> bool:
+    """Whether the route already handed the client a session cookie.
+
+    Authentication rotates the session id and the login route sets the rotated
+    one itself. The middleware resolved its own id before the route ran, so
+    without this check it appends a second cookie carrying the pre-rotation id;
+    last-wins leaves the browser holding the unauthenticated one and login
+    silently fails for every cookie-based client.
+    """
+    prefix = f"{cookie_name}=".encode("latin-1")
+    return any(
+        key.lower() == b"set-cookie" and value.lstrip().startswith(prefix)
+        for key, value in response.raw_headers
+    )
+
+
 @app.middleware("http")
 async def session_scope_middleware(request: Request, call_next):
     configuration_error = _authentication_configuration_error(validate_credentials=False)
@@ -434,7 +425,7 @@ async def session_scope_middleware(request: Request, call_next):
     raw_cookie = str(request.cookies.get(cookie_name, "")).strip()
     raw_header = str(request.headers.get(header_name, "")).strip()
     resolved = normalize_session_id(raw_cookie or raw_header or new_session_id())
-    should_set_cookie = raw_cookie != resolved
+    effective = resolved
 
     token = set_session_id(resolved)
     try:
@@ -499,6 +490,7 @@ async def session_scope_middleware(request: Request, call_next):
         }
         async with session_operation_scope(resolved, exclusive=exclusive):
             response = await call_next(request)
+        effective = get_browser_session_id()
         if protected_auth and (
             tool_session_authenticated() or viewer_session_authenticated()
         ):
@@ -506,10 +498,10 @@ async def session_scope_middleware(request: Request, call_next):
     finally:
         reset_session_id(token)
 
-    if should_set_cookie:
+    if effective != raw_cookie and not _sets_session_cookie(response, cookie_name):
         response.set_cookie(
             key=cookie_name,
-            value=resolved,
+            value=effective,
             httponly=True,
             secure=session_cookie_secure(),
             samesite="lax",
@@ -555,6 +547,13 @@ async def heavy_workload_middleware(request: Request, call_next):
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if request.url.path.startswith("/api/plots/") and response.headers.get(
+        "content-type", ""
+    ).lower().startswith("text/html"):
+        # Also contain HTML opened directly, outside the frontend iframe.
+        response.headers.setdefault(
+            "Content-Security-Policy", GENERATED_HTML_CSP + "; sandbox allow-scripts allow-downloads"
+        )
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault(
         "Permissions-Policy",

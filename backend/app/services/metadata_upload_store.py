@@ -12,6 +12,7 @@ from app.services.runtime_cache import invalidate_runtime_cache
 from app.services.session_context import get_session_id
 
 DEFAULT_METADATA_PROFILE_NAME = "Metadata"
+MAX_MANUAL_METADATA_PROFILES = 5
 SAMPLE_COLUMN_ALIASES = (
     "sample",
     "sample_name",
@@ -124,6 +125,44 @@ def _normalize_profile_name(
     return _active_profile_by_package().get(package, DEFAULT_METADATA_PROFILE_NAME)
 
 
+def _manual_profile_names(package_name: str) -> list[str]:
+    package = _ensure_package(package_name)
+    profiles = _uploaded_metadata_by_package()[package]
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
+    return [
+        name
+        for name, state in profiles.items()
+        if name not in auto_profiles
+        and (
+            name != DEFAULT_METADATA_PROFILE_NAME
+            or any(stored is not None for stored in state.values())
+        )
+    ]
+
+
+def _ensure_manual_profile_capacity(package_name: str, profile_name: str) -> None:
+    """Reject a new manual profile without counting generated combinations."""
+    package = _ensure_package(package_name)
+    name = str(profile_name or "").strip()
+    if not name:
+        return
+
+    profiles = _uploaded_metadata_by_package()[package]
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
+    if name in profiles and name not in auto_profiles:
+        state = profiles[name]
+        if name != DEFAULT_METADATA_PROFILE_NAME or any(
+            stored is not None for stored in state.values()
+        ):
+            return
+    if len(_manual_profile_names(package)) >= MAX_MANUAL_METADATA_PROFILES:
+        raise ValueError(
+            "A dataset package can contain at most "
+            f"{MAX_MANUAL_METADATA_PROFILES} manual metadata profiles. "
+            "Reuse or rename an existing profile."
+        )
+
+
 def _ensure_profile(
     profile_name: str | None = None,
     *,
@@ -133,6 +172,7 @@ def _ensure_profile(
     resolved_profile = _normalize_profile_name(profile_name, package)
     profiles = _uploaded_metadata_by_package()[package]
     if resolved_profile not in profiles:
+        _ensure_manual_profile_capacity(package, resolved_profile)
         profiles[resolved_profile] = _empty_metadata_state()
         invalidate_runtime_cache(f"metadata:{package}:profile:{resolved_profile}:created")
     return package, resolved_profile
@@ -163,11 +203,7 @@ def _refresh_combined_profile_keys(package_name: str) -> None:
     auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
     auto_sources = _auto_combined_profile_sources_by_package().setdefault(package, {})
 
-    manual_profiles = [
-        name
-        for name in profiles.keys()
-        if name not in auto_profiles and name != DEFAULT_METADATA_PROFILE_NAME
-    ]
+    manual_profiles = _manual_profile_names(package)
     expected_sources = {
         "-".join(source_profiles): source_profiles
         for source_profiles in _combined_profile_sources(manual_profiles)
@@ -469,6 +505,7 @@ def create_profile(profile_name: str, *, package_name: str | None = None) -> str
     profiles = _uploaded_metadata_by_package()[package]
     if name in profiles:
         raise ValueError(f"Metadata profile '{name}' already exists.")
+    _ensure_manual_profile_capacity(package, name)
     profiles[name] = _empty_metadata_state()
     _auto_combined_profiles_by_package().setdefault(package, set()).discard(name)
     _refresh_combined_profile_keys(package)
@@ -510,6 +547,76 @@ def rename_profile(
     return new_key
 
 
+def delete_profile(
+    profile_name: str,
+    *,
+    package_name: str | None = None,
+) -> list[str]:
+    """Delete one manual profile and every generated profile that depends on it."""
+    package = _ensure_package(package_name)
+    name = str(profile_name or "").strip()
+    if not name:
+        raise ValueError("Metadata profile name must not be empty.")
+
+    profiles = _uploaded_metadata_by_package()[package]
+    if name not in profiles:
+        raise ValueError(f"Metadata profile '{name}' does not exist.")
+    auto_profiles = _auto_combined_profiles_by_package().setdefault(package, set())
+    auto_sources = _auto_combined_profile_sources_by_package().setdefault(package, {})
+    if name in auto_profiles:
+        raise ValueError(
+            f"Metadata profile '{name}' is generated automatically. "
+            "Delete one of its source profiles instead."
+        )
+
+    dependent_profiles = {
+        generated_name
+        for generated_name, source_names in auto_sources.items()
+        if name in source_names
+    }
+    removed_profiles = [name, *sorted(dependent_profiles, key=str.lower)]
+    for generated_name in dependent_profiles:
+        profiles.pop(generated_name, None)
+        auto_profiles.discard(generated_name)
+        auto_sources.pop(generated_name, None)
+
+    if name == DEFAULT_METADATA_PROFILE_NAME:
+        profiles[name] = _empty_metadata_state()
+    else:
+        profiles.pop(name, None)
+    auto_profiles.discard(name)
+    auto_sources.pop(name, None)
+
+    active = _active_profile_by_package().get(package, DEFAULT_METADATA_PROFILE_NAME)
+    if active in removed_profiles:
+        # Make the active key valid before calling helpers that ensure package
+        # invariants; otherwise they would recreate the just-deleted active
+        # profile as an empty manual profile.
+        profiles.setdefault(DEFAULT_METADATA_PROFILE_NAME, _empty_metadata_state())
+        _active_profile_by_package()[package] = DEFAULT_METADATA_PROFILE_NAME
+        remaining_manual = [
+            profile
+            for profile, state in profiles.items()
+            if profile not in auto_profiles
+            and (
+                profile != DEFAULT_METADATA_PROFILE_NAME
+                or any(stored is not None for stored in state.values())
+            )
+        ]
+        fallback = (
+            remaining_manual[0]
+            if remaining_manual
+            else DEFAULT_METADATA_PROFILE_NAME
+        )
+        _active_profile_by_package()[package] = fallback
+
+    _refresh_combined_profile_keys(package)
+    _regenerate_combined_profiles(package, "protein")
+    _regenerate_combined_profiles(package, "phospho")
+    invalidate_runtime_cache(f"metadata:{package}:profile:{name}:deleted")
+    return removed_profiles
+
+
 def save_uploaded_metadata(
     kind: MetadataAnnotationKind,
     filename: str,
@@ -518,32 +625,109 @@ def save_uploaded_metadata(
     package_name: str | None = None,
     profile_name: str | None = None,
 ) -> StoredUploadedMetadata:
-    resolved_package, resolved_profile = _ensure_profile(
-        profile_name=profile_name,
-        package_name=package_name,
-    )
-    state = _profile_state(
-        profile_name=resolved_profile,
-        package_name=resolved_package,
+    package = _ensure_package(package_name)
+    profile = _normalize_profile_name(profile_name, package)
+    return save_uploaded_metadata_profiles(
+        kind,
+        filename,
+        [(profile, frame)],
+        package_name=package,
     )
 
-    stored = StoredUploadedMetadata(
-        kind=kind,
-        filename=filename,
-        frame=frame.copy(),
-        created_at=datetime.now(timezone.utc).isoformat(),
-        auto_generated=False,
-        source_profiles=None,
-    )
-    state[kind] = stored
-    _auto_combined_profiles_by_package().setdefault(resolved_package, set()).discard(
-        resolved_profile
-    )
-    _regenerate_combined_profiles(resolved_package, kind)
-    invalidate_runtime_cache(
-        f"metadata:{resolved_package}:{resolved_profile}:{kind}:uploaded"
-    )
-    return stored
+
+def save_uploaded_metadata_profiles(
+    kind: MetadataAnnotationKind,
+    filename: str,
+    profile_frames: list[tuple[str, pd.DataFrame]],
+    *,
+    package_name: str | None = None,
+    active_profile_name: str | None = None,
+) -> StoredUploadedMetadata:
+    """Atomically save one upload as one or more manual source profiles."""
+    if not profile_frames:
+        raise ValueError("Metadata upload did not produce any profiles.")
+
+    normalized_frames: list[tuple[str, pd.DataFrame]] = []
+    seen_names: set[str] = set()
+    for raw_name, frame in profile_frames:
+        name = str(raw_name or "").strip()
+        if not name:
+            raise ValueError("Metadata profile name must not be empty.")
+        if name in seen_names:
+            raise ValueError(f"Metadata profile '{name}' occurs more than once in the upload.")
+        if not isinstance(frame, pd.DataFrame):
+            raise ValueError(f"Metadata profile '{name}' is not a table.")
+        seen_names.add(name)
+        normalized_frames.append((name, frame))
+
+    package = _ensure_package(package_name)
+    prospective_manual_profiles = set(_manual_profile_names(package))
+    prospective_manual_profiles.update(name for name, _ in normalized_frames)
+    if len(prospective_manual_profiles) > MAX_MANUAL_METADATA_PROFILES:
+        raise ValueError(
+            "This upload would create "
+            f"{len(prospective_manual_profiles)} manual metadata profiles, above the "
+            f"limit. A dataset package can contain at most "
+            f"{MAX_MANUAL_METADATA_PROFILES} manual metadata profiles. Reuse existing "
+            "profile names or remove grouping columns from the upload."
+        )
+
+    profiles_by_package = _uploaded_metadata_by_package()
+    auto_by_package = _auto_combined_profiles_by_package()
+    sources_by_package = _auto_combined_profile_sources_by_package()
+    active_by_package = _active_profile_by_package()
+    # The transaction only replaces per-kind state entries; StoredUploadedMetadata
+    # objects and their potentially large DataFrames are immutable here. Copy the
+    # small dictionaries without duplicating every uploaded table in memory.
+    profiles_snapshot = {
+        name: state.copy()
+        for name, state in profiles_by_package[package].items()
+    }
+    auto_snapshot = set(auto_by_package[package])
+    sources_snapshot = dict(sources_by_package[package])
+    active_snapshot = active_by_package[package]
+
+    stored_by_name: dict[str, StoredUploadedMetadata] = {}
+    try:
+        profiles = profiles_by_package[package]
+        auto_profiles = auto_by_package[package]
+        auto_sources = sources_by_package[package]
+        created_at = datetime.now(timezone.utc).isoformat()
+        for name, frame in normalized_frames:
+            if name not in profiles:
+                profiles[name] = _empty_metadata_state()
+                invalidate_runtime_cache(f"metadata:{package}:profile:{name}:created")
+            auto_profiles.discard(name)
+            auto_sources.pop(name, None)
+            stored = StoredUploadedMetadata(
+                kind=kind,
+                filename=filename,
+                frame=frame.copy(),
+                created_at=created_at,
+                auto_generated=False,
+                source_profiles=None,
+            )
+            profiles[name][kind] = stored
+            stored_by_name[name] = stored
+            invalidate_runtime_cache(f"metadata:{package}:{name}:{kind}:uploaded")
+
+        selected_profile = str(active_profile_name or "").strip()
+        if selected_profile:
+            if selected_profile not in stored_by_name:
+                raise ValueError(
+                    f"Active metadata profile '{selected_profile}' is not part of the upload."
+                )
+            active_by_package[package] = selected_profile
+        _refresh_combined_profile_keys(package)
+        _regenerate_combined_profiles(package, kind)
+        return stored_by_name[selected_profile or normalized_frames[0][0]]
+    except Exception:
+        profiles_by_package[package] = profiles_snapshot
+        auto_by_package[package] = auto_snapshot
+        sources_by_package[package] = sources_snapshot
+        active_by_package[package] = active_snapshot
+        invalidate_runtime_cache(f"metadata:{package}:profile-upload-rolled-back")
+        raise
 
 
 def get_uploaded_metadata(

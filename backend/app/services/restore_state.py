@@ -278,7 +278,23 @@ def _normalize_table_kind(value: Any) -> TableKind | None:
     return None
 
 
-def _coerce_filter_config(payload: Any) -> AnnotationFilterConfig:
+def _coerce_filter_config(
+    payload: Any, warnings: list[str] | None = None, label: str = ""
+) -> AnnotationFilterConfig:
+    """Rebuild a saved filter configuration, reporting anything not recognised.
+
+    A state file is user-supplied, so refusing to load one is worse than loading
+    it approximately -- but a value that has to be coerced changes the analysis.
+    Silently rewriting an unknown normalization to "none" re-runs everything
+    unnormalized and the methods report then states "none", which is how a
+    reproducibility claim quietly becomes false. A field that is simply absent is
+    a legacy state file and defaults without comment; only a present-but-
+    unrecognised value is reported.
+    """
+    def report(message: str) -> None:
+        if warnings is not None:
+            warnings.append(f"{label}{message}" if label else message)
+
     if not isinstance(payload, dict):
         return AnnotationFilterConfig()
     method_raw = str(payload.get("method", "at_least_n")).strip()
@@ -292,16 +308,34 @@ def _coerce_filter_config(payload: Any) -> AnnotationFilterConfig:
         else 70.0
     )
     if min_present < 0:
+        report(f"Saved minimum present count {min_present} is negative; restored as 0.")
         min_present = 0
-    min_percentage = min(100.0, max(0.0, min_percentage))
+    if not 0.0 <= min_percentage <= 100.0:
+        clamped = min(100.0, max(0.0, min_percentage))
+        report(
+            f"Saved minimum percentage {min_percentage} is outside 0-100; "
+            f"restored as {clamped}."
+        )
+        min_percentage = clamped
     if method_raw not in {"at_least_n", "percentage"}:
+        if "method" in payload:
+            report(f"Saved filter method {method_raw!r} is not recognised; restored as 'at_least_n'.")
         method_raw = "at_least_n"
     if mode_raw not in {"per_group", "in_at_least_one_group", "overall"}:
+        if "mode" in payload:
+            report(f"Saved filter mode {mode_raw!r} is not recognised; restored as 'per_group'.")
         mode_raw = "per_group"
-    # Validated against the schema rather than a hardcoded set, so a new
-    # normalization method cannot be silently downgraded to "none" on restore.
+    # The allowed set comes from the schema so it cannot drift from the app, but
+    # that does not stop a value this build has never heard of from being coerced:
+    # an unrecognised method is rewritten to "none" and the analysis re-runs
+    # unnormalized, so say so.
     normalization_raw = str(payload.get("normalization", "none")).strip().lower()
     if normalization_raw not in set(get_args(NormalizationMethod)):
+        if "normalization" in payload:
+            report(
+                f"Saved normalization {normalization_raw!r} is not recognised; restored "
+                "as 'none', so the analysis was re-run without normalization."
+            )
         normalization_raw = "none"
     return AnnotationFilterConfig(
         method=method_raw,
@@ -748,6 +782,7 @@ def _read_replacement_bytes(replacement: ReplacementInput, *, label: str) -> byt
 def inspect_missing_files(
     state: dict[str, Any],
     replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+    *, allow_local_paths: bool = True,
 ) -> list[MissingStateFile]:
     backend = state.get("backend")
     if not isinstance(backend, dict):
@@ -783,7 +818,7 @@ def inspect_missing_files(
                 continue
 
             filename = _optional_text(dataset_entry.get("filename"))
-            path_text = _optional_text(dataset_entry.get("path"))
+            path_text = _optional_text(dataset_entry.get("path")) if allow_local_paths else None
             has_replacement = (package_name, kind) in replacements
             if path_text:
                 candidate = Path(path_text).expanduser()
@@ -823,6 +858,7 @@ def inspect_missing_files(
 def _prepare_restore_inputs(
     state: dict[str, Any],
     replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+    *, allow_local_paths: bool = True,
 ) -> PreparedRestoreInput:
     _validate_replacement_inputs(replacements)
     backend = state.get("backend")
@@ -854,7 +890,7 @@ def _prepare_restore_inputs(
                     f"Saved dataset entry for {package_name}:{kind} is invalid."
                 )
             filename = _optional_text(dataset_entry.get("filename")) or f"{kind}.csv"
-            path_text = _optional_text(dataset_entry.get("path"))
+            path_text = _optional_text(dataset_entry.get("path")) if allow_local_paths else None
             replacement = replacements.get((package_name, kind))
             if path_text:
                 candidate = Path(path_text).expanduser()
@@ -877,7 +913,7 @@ def _prepare_restore_inputs(
             frame_by_package_kind[(package_name, kind)] = (
                 frame,
                 replacement.file.filename or filename,
-                replacement.source_path,
+                replacement.source_path if allow_local_paths else None,
             )
             warnings.append(f"Restored {package_name}:{kind} from uploaded replacement file.")
 
@@ -887,7 +923,7 @@ def _prepare_restore_inputs(
         if not isinstance(peptide_entry, dict):
             raise RestoreStateError(f"Saved dataset entry for {package_name}:peptide is invalid.")
         peptide_filename = _optional_text(peptide_entry.get("filename")) or "peptide.tsv"
-        peptide_path = _optional_text(peptide_entry.get("path"))
+        peptide_path = _optional_text(peptide_entry.get("path")) if allow_local_paths else None
         replacement = replacements.get((package_name, "peptide"))
         if peptide_path:
             candidate = Path(peptide_path).expanduser()
@@ -898,7 +934,7 @@ def _prepare_restore_inputs(
             raise RestoreStateError(
                 f"Missing replacement for dataset {package_name}:peptide."
             )
-        if replacement.source_path:
+        if allow_local_paths and replacement.source_path:
             peptide_path_by_package[package_name] = (
                 replacement.source_path,
                 replacement.source_path,
@@ -1023,7 +1059,15 @@ def _apply_prepared_restore_state(
                     profile_name = str(profile_entry.get("name", "")).strip()
                     if not profile_name:
                         continue
-                    if profile_name != DEFAULT_METADATA_PROFILE_NAME:
+                    is_auto_generated_profile = any(
+                        isinstance(profile_entry.get(metadata_kind), dict)
+                        and bool(profile_entry[metadata_kind].get("autoGenerated"))
+                        for metadata_kind in _METADATA_KINDS
+                    )
+                    if (
+                        profile_name != DEFAULT_METADATA_PROFILE_NAME
+                        and not is_auto_generated_profile
+                    ):
                         try:
                             create_metadata_profile(profile_name, package_name=package_name)
                         except ValueError:
@@ -1138,7 +1182,11 @@ def _apply_prepared_restore_state(
                     continue
                 if metadata_frame.empty:
                     continue
-                filter_config = _coerce_filter_config(annotation_entry.get("filter"))
+                filter_config = _coerce_filter_config(
+                    annotation_entry.get("filter"),
+                    warnings,
+                    f"{package_name}:{profile_name}:{kind}: ",
+                )
                 if kind == "phosprot":
                     filter_config = phosprot_filter_config(filter_config)
                 is_log2_transformed = bool(annotation_entry.get("isLog2Transformed", True))
@@ -1263,6 +1311,7 @@ def _apply_prepared_restore_state(
 def apply_restore_state(
     state: dict[str, Any],
     replacements: dict[tuple[str, DatasetKind], ReplacementInput],
+    *, allow_local_paths: bool = True,
 ) -> RestoreApplyResult:
     """Apply a restore atomically within the current browser session.
 
@@ -1271,7 +1320,7 @@ def apply_restore_state(
     is replaced with its exact pre-restore snapshot before the error escapes.
     Separate sessions use separate locks and therefore remain independent.
     """
-    prepared = _prepare_restore_inputs(state, replacements)
+    prepared = _prepare_restore_inputs(state, replacements, allow_local_paths=allow_local_paths)
     with _current_restore_lock():
         snapshots = (
             snapshot_dataset_session_state(),

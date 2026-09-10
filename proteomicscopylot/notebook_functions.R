@@ -549,6 +549,65 @@ inverse_log2_transform_data <- function(data, meta) {
   invisible(meta)
 }
 
+
+.VALUE_PLACEHOLDERS <- c("", "na", "n/a", "nan", "-", "--", "null", "none",
+                         "filtered", "#div/0!", "#n/a")
+
+# Refuse sample columns whose values do not parse as numbers.
+#
+# as.numeric() turns unparseable text into NA, and NA reads as "not detected"
+# from then on. A column exported from a locale that writes 19,436 for 19.436
+# loses every value this way: the sample survives the completeness filter on the
+# strength of the other replicates and the analysis quietly runs one replicate
+# short. Blanks and documented placeholders really are missing, so they are
+# ignored; only entries carrying a digit count as a lost measurement.
+.validate_sample_values <- function(data, meta, threshold = 0.2) {
+  if (!is.data.frame(data) || !is.data.frame(meta) || !"sample" %in% names(meta)) {
+    return(invisible(data))
+  }
+  findings <- character(0)
+  for (column in as.character(meta$sample)) {
+    if (!column %in% names(data)) next
+    raw <- data[[column]]
+    if (is.numeric(raw) || is.logical(raw)) next
+    text <- trimws(as.character(raw))
+    considered <- text[!tolower(text) %in% .VALUE_PLACEHOLDERS]
+    if (!length(considered)) next
+    coerced <- suppressWarnings(as.numeric(considered))
+    has_digit <- grepl("[0-9]", considered)
+    lost <- sum(is.na(coerced) & has_digit)
+    if (lost == 0) next
+    example <- considered[is.na(coerced) & has_digit][1]
+    if (lost / length(considered) > threshold) {
+      findings <- c(findings, sprintf("%s lost %d of %d values (e.g. '%s')",
+                                      column, lost, length(considered), example))
+    } else {
+      # Below the threshold this is more likely a few odd cells than a mangled
+      # export, so it is not worth refusing the frame -- but it is still
+      # measurements turning into NA, and saying nothing was the same silence the
+      # threshold exists to break. A thousands separator applied by a spreadsheet
+      # hits only the largest values, so a partial loss is a biased one.
+      warning(sprintf(
+        paste0("Sample column '%s' lost %d of %d values that carry digits but do ",
+               "not parse as numbers (e.g. '%s'). They become NA and read as ",
+               "'not detected' from here on."),
+        column, lost, length(considered), example
+      ), call. = FALSE)
+    }
+  }
+  if (length(findings)) {
+    stop(sprintf(
+      paste0("%d sample column(s) carry values that do not parse as numbers: %s. ",
+             "This usually means a decimal comma from a locale-specific export. ",
+             "Every unparseable value becomes NA, so the sample would be treated ",
+             "as fully undetected rather than unreadable."),
+      length(findings), paste(findings, collapse = "; ")
+    ))
+  }
+  invisible(data)
+}
+
+
 # Reject a threshold that is not a meaningful quantity. A filter that keeps
 # nothing is a legitimate answer to a strict request, so only impossible values
 # are refused: a percentage outside 0-100, or a negative count. Those cannot
@@ -580,22 +639,23 @@ inverse_log2_transform_data <- function(data, meta) {
   invisible(NULL)
 }
 
-filter_data <- function(data, meta, num, filterops = "per group", method = "at_least_n", percentage = 70) {
+filter_data <- function(data, meta, num, mode = "per group", method = "at_least_n", percentage = 70) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   method <- tolower(trimws(method))
-  filterops <- gsub("_", " ", tolower(trimws(filterops)))
+  mode <- gsub("_", " ", tolower(trimws(mode)))
   if (!method %in% c("at_least_n", "percentage")) {
     stop("Filter method must be 'at_least_n' or 'percentage'.", call. = FALSE)
   }
-  # An unrecognised scope used to fall through to the `any` branch, silently
+  # An unrecognised mode used to fall through to the `any` branch, silently
   # applying the most permissive filter of the three: a misspelling retained
   # features present in only one condition, which is what `per_group` exists to
   # exclude.
-  if (!filterops %in% c("per group", "in at least one group", "overall")) {
-    stop("Filter scope must be 'per_group', 'in_at_least_one_group' or 'overall'.", call. = FALSE)
+  if (!mode %in% c("per group", "in at least one group", "overall")) {
+    stop("Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'.", call. = FALSE)
   }
   .validate_filter_thresholds(num, method, percentage)
-  if (filterops == "overall") {
+  if (mode == "overall") {
     valid <- rowSums(!is.na(data[, meta$sample, drop = FALSE]))
     rows_to_keep <- if (method == "percentage") valid / length(meta$sample) >= percentage / 100 else valid >= num
   } else {
@@ -606,7 +666,7 @@ filter_data <- function(data, meta, num, filterops = "per group", method = "at_l
       if (method == "percentage") valid / length(columns) >= percentage / 100 else valid >= num
     })
     if (is.null(dim(keep))) keep <- matrix(keep, ncol = 1)
-    rows_to_keep <- if (filterops == "per group") apply(keep, 1, all) else apply(keep, 1, any)
+    rows_to_keep <- if (mode == "per group") apply(keep, 1, all) else apply(keep, 1, any)
   }
   data[rows_to_keep, , drop = FALSE]
 }
@@ -615,7 +675,8 @@ transform_phosprot <- function(
     data,
     meta,
     mode = "robust_site_median",
-    data_scale = "linear"
+    data_scale = "linear",
+    coverage_data = NULL
 ) {
   required <- c("UPD_seq", "PTM_localization", "Protein_group", "Gene_group", "PTM_Collapse_key")
   missing <- setdiff(required, names(data))
@@ -671,7 +732,23 @@ transform_phosprot <- function(
   linear_matrix <- .numeric_matrix(linear_data, samples)
   log2_matrix[!is.finite(log2_matrix)] <- NA_real_
   linear_matrix[!is.finite(linear_matrix)] <- NA_real_
-  eligible <- rowSums(is.finite(log2_matrix)) > 0
+  # Original observations determine diagnostics and eligibility; supplied
+  # (possibly imputed) values determine per-sample aggregation availability.
+  coverage_matrix <- log2_matrix
+  if (!is.null(coverage_data)) {
+    if (!identical(rownames(coverage_data), rownames(data)) ||
+        !all(c("Protein_group", samples) %in% names(coverage_data))) {
+      stop("coverage_data must have matching rows and required columns.", call. = FALSE)
+    }
+    if (!identical(as.character(coverage_data$Protein_group), data$Protein_group)) {
+      stop("coverage_data Protein_group values must align exactly with data.", call. = FALSE)
+    }
+    if (data_scale == "linear") {
+      coverage_data <- log2_transform_data(.raw_zero_to_na(coverage_data, samples), meta)
+    }
+    coverage_matrix <- .numeric_matrix(coverage_data, samples)
+  }
+  eligible <- rowSums(is.finite(coverage_matrix)) > 0
   group_names <- unique(data$Protein_group)
   groups <- split(seq_len(nrow(data)), factor(data$Protein_group, levels = group_names))
   rows <- lapply(names(groups), function(group_name) {
@@ -679,7 +756,7 @@ transform_phosprot <- function(
     eligible_indices <- indices[eligible[indices]]
     eligible_count <- length(eligible_indices)
     observed <- if (eligible_count) {
-      colSums(is.finite(log2_matrix[eligible_indices, , drop = FALSE]))
+      colSums(is.finite(coverage_matrix[eligible_indices, , drop = FALSE]))
     } else {
       setNames(rep(0, length(samples)), samples)
     }
@@ -713,7 +790,7 @@ transform_phosprot <- function(
       required <- max(1L, ceiling(eligible_count * 0.5))
       for (sample_index in seq_along(samples)) {
         sample_values <- values[, sample_index]
-        row[[samples[sample_index]]] <- if (observed[sample_index] >= required) {
+        row[[samples[sample_index]]] <- if (sum(is.finite(sample_values)) >= required) {
           median(sample_values, na.rm = TRUE)
         } else {
           NA_real_
@@ -762,6 +839,27 @@ transform_phosprot <- function(
     paste0("site_observed__", samples), paste0("site_coverage__", samples)
   )
   output[numeric_columns] <- lapply(output[numeric_columns], function(x) as.numeric(as.character(x)))
+
+  # These modes aggregate original-scale intensities, so their result is linear
+  # while robust_site_median returns log2. Everything downstream -- volcano_data_f
+  # above all -- labels its output "log2FC" unconditionally, so a linear frame
+  # yields a "log2FC" that is really a difference of raw intensities, in the
+  # thousands. Transform here so every mode returns the same scale.
+  if (mode != "robust_site_median") {
+    aggregated <- as.matrix(output[samples])
+    non_positive <- sum(aggregated <= 0, na.rm = TRUE)
+    if (non_positive > 0) {
+      aggregated[!is.na(aggregated) & aggregated <= 0] <- NA_real_
+      warning(sprintf(
+        paste0("%d aggregated value(s) were not positive and were set to missing ",
+               "because they cannot be log2 transformed. This points at a scale or ",
+               "imputation problem in the phosphosite input rather than at the ",
+               "aggregation."),
+        non_positive
+      ), call. = FALSE)
+    }
+    output[samples] <- as.data.frame(log2(aggregated))
+  }
   output
 }
 
@@ -789,8 +887,13 @@ qqnorm_plot <- function(data, meta, seed = 187) {
 
 # Reference: the downshifted-normal model and its defaults follow Perseus
 # (Tyanova et al. 2016, doi:10.1038/nmeth.3901).
+# Phosphoprotein workflows: impute phosphosites BEFORE transform_phosprot, never
+# the collapsed matrix. Retain the non-imputed site matrix for coverage checks;
+# aggregate imputed log2 values with data_scale="log2".
+# This generic helper cannot infer biological dataset level from an arbitrary frame.
 impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TRUE, seed=1337, method="quantile", down_shift=1.8, width=0.3) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   method <- tolower(trimws(method))
   if (method == "normal") method <- "quantile"
   if (!method %in% c("quantile", "numerical")) {
@@ -2152,8 +2255,7 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     log2fc <- rowMeans(y_data, na.rm = TRUE) - rowMeans(x_data, na.rm = TRUE)
   }
 
-  # Welch and moderated need whole-column arithmetic -- the moderated prior is
-  # fitted across every feature at once -- so they are computed vectorised rather
+  # Welch needs whole-column arithmetic, so it is computed vectorised rather
   # than through the row-wise path below, which is kept byte-identical for the
   # pooled and paired cases it already served.
   # Control components: the control means carry their own uncertainty, which the
@@ -2166,33 +2268,14 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     control_components[[length(control_components) + 1]] <- .variance_and_count(values)
   }
 
-  vectorised <- variance %in% c("welch", "moderated") || length(control_components)
+  vectorised <- variance == "welch" || length(control_components)
   if (vectorised) {
     counts1 <- rowSums(!is.na(x_data))
     counts2 <- rowSums(!is.na(y_data))
     if (!is_paired) {
       variances1 <- apply(x_data, 1, stats::var, na.rm = TRUE)
       variances2 <- apply(y_data, 1, stats::var, na.rm = TRUE)
-      if (variance == "moderated") {
-        groups <- c(
-          list(
-            list(variance = variances1, count = counts1),
-            list(variance = variances2, count = counts2)
-          ),
-          control_components
-        )
-        total_count <- Reduce(`+`, lapply(groups, function(part) part$count))
-        residual_dof <- total_count - length(groups)
-        pooled_variance <- Reduce(`+`, lapply(
-          groups,
-          function(part) (part$count - 1) * part$variance
-        )) / pmax(residual_dof, 1e-12)
-        squeezed <- squeeze_variance(pooled_variance, residual_dof)
-        scale <- Reduce(`+`, lapply(groups, function(part) 1 / part$count))
-        standard_error <- sqrt(squeezed$posterior * scale)
-        degrees <- residual_dof +
-          if (is.finite(squeezed$df_prior)) squeezed$df_prior else 1e6
-      } else if (variance == "welch" || length(control_components)) {
+      if (variance == "welch" || length(control_components)) {
         components <- c(
           list(
             list(variance = variances1, count = counts1),
@@ -2209,14 +2292,8 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
       counts <- rowSums(pair_mask)
       variance_differences <- apply(differences, 1, stats::var, na.rm = TRUE)
       residual_dof <- counts - 1
-      if (variance == "moderated") {
-        squeezed <- squeeze_variance(variance_differences, residual_dof)
-        paired_variance <- squeezed$posterior
-        prior_dof <- if (is.finite(squeezed$df_prior)) squeezed$df_prior else 1e6
-      } else {
-        paired_variance <- variance_differences
-        prior_dof <- 0
-      }
+      paired_variance <- variance_differences
+      prior_dof <- 0
       if (length(control_components)) {
         components <- c(
           list(list(variance = paired_variance, count = counts)),
@@ -2265,10 +2342,17 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     } else {
       complete <- is.finite(values1) & is.finite(values2)
       pair_differences <- values2[complete] - values1[complete]
-      if (all(pair_differences == pair_differences[1])) {
-        if (pair_differences[1] == 0) 1 else 0
+      # Use the paired t statistic directly, as Python/backend do. t.test's
+      # near-constant-data rejection would abort otherwise valid comparisons.
+      mean_difference <- mean(pair_differences)
+      difference_variance <- var(pair_differences)
+      standard_error <- sqrt(difference_variance / length(pair_differences))
+      if (difference_variance == 0) {
+        if (mean_difference == 0) 1 else 0
       } else {
-        t.test(pair_differences, mu = 0)$p.value
+        pvalue <- 2 * pt(abs(mean_difference / standard_error),
+                         length(pair_differences) - 1, lower.tail = FALSE)
+        if (is.finite(pvalue)) pvalue else 1
       }
     }
   }, numeric(1))
@@ -2320,6 +2404,7 @@ volcano_data_f <- function(
     control2_columns = NULL
 ) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   label_col <- .resolve_volcano_label_column(data, workflow, label_column)
   extra_columns <- if (workflow == "Phosphoprotein") {
     intersect(c("site_num", "PTM_Collapse_keys"), names(data))
@@ -2355,6 +2440,7 @@ volcano_data_f <- function(
 
 volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   condition1_columns <- meta$sample[meta$condition == condition1]
   condition2_columns <- meta$sample[meta$condition == condition2]
   control1_columns <- meta$sample[meta$condition == condition1_control]
@@ -2603,6 +2689,7 @@ anova_data_f <- function(
     uncorrected = FALSE
 ) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   label_col <- .workflow_col(workflow)
   conditions <- conditions %||% unique(na.omit(meta$condition))
   if (length(conditions) < 2) {
@@ -2792,9 +2879,7 @@ anova_cluster_data <- function(
 .TEST_TYPES <- list(
   unpaired = list(paired = FALSE, model = "pooled"),
   unpaired_welch = list(paired = FALSE, model = "welch"),
-  unpaired_moderated = list(paired = FALSE, model = "moderated"),
-  paired = list(paired = TRUE, model = "pooled"),
-  paired_moderated = list(paired = TRUE, model = "moderated")
+  paired = list(paired = TRUE, model = "pooled")
 )
 
 # Return list(paired = , model = ) for a test_type string.
@@ -2833,79 +2918,6 @@ variance_model <- function(value) {
   list(se = sqrt(se_squared), dof = se_squared^2 / denominator)
 }
 
-# Invert the trigamma function by Newton iteration (limma::trigammaInverse).
-# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-trigamma_inverse <- function(values) {
-  x <- as.numeric(values)
-  y <- numeric(length(x))
-  big <- x > 1e7
-  small <- x < 1e-6
-  y[big] <- 1 / sqrt(x[big])
-  y[small] <- 1 / x[small]
-  middle <- !(big | small)
-  if (any(middle)) {
-    current <- 0.5 + 1 / x[middle]
-    for (iteration in seq_len(50)) {
-      tri <- trigamma(current)
-      step <- tri * (1 - tri / x[middle]) / psigamma(current, deriv = 2)
-      current <- current + step
-      if (max(-step / current) < 1e-8) break
-    }
-    y[middle] <- current
-  }
-  y
-}
-
-# Method-of-moments scaled inverse chi-square prior (limma::fitFDist).
-# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-fit_variance_prior <- function(variances, dof) {
-  variances <- as.numeric(variances)
-  dof <- as.numeric(dof)
-  usable <- is.finite(variances) & is.finite(dof) & variances > 0 & dof > 0
-  if (sum(usable) < 2) {
-    fallback <- if (any(usable)) mean(variances[usable], na.rm = TRUE) else 1
-    return(list(var_prior = fallback, df_prior = Inf))
-  }
-  observed <- variances[usable]
-  degrees <- dof[usable]
-  transformed <- log(observed) - digamma(degrees / 2) + log(degrees / 2)
-  count <- length(transformed)
-  mean_t <- mean(transformed)
-  excess <- sum((transformed - mean_t)^2) / (count - 1) - mean(trigamma(degrees / 2))
-  if (excess > 0) {
-    df_prior <- 2 * trigamma_inverse(excess)
-    var_prior <- exp(mean_t + digamma(df_prior / 2) - log(df_prior / 2))
-  } else {
-    # No excess variability between features: the prior carries all the weight
-    # and every feature gets the same variance.
-    df_prior <- Inf
-    var_prior <- exp(mean_t)
-  }
-  list(var_prior = as.numeric(var_prior), df_prior = as.numeric(df_prior))
-}
-
-# Shrink per-feature variances toward a fitted prior (limma::squeezeVar).
-#
-# This is what makes a moderated t-test worth having at proteomics group sizes: a
-# per-feature variance from n = 3 is a poor estimate, and borrowing strength
-# across features stabilises it. Returns list(posterior = , var_prior = ,
-# df_prior = ).
-# Reference: Smyth (2004), doi:10.2202/1544-6115.1027, as implemented in limma
-# (Ritchie et al. 2015, doi:10.1093/nar/gkv007).
-squeeze_variance <- function(variances, dof) {
-  prior <- fit_variance_prior(variances, dof)
-  variances <- as.numeric(variances)
-  dof <- as.numeric(dof)
-  posterior <- if (!is.finite(prior$df_prior)) {
-    rep(prior$var_prior, length(variances))
-  } else {
-    (dof * variances + prior$df_prior * prior$var_prior) / (dof + prior$df_prior)
-  }
-  list(posterior = posterior, var_prior = prior$var_prior, df_prior = prior$df_prior)
-}
-
 # Shift each sample so all samples share a common median.
 #
 # Operates on log2 values, where a multiplicative loading difference is an
@@ -2928,7 +2940,7 @@ median_center <- function(values) {
 # Missing values are neither imputed nor allowed to shift a sample's ranks: each
 # sample's observed values are mapped onto their own quantile positions, and the
 # shared reference distribution is read off at those positions. This matches
-# limma::normalizeQuantiles, which interpolates rather than dropping incomplete
+# interpolates rather than dropping incomplete
 # rows.
 quantile_normalize <- function(values) {
   matrix_values <- as.matrix(values)
@@ -2938,7 +2950,7 @@ quantile_normalize <- function(values) {
     return(as.data.frame(matrix_values, check.names = FALSE))
   }
 
-  # Grid spans the full row count, as limma does, so columns with different
+  # Grid spans the full row count so columns with different
   # numbers of observed values still land on a common reference curve.
   grid <- seq(0, 1, length.out = row_count)
   curves <- list()
@@ -2980,8 +2992,8 @@ quantile_normalize <- function(values) {
 # multimodal. `linear_source` supplies the untransformed intensities vsn models;
 # without it they are reconstructed as 2^log2, which perturbs the input at machine
 # epsilon and can shift the fit.
-# References: quantile normalization follows limma::normalizeQuantiles (Ritchie
-# et al. 2015, doi:10.1093/nar/gkv007); VSN is delegated to Bioconductor vsn
+# References: quantile normalization follows the method of Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185;
+# VSN is delegated to Bioconductor vsn
 # (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
 # Resolve the columns to normalize from a metadata frame or a column list.
 # Every other public function takes a metadata frame as its second argument, so
@@ -4191,6 +4203,7 @@ convert_to_centered <- function(seq) {
 
 ksea_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   if (!"UPD_seq" %in% names(data)) {
     stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
   }
@@ -4205,6 +4218,7 @@ ksea_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log
 
 ksea_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   if (!"UPD_seq" %in% names(data)) {
     stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
   }
@@ -4307,6 +4321,7 @@ ksea_data_f_control <- function(data, meta, condition1, condition2, condition1_c
 
 phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL) {
   .validate_meta_samples(meta)
+  .validate_sample_values(data, meta)
   # The per-protein table behind `phosprot_regulation`, with the same signature
   # as the pip package's function of this name. Split out so the numbers can be
   # read, exported and compared across the three pipelines; `phosprot_regulation`
@@ -5222,7 +5237,7 @@ simple_phos_site_plot <- function(data, filter_value=0, width_cm=15, height_cm=1
   .plot_result()
 }
 
-ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condition1=NULL, condition2=NULL, GRK=FALSE) {
+ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condition1=NULL, condition2=NULL) {
   .require_pkg("plotly")
 
   data <- rbind(data_st, data_tnc)
@@ -5254,11 +5269,10 @@ ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condit
     Downregulated = "blue",
     `Not significant` = "lightgrey"
   )
-  is_grk <- grepl("\\bGRK[0-9]*\\b", data$Kinase, ignore.case = TRUE)
 
   fig <- plotly::plot_ly()
   for (regulation in unique(data$Regulation)) {
-    normal_rows <- data$Regulation == regulation & (!is_grk | !GRK)
+    normal_rows <- data$Regulation == regulation
     if (any(normal_rows)) {
       subset <- data[normal_rows, , drop = FALSE]
       fig <- plotly::add_trace(
@@ -5285,31 +5299,6 @@ ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condit
         inherit = FALSE
       )
     }
-  }
-
-  if (GRK && any(is_grk)) {
-    grk_data <- data[is_grk, , drop = FALSE]
-    fig <- plotly::add_trace(
-      fig,
-      data = grk_data,
-      x = ~frequency_factor,
-      y = ~neg_log10_pval,
-      type = "scatter",
-      mode = "markers",
-      name = "GRK",
-      text = ~Kinase,
-      hovertemplate = paste0(
-        "Kinase: %{text}<br>",
-        "Log2(Frequency Factor): %{x}<br>",
-        "-log10(p-value): %{y}<extra></extra>"
-      ),
-      marker = list(
-        color = unname(color_mapping[grk_data$Regulation]),
-        size = 12,
-        line = list(color = "yellow", width = 2)
-      ),
-      inherit = FALSE
-    )
   }
 
   title <- if (header && !is.null(condition1) && !is.null(condition2)) {

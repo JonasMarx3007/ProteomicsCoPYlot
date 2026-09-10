@@ -168,17 +168,7 @@ def test_volcano_context_is_rank_limited_and_uses_informative_significance_value
     [
         ("unpaired", "unpaired_student_t_test_with_pooled_variance", False),
         ("unpaired_welch", "unpaired_welch_t_test_with_unequal_variance", False),
-        (
-            "unpaired_moderated",
-            "unpaired_moderated_t_test_with_empirical_bayes_variance_shrinkage",
-            False,
-        ),
         ("paired", "paired_student_t_test_on_within_pair_differences", True),
-        (
-            "paired_moderated",
-            "paired_moderated_t_test_on_within_pair_differences_with_empirical_bayes_variance_shrinkage",
-            True,
-        ),
     ],
 )
 def test_all_ai_statistical_contexts_preserve_the_selected_test_type(
@@ -202,7 +192,7 @@ def test_all_ai_statistical_contexts_preserve_the_selected_test_type(
         assert f"selected_test_description={description}" in payload
 
     assert ("volcano_pairing|" in volcano) is is_paired
-    assert "supported_tests=unpaired,unpaired_welch,unpaired_moderated,paired,paired_moderated" in volcano
+    assert "supported_tests=unpaired,unpaired_welch,paired" in volcano
 
 
 def test_ai_statistical_context_uses_safe_default_for_unknown_test_type() -> None:

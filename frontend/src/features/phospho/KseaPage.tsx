@@ -1,4 +1,8 @@
+import { Checkbox } from "../../components/PlotFields";
+import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType } from "../../lib/statisticalTests";
+import type { StatsTestType } from "../../lib/types";
 import {
   getPhosphoOptions,
   getPhosphoTable,
@@ -44,8 +48,8 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1.0));
-  const [testType, setTestType] = useState<"unpaired" | "paired">(() =>
-    persisted.testType === "paired" ? "paired" : "unpaired"
+  const [testType, setTestType] = useState<StatsTestType>(() =>
+    restoreTestType(persisted.testType)
   );
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
 
@@ -57,7 +61,6 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
   const [fileTnc, setFileTnc] = useState<File | null>(null);
   const [volcanoPValueThreshold, setVolcanoPValueThreshold] = useState(() => Number(persisted.volcanoPValueThreshold ?? 0.1));
   const [volcanoHeader, setVolcanoHeader] = useState(() => Boolean(persisted.volcanoHeader ?? true));
-  const [highlightGrk, setHighlightGrk] = useState(() => Boolean(persisted.highlightGrk ?? false));
   const [annotateHits, setAnnotateHits] = useState(() => Boolean(persisted.annotateHits ?? false));
   const [volcanoHtml, setVolcanoHtml] = useState("");
   const [volcanoLoading, setVolcanoLoading] = useState(false);
@@ -77,7 +80,6 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
       useUncorrected,
       volcanoPValueThreshold,
       volcanoHeader,
-      highlightGrk,
       annotateHits,
     });
   }, [
@@ -93,7 +95,6 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
     useUncorrected,
     volcanoPValueThreshold,
     volcanoHeader,
-    highlightGrk,
     annotateHits,
   ]);
 
@@ -261,7 +262,6 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
         header: volcanoHeader,
         condition1,
         condition2,
-        highlightGrk,
         annotateHits,
       });
       setVolcanoHtml(html);
@@ -372,8 +372,9 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
               <SelectField
                 label="Test Type"
                 value={testType}
-                options={["unpaired", "paired"]}
-                onChange={(value) => setTestType(value as "unpaired" | "paired")}
+                options={TEST_TYPE_VALUES}
+                optionLabels={TEST_TYPE_LABELS}
+                onChange={(value) => setTestType(value as StatsTestType)}
               />
             </div>
             {testType === "paired" ? (
@@ -464,7 +465,6 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
         </div>
         <div className="mt-4 flex flex-wrap gap-3">
           <Checkbox label="Toggle Header" checked={volcanoHeader} onChange={setVolcanoHeader} />
-          <Checkbox label="Highlight GRK Kinases" checked={highlightGrk} onChange={setHighlightGrk} />
           <Checkbox label="Annotate Hits" checked={annotateHits} onChange={setAnnotateHits} />
         </div>
         {!validSelection ? (
@@ -502,6 +502,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
           <h3 className="text-lg font-semibold text-slate-900">KSEA Volcano</h3>
           <div className="mt-4">
             <iframe
+              sandbox="allow-scripts allow-downloads"
               srcDoc={volcanoHtml}
               title="KSEA Volcano"
               className="h-[40rem] w-full rounded-xl border border-slate-200"
@@ -517,11 +518,13 @@ function SelectField({
   label,
   value,
   options,
+  optionLabels = {},
   onChange,
 }: {
   label: string;
   value: string;
   options: string[];
+  optionLabels?: Record<string, string>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -534,7 +537,7 @@ function SelectField({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {optionLabels[option] ?? option}
           </option>
         ))}
       </select>
@@ -596,28 +599,6 @@ function NumericField({
   );
 }
 
-function Checkbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-      />
-      {label}
-    </label>
-  );
-}
-
 function FileField({
   label,
   onFile,
@@ -674,12 +655,6 @@ function PreviewTable({
 }) {
   if (!rows || rows.length === 0) return <NeutralNotice message={emptyText} />;
   return <PaginatedTable rows={rows} pageSize={50} emptyText={emptyText} maxHeightClassName="max-h-[28rem]" />;
-}
-
-function collectColumns(rows: Record<string, unknown>[]) {
-  const keys = new Set<string>();
-  rows.forEach((row) => Object.keys(row).forEach((key) => keys.add(key)));
-  return Array.from(keys);
 }
 
 function rowsToDelimited(rows: Record<string, unknown>[], columns: string[], delimiter: string) {

@@ -69,6 +69,9 @@ def test_session_isolation_is_on_unless_it_is_explicitly_turned_off(monkeypatch)
 def test_viewer_policy_blocks_mutation_but_allows_analysis() -> None:
     assert _viewer_request_denied(_request("POST", "/api/datasets/upload"))
     assert _viewer_request_denied(_request("DELETE", "/api/annotations/metadata/current/protein"))
+    assert _viewer_request_denied(
+        _request("DELETE", "/api/datasets/metadata/profiles/delete")
+    )
     assert _viewer_request_denied(_request("PUT", "/api/annotations/pairing"))
     assert not _viewer_request_denied(_request("POST", "/api/stats/volcano/run"))
 
@@ -100,7 +103,6 @@ def test_remote_tool_policy_blocks_server_local_paths(monkeypatch) -> None:
         "/api/datasets/table-path",
         "/api/datasets/peptide-path",
         "/api/external/peptide-collapse/run",
-        "/api/restore/import",
     ],
 )
 def test_remote_local_path_operations_are_blocked_without_authentication(
@@ -119,7 +121,6 @@ def test_remote_local_path_operations_are_blocked_without_authentication(
         "/api/datasets/table-path",
         "/api/datasets/peptide-path",
         "/api/external/peptide-collapse/run",
-        "/api/restore/import",
     ],
 )
 def test_http_middleware_denies_remote_local_path_operations(
@@ -292,6 +293,50 @@ def test_protected_backend_rejects_shell_bypass_and_anonymous_session_flood(
         assert near_miss.status_code == 401
 
 
+def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Login must hand back exactly one session cookie.
+
+    Authentication rotates the session id and the login route sets the rotated
+    one. The middleware resolved its own id before the route ran, so it used to
+    append a second cookie carrying the pre-rotation id; last-wins left the
+    browser holding the unauthenticated one. Header-based clients were fine,
+    which is why the fixation test above never saw it.
+    """
+    access_file = tmp_path / "tool_access.json"
+    access_file.write_text(
+        json.dumps(
+            {
+                "password_pbkdf2_sha256": hash_password("test-password", iterations=100_000),
+                "tokens": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("COPYLOT_TOOL_ACCESS_ENABLED", "1")
+    monkeypatch.setenv("COPYLOT_TOOL_ACCESS_FILE", str(access_file))
+    monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
+    monkeypatch.delenv("COPYLOT_VIEWER_PORTAL_ENABLED", raising=False)
+
+    with TestClient(app) as client:
+        client.cookies.clear()
+        login = client.post("/api/tool/auth/login", json={"password": "test-password"})
+        assert login.status_code == 200
+
+        handed_out = [
+            value.decode("latin-1")
+            for key, value in login.headers.raw
+            if key.lower() == b"set-cookie"
+            and value.lstrip().startswith(b"copylot_session_id=")
+        ]
+        assert len(handed_out) == 1, f"login set {len(handed_out)} session cookies: {handed_out}"
+        assert client.cookies.get("copylot_session_id") == login.json()["sessionId"]
+
+        assert client.get("/api/datasets/current").status_code == 200
+
+
 def test_invalid_auth_combinations_and_placeholder_credentials_fail_closed(
     monkeypatch,
     tmp_path,
@@ -344,3 +389,36 @@ def test_restore_gzip_expansion_is_bounded(monkeypatch) -> None:
     compressed = gzip.compress(b"x" * 128)
     with pytest.raises(RestoreStateError, match="Expanded restore state"):
         decode_restore_blob(compressed)
+
+
+def test_authenticated_browsers_cannot_read_each_others_packages(monkeypatch, tmp_path):
+    access_file = tmp_path / 'isolated-tool-access.json'
+    access_file.write_text(json.dumps({
+        'password_pbkdf2_sha256': hash_password('synthetic-password', iterations=100_000),
+        'tokens': [],
+    }), encoding='utf-8')
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_ENABLED', '1')
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_FILE', str(access_file))
+    monkeypatch.setenv('COPYLOT_SESSION_ISOLATION', '1')
+    monkeypatch.setenv('COPYLOT_VIEWER_PORTAL_ENABLED', '0')
+    with TestClient(app) as first, TestClient(app) as second:
+        for client in (first, second):
+            assert client.post('/api/tool/auth/login', json={'password': 'synthetic-password'}).status_code == 200
+        assert first.cookies.get('copylot_session_id') != second.cookies.get('copylot_session_id')
+        for client, name in ((first, 'First-private'), (second, 'Second-private')):
+            assert client.post('/api/datasets/packages/create', json={'packageName': name}).status_code == 200
+        uploaded = first.post('/api/datasets/upload', data={'kind': 'protein'}, files={
+            'file': ('private.csv', 'ProteinNames,A1,A2\nPRIVATE_FEATURE,12,13\n', 'text/csv'),
+        })
+        assert uploaded.status_code == 200
+        original = first.get('/api/datasets/current').json()
+        assert 'First-private' in first.get('/api/datasets/packages').json()['availablePackages']
+        assert 'Second-private' not in first.get('/api/datasets/packages').json()['availablePackages']
+        assert 'First-private' not in second.get('/api/datasets/packages').json()['availablePackages']
+        # Tool mode permits creating an empty package by selecting a new name.
+        # Reusing another session's name must not reuse its contents.
+        selected = second.post('/api/datasets/active', json={'packageName': 'First-private'})
+        assert selected.status_code == 200
+        assert selected.json()['protein'] is None
+        assert first.get('/api/datasets/packages').json()['activePackage'] == 'First-private'
+        assert first.get('/api/datasets/current').json() == original

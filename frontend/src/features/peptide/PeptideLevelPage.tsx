@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   buildPlotUrl,
   getPeptideOverview,
@@ -622,10 +622,11 @@ function SelectField({
   options: string[];
   labels?: Record<string, string>;
 }) {
+  const fieldId = useId();
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <select id={fieldId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -653,6 +654,7 @@ function CommittedNumberField({
   value: number;
   onCommit: (value: number) => void;
 }) {
+  const fieldId = useId();
   const [draft, setDraft] = useState(() => formatNumberValue(value));
 
   useEffect(() => {
@@ -676,8 +678,8 @@ function CommittedNumberField({
 
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <input id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -796,6 +798,7 @@ function ImagePlotCard({
         />
       ) : (
         <iframe
+          sandbox="allow-scripts allow-downloads"
           key={url}
           src={url}
           title={`${title} interactive`}

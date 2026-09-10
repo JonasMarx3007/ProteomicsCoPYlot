@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.annotation import AnnotationKind
 
@@ -19,9 +19,7 @@ AnovaPostHoc = Literal["none", "tukey"]
 StatsTestType = Literal[
     "unpaired",
     "unpaired_welch",
-    "unpaired_moderated",
     "paired",
-    "paired_moderated",
 ]
 StatsIdentifier = Literal["workflow", "genes"]
 OraDirection = Literal["up", "down", "cluster"]
@@ -66,14 +64,35 @@ class VolcanoControlRequest(BaseModel):
     dataSource: VolcanoDataSource = "data"
     condition1: str
     condition2: str
-    condition1Control: str
-    condition2Control: str
+    # A blank control is a contradiction on this endpoint: the service treats a
+    # falsy control as "no control" and quietly returns an ordinary volcano, so
+    # asking for a control-corrected result and leaving one field empty gave a
+    # 200 that was byte-identical to the uncorrected one. Two wrong controls
+    # already raised; one wrong and one blank did not.
+    condition1Control: str = Field(min_length=1)
+    condition2Control: str = Field(min_length=1)
     identifier: StatsIdentifier = "workflow"
     pValueThreshold: float = Field(default=0.05, gt=0.0, le=1.0)
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_distinct_conditions(self) -> "VolcanoControlRequest":
+        conditions = [
+            self.condition1,
+            self.condition1Control,
+            self.condition2,
+            self.condition2Control,
+        ]
+        normalized = [str(condition).strip() for condition in conditions]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError(
+                "Control-corrected volcano analysis requires four distinct conditions; "
+                "an experimental condition cannot be used as its own control."
+            )
+        return self
 
 
 class VolcanoResultResponse(BaseModel):
@@ -159,6 +178,7 @@ class EnrichmentResultResponse(BaseModel):
     # actually overlap the query, which is smaller. The UI labels this
     # "Terms in search space" for that reason.
     testedTermCount: int
+    termCounts: dict[str, dict[str, int]] = Field(default_factory=dict, description="Per-query searchSpace, overlapTested (BH family), passingCutoff before topN, and displayed counts. BH is applied independently per query across eligible ontologies.")
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -228,6 +248,7 @@ class ListEnrichmentResultResponse(BaseModel):
     # actually overlap the query, which is smaller. The UI labels this
     # "Terms in search space" for that reason.
     testedTermCount: int
+    termCounts: dict[str, dict[str, int]] = Field(default_factory=dict, description="Per-query searchSpace, overlapTested (BH family), passingCutoff before topN, and displayed counts. BH is applied independently per query across eligible ontologies.")
     warnings: list[str] = Field(default_factory=list)
 
 

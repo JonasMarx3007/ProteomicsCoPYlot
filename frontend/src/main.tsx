@@ -3,22 +3,14 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import ToolAccessGate from "./components/ToolAccessGate";
 import ViewerPortalGate from "./components/ViewerPortalGate";
-import { initializeAdvancedPlotState, initializeSessionTheme } from "./lib/appSettings";
-import { shouldResetClientStateOnBrowserLoad } from "./lib/datasetAvailability";
-import { clearCopylotClientStorageState } from "./lib/restoreUiState";
+import AnalysisSessionGate from "./components/AnalysisSessionGate";
 import "./index.css";
-
-if (shouldResetClientStateOnBrowserLoad()) {
-  clearCopylotClientStorageState();
-}
-initializeSessionTheme();
-initializeAdvancedPlotState();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ToolAccessGate>
       <ViewerPortalGate>
-        <App />
+        <AnalysisSessionGate><App /></AnalysisSessionGate>
       </ViewerPortalGate>
     </ToolAccessGate>
   </React.StrictMode>

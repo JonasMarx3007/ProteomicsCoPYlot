@@ -77,9 +77,7 @@ def test_health_runtime_and_openapi_routes() -> None:
         assert set(volcano_parameters["testType"]["enum"]) == {
             "unpaired",
             "unpaired_welch",
-            "unpaired_moderated",
             "paired",
-            "paired_moderated",
         }
         assert simulation_parameters["testType"]["enum"] == [
             "unpaired",

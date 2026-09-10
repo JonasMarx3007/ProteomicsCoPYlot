@@ -43,7 +43,7 @@ def _volcano(tag: str) -> pd.DataFrame:
     return st._volcano_dataframe(
         kind="protein", condition1="WT", condition2="KO", identifier="workflow",
         p_value_threshold=0.05, log2fc_threshold=1.0,
-        test_type="unpaired_moderated", use_uncorrected=False, data_source="data",
+        test_type="unpaired_welch", use_uncorrected=False, data_source="data",
     )[2]
 
 
@@ -79,7 +79,7 @@ def test_rerunning_the_same_analysis_is_bit_identical(loaded) -> None:
     assert _digest(first) == _digest(second), "the same analysis gave two different frames"
 
 
-def test_the_moderated_test_is_not_accidentally_random(loaded) -> None:
+def test_the_welch_test_is_not_accidentally_random(loaded) -> None:
     first = _volcano("stable-1")["adj_pval"].to_numpy(dtype=float)
     second = _volcano("stable-2")["adj_pval"].to_numpy(dtype=float)
     assert np.array_equal(first, second, equal_nan=True)

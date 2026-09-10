@@ -70,7 +70,7 @@ def _patch_stats_source(
 @pytest.mark.parametrize("use_uncorrected", [False, True])
 @pytest.mark.parametrize(
     "test_type",
-    ["unpaired", "unpaired_welch", "unpaired_moderated", "paired", "paired_moderated"],
+    ["unpaired", "unpaired_welch", "paired"],
 )
 def test_ksea_standard_formats_exact_volcano_output(
     monkeypatch: pytest.MonkeyPatch,
@@ -117,7 +117,7 @@ def test_ksea_standard_formats_exact_volcano_output(
 @pytest.mark.parametrize("use_uncorrected", [False, True])
 @pytest.mark.parametrize(
     "test_type",
-    ["unpaired", "unpaired_welch", "unpaired_moderated", "paired", "paired_moderated"],
+    ["unpaired", "unpaired_welch", "paired"],
 )
 def test_ksea_control_formats_exact_control_volcano_output(
     monkeypatch: pytest.MonkeyPatch,

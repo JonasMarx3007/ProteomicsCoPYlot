@@ -21,13 +21,14 @@ export default function TopTabs<T extends string>({
   return (
     <div className="border-b border-slate-200 bg-white px-4 sm:px-6">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap gap-2">
+        <nav aria-label="Module views" className="flex min-w-0 flex-wrap gap-2">
           {tabs.map((tab) => {
             const active = tab.key === activeTab;
 
             return (
               <button
                 key={tab.key}
+                aria-current={active ? "page" : undefined}
                 onClick={() => onChange(tab.key)}
                 className={[
                   "border-b-2 px-4 py-3 text-sm font-medium transition",
@@ -40,7 +41,7 @@ export default function TopTabs<T extends string>({
               </button>
             );
           })}
-        </div>
+        </nav>
         {rightContent ? <div className="shrink-0">{rightContent}</div> : null}
       </div>
     </div>
