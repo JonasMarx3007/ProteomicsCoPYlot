@@ -54,8 +54,8 @@ test('accessible workflow labels, modal focus and responsive navigation', async 
   await expect(page.locator('#main-content')).toBeFocused();
   await page.screenshot({ path: info.outputPath('statistics-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(await page.locator('main').evaluate(el => el.getBoundingClientRect().left)).toBeLessThan(20);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
+  await expect.poll(() => page.locator('main').evaluate(el => el.getBoundingClientRect().left)).toBeLessThan(20);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
   await page.screenshot({ path: info.outputPath('statistics-narrow.png'), fullPage: true });
 });
 
