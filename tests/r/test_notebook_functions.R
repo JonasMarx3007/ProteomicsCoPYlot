@@ -406,4 +406,80 @@ observed_rng_after <- runif(8)
 stopifnot(identical(observed_rng_after, expected_rng_after))
 invisible(parse(file = example_path))
 
+
+# A decimal comma turns every value in a sample into NA. The sample then reads as
+# fully undetected, survives the completeness filter on the other replicates, and
+# the analysis runs one replicate short with no sign anything went wrong.
+comma_meta <- data.frame(
+  sample = c("s1", "s2", "s3", "s4"),
+  condition = c("a", "a", "b", "b"),
+  stringsAsFactors = FALSE
+)
+set.seed(11)
+comma_clean <- as.data.frame(matrix(rnorm(40 * 4, 20, 2), ncol = 4))
+names(comma_clean) <- comma_meta$sample
+comma_clean <- cbind(ProteinNames = paste0("P", seq_len(40)), comma_clean,
+                     stringsAsFactors = FALSE)
+stopifnot(nrow(filter_data(comma_clean, comma_meta, 2)) > 0)
+
+comma_dirty <- comma_clean
+comma_dirty$s2 <- sub(".", ",", as.character(round(comma_dirty$s2, 3)), fixed = TRUE)
+comma_result <- try(filter_data(comma_dirty, comma_meta, 2), silent = TRUE)
+stopifnot(inherits(comma_result, "try-error"))
+stopifnot(grepl("do not parse as numbers", attr(comma_result, "condition")$message))
+stopifnot(grepl("s2", attr(comma_result, "condition")$message))
+
+# Blanks and documented placeholders really are missing, not unreadable.
+comma_placeholder <- comma_clean
+comma_placeholder$s2 <- as.character(comma_placeholder$s2)
+comma_placeholder$s2[1:8] <- "NA"
+comma_placeholder$s2[9:16] <- "Filtered"
+stopifnot(nrow(filter_data(comma_placeholder, comma_meta, 2)) > 0)
+
+# Only a column losing most of its values is a mangled export.
+comma_label <- comma_clean
+comma_label$s2 <- as.character(comma_label$s2)
+comma_label$s2[1:2] <- "not detected"
+stopifnot(nrow(filter_data(comma_label, comma_meta, 2)) > 0)
+
+
+# The sum and mean modes aggregate original-scale intensities, so without a
+# transform their fold changes are differences of raw intensities -- in the
+# thousands -- under a column headed log2FC. Every mode must return log2.
+scale_meta <- data.frame(
+  sample = c(paste0("Ctrl_", 1:3), paste0("Treat_", 1:3)),
+  condition = rep(c("Ctrl", "Treat"), each = 3),
+  stringsAsFactors = FALSE
+)
+set.seed(3)
+scale_rows <- list()
+for (p_i in seq_len(40)) {
+  base <- rlnorm(1, 11, 1)
+  effect <- rnorm(1, 0, 1)
+  for (s_i in seq_len(3)) {
+    vals <- c(base * rlnorm(3, 0, 0.25), base * (2 ^ effect) * rlnorm(3, 0, 0.25))
+    entry <- data.frame(
+      UPD_seq = paste0("SEQ", p_i, "_", s_i),
+      PTM_localization = "0.99",
+      Protein_group = paste0("PROT", p_i),
+      Gene_group = paste0("G", p_i),
+      PTM_Collapse_key = paste0("K", p_i, "_", s_i),
+      stringsAsFactors = FALSE
+    )
+    for (k in seq_along(scale_meta$sample)) entry[[scale_meta$sample[k]]] <- vals[k]
+    scale_rows[[length(scale_rows) + 1L]] <- entry
+  }
+}
+scale_data <- do.call(rbind, scale_rows)
+
+for (scale_mode in c("robust_site_median", "mean", "sum_ignore_na", "sum_propagate_na")) {
+  aggregated <- suppressWarnings(
+    transform_phosprot(scale_data, scale_meta, mode = scale_mode, data_scale = "linear")
+  )
+  observed <- as.matrix(aggregated[scale_meta$sample])
+  observed <- observed[is.finite(observed)]
+  stopifnot(length(observed) > 0)
+  stopifnot(max(observed) < 60)
+}
+
 cat("R notebook helper smoke tests passed\n")

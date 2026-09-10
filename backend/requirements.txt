@@ -1,19 +1,19 @@
 fastapi
 pydantic
 uvicorn[standard]
-pandas
-numpy
-pyarrow
-openpyxl
+pandas>=2.0,<4
+numpy>=1.24,<3
+pyarrow>=12,<24
+openpyxl>=3.1,<4
 python-multipart
-matplotlib
-scipy
-scikit-learn
+matplotlib>=3.7,<4
+scipy>=1.10,<2
+scikit-learn>=1.3,<2
 umap-learn
-seaborn
-matplotlib-venn
-plotly
-statsmodels
+seaborn>=0.12,<1
+matplotlib-venn>=1.0,<2
+plotly>=5.15,<7
+statsmodels>=0.14,<1
 Pillow
 # statsmodels is required, not optional: functions.py imports it for the
 # Benjamini-Hochberg correction and falls back to a local implementation when it

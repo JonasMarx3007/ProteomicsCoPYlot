@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { collectColumns, formatCellValue } from "../lib/tableData";
 
 type Props = {
   rows: Record<string, unknown>[];
@@ -16,13 +17,7 @@ export default function PaginatedTable({
   const resolvedPageSize = Math.max(1, Math.round(pageSize));
   const [requestedPage, setRequestedPage] = useState(1);
 
-  const columns = useMemo(() => {
-    const keys = new Set<string>();
-    rows.forEach((row) => {
-      Object.keys(row).forEach((key) => keys.add(key));
-    });
-    return Array.from(keys);
-  }, [rows]);
+  const columns = useMemo(() => collectColumns(rows), [rows]);
 
   const totalPages = Math.max(1, Math.ceil(rows.length / resolvedPageSize));
   const page = Math.min(requestedPage, totalPages);
@@ -99,15 +94,4 @@ export default function PaginatedTable({
       </div>
     </div>
   );
-}
-
-function formatCellValue(value: unknown) {
-  if (value == null) return "";
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return String(value);
-    return value.toFixed(4);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }

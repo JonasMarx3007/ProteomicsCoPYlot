@@ -34,6 +34,19 @@ npm --prefix frontend install
 backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
 ```
 
+### Reproducible dependency sets
+
+- `backend/requirements-runtime.lock` is the exact Python 3.13 production set used by the Docker image and audited by security CI.
+- `backend/requirements.lock` is the exact Python 3.13 development and reference-test set. It contains the runtime set plus test and packaging tools.
+- `backend/requirements.txt` and `backend/requirements-dev.txt` retain bounded ranges for supported-version compatibility testing, including Python 3.10–3.12.
+
+Install an exact local reference environment with:
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.lock
+.\backend\.venv\Scripts\python.exe -m pip install --no-deps -e .
+```
+
 ## Development launchers
 
 Platform launchers are grouped under `packaging/` and resolve the repository root automatically.
@@ -92,6 +105,9 @@ invalid.
 non-loopback bind. It prints a warning and must not be used for sensitive data. Even with this
 override, remote clients cannot call server-local path operations such as `table-path`,
 `peptide-path`, peptide-collapse-by-path, or restore-by-path; use file-upload endpoints instead.
+Restore uploads from remote or protected sessions ignore saved dataset paths and replacement
+`sourcePath` values and require the dataset files to be uploaded. No server path is probed or
+opened. Ordinary local desktop restoration keeps its existing path-based behavior.
 When a reverse proxy is used, configure `COPYLOT_TRUSTED_PROXY_IPS` so the backend can enforce
 this policy against the forwarded client address.
 
@@ -257,6 +273,18 @@ Use `viewer_access.example.json` as the public template. Keep real credentials u
 Project data belongs in `viewer_data/<ProjectName>/`. Private local-only projects may use `viewer_data/local/<ProjectName>/`.
 
 ## Docker
+
+For an isolated runtime check (Docker running; backend development environment active):
+
+```bash
+docker build --build-arg FRONTEND_TOOL_ACCESS_AUTH=1 --build-arg FRONTEND_RESET_ON_BROWSER_LOAD=1 -t copylot-runtime-check .
+python tests/docker_runtime_check.py copylot-runtime-check
+```
+
+This uses the Python 3.13 runtime lock, disposable synthetic data/credentials, loopback-only
+ports and a temporary locally trusted TLS certificate. It checks the hardened analysis
+container, R/VSN, authentication, isolation and portable save/restore, then removes its test
+container and temporary files. It does not validate the live nginx host or viewer deployment.
 
 Create the ignored local credential files before starting either Compose stack:
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useId, useEffect, useMemo, useState } from "react";
 import {
   getConditionPalette,
   getQcPlotOptions,
@@ -295,10 +295,11 @@ function SelectField({
   options: { value: string; label: string }[];
   disabled?: boolean;
 }) {
+  const fieldId = useId();
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <select id={fieldId}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}

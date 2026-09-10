@@ -17,7 +17,7 @@ from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.password_hashing import validate_password_hash, verify_password
 from app.services.peptide_metadata_store import clear_peptide_metadata
-from app.services.session_context import get_session_id, session_isolation_enabled
+from app.services.session_context import get_session_id, rotate_session_id, session_isolation_enabled
 from app.services.viewer_bootstrap import (
     load_viewer_state,
     resolve_viewer_project_config,
@@ -421,12 +421,17 @@ def authenticate_viewer_session(password: str, *, project_root: Path | None = No
     if selected is None:
         raise ValueError("Invalid viewer password.")
 
-    session_id = get_session_id()
+    # Rotate before recording the grant: the id arrived from the client, so binding
+    # authentication to it would let a planted id become an authenticated one.
+    previous_id = get_session_id()
+    session_id = rotate_session_id()
     session_auth = ViewerSessionAuth(
         project=selected.project,
         project_label=selected.project_label,
     )
     with _LOCK:
+        _SESSION_AUTH.pop(previous_id, None)
+        _BOOTSTRAPPED_SESSION_PROJECT.pop(previous_id, None)
         _SESSION_AUTH[session_id] = session_auth
         _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
 
@@ -459,12 +464,17 @@ def authenticate_viewer_qr_session(token: str, *, project_root: Path | None = No
     if selected is None:
         raise ValueError("Invalid viewer QR token.")
 
-    session_id = get_session_id()
+    # Rotate before recording the grant: the id arrived from the client, so binding
+    # authentication to it would let a planted id become an authenticated one.
+    previous_id = get_session_id()
+    session_id = rotate_session_id()
     session_auth = ViewerSessionAuth(
         project=selected.project,
         project_label=selected.project_label,
     )
     with _LOCK:
+        _SESSION_AUTH.pop(previous_id, None)
+        _BOOTSTRAPPED_SESSION_PROJECT.pop(previous_id, None)
         _SESSION_AUTH[session_id] = session_auth
         _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
 

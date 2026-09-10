@@ -3,3 +3,5 @@ pytest
 httpx
 build
 wheel
+ipython
+nbformat>=4.2

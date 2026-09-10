@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-import io
+from app.services.html_security import GENERATED_HTML_META
+
+from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
+)
+
 import re
 from typing import Literal
 
@@ -45,17 +50,6 @@ def _get_plotly_go():
     return go
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
 def _plotly_html(fig) -> str:
@@ -67,6 +61,7 @@ def _plotly_html(fig) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{GENERATED_HTML_META}"
         "<style>"
         f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
@@ -785,7 +780,6 @@ def ksea_uploaded_volcano_html(
     header: bool = True,
     condition1: str = "",
     condition2: str = "",
-    highlight_grk: bool = False,
     annotate_hits: bool = False,
     advanced: dict | None = None,
 ) -> str:
@@ -848,13 +842,9 @@ def ksea_uploaded_volcano_html(
         "Not significant": "lightgrey",
     }
 
-    is_grk = frame["kinase"].str.contains(r"\bGRK\d*\b", case=False, na=False)
-    frame_grk = frame[is_grk] if highlight_grk else pd.DataFrame(columns=frame.columns)
-    frame_main = frame[~is_grk]
-
     fig = go.Figure()
     for regulation in ["Upregulated", "Downregulated", "Not significant"]:
-        subset = frame_main[frame_main["regulation"] == regulation]
+        subset = frame[frame["regulation"] == regulation]
         if subset.empty:
             continue
         fig.add_trace(
@@ -877,28 +867,8 @@ def ksea_uploaded_volcano_html(
             )
         )
 
-    if highlight_grk and not frame_grk.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=frame_grk["log2ff"],
-                y=frame_grk["neg_log10_pval"],
-                mode="markers",
-                marker=dict(
-                    color=frame_grk["regulation"].map(color_map).fillna("lightgrey"),
-                    size=12,
-                    line=dict(color="yellow", width=2),
-                ),
-                name="GRK",
-                text=frame_grk["kinase"],
-                hovertemplate=(
-                    "Kinase: %{text}<br>Log2(Frequency Factor): %{x:.4f}<br>"
-                    "-log10(Adjusted p-value): %{y:.4f}<extra></extra>"
-                ),
-            )
-        )
-
     if annotate_hits:
-        significant_main = frame_main[frame_main["regulation"] != "Not significant"]
+        significant_main = frame[frame["regulation"] != "Not significant"]
         if not significant_main.empty:
             fig.add_trace(
                 go.Scatter(
@@ -912,22 +882,6 @@ def ksea_uploaded_volcano_html(
                     hoverinfo="skip",
                 )
             )
-        if highlight_grk and not frame_grk.empty:
-            significant_grk = frame_grk[frame_grk["regulation"] != "Not significant"]
-            if not significant_grk.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=significant_grk["log2ff"],
-                        y=significant_grk["neg_log10_pval"],
-                        mode="text",
-                        text=significant_grk["kinase"],
-                        textposition="top right",
-                        textfont=dict(color="black", size=10),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    )
-                )
-
     y_line = float(-np.log10(max(float(p_value_threshold), 1e-300)))
     fig.add_hline(y=y_line, line_dash="dash", line_color="green")
 

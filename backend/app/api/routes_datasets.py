@@ -22,6 +22,7 @@ from app.schemas.dataset import (
     DatasetPreviewResponse,
     DatasetPackagesResponse,
     MetadataProfileCreateRequest,
+    MetadataProfileDeleteRequest,
     MetadataProfileRenameRequest,
     PeptidePathRequest,
     PeptidePathResponse,
@@ -42,6 +43,7 @@ from app.services.dataset_store import (
 )
 from app.services.annotation_store import (
     clear_annotation,
+    delete_metadata_profile as delete_annotation_metadata_profile,
     get_annotation,
     rename_metadata_profile as rename_annotation_metadata_profile,
     rename_package as rename_annotation_package,
@@ -51,6 +53,7 @@ from app.services.metadata_upload_store import (
     build_combined_metadata_frame,
     create_profile as create_metadata_profile,
     clear_uploaded_metadata,
+    delete_profile as delete_metadata_profile,
     get_auto_generated_profile_sources,
     get_active_profile as get_active_metadata_profile,
     get_uploaded_metadata,
@@ -465,6 +468,20 @@ def rename_metadata_profile_route(payload: MetadataProfileRenameRequest) -> Curr
     try:
         rename_metadata_profile(old_name, new_name)
         rename_annotation_metadata_profile(old_name, new_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return _current_datasets_response()
+
+
+@router.delete("/metadata/profiles/delete", response_model=CurrentDatasetsResponse)
+def delete_metadata_profile_route(payload: MetadataProfileDeleteRequest) -> CurrentDatasetsResponse:
+    name = payload.profileName.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Metadata profile name must not be empty.")
+    try:
+        deleted_profiles = delete_metadata_profile(name)
+        for deleted_name in deleted_profiles:
+            delete_annotation_metadata_profile(deleted_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return _current_datasets_response()

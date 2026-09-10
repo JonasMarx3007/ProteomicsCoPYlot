@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from app.services.html_security import GENERATED_HTML_META
+
+from app.services.plot_export import (
+    cm_to_inch as _cm_to_inch,
+    cm_to_px as _cm_to_px,
+)
+
 import io
 
 import numpy as np
@@ -65,12 +72,8 @@ def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
     return buf.getvalue()
 
 
-def _cm_to_inch(value_cm: float) -> float:
-    return max(1.0, float(value_cm) / 2.54)
 
 
-def _cm_to_px(value_cm: float) -> int:
-    return max(320, int(round((_cm_to_inch(value_cm) * 96.0))))
 
 
 def _plotly_html(fig) -> str:
@@ -82,6 +85,7 @@ def _plotly_html(fig) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{GENERATED_HTML_META}"
         "<style>"
         f"html,body{{margin:0;padding:0;background:{background};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"

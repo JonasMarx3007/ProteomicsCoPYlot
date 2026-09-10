@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
+import Modal from "./Modal";
 import type { SidebarSection } from "../lib/types";
 import type {
   ChatMessage,
@@ -183,7 +184,7 @@ export default function AppShell({
   onRightPanelChange,
   children,
 }: AppShellProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -710,11 +711,19 @@ export default function AppShell({
 
   return (
     <div className="relative min-h-screen w-full bg-slate-50 text-slate-900">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[80] focus:rounded-lg focus:bg-white focus:p-3">Skip to analysis content</a>
       <Sidebar
         activeSection={activeSection}
         onChange={onSectionChange}
         isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        onClose={() => {
+          setSidebarOpen(false);
+          requestAnimationFrame(() => {
+            if (document.activeElement === document.body) {
+              document.querySelector<HTMLButtonElement>('[aria-label="Open sidebar"]')?.focus();
+            }
+          });
+        }}
         sections={sections}
       />
 
@@ -722,7 +731,7 @@ export default function AppShell({
         <button
           type="button"
           onClick={() => setSidebarOpen(true)}
-          className="fixed bottom-4 left-4 z-50 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition hover:bg-slate-50"
+          className="relative z-30 m-3 inline-flex h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-3 text-slate-700 shadow-sm transition hover:bg-slate-50 md:fixed md:bottom-4 md:left-4 md:z-50 md:m-0"
           aria-label="Open sidebar"
         >
           Menu
@@ -732,6 +741,9 @@ export default function AppShell({
       {aiEnabled ? (
         <>
           <aside
+            inert={!chatOpen}
+            aria-hidden={!chatOpen}
+            aria-label="Chatbot"
             className={[
               "fixed inset-y-0 right-0 z-40 flex h-screen w-80 shrink-0 flex-col border-l border-slate-200 bg-white transition-transform duration-300",
               chatOpen ? "translate-x-0" : "translate-x-full",
@@ -1109,12 +1121,8 @@ export default function AppShell({
       ) : null}
 
       {cloudConsentDialogOpen && cloudConsentStatus ? (
-        <div
-          className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="cloud-ai-consent-title"
-        >
+        <Modal labelledBy="cloud-ai-consent-title" busy={cloudConsentBusy}
+          onClose={() => setCloudConsentDialogOpen(false)} className="max-w-lg">
           <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
             <h2 id="cloud-ai-consent-title" className="text-lg font-bold text-slate-900">
               Send analysis context to {cloudConsentStatus.providerLabel}?
@@ -1166,19 +1174,19 @@ export default function AppShell({
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       ) : null}
 
       <div
         className={[
           "min-h-screen min-w-0 transition-all duration-300",
-          sidebarOpen ? "ml-72" : "ml-0",
-          chatOpen ? "pr-[20rem]" : "pr-0",
+          sidebarOpen ? "md:ml-72" : "ml-0",
+          chatOpen ? "lg:pr-[20rem]" : "pr-0",
         ].join(" ")}
       >
         {topBar ? <div className="shrink-0">{topBar}</div> : null}
 
-        <main lang="en-US" className="min-w-0 p-4 sm:p-6">
+        <main id="main-content" tabIndex={-1} lang="en-US" className="min-w-0 p-4 sm:p-6">
           <div className="w-full">{children}</div>
         </main>
       </div>

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-import io
+from app.services.html_security import GENERATED_HTML_META
+
+from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
+    cm_to_inch as _cm_to_inch,
+)
+
 import json
 import math
 import re
@@ -12,7 +18,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.condition_palette_store import build_condition_color_map
-from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind
 from app.services.functions import (
     _phosprot_values_are_centred,
     resolve_feature_scaling,
@@ -55,21 +61,8 @@ def _get_plotly():
         ) from exc
 
 
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
 
 
-def _cm_to_inch(value_cm: float) -> float:
-    return max(1.0, float(value_cm) / 2.54)
 
 
 def _cm_to_px(value_cm: float) -> int:
@@ -97,6 +90,7 @@ def _plotly_html(fig) -> str:
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{GENERATED_HTML_META}"
         "<style>"
         f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
         "#plot-root{width:100%;height:100%;}"
@@ -138,6 +132,7 @@ def _plotly_html(fig) -> str:
 
 
 def _imputation_source(kind: AnnotationKind):
+    require_imputable_kind(kind)
     raw = _get_current_frame(kind)
     annotation = get_annotation(kind)
     filtered = annotation.filtered_data if annotation is not None else None

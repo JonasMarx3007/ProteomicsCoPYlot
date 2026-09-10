@@ -57,7 +57,16 @@ def _get_sample_columns(kind: AnnotationKind, frame: pd.DataFrame) -> list[str]:
     return []
 
 
+def require_imputable_kind(kind: AnnotationKind) -> None:
+    if kind == "phosprot":
+        raise ValueError(
+            "Direct phosphoprotein imputation is disabled. Impute phosphosite data "
+            "first, then aggregate phosphoproteins using the imputed phosphosite source."
+        )
+
+
 def _best_imputation_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
+    require_imputable_kind(kind)
     raw_frame = _get_current_frame(kind)
     annotation = get_annotation(kind)
     filtered = annotation.filtered_data if annotation is not None else None
@@ -93,6 +102,7 @@ def _persist_imputation_result(
     missing_after: int,
     imputed_data: pd.DataFrame,
 ) -> None:
+    require_imputable_kind(payload.kind)
     annotation = get_annotation(payload.kind)
     if annotation is None:
         return
@@ -123,6 +133,7 @@ def _persist_imputation_result(
         log2_auto_detected=getattr(annotation, "log2_auto_detected", False),
         imputation=imputation_info,
         imputed_data=imputed_data,
+        phosprot_aggregation=getattr(annotation, "phosprot_aggregation", None),
     )
 
 

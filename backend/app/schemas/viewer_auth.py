@@ -22,6 +22,10 @@ class ViewerAuthLoginResponse(BaseModel):
     ok: bool
     project: str
     projectLabel: str
+    # Authentication rotates the session id, so a client that identifies itself with
+    # the X-CoPYlot-Session header rather than a cookie needs to be told the new
+    # one; otherwise it keeps sending the pre-login id and reads as anonymous.
+    sessionId: str = ""
 
 
 class ViewerAuthLogoutResponse(BaseModel):

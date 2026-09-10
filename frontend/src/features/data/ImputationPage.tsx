@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import SelectField from "../../components/SelectField";
+import SummaryCard from "../../components/SummaryCard";
+import { useId, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, isAbortError, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -12,8 +14,16 @@ import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
 
 export default function ImputationPage() {
   const advancedPlotSignal = useAdvancedPlotSignal();
-  const [kind, setKind] = useState<AnnotationKind>("protein");
-  const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
+  const [kind, setKind] = useState<Exclude<AnnotationKind, "phosprot">>("protein");
+  const datasets = useCurrentDatasetsSnapshot();
+  const availableKinds = useMemo(
+    () => datasets.availableKinds.filter((value) => value !== "phosprot"),
+    [datasets.availableKinds]
+  );
+  const kindOptions = useMemo(
+    () => datasets.kindOptions.filter((option) => option.value !== "phosprot"),
+    [datasets.kindOptions]
+  );
   const availableKindsKey = useMemo(() => availableKinds.join("|"), [availableKinds]);
   const [method, setMethod] = useState<"quantile" | "numerical">("quantile");
   const [qValue, setQValue] = useState(0.01);
@@ -34,7 +44,7 @@ export default function ImputationPage() {
   const fetchPreview = useCallback(async (signal?: AbortSignal) => {
     if (!availableKinds.includes(kind)) {
       setResult(null);
-      setError("Please upload a protein, phospho, or phosphoprotein dataset first.");
+      setError("Please upload a protein or phosphosite dataset first.");
       return;
     }
     try {
@@ -224,12 +234,18 @@ export default function ImputationPage() {
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Impute Data</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          Phosphoproteins cannot be imputed directly. Impute phosphosite data here first,
+          then aggregate phosphoproteins using the imputed phosphosite source.
+        </p>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <SelectField
             label="Dataset level"
             value={kindOptions.length === 0 ? "" : kind}
-            onChange={(value) => setKind(value as AnnotationKind)}
+            onChange={(value) => {
+              if (value === "protein" || value === "phospho") setKind(value);
+            }}
             options={kindOptions}
           />
           <SelectField
@@ -292,7 +308,7 @@ export default function ImputationPage() {
           <button
             type="button"
             onClick={handleRun}
-            disabled={loading}
+            disabled={loading || !availableKinds.includes(kind)}
             className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading ? "Updating..." : "Impute Data Values"}
@@ -308,7 +324,7 @@ export default function ImputationPage() {
 
       {kindOptions.length === 0 ? (
         <section className="rounded-2xl border border-sky-200 bg-sky-50 px-6 py-4 text-sm text-sky-800">
-          Upload a protein, phospho, or phosphoprotein dataset in the Data tab to enable imputation plots.
+          Upload a protein or phosphosite dataset in the Data tab to enable imputation plots.
         </section>
       ) : null}
 
@@ -451,35 +467,6 @@ function PlotSection({
   );
 }
 
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 function NumberField({
   label,
   value,
@@ -491,6 +478,7 @@ function NumberField({
   onChange: (value: number) => void;
   step?: number;
 }) {
+  const fieldId = useId();
   const [draft, setDraft] = useState<string | null>(null);
   const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
 
@@ -511,8 +499,8 @@ function NumberField({
 
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input
+      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <input id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -528,17 +516,6 @@ function NumberField({
         }}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
       />
-    </div>
-  );
-}
-
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-        {label}
-      </div>
-      <div className="mt-1 text-sm font-semibold text-slate-900">{value}</div>
     </div>
   );
 }

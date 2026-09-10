@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PeptideCollapseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     inputPath: str
     outputPath: str | None = None
     cutoff: float = Field(default=0.0, ge=0.0, le=1.0)
-    collapseVersion: Literal["fixed", "newest", "legacy"] = "fixed"
 
 
 class PeptideCollapseResponse(BaseModel):
@@ -17,7 +18,6 @@ class PeptideCollapseResponse(BaseModel):
     inputPath: str
     outputPath: str | None
     cutoff: float
-    collapseVersion: Literal["fixed", "newest", "legacy"]
     rows: int | None = None
     columns: int | None = None
     columnNames: list[str] = Field(default_factory=list)

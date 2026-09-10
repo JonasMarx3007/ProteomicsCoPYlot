@@ -50,6 +50,7 @@ dev = [
   "build",
   "httpx",
   "ipython",
+  "nbformat>=4.2",
   "pytest",
   "twine",
   "wheel",

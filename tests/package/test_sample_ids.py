@@ -640,8 +640,31 @@ def test_ui_pairing_requires_every_sample_once(monkeypatch: pytest.MonkeyPatch) 
         )
 
 
+@pytest.fixture(params=["empty", "unrelated_annotation"])
+def regulation_store_state(request):
+    """Numerical unit fixtures must not depend on a viewer being loaded first."""
+    from app.schemas.annotation import AnnotationFilterConfig
+    from app.services import annotation_store
+
+    snapshot = annotation_store.snapshot_annotation_session_state()
+    try:
+        annotation_store.reset_all_annotations()
+        if request.param == "unrelated_annotation":
+            frame = pd.DataFrame({"PTM_Collapse_key": ["unrelated"], "viewer_sample": [99.]})
+            annotation_store.save_annotation(
+                kind="phospho", source_data=frame, log2_data=frame, filtered_data=frame,
+                metadata=pd.DataFrame({"sample": ["viewer_sample"], "condition": ["viewer_condition"]}),
+                is_log2_transformed=True, metadata_source="manual",
+                filter_config=AnnotationFilterConfig(), auto_detected=False, warnings=[],
+            )
+        yield
+    finally:
+        annotation_store.restore_annotation_session_state(snapshot)
+
+
 def test_paired_phospho_paths_use_the_same_identity(
     monkeypatch: pytest.MonkeyPatch,
+    regulation_store_state,
 ) -> None:
     from app.services import phospho_tools
 
@@ -681,7 +704,7 @@ def test_paired_phospho_paths_use_the_same_identity(
     regulation_frame["Protein_group"] = ["P1", "P2", "P3", "P4"]
     monkeypatch.setattr(
         phospho_tools,
-        "_phospho_context",
+        "_phospho_regulation_context",
         lambda: (
             regulation_frame.copy(),
             metadata.copy(),
@@ -707,6 +730,7 @@ def test_paired_phospho_paths_use_the_same_identity(
 
 def test_phosprot_regulation_uses_only_significant_site_log2fc(
     monkeypatch: pytest.MonkeyPatch,
+    regulation_store_state,
 ) -> None:
     from app.services import phospho_tools
     from proteomicscopylot.notebook_functions import phosprot_regulation
@@ -731,7 +755,7 @@ def test_phosprot_regulation_uses_only_significant_site_log2fc(
     )
     monkeypatch.setattr(
         phospho_tools,
-        "_phospho_context",
+        "_phospho_regulation_context",
         lambda: (frame.copy(), metadata.copy(), metadata["sample"].tolist()),
     )
 

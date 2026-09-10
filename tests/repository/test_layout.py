@@ -63,6 +63,42 @@ def test_packaging_includes_canonical_example_data() -> None:
     assert "proteomicscopylot/example_data:proteomicscopylot/example_data" in macos_build
 
 
+def test_deployment_and_reference_ci_use_exact_dependency_locks() -> None:
+    runtime_lock = ROOT / "backend" / "requirements-runtime.lock"
+    development_lock = ROOT / "backend" / "requirements.lock"
+    assert runtime_lock.is_file()
+    assert development_lock.is_file()
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    security = (ROOT / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
+    tests = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    parity = (ROOT / ".github" / "workflows" / "cross-implementation.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY backend/requirements-runtime.lock" in dockerfile
+    assert "FROM python:3.13-" in dockerfile
+    assert "pip install -r /app/backend/requirements-runtime.lock" in dockerfile
+    assert "pip_audit --requirement backend/requirements-runtime.lock" in security
+    assert "pip_audit --requirement backend/requirements.lock" in security
+    assert "pip install -r backend/requirements.lock" in tests
+    assert "pip install -r backend/requirements.lock" in parity
+
+    def locked_versions(path: Path) -> dict[str, str]:
+        versions: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            requirement = line.strip()
+            if not requirement or requirement.startswith("#"):
+                continue
+            name, version = requirement.split("==", 1)
+            versions[name.lower().replace("_", "-")] = version
+        return versions
+
+    runtime_versions = locked_versions(runtime_lock)
+    development_versions = locked_versions(development_lock)
+    assert runtime_versions.items() <= development_versions.items()
+
+
 def test_executable_builds_exclude_private_viewer_data() -> None:
     windows_build = (ROOT / "packaging" / "windows" / "build_exe_windows.ps1").read_text(
         encoding="utf-8"

@@ -1,7 +1,10 @@
+import { SizeRow, MultiSelectField, NumericField, ColorField, Checkbox } from "../../components/PlotFields";
+import { collectColumns } from "../../lib/tableData";
+import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { TEST_TYPE_VALUES, TEST_TYPE_LABELS } from "../../lib/statisticalTests";
 import { buildPlotUrl, getPhosphoOptions, getPhosphoTable, isAbortError, pairingIsReady } from "../../lib/api";
-import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
-import PaginatedTable from "../../components/PaginatedTable";
+import PreviewTable from "../../components/PaginatedTable";
 import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -642,6 +645,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           <div className="mt-4">
             {plotView.type === "html" ? (
               <iframe
+                sandbox="allow-scripts allow-downloads"
                 key={plotView.url}
                 src={plotView.url}
                 title={plotView.title}
@@ -879,7 +883,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               key="testType"
               label="Test Type"
               value={ksea.testType}
-              options={["unpaired", "paired"]}
+              options={TEST_TYPE_VALUES}
+              optionLabels={TEST_TYPE_LABELS}
               onChange={(value) => setKsea({ ...ksea, testType: value })}
             />,
             ...(ksea.testType === "paired"
@@ -961,7 +966,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               key="testType"
               label="Test Type"
               value={phosprotRegulation.testType}
-              options={["unpaired", "paired"]}
+              options={TEST_TYPE_VALUES}
+              optionLabels={TEST_TYPE_LABELS}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, testType: value })}
             />,
             ...(phosprotRegulation.testType === "paired"
@@ -1052,39 +1058,17 @@ function OptionsLayout({
   );
 }
 
-function SizeRow({
-  widthCm,
-  heightCm,
-  dpi,
-  onWidthChange,
-  onHeightChange,
-  onDpiChange,
-}: {
-  widthCm: number;
-  heightCm: number;
-  dpi: number;
-  onWidthChange: (value: number) => void;
-  onHeightChange: (value: number) => void;
-  onDpiChange: (value: number) => void;
-}) {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
-      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
-    </div>
-  );
-}
-
 function SelectField({
   label,
   value,
   options,
+  optionLabels = {},
   onChange,
 }: {
   label: string;
   value: string;
   options: string[];
+  optionLabels?: Record<string, string>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1097,182 +1081,10 @@ function SelectField({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {optionLabels[option] ?? option}
           </option>
         ))}
       </select>
     </label>
   );
 }
-
-function MultiSelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string[];
-  options: string[];
-  onChange: (value: string[]) => void;
-}) {
-  const visibleRows = Math.max(4, Math.min(8, options.length || 4));
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
-        multiple
-        size={visibleRows}
-        value={value}
-        onChange={(event) => {
-          const selected = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
-          onChange(selected);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-      <span className="mt-1 block text-xs text-slate-500">Use Ctrl/Cmd-click for multi-select.</span>
-    </label>
-  );
-}
-
-function NumericField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
-
-  const commit = () => {
-    const normalized = displayedValue.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(null);
-      return;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed)) {
-      setDraft(null);
-      return;
-    }
-    onChange(parsed);
-    setDraft(null);
-  };
-
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        value={displayedValue}
-        onChange={(event) => {
-          const normalized = event.target.value.replace(",", ".");
-          setDraft(normalized);
-          const parsed = Number(normalized);
-          if (Number.isFinite(parsed)) {
-            onChange(parsed);
-          }
-        }}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
-}
-
-function ColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
-        type="color"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-2 py-1"
-      />
-    </label>
-  );
-}
-
-function Checkbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-      />
-      {label}
-    </label>
-  );
-}
-
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  return <PaginatedTable rows={rows} pageSize={50} emptyText={emptyText} maxHeightClassName="max-h-[28rem]" />;
-}
-
-function collectColumns(rows: Record<string, unknown>[]) {
-  const keys = new Set<string>();
-  rows.forEach((row) => {
-    Object.keys(row).forEach((key) => keys.add(key));
-  });
-  return Array.from(keys);
-}
-
-function rowsToCsv(rows: Record<string, unknown>[], columns: string[]) {
-  const header = columns.join(",");
-  const body = rows.map((row) =>
-    columns
-      .map((column) => {
-        const raw = row[column];
-        const text = raw == null ? "" : String(raw);
-        if (text.includes(",") || text.includes('"') || text.includes("\n")) {
-          return `"${text.replace(/"/g, '""')}"`;
-        }
-        return text;
-      })
-      .join(",")
-  );
-  return [header, ...body].join("\n");
-}
-

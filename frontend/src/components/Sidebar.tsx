@@ -51,6 +51,9 @@ export default function Sidebar({
       />
 
       <aside
+        inert={!isOpen}
+        aria-hidden={!isOpen}
+        aria-label="Main navigation"
         className={[
           "fixed inset-y-0 left-0 z-40 flex h-screen w-72 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-300",
           isOpen ? "translate-x-0" : "-translate-x-full",
@@ -81,14 +84,15 @@ export default function Sidebar({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
-          <nav className="space-y-2">
+          <nav aria-label="Analysis modules" className="space-y-2">
             {visibleItems.map((item) => {
               const active = item.key === activeSection;
 
               return (
                 <button
                   key={item.key}
-                  onClick={() => onChange(item.key)}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => { onChange(item.key); if (window.innerWidth < 768) onClose(); }}
                   className={[
                     "w-full rounded-xl px-4 py-3 text-left text-sm transition",
                     active

@@ -35,10 +35,11 @@ export default function UploadForm({
 
       <div className="grid gap-4">
         <div className="max-w-sm">
-          <label className="mb-2 block text-sm font-medium text-slate-700">
+          <label htmlFor="upload-dataset-kind" className="mb-2 block text-sm font-medium text-slate-700">
             Dataset type
           </label>
           <select
+            id="upload-dataset-kind"
             value={kind}
             onChange={(e) => {
               setFile(null);
@@ -58,11 +59,12 @@ export default function UploadForm({
         {isTableKind && (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div className="min-w-0">
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label htmlFor="upload-table-file" className="mb-2 block text-sm font-medium text-slate-700">
                 File
               </label>
               <input
                 key={`upload-file-${kind}`}
+                id="upload-table-file"
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
                 onChange={(e) => {
@@ -86,11 +88,12 @@ export default function UploadForm({
         {isPeptide && (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
             <div className="min-w-0">
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label htmlFor="upload-peptide-file" className="mb-2 block text-sm font-medium text-slate-700">
                 File
               </label>
               <input
                 key="upload-file-peptide"
+                id="upload-peptide-file"
                 type="file"
                 accept=".csv,.tsv,.txt,.xlsx,.parquet"
                 onChange={(e) => {
