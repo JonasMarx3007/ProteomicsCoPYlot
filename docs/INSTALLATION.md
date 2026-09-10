@@ -5,7 +5,7 @@ Run commands from the repository root unless a section says otherwise.
 ## Prerequisites
 
 - Python 3.10 or newer
-- Node.js and npm
+- Node.js 24 LTS and npm
 - Optional: [Ollama](https://ollama.com) for AI mode
 - Optional: R with `Rscript` for the R notebook-compatible helpers
 
