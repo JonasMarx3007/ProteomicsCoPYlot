@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { tabRequest } from '../browser/authStartup.mjs';
 
 const viewer = process.env.COPYLOT_ACCESS_MODE === 'viewer';
 const authPath = viewer ? '/api/viewer/auth' : '/api/tool/auth';
@@ -6,8 +7,8 @@ const fragment = viewer ? 'qr=synthetic-browser-qr-only' : 'tool=synthetic-brows
 test('fragment login completes once and reaches the app', async ({ page }) => {
   const path = viewer ? '/api/viewer/auth/qr-login' : '/api/tool/auth/link-login';
   let calls = 0;
-  page.on('request', request => { if (new URL(request.url()).pathname === path) calls++; });
-  const login = page.waitForResponse(response => new URL(response.url()).pathname === path);
+  page.on('request', request => { if (new URL(request.url()).pathname.endsWith(path)) calls++; });
+  const login = page.waitForResponse(response => new URL(response.url()).pathname.endsWith(path));
   await page.goto(viewer ? '/#qr=synthetic-browser-qr-only' : '/#tool=synthetic-browser-link-only');
   expect((await login).ok()).toBeTruthy();
   const outcome = async () => calls > 1 ? 'repeated-login' :
@@ -18,7 +19,7 @@ test('fragment login completes once and reaches the app', async ({ page }) => {
   expect(new URL(page.url()).hash).toBe('');
   await page.getByRole('button', { name: 'Statistical Analysis', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Analysis modules' })).toBeVisible();
-  expect((await (await page.request.get(`${authPath}/status`)).json()).authenticated).toBe(true);
+  expect((await (await tabRequest(page).get(`${authPath}/status`)).json()).authenticated).toBe(true);
   expect(calls).toBe(1);
 });
 

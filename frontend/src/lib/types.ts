@@ -835,6 +835,7 @@ export type SummaryVolcanoEntry = {
 };
 
 export type SummaryReportContext = {
+  completenessSettings?: Record<string, unknown>;
   qcSettings?: Record<string, Record<string, unknown>>;
   volcanoEntries?: SummaryVolcanoEntry[];
   advancedPlotMode?: boolean;

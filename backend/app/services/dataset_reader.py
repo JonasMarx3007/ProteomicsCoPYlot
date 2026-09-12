@@ -28,6 +28,7 @@ def get_extension(filename: str) -> str:
 def make_columns_unique(columns: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     result: list[str] = []
+    occupied = {str(col) for col in columns}
 
     for col in columns:
         base = str(col)
@@ -36,7 +37,12 @@ def make_columns_unique(columns: list[str]) -> list[str]:
             result.append(base)
         else:
             seen[base] += 1
-            result.append(f"{base}.{seen[base]}")
+            candidate = f"{base}.{seen[base]}"
+            while candidate in occupied:
+                seen[base] += 1
+                candidate = f"{base}.{seen[base]}"
+            occupied.add(candidate)
+            result.append(candidate)
     return result
 
 

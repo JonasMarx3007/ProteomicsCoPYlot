@@ -84,6 +84,7 @@ def tool_auth_status_route() -> ToolAuthStatusResponse:
 
 from app.services.session_context import (
     session_cookie_name,
+    session_cookie_path,
     session_cookie_secure,
 )
 
@@ -101,7 +102,7 @@ def _set_rotated_session_cookie(response: Response, session_id: str) -> None:
         httponly=True,
         secure=session_cookie_secure(),
         samesite="lax",
-        path="/",
+        path=session_cookie_path(),
     )
 
 

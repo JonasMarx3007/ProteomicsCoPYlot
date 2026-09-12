@@ -217,7 +217,7 @@ def _perseus_frame() -> pd.DataFrame:
     )
 
 
-def test_numerical_imputation_uses_perseus_shift_and_width_per_sample() -> None:
+def test_numerical_imputation_uses_sample_sd_shift_and_width_per_sample() -> None:
     diagnostics = impute_values_with_diagnostics(
         _perseus_frame(),
         ["s1", "s2"],
@@ -226,9 +226,10 @@ def test_numerical_imputation_uses_perseus_shift_and_width_per_sample() -> None:
         width=0.3,
         seed=1337,
     )
-    assert diagnostics.draw_components == [(9.2, 0.3, 2), (13.2, 0.3, 2)], (
-        "the default draw is per sample, so each column contributes its own "
-        "centre of mean - 1.8 sd and width 0.3 sd"
+    np.testing.assert_allclose(
+        diagnostics.draw_components,
+        [(11 - 1.8 * np.sqrt(2), 0.3 * np.sqrt(2), 2),
+         (15 - 1.8 * np.sqrt(2), 0.3 * np.sqrt(2), 2)],
     )
     assert diagnostics.missing_before == 4
     assert diagnostics.missing_after == 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.html_security import GENERATED_HTML_META
+from app.services.functions import comparison_contrast
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -49,6 +50,8 @@ from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame
 from app.services.functions import (
     constant_within_group,
+    _phosprot_values_are_centred,
+    intensity_unit_label,
     anova_posthoc_data,
     analysis_data_source,
     extract_sample_id as _extract_id_or_number,
@@ -132,6 +135,11 @@ def _bh_adjust(pvalues: np.ndarray) -> np.ndarray:
     pvalues = np.asarray(pvalues, dtype=float)
     if pvalues.size == 0:
         return pvalues
+    finite = np.isfinite(pvalues)
+    if not finite.all():
+        result = np.full(pvalues.shape, np.nan)
+        result[finite] = _bh_adjust(pvalues[finite])
+        return result
     order = np.argsort(pvalues)
     ranked = pvalues[order]
     adjusted = np.empty_like(ranked)
@@ -182,6 +190,7 @@ def _satterthwaite(components: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         dof = se_squared**2 / denominator
+    dof = np.where(se_squared == 0, 1.0, dof)
     return np.sqrt(se_squared), dof
 
 
@@ -341,6 +350,8 @@ def _volcano_dataframe(
     frame_override: pd.DataFrame | None = None,
     metadata_override: pd.DataFrame | None = None,
 ) -> tuple[StatsSource, str, pd.DataFrame, list[str]]:
+    if condition1 == condition2:
+        raise ValueError("Please select two different conditions.")
     if frame_override is None and metadata_override is None:
         source_used, frame, metadata, warnings = _stats_source(
             kind, data_source=data_source
@@ -483,10 +494,10 @@ def _volcano_dataframe(
             t_stat = log2fc / se
         pvals = 2.0 * t.sf(np.abs(t_stat), dof)
 
-    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
     adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
     significance[(adj_pvals < p_value_threshold) & (log2fc > log2fc_threshold)] = "Upregulated"
     significance[(adj_pvals < p_value_threshold) & (log2fc < -log2fc_threshold)] = "Downregulated"
 
@@ -497,8 +508,7 @@ def _volcano_dataframe(
     result["correction"] = _correction_label(use_uncorrected)
     result["neg_log10_adj_pval"] = _safe_neg_log10(adj_pvals if not use_uncorrected else pvals)
     result["significance"] = significance
-    # Marks rows whose significance comes from absent within-group variation
-    # rather than effect size. The p-value is unchanged and correct.
+    # A variance warning is independent of whether the test has a finite p-value.
     result["zero_variance"] = constant_within_group(arr_x) | constant_within_group(arr_y)
     if paired:
         result["n_pairs"] = n_diff.astype(int)
@@ -520,7 +530,7 @@ def _volcano_response(
         upregulatedCount=int((df["significance"] == "Upregulated").sum()),
         downregulatedCount=int((df["significance"] == "Downregulated").sum()),
         notSignificantCount=int((df["significance"] == "Not significant").sum()),
-        rows=df.where(pd.notna(df), None).to_dict(orient="records"),
+        rows=df.astype(object).where(pd.notna(df), None).to_dict(orient="records"),
         warnings=warnings,
     )
 
@@ -567,6 +577,8 @@ def _volcano_figure(
     log2fc_threshold: float,
     use_uncorrected: bool,
     highlight_terms: list[str],
+    condition1_control: str | None = None,
+    condition2_control: str | None = None,
 ):
     go = _get_plotly()
     color_mapping = {
@@ -668,8 +680,9 @@ def _volcano_figure(
         line=dict(color="black", dash="dash"),
     )
     fig.update_layout(
-        title=f"{condition1} vs {condition2}",
-        xaxis_title=f"log2 fold change ({condition2} - {condition1})",
+        title=(f"{condition1} vs {condition2} (controls: {condition1_control} vs {condition2_control})"
+               if condition1_control and condition2_control else f"{condition1} vs {condition2}"),
+        xaxis_title=f"log2 fold change ({comparison_contrast(condition1, condition2, condition1_control, condition2_control)})",
         yaxis_title="-log10 adj. p-value" if not use_uncorrected else "-log10 p-value",
         hovermode="closest",
         margin=dict(l=40, r=20, t=50, b=40),
@@ -719,6 +732,8 @@ def volcano_control_html(payload: VolcanoControlRequest, advanced: dict | None =
     )
     fig = _volcano_figure(
         df,
+        condition1_control=payload.condition1Control,
+        condition2_control=payload.condition2Control,
         label_column=label_column,
         condition1=payload.condition1,
         condition2=payload.condition2,
@@ -938,7 +953,10 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
                 "pairwise comparison test the same thing.",
             ]
         elif post_hoc_df.empty:
-            warnings = [*warnings, "No rows passed the ANOVA threshold, so Tukey HSD was not run."]
+            if (anova_df["adj_pval"] < payload.pValueThreshold).any():
+                warnings = [*warnings, "Rows passed the ANOVA threshold, but no usable Tukey HSD comparisons could be calculated."]
+            else:
+                warnings = [*warnings, "No rows passed the ANOVA threshold, so Tukey HSD was not run."]
 
     return AnovaResultResponse(
         kind=payload.kind,
@@ -1901,7 +1919,7 @@ def pathway_heatmap_png(
         heatmap_data = heatmap_data.apply(z_transform, axis=1)
         color_label = "Z-score"
     else:
-        color_label = "log2 Intensity"
+        color_label = intensity_unit_label(_phosprot_values_are_centred(kind))
 
     heatmap_data = heatmap_data.replace([np.inf, -np.inf], np.nan)
     if value_type == "z":
@@ -1954,7 +1972,7 @@ def pathway_heatmap_png(
     ax.set_yticks(np.arange(heatmap_data.shape[0]))
     ax.set_yticklabels(list(heatmap_data.index) if header else [""] * heatmap_data.shape[0])
     ax.set_title(
-        f"{pathway} ({'Z-transformed' if value_type == 'z' else 'log2 Intensities'}; "
+        f"{pathway} ({'Z-transformed' if value_type == 'z' else color_label}; "
         "median across mapped features)"
     )
     cbar = fig.colorbar(image, ax=ax)
@@ -2035,13 +2053,10 @@ def _simulation_dataframe(
     with np.errstate(divide="ignore", invalid="ignore"):
         t_stat = log2fc / se
     pvals = np.asarray(2.0 * t.sf(np.abs(t_stat), degrees_freedom), dtype=float)
-    zero_se = se == 0
-    pvals[zero_se & (log2fc == 0)] = 1.0
-    pvals[zero_se & (log2fc != 0)] = 0.0
-    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
     selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
     significance[
         (selected_pvals < payload.pValueThreshold)
         & (log2fc > payload.log2fcThreshold)
@@ -2087,7 +2102,7 @@ def run_simulation(payload: SimulationRequest) -> SimulationResultResponse:
         upregulatedCount=int((frame["significance"] == "Upregulated").sum()),
         downregulatedCount=int((frame["significance"] == "Downregulated").sum()),
         notSignificantCount=int((frame["significance"] == "Not significant").sum()),
-        rows=frame.where(pd.notna(frame), None).to_dict(orient="records"),
+        rows=frame.astype(object).where(pd.notna(frame), None).to_dict(orient="records"),
         warnings=warnings,
     )
 

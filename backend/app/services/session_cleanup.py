@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import contextmanager
 from threading import RLock
 
 from app.services.annotation_store import reset_all_annotations
@@ -10,7 +11,7 @@ from app.services.cloud_ai_consent import clear_cloud_ai_consent
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.peptide_metadata_store import clear_peptide_metadata
-from app.services.session_context import reset_session_id, set_session_id
+from app.services.session_context import get_session_id, reset_session_id, rotate_session_id, set_session_id
 from app.services.tool_access import clear_tool_session_auth
 from app.services.viewer_portal import clear_viewer_session_auth
 
@@ -44,6 +45,23 @@ def _discard_session(session_id: str) -> None:
         clear_peptide_metadata()
     finally:
         reset_session_id(token)
+
+
+@contextmanager
+def authenticated_session_rotation():
+    previous = get_session_id()
+    replacement = rotate_session_id()
+    with _LOCK:
+        _LAST_SEEN.pop(previous, None)
+    _discard_session(previous)
+    try:
+        yield replacement
+        touch_and_cleanup_sessions(replacement)
+    except BaseException:
+        with _LOCK:
+            _LAST_SEEN.pop(replacement, None)
+        _discard_session(replacement)
+        raise
 
 
 def expire_idle_session(session_id: str) -> bool:

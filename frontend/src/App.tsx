@@ -25,9 +25,7 @@ import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
 import { downloadRestoreState } from "./lib/api";
 import { unsavedAnalysis, warnBeforeUnload } from "./lib/unsavedAnalysis";
 import {
-  applyCopylotLocalStorageState,
   applyCopylotSessionStorageState,
-  captureCopylotLocalStorageState,
   captureCopylotSessionStorageState,
 } from "./lib/restoreUiState";
 import {
@@ -344,6 +342,8 @@ export default function App() {
   const [qcWorkflowScope, setQcWorkflowScope] = useState<string>("");
   const [qcBoxplotMode, setQcBoxplotMode] = useState<string>("");
   const [qcPcaContextMode, setQcPcaContextMode] = useState<string>("");
+  const [qcAbundanceContextMode, setQcAbundanceContextMode] = useState<string>("");
+  const [qcCoverageContextMode, setQcCoverageContextMode] = useState<string>("");
   const [completenessContextMode, setCompletenessContextMode] = useState<string>("");
   const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
   const [statsAnovaContextMode, setStatsAnovaContextMode] = useState<string>("");
@@ -869,6 +869,12 @@ export default function App() {
     if (activeSection === "qc" && activeQcTab === "pca") {
       return qcPcaContextMode.trim();
     }
+    if (activeSection === "qc" && activeQcTab === "abundance") {
+      return qcAbundanceContextMode.trim();
+    }
+    if (activeSection === "qc" && activeQcTab === "coverage") {
+      return qcCoverageContextMode.trim();
+    }
     if (
       activeSection === "peptide" &&
       (
@@ -918,6 +924,8 @@ export default function App() {
     completenessContextMode,
     qcBoxplotMode,
     qcPcaContextMode,
+    qcAbundanceContextMode,
+    qcCoverageContextMode,
     peptideContextMode,
     singleProteinBoxplotContextMode,
     comparisonPearsonContextMode,
@@ -1158,7 +1166,6 @@ export default function App() {
         enabled: advancedModeEnabled,
         settingsByKey: advancedByKey,
       },
-      localStorageState: captureCopylotLocalStorageState(),
       sessionStorageState: captureCopylotSessionStorageState(),
     };
   }
@@ -1190,16 +1197,10 @@ export default function App() {
     const advancedPlotState = payload?.advancedPlot;
     const localStorageState = payload?.localStorageState ?? payload?.reportLocalStorage;
     const sessionStorageState = payload?.sessionStorageState;
-    applyCopylotLocalStorageState(
-      localStorageState && typeof localStorageState === "object"
-        ? (localStorageState as Record<string, unknown>)
-        : {}
-    );
-    applyCopylotSessionStorageState(
-      sessionStorageState && typeof sessionStorageState === "object"
-        ? (sessionStorageState as Record<string, unknown>)
-        : {}
-    );
+    applyCopylotSessionStorageState({
+      ...(localStorageState && typeof localStorageState === "object" ? localStorageState : {}),
+      ...(sessionStorageState && typeof sessionStorageState === "object" ? sessionStorageState : {}),
+    });
     const restoredAdvancedMode = getAdvancedPlotMode();
     const restoredAdvancedSettings = getAdvancedPlotSettingsByKey();
     setAdvancedModeEnabled(restoredAdvancedMode);
@@ -1400,6 +1401,8 @@ export default function App() {
           onWorkflowScopeChange={setQcWorkflowScope}
           onBoxplotModeChange={setQcBoxplotMode}
           onPcaContextModeChange={setQcPcaContextMode}
+          onAbundanceContextModeChange={setQcAbundanceContextMode}
+          onCoverageContextModeChange={setQcCoverageContextMode}
         />
       );
     }

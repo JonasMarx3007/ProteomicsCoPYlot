@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Any, Callable, TypeVar
 
 from app.services.session_context import get_session_id
+from app.services.plot_export import plot_output_format
 
 T = TypeVar("T")
 
@@ -137,7 +138,7 @@ def cached_call(
     """
     version = runtime_cache_version()
     try:
-        key = (namespace, version, get_session_id(), _freeze(key_data))
+        key = (namespace, version, get_session_id(), plot_output_format.get(), _freeze(key_data))
     except UnfreezableArgument:
         # No exact key is possible, so a cache hit could serve the wrong result.
         # Recomputing is slower and correct; guessing is faster and wrong.

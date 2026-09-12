@@ -41,6 +41,18 @@ def _preview(df: pd.DataFrame, rows: int = 20) -> list[dict[str, object]]:
     return df.head(rows).where(pd.notna(df.head(rows)), None).to_dict(orient="records")
 
 
+def original_intensity_frame(raw: pd.DataFrame, annotation) -> pd.DataFrame:
+    """Uploaded intensities, without normalization, filtering or imputation."""
+    if annotation is None:
+        return raw.copy()
+    source = annotation.source_data.copy()
+    if annotation.is_log2_transformed:
+        columns = [c for c in annotation.metadata["sample"] if c in source.columns]
+        if columns:
+            return inverse_log2_transform_data(source, columns).reindex(columns=source.columns)
+    return source
+
+
 def _get_current_frame(kind: AnnotationKind) -> pd.DataFrame:
     current = get_current_dataset(kind)
     if current is None or not hasattr(current, "frame"):
@@ -161,7 +173,7 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         bins=30,
     )
     overall_hist = histogram(diagnostics.overall_observed, bins=30)
-    fit_curve = normal_fit_curve(diagnostics.overall_observed, points=200)
+    fit_curve = normal_fit_curve(diagnostics.overall_observed, points=200, ddof=1)
     after_hist = comparative_histogram(
         diagnostics.after_non_imputed,
         diagnostics.after_imputed,
@@ -184,9 +196,9 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
         sampleColumns=sample_columns,
         missingBefore=diagnostics.missing_before,
         missingAfter=diagnostics.missing_after,
-        mean=diagnostics.mean,
-        std=diagnostics.std,
-        quantile=diagnostics.quantile,
+        mean=diagnostics.mean if np.isfinite(diagnostics.mean) else None,
+        std=diagnostics.std if np.isfinite(diagnostics.std) else None,
+        quantile=diagnostics.quantile if np.isfinite(diagnostics.quantile) else None,
         qValue=payload.qValue,
         adjustStd=payload.adjustStd,
         downShift=payload.downShift,
@@ -215,8 +227,13 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
             )
             for start, end, left, right in after_hist
         ],
-        warnings=warnings,
-        preview=_preview(diagnostics.imputed_data, rows=20),
+        warnings=warnings + ([
+            "Missing values left unchanged: fewer than two observations or no usable spread in sample(s): "
+            + ", ".join(diagnostics.skipped_samples)
+        ] if diagnostics.skipped_samples else []),
+        preview=diagnostics.imputed_data.head(20).astype(object).where(
+            diagnostics.imputed_data.head(20).notna(), None
+        ).to_dict(orient="records"),
     )
 
 

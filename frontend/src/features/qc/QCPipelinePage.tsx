@@ -36,6 +36,8 @@ type Props = {
   onWorkflowScopeChange?: (workflow: string) => void;
   onBoxplotModeChange?: (mode: string) => void;
   onPcaContextModeChange?: (mode: string) => void;
+  onAbundanceContextModeChange?: (mode: string) => void;
+  onCoverageContextModeChange?: (mode: string) => void;
 };
 
 type QcTableRequest = {
@@ -43,7 +45,7 @@ type QcTableRequest = {
   params?: Record<string, string | number | boolean>;
 };
 
-type QcKind = AnnotationKind | "peptide";
+type QcKind = AnnotationKind | "peptide" | "precursor";
 type AdvancedPlotState = Partial<Record<QcTab, AdvancedPlotSettings>>;
 
 function isAnnotationKind(kind: QcKind): kind is AnnotationKind {
@@ -53,7 +55,7 @@ function isAnnotationKind(kind: QcKind): kind is AnnotationKind {
 function workflowScopeFromKind(kind: QcKind): string {
   if (kind === "phospho") return "phosphosite";
   if (kind === "phosprot") return "phosphoprotein";
-  if (kind === "peptide") return "peptide";
+  if (kind === "peptide" || kind === "precursor") return "peptide";
   return "protein";
 }
 
@@ -188,6 +190,8 @@ export default function QCPipelinePage({
   onWorkflowScopeChange,
   onBoxplotModeChange,
   onPcaContextModeChange,
+  onAbundanceContextModeChange,
+  onCoverageContextModeChange,
 }: Props) {
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("qc.pipeline.v1", {}),
@@ -205,7 +209,7 @@ export default function QCPipelinePage({
     : (persisted.advanced as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
-    if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide") return value;
+    if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
     return "protein";
   });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
@@ -365,11 +369,27 @@ export default function QCPipelinePage({
     });
   }, [kind, availableKinds, coverage, hist, box, cv, pca, abundance, correlation]);
 
+  useEffect(() => {
+    if ((kind === "peptide" || kind === "precursor") && datasets?.peptide) {
+      saveQcReportSettings("peptide", { coverage });
+    }
+  }, [kind, datasets?.peptide, coverage]);
+
+  useEffect(() => {
+    onAbundanceContextModeChange?.(activeTab === "abundance" ? `condition=${encodeURIComponent(abundance.condition)}` : "");
+  }, [activeTab, abundance.condition, onAbundanceContextModeChange]);
+
+  useEffect(() => {
+    onCoverageContextModeChange?.(activeTab === "coverage"
+      ? `level=${kind === "precursor" ? "precursor" : "peptide"}|quantityColumn=${encodeURIComponent(coverage.quantityColumn)}` : "");
+  }, [activeTab, kind, coverage.quantityColumn, onCoverageContextModeChange]);
+
   const activeKindOptions = useMemo<Array<{ value: QcKind; label: string }>>(() => {
     if (activeTab !== "coverage") return kindOptions;
     const options: Array<{ value: QcKind; label: string }> = [...kindOptions];
     if (datasets?.peptide) {
       options.push({ value: "peptide", label: "Peptide" });
+      options.push({ value: "precursor", label: "Precursor" });
     }
     return options;
   }, [activeTab, kindOptions, datasets]);
@@ -385,7 +405,7 @@ export default function QCPipelinePage({
   }, [activeKindOptions, kind]);
 
   useEffect(() => {
-    if (kind !== "peptide" || !datasets?.peptide) {
+    if ((kind !== "peptide" && kind !== "precursor") || !datasets?.peptide) {
       setPeptideQuantityColumns([]);
       setPeptideQuantityRequiresSelection(false);
       setPeptideQuantityError(null);
@@ -449,9 +469,10 @@ export default function QCPipelinePage({
       `plotDim=${plotDim || "2D"}`,
       `type=${type || "Normal"}`,
       `dataSource=${pca.dataSource}`,
+      `scaling=${pca.scaling}`,
     ];
     onPcaContextModeChange(parts.join("|"));
-  }, [activeTab, pca.dataSource, pca.method, pca.plotDim, pca.type, onPcaContextModeChange]);
+  }, [activeTab, pca.dataSource, pca.method, pca.plotDim, pca.type, pca.scaling, onPcaContextModeChange]);
 
   const [pcaFeatures, setPcaFeatures] = useState<QcPcaFeatureSummary | null>(null);
 
@@ -748,7 +769,7 @@ export default function QCPipelinePage({
   const plotView = useMemo(() => {
     if (!activeKindOptions.some((option) => option.value === kind)) return null;
     if (activeTab === "coverage") {
-      if (kind === "peptide" && (!coverage.quantityColumn || peptideQuantityError)) return null;
+      if ((kind === "peptide" || kind === "precursor") && (!coverage.quantityColumn || peptideQuantityError)) return null;
       return {
         mode: "image" as const,
         url: buildPlotUrl(`/api/plots/qc/${kind}/coverage.png`, withAdvancedParams(coverage, activeAdvancedParam)),
@@ -901,7 +922,7 @@ export default function QCPipelinePage({
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Options</h3>
         <div className="mt-4">{renderOptions()}</div>
-        {kind === "peptide" && peptideQuantityError ? (
+        {(kind === "peptide" || kind === "precursor") && peptideQuantityError ? (
           <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {peptideQuantityError}
           </div>
@@ -1039,7 +1060,7 @@ export default function QCPipelinePage({
             <Checkbox key="text" label="Toggle Text" checked={coverage.text} onChange={(v) => setCoverage({ ...coverage, text: v })} />,
           ]}
           inputs={[
-            ...(kind === "peptide"
+            ...((kind === "peptide" || kind === "precursor")
               ? [
                   <SelectField
                     key="quantity-column"

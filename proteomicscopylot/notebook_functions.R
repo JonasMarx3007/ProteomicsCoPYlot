@@ -908,6 +908,10 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
   incomplete_values <- as.vector(values[rowSums(missing_mask) > 0, , drop = FALSE])
   incomplete_values <- incomplete_values[is.finite(incomplete_values)]
 
+  if (ret %in% c(1,2,3) && !any(is.finite(values))) {
+    stop("No observed values available to plot an imputation distribution.", call. = FALSE)
+  }
+
   if (ret == 1) {
     hist(
       complete_values,
@@ -940,6 +944,10 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
   mean_value <- mean(values, na.rm = TRUE)
   sd_value <- sd(values, na.rm = TRUE)
   quantile_value <- quantile(values, q, na.rm = TRUE)
+  observed <- values[!is.na(values)]
+  if (!sample_wise && (length(observed) < 2 || !is.finite(sd_value) || sd_value <= 0 || length(unique(observed)) == 1)) {
+    stop("Global imputation requires at least two observed values with nonzero spread.", call. = FALSE)
+  }
 
   if (ret == 2) {
     finite_values <- values[is.finite(values)]
@@ -953,13 +961,10 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
       ylab = "Density",
       main = "Overall data distribution and norm fit"
     )
-    curve(
-      dnorm(x, mean = mean_value, sd = sd_value),
-      add = TRUE,
-      col = "red",
-      lwd = 2
-    )
-    legend("topright", "Normal fit", col = "red", lwd = 2, bty = "n")
+    if (is.finite(sd_value) && sd_value > 0) {
+      curve(dnorm(x, mean = mean_value, sd = sd_value), add = TRUE, col = "red", lwd = 2)
+      legend("topright", "Normal fit", col = "red", lwd = 2, bty = "n")
+    }
     return(.plot_result())
   }
 
@@ -969,7 +974,13 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
       if (!number_missing) next
 
       if (sample_wise) {
+        observed_sample <- values[, column_index]
+        observed_sample <- observed_sample[!is.na(observed_sample)]
         sample_sd <- sd(values[, column_index], na.rm = TRUE)
+        if (length(observed_sample) < 2 || !is.finite(sample_sd) || sample_sd <= 0 || length(unique(observed_sample)) == 1) {
+          warning(paste0("Missing values left unchanged: fewer than two observations or no usable spread in sample: ", samples[column_index]), call. = FALSE)
+          next
+        }
         if (method == "numerical") {
           draw_center <- mean(values[, column_index], na.rm = TRUE) - down_shift * sample_sd
           draw_sd <- sample_sd * width
@@ -1030,7 +1041,7 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
     return(.plot_result())
   }
 
-  output[samples] <- values
+  output[samples] <- as.data.frame(values)
   output
 }
 
@@ -1273,6 +1284,25 @@ coverage_plot_summary <- function(
   .plot_result()
 }
 
+.peptide_sample_map <- function(columns, samples) {
+  columns <- as.character(columns)
+  samples <- as.character(samples)
+  exact <- intersect(columns, samples)
+  mapping <- setNames(exact, exact)
+  remaining_columns <- setdiff(columns, exact)
+  remaining_samples <- setdiff(samples, columns)
+  if (length(remaining_columns) && length(remaining_samples)) {
+    by_id <- sample_id_map(remaining_columns)
+    sample_id_map(remaining_samples)
+    for (sample in remaining_samples) {
+      column <- by_id[[extract_sample_id(sample)]]
+      if (!is.null(column)) mapping[column] <- sample
+    }
+  }
+  if (length(samples) && !length(mapping)) stop("Peptide metadata does not match peptide sample columns.", call.=FALSE)
+  mapping
+}
+
 coverage_plot_pep <- function(
     data2_path,
     meta,
@@ -1282,8 +1312,12 @@ coverage_plot_pep <- function(
     plot_colors = NULL,
     width = 10,
     height = 6,
-    dpi = 100
+    dpi = 100,
+    quantity_column = "Precursor.Quantity",
+    level = "peptide"
 ) {
+  if (!level %in% c("peptide", "precursor")) stop("Coverage level must be peptide or precursor.", call.=FALSE)
+  feature_column <- if (level == "precursor") "Precursor.Id" else "Stripped.Sequence"
   data <- if (is.data.frame(data2_path)) {
     data2_path
   } else {
@@ -1294,28 +1328,24 @@ coverage_plot_pep <- function(
   if ("File.Name" %in% names(data)) {
     wide_data <- .pivot_wide(
       data,
-      "Stripped.Sequence",
+      feature_column,
       "File.Name",
-      "Precursor.Quantity",
+      quantity_column,
       max
-    )
-    names(wide_data) <- vapply(names(wide_data), extract_id_or_number, character(1))
-    id_map <- setNames(meta$new_sample, meta$id)
-    names(wide_data) <- ifelse(
-      names(wide_data) %in% names(id_map),
-      id_map[names(wide_data)],
-      names(wide_data)
     )
     peptide_count <- nrow(wide_data)
   } else {
-    wide_data <- .rename_samples(data, meta)
-    peptide_count <- if ("Stripped.Sequence" %in% names(data)) {
-      length(unique(data$Stripped.Sequence))
+    wide_data <- data
+    peptide_count <- if (feature_column %in% names(data)) {
+      length(unique(data[[feature_column]]))
     } else {
       nrow(data)
     }
   }
 
+  mapping <- .peptide_sample_map(setdiff(names(wide_data), feature_column), meta$sample)
+  matched <- match(names(mapping), names(wide_data))
+  names(wide_data)[matched] <- meta$new_sample[match(unname(mapping), meta$sample)]
   samples <- intersect(meta$new_sample, names(wide_data))
   counts <- colSums(
     !is.na(wide_data[, samples, drop = FALSE]) &
@@ -1345,8 +1375,8 @@ coverage_plot_pep <- function(
     ylim = c(0, max(counts, peptide_count) * 1.1),
     axes = FALSE,
     xlab = "Condition",
-    ylab = "Number of peptides",
-    main = if (header) "Peptides per sample" else ""
+    ylab = paste("Number of", paste0(level, "s")),
+    main = if (header) paste0(if (level == "precursor") "Precursors" else "Peptides", " per sample") else ""
   )
   axis(1, at = mids, labels = samples, las = 2, cex.axis = 0.7, tick = FALSE)
   axis(2, las = 1)
@@ -1929,6 +1959,9 @@ abundance_axis_label <- function(workflow, centered = FALSE) {
 
 abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, width_cm=20, height_cm=10, dpi=300, legend=TRUE, header=TRUE, data_scale="log2", centered=FALSE) {
   data <- .prepare_intensity_data(data, meta$sample, data_scale)
+  if (tolower(trimws(data_scale)) == "log2") {
+    data <- inverse_log2_transform_data(data, meta)
+  }
   key_col <- .workflow_col(workflow)
   conditions <- unique(meta$condition)
   colors <- .plot_colors(length(conditions), plot_colors)
@@ -1939,8 +1972,9 @@ abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, wid
     sort(values[is.finite(values)], decreasing = TRUE)
   })
 
-  x_max <- max(lengths(ranked_values))
-  y_range <- range(unlist(ranked_values), na.rm = TRUE)
+  x_max <- max(c(1L, lengths(ranked_values)))
+  observed <- unlist(ranked_values)
+  y_range <- if (length(observed)) range(observed) else c(0, 1)
 
   .set_notebook_plot_size(width_cm, height_cm)
   old_par <- .set_plot_margins(legend = legend)
@@ -1997,6 +2031,9 @@ interactive_abundance_plot <- function(
   feature_col <- .workflow_col(workflow)
   sample_columns <- meta$sample[meta$condition == condition]
   data <- .prepare_intensity_data(data, sample_columns, data_scale)
+  if (tolower(trimws(data_scale)) == "log2") {
+    data <- inverse_log2_transform_data(data, meta[meta$condition == condition, , drop = FALSE])
+  }
   condition_means <- log10(
     rowMeans(.numeric_matrix(data, sample_columns), na.rm = TRUE) + 1
   )
@@ -2007,6 +2044,15 @@ interactive_abundance_plot <- function(
     stringsAsFactors = FALSE
   )
   plot_data <- plot_data[is.finite(plot_data$log10Intensity), , drop = FALSE]
+
+  if (!nrow(plot_data)) {
+    return(plotly::layout(
+      plotly::plot_ly(x = numeric(), y = numeric(), type = "scatter", mode = "markers"),
+      title = paste0("Abundance plot - ", condition, " (", workflow, ")"),
+      xaxis = list(title = paste(workflow, "Rank")),
+      yaxis = list(title = abundance_axis_label(workflow, centered))
+    ))
+  }
 
   if (workflow == "Phosphoprotein") {
     plot_data$site_num <- if ("site_num" %in% names(data)) {
@@ -2101,15 +2147,23 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = id)
   renamed_data <- .rename_samples(data, meta)
-  correlation_matrix <- cor(
-    .numeric_matrix(renamed_data, meta$new_sample),
+  values <- .numeric_matrix(renamed_data, meta$new_sample)
+  values <- values[, colSums(!is.na(values)) > 0, drop=FALSE]
+  if (ncol(values) < 2) stop("At least two non-empty sample columns are required for correlation plot.", call.=FALSE)
+  correlation_matrix <- suppressWarnings(cor(
+    values,
     use = "pairwise.complete.obs",
     method = "pearson"
-  )
-
-  ordered_indices <- hclust(
-    as.dist(1 - correlation_matrix),
-    method = "complete"
+  ))
+  invalid_samples <- vapply(seq_len(ncol(values)), function(i) {
+    observed <- values[, i][is.finite(values[, i])]
+    length(observed) < 2 || length(unique(observed)) < 2
+  }, logical(1))
+  correlation_matrix[invalid_samples, ] <- NA_real_
+  correlation_matrix[, invalid_samples] <- NA_real_
+  incomplete <- any(!is.finite(correlation_matrix))
+  ordered_indices <- if (incomplete) seq_len(ncol(values)) else hclust(
+    as.dist(1 - correlation_matrix), method = "complete"
   )$order
   ordered_correlation <- correlation_matrix[
     ordered_indices,
@@ -2117,7 +2171,9 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     drop = FALSE
   ]
 
-  color_range <- if (full_range) c(-1, 1) else range(ordered_correlation)
+  finite <- ordered_correlation[is.finite(ordered_correlation)]
+  color_range <- if (full_range || !length(finite)) c(-1, 1) else range(finite)
+  if (diff(color_range) == 0) color_range <- c(-1, 1)
   colors <- colorRampPalette(c("#3b4cc0", "white", "#b40426"))(100)
 
   .set_notebook_plot_size(width, height, units = "in")
@@ -2140,6 +2196,9 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     )
     axis(1, seq_len(ncol(ordered_correlation)), colnames(ordered_correlation), las = 2, cex.axis = 0.65)
     axis(2, seq_len(nrow(ordered_correlation)), rev(rownames(ordered_correlation)), las = 2, cex.axis = 0.65)
+    missing <- which(!is.finite(ordered_correlation), arr.ind=TRUE)
+    if (nrow(missing)) text(missing[,2], nrow(ordered_correlation) - missing[,1] + 1, "NA", cex=0.65, col="grey40")
+    if (incomplete) mtext("NA: unavailable; clustering skipped (metadata order)", side=1, line=6, cex=0.7)
     box()
 
     par(mar = c(8, 0.2, 2, 2))
@@ -2166,6 +2225,10 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     for (i in seq_len(n)) {
       for (j in seq_len(n)) {
         correlation <- ordered_correlation[i, j]
+        if (!is.finite(correlation)) {
+          text(j - 0.5, n - i + 0.5, "NA", cex=0.65, col="grey40")
+          next
+        }
         angle <- if (correlation > 0) pi / 4 else -pi / 4
         theta <- seq(0, 2 * pi, length.out = 80)
         x <- 0.45 * cos(theta)
@@ -2185,6 +2248,7 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     stop("method must be 'Matrix' or 'Ellipse'", call. = FALSE)
   }
 
+  if (incomplete && tolower(method) == "ellipse") mtext("NA: unavailable; clustering skipped (metadata order)", side=1, line=6, cex=0.7)
   .plot_result()
 }
 
@@ -2308,15 +2372,9 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
       }
       effect <- log2fc
     }
-    # Zero standard error keeps its meaning: a non-zero effect is infinitely
-    # significant, an exactly zero one is not significant at all.
-    statistic <- ifelse(
-      is.finite(standard_error) & standard_error != 0,
-      effect / standard_error,
-      ifelse(effect > 0, Inf, ifelse(effect < 0, -Inf, NA_real_))
-    )
+    # Match SciPy's zero-SE arithmetic; 0/0 remains unavailable.
+    statistic <- effect / standard_error
     pvalues <- 2 * stats::pt(abs(statistic), degrees, lower.tail = FALSE)
-    pvalues[!is.finite(pvalues)] <- 1
   } else {
   pvalues <- vapply(seq_len(nrow(filtered_data)), function(index) {
     values1 <- x_data[index, ]
@@ -2334,11 +2392,7 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
       pooled_var <- ((n1 - 1) * var(values1) + (n2 - 1) * var(values2)) / (n1 + n2 - 2)
       standard_error <- sqrt(pooled_var * (1 / n1 + 1 / n2))
       mean_difference <- mean(values2) - mean(values1)
-      if (!is.finite(standard_error) || standard_error == 0) {
-        if (mean_difference == 0) 1 else 0
-      } else {
-        2 * pt(abs(mean_difference / standard_error), n1 + n2 - 2, lower.tail = FALSE)
-      }
+      2 * pt(abs(mean_difference / standard_error), n1 + n2 - 2, lower.tail = FALSE)
     } else {
       complete <- is.finite(values1) & is.finite(values2)
       pair_differences <- values2[complete] - values1[complete]
@@ -2347,25 +2401,21 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
       mean_difference <- mean(pair_differences)
       difference_variance <- var(pair_differences)
       standard_error <- sqrt(difference_variance / length(pair_differences))
-      if (difference_variance == 0) {
-        if (mean_difference == 0) 1 else 0
-      } else {
-        pvalue <- 2 * pt(abs(mean_difference / standard_error),
-                         length(pair_differences) - 1, lower.tail = FALSE)
-        if (is.finite(pvalue)) pvalue else 1
-      }
+      2 * pt(abs(mean_difference / standard_error),
+             length(pair_differences) - 1, lower.tail = FALSE)
     }
   }, numeric(1))
   }
 
-  adjusted_pvalues <- if (uncorrected) pvalues else p.adjust(pvalues, "BH")
+  adjusted_pvalues <- pvalues
+  finite <- is.finite(pvalues)
+  if (!uncorrected) adjusted_pvalues[finite] <- p.adjust(pvalues[finite], "BH")
   output_columns <- c(label_col, extras[extras %in% names(filtered_data)])
   output <- filtered_data[, output_columns, drop = FALSE]
   output$log2FC <- log2fc
   output$pval <- pvalues
   output$adj_pval <- adjusted_pvalues
-  # Marks rows whose significance comes from absent within-group variation rather
-  # than effect size. The p-value is unchanged and correct.
+  # A variance warning is independent of whether the test has a finite p-value.
   output$zero_variance <- constant_within_group(x_data) | constant_within_group(y_data)
   if (is_paired) output$n_pairs <- as.integer(n_pairs)
   output
@@ -2403,6 +2453,9 @@ volcano_data_f <- function(
     control1_columns = NULL,
     control2_columns = NULL
 ) {
+  if (identical(condition1, condition2)) {
+    stop("Please select two different conditions.", call. = FALSE)
+  }
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
   label_col <- .resolve_volcano_label_column(data, workflow, label_column)
@@ -2434,7 +2487,8 @@ volcano_data_f <- function(
       "Not significant"
     )
   )
-  output$neg_log10_adj_pval <- -log10(output$adj_pval)
+  output$significance[!is.finite(output$pval)] <- "Unavailable"
+  output$neg_log10_adj_pval <- -log10(pmax(output$adj_pval, 1e-300))
   output
 }
 
@@ -2915,7 +2969,9 @@ variance_model <- function(value) {
       components
     )
   )
-  list(se = sqrt(se_squared), dof = se_squared^2 / denominator)
+  degrees <- se_squared^2 / denominator
+  degrees[is.finite(se_squared) & se_squared == 0] <- 1
+  list(se = sqrt(se_squared), dof = degrees)
 }
 
 # Shift each sample so all samples share a common median.
@@ -2958,7 +3014,7 @@ quantile_normalize <- function(values) {
     observed <- sort(matrix_values[, index][!is.na(matrix_values[, index])])
     if (!length(observed)) next
     positions <- if (length(observed) > 1) seq(0, 1, length.out = length(observed)) else 0
-    curves[[length(curves) + 1]] <- stats::approx(
+    curves[[length(curves) + 1]] <- if (length(observed) == 1) rep(observed, length(grid)) else stats::approx(
       positions, observed, xout = grid, rule = 2
     )$y
   }
@@ -2974,7 +3030,7 @@ quantile_normalize <- function(values) {
     if (!length(observed)) next
     ranks <- rank(observed, ties.method = "average")
     positions <- if (length(observed) > 1) (ranks - 1) / (length(observed) - 1) else 0
-    matrix_values[mask, index] <- stats::approx(
+    matrix_values[mask, index] <- if (length(reference) == 1) rep(reference, length(positions)) else stats::approx(
       grid, reference, xout = positions, rule = 2
     )$y
   }
@@ -3045,10 +3101,14 @@ normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
     linear <- if (is.null(linear_source)) {
       2^numeric_values
     } else {
-      .numeric_matrix(linear_source, present)
+      raw <- .numeric_matrix(linear_source, present)
+      raw[!is.na(raw) & raw == 0] <- NA_real_
+      raw
     }
     fit <- vsn::vsn2(as.matrix(linear), verbose = FALSE)
-    as.data.frame(vsn::predict(fit, newdata = as.matrix(linear)), check.names = FALSE)
+    predicted <- vsn::predict(fit, newdata = as.matrix(linear))
+    predicted[is.na(linear)] <- NA_real_
+    as.data.frame(predicted, check.names = FALSE)
   } else {
     stop("method must be one of: none, median, quantile, vsn.", call. = FALSE)
   }
@@ -3988,7 +4048,13 @@ load_go_db <- function() {
   list(data = heatmap_data, source_feature_count = source_counts)
 }
 
-proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsize=c(12,8), cmap_name="plasma", remove_empty=TRUE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="z", header=TRUE, id=TRUE) {
+proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsize=c(12,8), cmap_name="plasma", remove_empty=TRUE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="z", header=TRUE, id=TRUE, gene_column=NULL) {
+  if (is.null(gene_column)) {
+    candidates <- intersect(c("GeneNames", "Gene_group"), names(data))
+    if (length(candidates) != 1) stop("Specify gene_column when gene labels are missing or ambiguous.", call.=FALSE)
+    gene_column <- candidates[1]
+  }
+  if (!gene_column %in% names(data)) stop("Selected gene_column is missing.", call.=FALSE)
   pathway_row <- db[
     tolower(db$description) == tolower(pathway),
     ,
@@ -4008,7 +4074,7 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
 
   aggregated <- .aggregate_pathway_gene_values(
     data,
-    gene_column = "GeneNames",
+    gene_column = gene_column,
     sample_columns = as.character(meta_filtered$sample),
     pathway_genes = genes
   )
@@ -4032,7 +4098,7 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
   if (value_type == "z") {
     heatmap_data <- .row_zscore(heatmap_data)
     color_label <- "Z-score"
-    zlim <- c(-2.5, 2.5)
+    zlim <- NULL
   } else if (value_type == "log2") {
     color_label <- "log2 Intensity"
     zlim <- NULL
@@ -4130,7 +4196,9 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
   t_statistic <- log2fc / standard_error
   degrees_freedom <- n1 + n2 - 2
   pvals <- 2 * stats::pt(abs(t_statistic), degrees_freedom, lower.tail = FALSE)
-  adjusted_pvals <- p.adjust(pvals, method = "BH")
+  adjusted_pvals <- pvals
+  finite <- is.finite(pvals)
+  adjusted_pvals[finite] <- p.adjust(pvals[finite], method = "BH")
 
   significance <- ifelse(
     adjusted_pvals < in_pval & log2fc > in_log2fc,
@@ -4142,13 +4210,14 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
     )
   )
 
+  significance[!is.finite(pvals)] <- "Unavailable"
   volcano_data <- data.frame(
     Feature = filtered_data[[label_col]],
     log2FC = log2fc,
     pval = pvals,
     adj_pval = adjusted_pvals,
     significance = significance,
-    neg_log10_adj_pval = -log10(adjusted_pvals),
+    neg_log10_adj_pval = -log10(pmax(adjusted_pvals, 1e-300)),
     stringsAsFactors = FALSE
   )
   names(volcano_data)[1] <- label_col
@@ -4178,18 +4247,18 @@ convert_to_centered <- function(seq) {
   left <- substr(clean_sequence, 1, modified_position - 1)
   right <- substr(clean_sequence, modified_position + 1, nchar(clean_sequence))
 
-  left_tail <- if (nchar(left) >= 6) {
-    substr(left, nchar(left) - 5, nchar(left))
+  left_tail <- if (nchar(left) >= 7) {
+    substr(left, nchar(left) - 6, nchar(left))
   } else {
-    paste0(strrep("_", 6 - nchar(left)), left)
+    paste0(strrep("_", 7 - nchar(left)), left)
   }
-  right_tail <- if (nchar(right) >= 6) {
-    substr(right, 1, 6)
+  right_tail <- if (nchar(right) >= 7) {
+    substr(right, 1, 7)
   } else {
-    paste0(right, strrep("_", 6 - nchar(right)))
+    paste0(right, strrep("_", 7 - nchar(right)))
   }
 
-  paste0("_", left_tail, modified_residue, right_tail, "_")
+  paste0(left_tail, modified_residue, right_tail)
 }
 
 .ksea_format_volcano <- function(volcano_df) {
@@ -4650,11 +4719,22 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
   .plot_result()
 }
 
+.peptide_starts <- function(sequence, peptide) {
+  width <- nchar(peptide)
+  if (width == 0L || width > nchar(sequence)) return(integer(0))
+  starts <- seq_len(nchar(sequence) - width + 1L)
+  starts[substring(sequence, starts, starts + width - 1L) == peptide]
+}
+
+.protein_peptides <- function(data, protein) {
+  members <- strsplit(as.character(data$ProteinNames), ";", fixed = TRUE)
+  selected <- vapply(members, function(names) protein %in% trimws(names), logical(1))
+  unique(as.character(na.omit(data$Stripped.Sequence[selected])))
+}
+
 calculate_coverage <- function(data_path, db, protein) {
   data <- read_data(data_path)
-  peptides <- unique(data$Stripped.Sequence[
-    grepl(paste0("\\b", protein, "\\b"), data$ProteinNames)
-  ])
+  peptides <- .protein_peptides(data, protein)
   sequence <- db$V1[match(protein, db$name)]
   if (is.na(sequence)) {
     stop(
@@ -4666,9 +4746,7 @@ calculate_coverage <- function(data_path, db, protein) {
 
   coverage_mask <- rep(FALSE, nchar(sequence))
   for (peptide in peptides) {
-    starts <- gregexpr(peptide, sequence, fixed = TRUE)[[1]]
-    starts <- starts[starts > 0]
-    for (start in starts) {
+    for (start in .peptide_starts(sequence, peptide)) {
       coverage_mask[start:(start + nchar(peptide) - 1)] <- TRUE
     }
   }
@@ -4677,9 +4755,7 @@ calculate_coverage <- function(data_path, db, protein) {
 }
 
 vis_coverage <- function(data, db, protein, chunk_size=30) {
-  peptides <- unique(data$Stripped.Sequence[
-    grepl(paste0("\\b", protein, "\\b"), data$ProteinNames)
-  ])
+  peptides <- .protein_peptides(data, protein)
   sequence <- db$V1[match(protein, db$name)]
   if (is.na(sequence)) {
     return(paste0("No sequence found in the selected database for protein: ", protein))
@@ -4688,8 +4764,7 @@ vis_coverage <- function(data, db, protein, chunk_size=30) {
   sequence_length <- nchar(sequence)
   tracks <- strrep("-", sequence_length)
   for (peptide in peptides) {
-    starts <- gregexpr(peptide, sequence, fixed = TRUE)[[1]]
-    for (start in starts[starts > 0]) {
+    for (start in .peptide_starts(sequence, peptide)) {
       placed <- FALSE
       for (track_index in seq_along(tracks)) {
         region <- substr(
@@ -5031,45 +5106,33 @@ phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id
 }
 
 # PHOSPHO-SPECIFIC
-phossite_coverage_plot <- function(data, meta, id=FALSE, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange") {
-  meta <- .sample_meta(meta, id = id, newline = TRUE, zero_based = TRUE)
-  renamed_data <- .rename_samples(data, meta)
-  samples <- meta$new_sample
-
-  class_i <- colSums(!is.na(
-    renamed_data[renamed_data$PTM_localization >= 0.75, samples, drop = FALSE]
-  ))
-  not_class_i <- colSums(!is.na(
-    renamed_data[renamed_data$PTM_localization < 0.75, samples, drop = FALSE]
-  ))
-
-  .set_notebook_plot_size(width, height)
-  old_par <- .set_plot_margins(legend = legend, rotated_labels = TRUE)
-  on.exit(par(old_par), add = TRUE)
-
-  barplot(
-    rbind(class_i, not_class_i),
-    names.arg = samples,
-    las = 2,
-    cex.names = 0.65,
-    col = c(color_classI, color_notclassI),
-    border = NA,
-    xlab = "Sample",
-    ylab = if (header) "Number of phosphosites" else "Number",
-    main = if (header) "Phosphosites per sample" else ""
+.phossite_coverage_counts <- function(data, meta, is_log2=TRUE) {
+  values <- as.matrix(data[as.character(meta$sample)])
+  storage.mode(values) <- "numeric"
+  observed <- is.finite(values)
+  if (!is_log2) observed <- observed & values != 0
+  localization <- suppressWarnings(as.numeric(data$PTM_localization))
+  if (!length(localization)) localization <- rep(NA_real_, nrow(data))
+  localization[!is.finite(localization) | localization < 0 | localization > 1] <- NA_real_
+  rbind(
+    "Class I" = colSums(observed[which(localization >= .75), , drop=FALSE]),
+    "Not Class I" = colSums(observed[which(localization < .75), , drop=FALSE]),
+    "Unclassified" = colSums(observed[which(is.na(localization)), , drop=FALSE])
   )
+}
 
-  if (legend) {
-    legend(
-      "topright",
-      inset = c(-0.28, 0),
-      legend = c("Class I", "Not Class I"),
-      fill = c(color_classI, color_notclassI),
-      border = NA,
-      bty = "n"
-    )
-  }
-
+phossite_coverage_plot <- function(data, meta, id=FALSE, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", is_log2=TRUE) {
+  counts <- .phossite_coverage_counts(data, meta, is_log2)
+  meta <- .sample_meta(meta, id=id, newline=TRUE, zero_based=TRUE)
+  if (!any(counts["Unclassified", ])) counts <- counts[1:2, , drop=FALSE]
+  colors <- c(color_classI, color_notclassI, "#94a3b8")[seq_len(nrow(counts))]
+  .set_notebook_plot_size(width, height)
+  old_par <- .set_plot_margins(legend=legend, rotated_labels=TRUE)
+  on.exit(par(old_par), add=TRUE)
+  barplot(counts, names.arg=meta$new_sample, las=2, cex.names=.65, col=colors,
+    border=NA, xlab="Sample", ylab=if (header) "Number of phosphosites" else "Number",
+    main=if (header) "Phosphosites per sample" else "")
+  if (legend) legend("topright", inset=c(-.28, 0), legend=rownames(counts), fill=colors, border=NA, bty="n")
   .plot_result()
 }
 
@@ -5085,7 +5148,14 @@ sty_plot <- function(data) {
   )
 
   counts <- table(factor(residues, levels = c("S", "T", "Y")))
-  percentages <- counts / sum(counts) * 100
+  short_matches <- regexec("(^|_)([STY])[0-9]+(_|$)", as.character(data$PTM_Collapse_key))
+  short_residues <- vapply(regmatches(as.character(data$PTM_Collapse_key), short_matches),
+    function(value) if (length(value) > 2) value[3] else NA_character_, character(1))
+  residues[is.na(residues)] <- short_residues[is.na(residues)]
+  counts <- table(factor(residues, levels = c("S", "T", "Y")))
+  if (anyNA(residues)) counts <- c(counts, Unparsed = sum(is.na(residues)))
+  total <- sum(counts)
+  percentages <- if (total > 0) counts / total * 100 else counts * 0
   colors <- c(S = "#4C78A8", T = "#F58518", Y = "#54A24B")
 
   old_par <- par(mar = c(4.5, 4.5, 3.5, 4.5))
@@ -5093,10 +5163,10 @@ sty_plot <- function(data) {
 
   mids <- barplot(
     counts,
-    col = colors,
+    col = c(colors, Unparsed = "#64748b")[names(counts)],
     border = "black",
     lwd = 0.6,
-    ylim = c(0, max(counts) * 1.13),
+    ylim = c(0, max(1, max(counts) * 1.13)),
     main = "Modified S/T/Y Peptide Counts",
     xlab = "Peptide",
     ylab = "Count"
@@ -5111,98 +5181,42 @@ sty_plot <- function(data) {
     cex = 0.9
   )
 
-  count_ticks <- pretty(c(0, max(counts)))
-  axis(
-    4,
-    at = count_ticks,
-    labels = sprintf("%.0f", count_ticks / sum(counts) * 100)
-  )
-  mtext("Percentage (%)", side = 4, line = 2.5)
+  if (total > 0) {
+    count_ticks <- pretty(c(0, max(counts)))
+    axis(4, at = count_ticks, labels = sprintf("%.0f", count_ticks / total * 100))
+    mtext("Percentage (%)", side = 4, line = 2.5)
+  }
 
   .plot_result()
 }
 
-phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", seed=69) {
-  meta <- .sample_meta(meta, id = FALSE)
-  renamed_data <- .rename_samples(data, meta)
-
-  class_i <- colSums(!is.na(
-    renamed_data[renamed_data$PTM_localization >= 0.75, meta$new_sample, drop = FALSE]
-  ))
-  not_class_i <- colSums(!is.na(
-    renamed_data[renamed_data$PTM_localization < 0.75, meta$new_sample, drop = FALSE]
-  ))
-
-  conditions <- unique(meta$condition)
-  class_values <- split(class_i, meta$condition)
-  not_class_values <- split(not_class_i, meta$condition)
-  class_means <- vapply(class_values, mean, numeric(1))
-  not_class_means <- vapply(not_class_values, mean, numeric(1))
-  class_sd <- vapply(class_values, sd, numeric(1))
-  not_class_sd <- vapply(not_class_values, sd, numeric(1))
-  class_sd[!is.finite(class_sd)] <- 0
-  not_class_sd[!is.finite(not_class_sd)] <- 0
-
-  means <- rbind(class_means, not_class_means)
-  sds <- rbind(class_sd, not_class_sd)
-  ymax <- max(means + sds, na.rm = TRUE) * 1.1
-
+phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", seed=69, is_log2=TRUE) {
+  counts <- .phossite_coverage_counts(data, meta, is_log2)
+  if (!any(counts["Unclassified", ])) counts <- counts[1:2, , drop=FALSE]
+  conditions <- unique(as.character(meta$condition))
+  groups <- lapply(conditions, function(condition) counts[, meta$condition == condition, drop=FALSE])
+  means <- do.call(cbind, lapply(groups, rowMeans))
+  sds <- do.call(cbind, lapply(groups, function(group) apply(group, 1, sd)))
+  sds[!is.finite(sds)] <- 0
+  colors <- c(color_classI, color_notclassI, "#94a3b8")[seq_len(nrow(counts))]
   .set_notebook_plot_size(width, height)
-  old_par <- .set_plot_margins(legend = legend, rotated_labels = TRUE)
-  on.exit(par(old_par), add = TRUE)
-
-  mids <- barplot(
-    means,
-    beside = TRUE,
-    names.arg = conditions,
-    las = 2,
-    col = c(color_classI, color_notclassI),
-    border = NA,
-    ylim = c(0, ymax),
-    ylab = if (header) "Number of phosphosites" else "Number",
-    main = if (header) "Phosphosites per condition" else ""
-  )
-
-  arrows(
-    mids,
-    pmax(0, means - sds),
-    mids,
-    means + sds,
-    angle = 90,
-    code = 3,
-    length = 0.04
-  )
-
+  old_par <- .set_plot_margins(legend=legend, rotated_labels=TRUE)
+  on.exit(par(old_par), add=TRUE)
+  mids <- barplot(means, beside=TRUE, names.arg=conditions, las=2, col=colors,
+    border=NA, ylim=c(0, max(1, max(means + sds) * 1.1)),
+    ylab=if (header) "Number of phosphosites" else "Number",
+    main=if (header) "Phosphosites per condition" else "")
+  nonzero <- sds > 0
+  if (any(nonzero)) arrows(mids[nonzero], pmax(0, means - sds)[nonzero],
+    mids[nonzero], (means + sds)[nonzero], angle=90, code=3, length=.04)
   .with_local_seed(seed, function() {
-    for (i in seq_along(conditions)) {
-      points(
-        jitter(rep(mids[1, i], length(class_values[[i]])), amount = 0.04),
-        class_values[[i]],
-        pch = 16,
-        cex = 0.7,
-        col = grDevices::adjustcolor("black", alpha.f = 0.7)
-      )
-      points(
-        jitter(rep(mids[2, i], length(not_class_values[[i]])), amount = 0.04),
-        not_class_values[[i]],
-        pch = 16,
-        cex = 0.7,
-        col = grDevices::adjustcolor("black", alpha.f = 0.7)
-      )
+    for (i in seq_along(groups)) for (j in seq_len(nrow(counts))) {
+      values <- groups[[i]][j, ]
+      points(jitter(rep(mids[j, i], length(values)), amount=.04), values,
+        pch=16, cex=.7, col=grDevices::adjustcolor("black", alpha.f=.7))
     }
   })
-
-  if (legend) {
-    legend(
-      "topright",
-      inset = c(-0.28, 0),
-      legend = c("Class I", "Not Class I"),
-      fill = c(color_classI, color_notclassI),
-      border = NA,
-      bty = "n"
-    )
-  }
-
+  if (legend) legend("topright", inset=c(-.28, 0), legend=rownames(counts), fill=colors, border=NA, bty="n")
   .plot_result()
 }
 
@@ -5237,23 +5251,55 @@ simple_phos_site_plot <- function(data, filter_value=0, width_cm=15, height_cm=1
   .plot_result()
 }
 
+.normalize_ksea_results <- function(data) {
+  if (anyDuplicated(names(data))) stop("KSEA result column names must be unique.", call.=FALSE)
+  keys <- gsub("[^a-z0-9]", "", tolower(gsub("\u2082", "2", names(data), fixed=TRUE)))
+  numeric_field <- function(aliases, effect=FALSE) {
+    result <- rep(NA_real_, nrow(data))
+    columns <- which(keys %in% aliases)
+    if (!length(columns)) stop("Each KSEA row requires a frequency factor and adjusted p-value.", call.=FALSE)
+    for (column in columns) {
+      text <- as.character(data[[column]])
+      supplied <- !is.na(text) & nzchar(trimws(text))
+      values <- suppressWarnings(as.numeric(text))
+      if (any(supplied & !is.finite(values))) stop("KSEA values must be finite numeric values.", call.=FALSE)
+      if (effect && keys[column] == "frequencyfactor") {
+        if (any(supplied & values <= 0)) stop("Raw Frequency Factor values must be positive.", call.=FALSE)
+        values <- log2(values)
+      } else if (!effect && any(supplied & (values < 0 | values > 1))) {
+        stop("Adjusted p-values must be between 0 and 1.", call.=FALSE)
+      }
+      overlap <- supplied & !is.na(result)
+      if (any(abs(result[overlap] - values[overlap]) > 1e-12 + 1e-10 * abs(values[overlap]))) {
+        stop("Conflicting KSEA result columns; provide consistent values.", call.=FALSE)
+      }
+      take <- supplied & is.na(result)
+      result[take] <- values[take]
+    }
+    if (anyNA(result)) stop("Each KSEA row requires a frequency factor and adjusted p-value.", call.=FALSE)
+    result
+  }
+  if (!nrow(data)) return(data.frame(Kinase=character(), frequency_factor=numeric(), adjusted_pvalue=numeric()))
+  effect <- numeric_field(c("log2frequencyfactor", "frequencyfactor"), TRUE)
+  probability <- numeric_field(c("adjustedpvalue", "adjustedp"))
+  labels <- rep(NA_character_, nrow(data))
+  for (alias in c("kinase", "genename", "gene")) {
+    for (column in which(keys == alias)) {
+      values <- as.character(data[[column]])
+      take <- is.na(labels) & !is.na(values) & nzchar(trimws(values))
+      labels[take] <- values[take]
+    }
+  }
+  labels[is.na(labels)] <- as.character(effect[is.na(labels)])
+  data.frame(Kinase=labels, frequency_factor=effect, adjusted_pvalue=probability)
+}
+
 ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condition1=NULL, condition2=NULL) {
   .require_pkg("plotly")
 
-  data <- rbind(data_st, data_tnc)
-  frequency_col <- grep("Frequency Factor", names(data), value = TRUE)[1]
-  pvalue_col <- grep("Adjusted p-value", names(data), fixed = TRUE, value = TRUE)[1]
-
-  if (is.na(frequency_col) || is.na(pvalue_col)) {
-    stop(
-      "Input must contain 'Log2(Frequency Factor)' and 'Adjusted p-value' columns",
-      call. = FALSE
-    )
-  }
-
-  data$frequency_factor <- as.numeric(data[[frequency_col]])
-  data$adjusted_pvalue <- as.numeric(data[[pvalue_col]])
-  data$neg_log10_pval <- -log10(data$adjusted_pvalue)
+  data <- rbind(.normalize_ksea_results(data_st), .normalize_ksea_results(data_tnc))
+  if (!nrow(data)) stop("Uploaded KSEA result files are empty.", call.=FALSE)
+  data$neg_log10_pval <- -log10(pmax(data$adjusted_pvalue, 1e-300))
   data$Regulation <- ifelse(
     data$adjusted_pvalue < pval_thresh & data$frequency_factor > 0,
     "Upregulated",
@@ -5716,28 +5762,25 @@ missing_value_plot_prec <- function(
     width = 10,
     height = 6,
     dpi = 100,
-    color = "blue"
+    color = "blue",
+    quantity_column = "Precursor.Quantity"
 ) {
   precursor_data <- sanitize_dataframe(read_data(data_path))
   wide_data <- .pivot_wide(
     precursor_data,
     "Precursor.Id",
     "File.Name",
-    "Precursor.Quantity",
+    quantity_column,
     # max matches missing_value_plot_pep below. Taking the first value depended
     # on input row order, and the raw-zero conversion runs immediately after, so
     # which duplicate won decided whether a precursor read as detected.
     max
   )
-  names(wide_data) <- vapply(
-    names(wide_data),
-    extract_id_or_number,
-    character(1)
-  )
-  samples <- vapply(meta$sample, extract_id_or_number, character(1))
-  sample_columns <- intersect(samples, names(wide_data))
+  sample_columns <- names(.peptide_sample_map(names(wide_data), meta$sample))
   wide_data <- .raw_zero_to_na(wide_data, sample_columns)
-  missing_counts <- rowSums(is.na(wide_data[, sample_columns, drop = FALSE]))
+  observed <- wide_data[, sample_columns, drop = FALSE]
+  observed <- observed[rowSums(!is.na(observed)) > 0, , drop = FALSE]
+  missing_counts <- rowSums(is.na(observed))
 
   .set_notebook_plot_size(width, height, units = "in")
   .missing_bar(
@@ -5761,7 +5804,8 @@ missing_value_plot_pep <- function(
     width = 10,
     height = 6,
     dpi = 100,
-    color = "blue"
+    color = "blue",
+    quantity_column = "Precursor.Quantity"
 ) {
   peptide_data <- sanitize_dataframe(read_data(data_path))
 
@@ -5770,22 +5814,18 @@ missing_value_plot_pep <- function(
       peptide_data,
       "Stripped.Sequence",
       "File.Name",
-      "Precursor.Quantity",
+      quantity_column,
       max
-    )
-    names(wide_data) <- vapply(
-      names(wide_data),
-      extract_id_or_number,
-      character(1)
     )
   } else {
     wide_data <- peptide_data
   }
 
-  samples <- vapply(meta$sample, extract_id_or_number, character(1))
-  sample_columns <- intersect(samples, names(wide_data))
+  sample_columns <- names(.peptide_sample_map(setdiff(names(wide_data), "Stripped.Sequence"), meta$sample))
   wide_data <- .raw_zero_to_na(wide_data, sample_columns)
-  missing_counts <- rowSums(is.na(wide_data[, sample_columns, drop = FALSE]))
+  observed <- wide_data[, sample_columns, drop = FALSE]
+  observed <- observed[rowSums(!is.na(observed)) > 0, , drop = FALSE]
+  missing_counts <- rowSums(is.na(observed))
 
   .set_notebook_plot_size(width, height, units = "in")
   .missing_bar(

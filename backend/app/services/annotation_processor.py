@@ -191,7 +191,8 @@ def prepare_normalized_log2_data(
     """Create the one canonical analysis matrix used by every annotation path.
 
     VSN models linear intensities and is sensitive to machine-epsilon changes in
-    its input, so linear uploads are passed through unchanged as its source.
+    its input, so observed linear intensities are preserved exactly as its source.
+    Raw-zero non-detections are masked by the normalization boundary.
     For already-log2 uploads there is no original linear matrix to preserve.
     """
     if is_log2_transformed:

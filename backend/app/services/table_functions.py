@@ -5,10 +5,9 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns
+from app.services.data_tools import _get_current_frame, _get_sample_columns, original_intensity_frame
 from app.services.functions import (
     extract_sample_id as _extract_id_or_number,
-    inverse_log2_transform_data,
     raw_zero_to_nan,
 )
 from app.services.runtime_cache import apply_cached_wrappers
@@ -72,19 +71,7 @@ def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
 
 
 def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is None:
-        return raw
-    if bool(getattr(annotation, "is_log2_transformed", False)):
-        transformed = annotation.log2_data if not annotation.log2_data.empty else raw
-        sample_columns = [
-            c for c in annotation.metadata["sample"].tolist() if c in transformed.columns
-        ]
-        if sample_columns:
-            return inverse_log2_transform_data(transformed, sample_columns)
-        return raw
-    return annotation.source_data.copy()
+    return original_intensity_frame(_get_current_frame(kind), get_annotation(kind))
 
 
 def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
@@ -185,6 +172,19 @@ def prepare_coverage_summary_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.Da
     return condition_summary
 
 
+def _boxplot_summary(values):
+    from matplotlib.cbook import boxplot_stats
+
+    stats = boxplot_stats(values, whis=1.5)[0]
+    return {
+        name: round(float(stats[key]), 2)
+        for name, key in (
+            ("mean", "mean"), ("median", "med"), ("Q1", "q1"), ("Q3", "q3"),
+            ("lower_whisker", "whislo"), ("upper_whisker", "whishi"),
+        )
+    }
+
+
 def prepare_boxplot_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     conditions_order = meta["condition"].unique()
     summary_list: list[dict[str, object]] = []
@@ -195,23 +195,12 @@ def prepare_boxplot_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
         if len(values) == 0:
             continue
 
-        q1 = float(np.percentile(values, 25))
-        median = float(np.median(values))
-        q3 = float(np.percentile(values, 75))
-        iqr = q3 - q1
-        lower_whisker = float(max(np.min(values), q1 - 1.5 * iqr))
-        upper_whisker = float(min(np.max(values), q3 + 1.5 * iqr))
-        mean = float(np.mean(values))
+        summary = _boxplot_summary(values)
 
         summary_list.append(
             {
                 "Condition": str(condition),
-                "mean": round(mean, 2),
-                "median": round(median, 2),
-                "Q1": round(q1, 2),
-                "Q3": round(q3, 2),
-                "lower_whisker": round(lower_whisker, 2),
-                "upper_whisker": round(upper_whisker, 2),
+                **summary,
             }
         )
 
@@ -238,22 +227,11 @@ def prepare_boxplot_single_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool
         if len(values) == 0:
             continue
 
-        q1 = float(np.percentile(values, 25))
-        median = float(np.median(values))
-        q3 = float(np.percentile(values, 75))
-        iqr = q3 - q1
-        lower_whisker = float(max(np.min(values), q1 - 1.5 * iqr))
-        upper_whisker = float(min(np.max(values), q3 + 1.5 * iqr))
-        mean = float(np.mean(values))
+        summary = _boxplot_summary(values)
 
         row_dict: dict[str, object] = {
             "Sample": sample,
-            "mean": round(mean, 2),
-            "median": round(median, 2),
-            "Q1": round(q1, 2),
-            "Q3": round(q3, 2),
-            "lower_whisker": round(lower_whisker, 2),
-            "upper_whisker": round(upper_whisker, 2),
+            **summary,
         }
         if name:
             original_name = meta.loc[meta["new_sample"] == sample, "sample"].values[0]
@@ -281,23 +259,12 @@ def prepare_cov_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
         if len(cv) == 0:
             continue
 
-        q1 = float(np.percentile(cv, 25))
-        median = float(np.median(cv))
-        q3 = float(np.percentile(cv, 75))
-        iqr = q3 - q1
-        lower_whisker = float(max(np.min(cv), q1 - 1.5 * iqr))
-        upper_whisker = float(min(np.max(cv), q3 + 1.5 * iqr))
-        mean_cv = float(np.mean(cv))
+        summary = _boxplot_summary(cv)
 
         summary_list.append(
             {
                 "Condition": str(cond),
-                "mean": round(mean_cv, 2),
-                "median": round(median, 2),
-                "Q1": round(q1, 2),
-                "Q3": round(q3, 2),
-                "lower_whisker": round(lower_whisker, 2),
-                "upper_whisker": round(upper_whisker, 2),
+                **summary,
             }
         )
 

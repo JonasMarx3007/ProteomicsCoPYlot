@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import warnings
 from dataclasses import dataclass
 from statistics import NormalDist
@@ -16,6 +17,18 @@ from app.schemas.annotation import AnnotationKind
 from app.schemas.completeness import CompletenessTablesResponse
 from app.services.clustering_tools import require_complete_clustering_matrix
 from app.services.runtime_cache import apply_cached_wrappers
+
+
+def parse_selection_list(raw: str, *, legacy_semicolons: bool = False) -> list[str]:
+    text = str(raw or "").strip()
+    if text.startswith("["):
+        values = json.loads(text)
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise ValueError("Selections must be an array of strings.")
+        return values
+    if legacy_semicolons:
+        text = text.replace(";", ",")
+    return [value.strip() for value in text.split(",") if value.strip()]
 
 try:
     from statsmodels.stats.multitest import multipletests
@@ -85,6 +98,7 @@ class ImputationDiagnostics:
     after_non_imputed: np.ndarray
     after_imputed: np.ndarray
     draw_components: list[tuple[float, float, int]]
+    skipped_samples: list[str]
 
 
 def strip_sample_measurement_suffix(value):
@@ -224,6 +238,12 @@ def resolve_test_type(value) -> tuple[bool, str]:
     return _TEST_TYPES[mode]
 
 
+def comparison_contrast(condition1, condition2, condition1_control=None, condition2_control=None) -> str:
+    if condition1_control and condition2_control:
+        return f"({condition2} - {condition2_control}) - ({condition1} - {condition1_control})"
+    return f"{condition2} - {condition1}"
+
+
 def paired_test_enabled(value) -> bool:
     return resolve_test_type(value)[0]
 
@@ -244,10 +264,6 @@ def paired_t_test(differences: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.n
     se = np.sqrt(variance / n_pairs)
     with np.errstate(divide="ignore", invalid="ignore"):
         pvalues = 2.0 * stats.t.sf(np.abs(mean_diff / se), n_pairs - 1.0)
-    constant = variance == 0
-    pvalues[constant & (mean_diff == 0)] = 1.0
-    pvalues[constant & (mean_diff != 0)] = 0.0
-    pvalues = np.nan_to_num(pvalues, nan=1.0, posinf=1.0, neginf=1.0)
     return mean_diff, n_pairs, np.asarray(pvalues, dtype=float)
 
 
@@ -278,14 +294,18 @@ def build_metadata_from_conditions(
         for col in columns:
             requested = str(col)
             sample = requested if requested in exact else by_stripped.get(requested.strip(), "")
-            if not sample or sample in used_samples:
+            if not sample:
                 continue
+            if sample in used_samples:
+                raise ValueError(f"Sample '{sample}' is assigned more than once. Assign each sample to exactly one condition.")
             rows.append({"sample": sample, "condition": name})
             used_samples.add(sample)
 
     if rows:
         return MetadataBuildResult(metadata=pd.DataFrame(rows), auto_detected=False)
 
+    if conditions:
+        raise ValueError("No valid condition assignments were provided. Select samples and name their conditions.")
     auto_columns = [str(col) for col in data.columns if AUTO_SAMPLE_PATTERN.search(str(col))]
     if not auto_columns:
         raise ValueError(
@@ -484,13 +504,14 @@ def normalize_data(
 
         if linear_source is not None:
             linear = linear_source[present].apply(pd.to_numeric, errors="coerce")
+            linear = linear.mask(linear == 0)
         else:
             linear = pd.DataFrame(
                 np.power(2.0, numeric.to_numpy(dtype=float)),
                 index=numeric.index,
                 columns=numeric.columns,
             )
-        normalized = vsn_normalize_linear(linear)
+        normalized = vsn_normalize_linear(linear).where(linear.notna())
     else:
         raise ValueError("Normalization must be 'none', 'median', 'quantile', or 'vsn'.")
 
@@ -651,21 +672,22 @@ def impute_values_with_diagnostics(
 
     all_values = numeric.values.flatten()
     observed = all_values[~np.isnan(all_values)]
-    if observed.size == 0:
-        raise ValueError("No numeric values available for imputation.")
 
     before_without = numeric.loc[~row_has_missing].values.flatten()
     before_with = numeric.loc[row_has_missing].values.flatten()
     before_without = before_without[~np.isnan(before_without)]
     before_with = before_with[~np.isnan(before_with)]
 
-    mean_val = float(np.nanmean(observed))
-    std_val = float(np.nanstd(observed))
-    quantile_val = float(np.nanquantile(observed, q))
+    mean_val = float(np.mean(observed)) if observed.size else np.nan
+    std_val = float(np.std(observed, ddof=1)) if observed.size > 1 else np.nan
+    quantile_val = float(np.quantile(observed, q)) if observed.size else np.nan
+    if not sample_wise and (observed.size < 2 or not np.isfinite(std_val) or std_val <= 0 or np.ptp(observed) == 0):
+        raise ValueError("Global imputation requires at least two observed values with nonzero spread.")
 
     imputed_numeric = numeric.copy()
     missing_before = int(imputed_numeric.isna().sum().sum())
     draw_components = []
+    skipped_samples = []
 
     if sample_wise:
         for col in sample_columns:
@@ -674,25 +696,19 @@ def impute_values_with_diagnostics(
             if missing_count <= 0:
                 continue
             col_observed = col_values.dropna().values
-            if col_observed.size == 0:
-                if method == "numerical":
-                    draw_center = mean_val - down_shift * std_val
-                    draw_std = std_val * width
-                else:
-                    draw_center = quantile_val
-                    draw_std = std_val * adj_std
+            if col_observed.size < 2 or np.ptp(col_observed) == 0:
+                skipped_samples.append(str(col))
+                continue
+            col_sd = float(np.std(col_observed, ddof=1))
+            if not np.isfinite(col_sd) or col_sd <= 0:
+                skipped_samples.append(str(col))
+                continue
+            if method == "numerical":
+                draw_center = float(np.mean(col_observed)) - down_shift * col_sd
+                draw_std = col_sd * width
             else:
-                col_sd = float(np.nanstd(col_observed))
-                if method == "numerical":
-                    effective_sd = col_sd if col_sd > 0 else std_val
-                    draw_center = float(np.nanmean(col_observed)) - down_shift * effective_sd
-                    draw_std = effective_sd * width
-                else:
-                    draw_center = float(np.nanquantile(col_observed, q))
-                    # adj_std must scale the draw here exactly as it does in the
-                    # global branch below; without it the setting is inert in
-                    # sample-wise mode and the spread is always the full SD.
-                    draw_std = (col_sd if col_sd > 0 else std_val) * adj_std
+                draw_center = float(np.quantile(col_observed, q))
+                draw_std = col_sd * adj_std
             draws = rng.normal(draw_center, draw_std, missing_count)
             imputed_numeric.loc[col_values.isna(), col] = draws
             draw_components.append((draw_center, draw_std, missing_count))
@@ -735,6 +751,7 @@ def impute_values_with_diagnostics(
         after_non_imputed=after_non_imputed,
         after_imputed=after_imputed,
         draw_components=draw_components,
+        skipped_samples=skipped_samples,
     )
 
 
@@ -1233,6 +1250,11 @@ def resolve_feature_scaling(scaling="auto", method="PCA"):
     return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
 
 
+def intensity_unit_label(centered=False, scale="log2", workflow=""):
+    unit = "Ratio to Site Median" if centered else "Intensity"
+    return " ".join(part for part in (scale, workflow, unit) if part)
+
+
 def abundance_axis_label(workflow, centered=False):
     """Y-axis label for the abundance plot.
 
@@ -1241,9 +1263,7 @@ def abundance_axis_label(workflow, centered=False):
     rather than an intensity. Every other phosprot mode, and both other
     workflows, hold real abundances.
     """
-    if centered:
-        return f"log10 {workflow} Ratio to Site Median"
-    return f"log10 {workflow} Intensity"
+    return intensity_unit_label(centered, scale="log10", workflow=workflow)
 
 
 def _auto_label_col(frame: pd.DataFrame) -> str:
@@ -1567,11 +1587,11 @@ def comparative_histogram(
     ]
 
 
-def normal_fit_curve(values: np.ndarray, points: int = 200) -> list[tuple[float, float]]:
+def normal_fit_curve(values: np.ndarray, points: int = 200, ddof: int = 0) -> list[tuple[float, float]]:
     clean = values[~np.isnan(values)]
-    if clean.size == 0:
+    if clean.size <= ddof:
         return []
-    std_val = float(np.std(clean))
+    std_val = float(np.std(clean, ddof=ddof))
     if std_val <= 0:
         return []
     mean_val = float(np.mean(clean))
@@ -1874,6 +1894,7 @@ def qc_peptide_coverage_plot(
     dpi: int = 300,
     advanced: dict | None = None,
     quantity_column: str | None = None,
+    level: str = "peptide",
 ) -> bytes:
     from app.services.plot_images import qc_peptide_coverage_plot as _impl
 
@@ -1886,6 +1907,7 @@ def qc_peptide_coverage_plot(
         dpi=dpi,
         advanced=advanced,
         quantity_column=quantity_column,
+        level=level,
     )
 
 

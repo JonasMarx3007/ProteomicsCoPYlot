@@ -39,6 +39,7 @@ class SummaryVolcanoEntry(BaseModel):
 
 
 class SummaryReportContext(BaseModel):
+    completenessSettings: dict[str, Any] = Field(default_factory=dict)
     qcSettings: dict[str, dict[str, Any]] = Field(default_factory=dict)
     volcanoEntries: list[SummaryVolcanoEntry] = Field(default_factory=list)
     advancedPlotMode: bool = False

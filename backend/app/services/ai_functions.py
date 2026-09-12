@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, cast, get_args
+import json
+from urllib.parse import unquote
 
 import pandas as pd
 
@@ -17,11 +19,13 @@ from app.services import comparison_tools as _comparison_tools
 from app.services import phospho_tools as _phospho_tools
 from app.services import table_functions as _table_functions
 from app.services.functions import (
+    parse_selection_list,
     DATA_SOURCE_CHOICES,
+    comparison_contrast,
     _phosprot_values_are_centred,
     resolve_test_type,
 )
-from app.services.peptide_tools import _extract_id_or_number as _extract_peptide_id
+from app.services.peptide_tools import _sample_rename_map as _peptide_sample_rename_map
 from app.services.peptide_tools import PROTEASE_LABELS as _PROTEASE_LABELS
 from app.services.peptide_tools import get_peptide_frame
 from app.services.peptide_tools import peptide_modification_counts as _peptide_modification_counts
@@ -202,38 +206,14 @@ def _coverage_rows_from_wide(kind: AnnotationKind) -> tuple[pd.DataFrame, int | 
     return frame[["Sample", "Condition", "Count"]].reset_index(drop=True), total_features
 
 
-def _coverage_rows_from_peptide() -> tuple[pd.DataFrame, int | None]:
-    frame = get_peptide_frame()
-    file_col = _plot_images._peptide_file_column(frame)
-    seq_col = _plot_images._peptide_sequence_column(frame)
-    quantity_col = _plot_images._peptide_quantity_column(frame)
-    meta = _plot_images._peptide_coverage_metadata(frame, include_id=False)
-
-    pivot = frame.pivot_table(index=seq_col, columns=file_col, values=quantity_col, aggfunc="max")
-    if pivot.empty:
-        return pd.DataFrame(columns=["Sample", "Condition", "Count"]), 0
-
-    pivot = pivot.copy()
-    pivot.columns = [_extract_peptide_id(column) for column in pivot.columns]
-    labels = meta["label"].astype(str).tolist()
-    rename_map = dict(zip(meta["id"].astype(str), labels))
-    pivot = pivot.rename(columns=rename_map)
-    selected = [label for label in labels if label in pivot.columns]
-    if not selected:
-        selected = list(pivot.columns.astype(str))
-    if not selected:
-        return pd.DataFrame(columns=["Sample", "Condition", "Count"]), int(pivot.shape[0])
-
-    filtered = pivot[selected].copy()
-    summary_df = filtered.notna().sum(axis=0).reset_index()
-    summary_df.columns = ["Sample", "Count"]
-    sample_to_condition = dict(zip(meta["label"].astype(str), meta["condition"].astype(str)))
-    summary_df["Condition"] = summary_df["Sample"].astype(str).map(sample_to_condition).fillna(
-        summary_df["Sample"].astype(str)
+def _coverage_rows_from_peptide(*, quantity_column=None, level="peptide") -> tuple[pd.DataFrame, int | None]:
+    summary, total, meta = _plot_images._peptide_coverage_summary(
+        quantity_column=quantity_column, level=level
     )
-    summary_df["Count"] = pd.to_numeric(summary_df["Count"], errors="coerce")
-    summary_df = summary_df.dropna(subset=["Count"]).reset_index(drop=True)
-    return summary_df[["Sample", "Condition", "Count"]], int(pivot.shape[0])
+    rows = summary.rename(columns={"Value": "Count"}).copy()
+    conditions = dict(zip(meta["label"].astype(str), meta["condition"].astype(str)))
+    rows["Condition"] = rows["Sample"].astype(str).map(conditions)
+    return rows[["Sample", "Condition", "Count"]], total
 
 
 def _condition_palette_for_workflow(workflow: str, conditions: list[str]) -> dict[str, str]:
@@ -329,6 +309,12 @@ def _parse_mode_pairs(mode: str | None) -> dict[str, str]:
     text = str(mode or "").strip()
     if not text:
         return {}
+    if text.startswith("{"):
+        values = json.loads(text)
+        if not isinstance(values, dict):
+            raise ValueError("Context selections must be an object.")
+        return {str(key).lower(): json.dumps(value, ensure_ascii=False) if isinstance(value, list)
+                else str(value) for key, value in values.items()}
     parsed: dict[str, str] = {}
     for part in text.split("|"):
         token = str(part or "").strip()
@@ -353,7 +339,13 @@ def _normalize_stats_test_type(value: object) -> StatsTestType:
     return cast(StatsTestType, mode)
 
 
-def _stats_test_description(test_type: StatsTestType) -> str:
+def _stats_test_description(test_type: StatsTestType, *, control: bool = False) -> str:
+    if control:
+        return (
+            "paired_experimental_differences_with_propagated_control_variance"
+            if test_type == "paired"
+            else "unpaired_propagated_variance_with_satterthwaite_degrees_of_freedom"
+        )
     return _STATS_TEST_DESCRIPTIONS[test_type]
 
 
@@ -412,15 +404,7 @@ def _float_from_mode(
 
 
 def _split_mode_list(value: str) -> list[str]:
-    raw = str(value or "").strip()
-    if not raw:
-        return []
-    items: list[str] = []
-    for token in raw.replace(";", ",").split(","):
-        normalized = str(token).strip()
-        if normalized:
-            items.append(normalized)
-    return items
+    return parse_selection_list(value, legacy_semicolons=True)
 
 
 def _completeness_feature_rows(
@@ -590,6 +574,7 @@ def _pca_variance_lines(
     method: str = "PCA",
     plot_dim: str = "2D",
     data_source: str = "data",
+    scaling: str = "auto",
 ) -> list[str]:
     kind = _workflow_kind(workflow)
     lines: list[str] = []
@@ -617,6 +602,7 @@ def _pca_variance_lines(
             data_source=data_source,
             plot_dim=target_dim,
             method="PCA",
+            scaling=scaling,
         )
     except Exception as exc:
         projection_error = exc
@@ -785,10 +771,14 @@ def _histogram_data_lines(workflow: str) -> list[str]:
     return lines
 
 
-def _abundance_data_lines(workflow: str, *, limit: int = 5) -> list[str]:
+def _abundance_data_lines(workflow: str, *, limit: int = 5, condition: str = "All Conditions") -> list[str]:
     kind = _workflow_kind(workflow)
     try:
         mean_intensities, conditions, _, key_column = _plot_images._abundance_mean_intensities(kind)
+        if condition != "All Conditions":
+            if condition not in conditions:
+                raise ValueError(f"Condition '{condition}' not found.")
+            conditions = [condition]
     except Exception as exc:
         return [f"abundance_data|status=unavailable|detail={_safe_context_text(exc)}"]
 
@@ -910,8 +900,11 @@ def _coverage_text_from_rows(
     workflow: str,
     total_features: int | None,
     palette: dict[str, str],
+    level: str = "peptide",
 ) -> str:
     _, entity_plural = _WORKFLOW_ENTITY_LABELS.get(workflow, _WORKFLOW_ENTITY_LABELS["protein"])
+    if workflow == "peptide" and level == "precursor":
+        entity_plural = "precursors"
     if rows.empty:
         return (
             f"coverage|workflow={workflow}|entity={entity_plural}|status=empty"
@@ -1040,11 +1033,14 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("general_proteomics_context", "\n".join(lines))
 
 
-def qc_coverage_plot(workflow: str = "protein") -> dict[str, Any]:
+def qc_coverage_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
+    parameters = _parse_mode_pairs(mode)
+    level = parameters.get("level", "peptide")
     try:
         if workflow_key == "peptide":
-            rows, total_features = _coverage_rows_from_peptide()
+            rows, total_features = _coverage_rows_from_peptide(
+                quantity_column=unquote(parameters.get("quantitycolumn", "")) or None, level=level)
         else:
             rows, total_features = _coverage_rows_from_wide(_workflow_kind(workflow_key))
         conditions = rows["Condition"].astype(str).tolist() if "Condition" in rows.columns else []
@@ -1054,9 +1050,12 @@ def qc_coverage_plot(workflow: str = "protein") -> dict[str, Any]:
             workflow=workflow_key,
             total_features=total_features,
             palette=palette,
+            level=level,
         )
     except Exception as exc:
         _, entity_plural = _WORKFLOW_ENTITY_LABELS.get(workflow_key, _WORKFLOW_ENTITY_LABELS["protein"])
+        if workflow_key == "peptide" and level == "precursor":
+            entity_plural = "precursors"
         text = (
             f"The bars of the plot show the number of {entity_plural} per sample colored by condition. "
             f"Coverage text generation is currently unavailable: {exc}"
@@ -1374,6 +1373,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
             method=method,
             plot_dim=plot_dim,
             data_source=data_source,
+            scaling=mode_pairs.get("scaling", "auto"),
         )
     )
 
@@ -1386,6 +1386,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
 def qc_abundance_plot(
     workflow: str = "protein",
     context_tier: str = "compact",
+    mode: str | None = None,
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
@@ -1445,6 +1446,7 @@ def qc_abundance_plot(
     lines.extend(
         _abundance_data_lines(
             workflow_key,
+            condition=unquote(_parse_mode_pairs(mode).get("condition", "All Conditions")),
             limit=_context_tier_limit(context_tier, compact=2, standard=3, extended=6),
         )
     )
@@ -1713,15 +1715,13 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
         frame.pivot_table(index=file_col, columns=sequence_col, values=quantity_col, aggfunc="max")
         .T.reset_index()
     )
-    wide.columns = [
-        _extract_peptide_id(column) if str(column) != sequence_col else sequence_col
-        for column in wide.columns
-    ]
-
-    rename_map = {
-        str(sample_id): str(label)
-        for sample_id, label in zip(meta["id"].astype(str), meta["label"].astype(str))
-    }
+    try:
+        rename_map = _peptide_sample_rename_map(
+            wide.columns, meta.rename(columns={"label": "new_sample"}), sequence_col
+        )
+    except ValueError as exc:
+        lines.append("peptide_modification_data|status=error|detail=" + _safe_context_text(exc))
+        return _text_payload("peptide_modification_plot", "\n".join(lines))
     wide = wide.rename(columns=rename_map)
     ordered_samples = [str(label) for label in meta["label"].astype(str).tolist()]
     annotated_cols = [column for column in ordered_samples if column in wide.columns]
@@ -1869,15 +1869,13 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = N
         .T.reset_index()
     )
     wide = wide.rename(columns={"index": seq_col})
-    wide.columns = [
-        _extract_peptide_id(column) if str(column) != seq_col else seq_col
-        for column in wide.columns
-    ]
-
-    rename_map = {
-        str(sample_id): str(label)
-        for sample_id, label in zip(meta["id"].astype(str), meta["label"].astype(str))
-    }
+    try:
+        rename_map = _peptide_sample_rename_map(
+            wide.columns, meta.rename(columns={"label": "new_sample"}), seq_col
+        )
+    except ValueError as exc:
+        lines.append("peptide_missed_cleavage_data|status=error|detail=" + _safe_context_text(exc))
+        return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
     wide = wide.rename(columns=rename_map)
     sample_order = [str(label) for label in meta["label"].astype(str).tolist()]
     annotated_cols = [column for column in sample_order if column in wide.columns]
@@ -2395,10 +2393,18 @@ def stats_volcano_plot(
             if is_paired_test
             else "mean_condition2_minus_mean_condition1"
         )
+        + ("_minus_(mean_condition2_control_minus_mean_condition1_control)" if source == "volcano_control" else "")
+    )
+    lines.append(
+        "volcano_contrast|" + comparison_contrast(
+            condition1 or "condition1", condition2 or "condition2",
+            (condition1_control or "condition1_control") if source == "volcano_control" else None,
+            (condition2_control or "condition2_control") if source == "volcano_control" else None,
+        )
     )
     lines.append(
         f"volcano_testing|selected_test={test_type}|"
-        f"selected_test_description={_stats_test_description(test_type)}|"
+        f"selected_test_description={_stats_test_description(test_type, control=source == 'volcano_control')}|"
         f"supported_tests={','.join(_STATS_TEST_TYPES)}"
     )
     if is_paired_test:
@@ -2718,7 +2724,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
         )
         lines.append(
             "ora_method|volcano_dependency=upregulated_and_downregulated_gene_clusters_are_derived_from_the_selected_differential_test_and_multiple_testing_settings|"
-            f"selected_test={test_type}|selected_test_description={_stats_test_description(test_type)}"
+            f"selected_test={test_type}|selected_test_description={_stats_test_description(test_type, control=source == 'volcano_control')}"
         )
         lines.append(
             "ora_flow|upregulated_cluster=upregulated_genes_to_enriched_pathways"

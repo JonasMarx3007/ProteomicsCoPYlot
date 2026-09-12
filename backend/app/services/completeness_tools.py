@@ -16,7 +16,7 @@ from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
-from app.services.functions import raw_zero_to_nan, sample_id_map
+from app.services.functions import raw_zero_to_nan
 from app.services.plot_images import _advanced_label, _apply_advanced_axes
 
 
@@ -98,6 +98,8 @@ def _peptide_quantity_column(frame: pd.DataFrame, requested: str | None = None) 
 
 
 def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
+    from app.services.peptide_tools import _prepare_metadata, _sample_rename_map
+
     file_col = _peptide_file_column(frame)
     file_names = [
         str(value)
@@ -108,45 +110,11 @@ def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
     if not ordered_files:
         raise ValueError("Peptide dataset does not contain any sample entries in the file-name column.")
 
-    annotation = get_annotation("protein")
-    if annotation is None or annotation.metadata.empty:
-        return ordered_files
-
-    meta = annotation.metadata.copy()
-    if "sample" not in meta.columns:
-        return ordered_files
-    if "condition" not in meta.columns:
-        meta["condition"] = "sample"
-
-    meta["sample"] = meta["sample"].astype(str)
-    meta["condition"] = meta["condition"].astype(str)
-    file_set = set(ordered_files)
-    unmatched = [
-        str(row["sample"])
-        for _, row in meta.iterrows()
-        if str(row["sample"]) not in file_set
-    ]
-    if not unmatched:
-        id_to_file: dict[str, str] = {}
-    else:
-        # Only pay for the number fallback when a name actually needs it, and let
-        # it raise rather than silently collapse two runs onto one id.
-        id_to_file = sample_id_map(ordered_files)
-        sample_id_map(unmatched)
-
-    matched: list[str] = []
-    for _, row in meta.iterrows():
-        sample = str(row["sample"])
-        if sample in file_set:
-            matched.append(sample)
-            continue
-        sample_id = _extract_id_or_number(sample)
-        mapped = id_to_file.get(sample_id)
-        if mapped is not None:
-            matched.append(mapped)
-
-    ordered_matched = list(dict.fromkeys(matched))
-    return ordered_matched if ordered_matched else ordered_files
+    meta = _prepare_metadata(frame, include_id=False)
+    matched = _sample_rename_map(ordered_files, meta, key_column=file_col)
+    if not matched:
+        raise ValueError("Peptide metadata does not match peptide sample columns.")
+    return list(matched)
 
 
 def _missing_value_plot_from_matrix(
@@ -334,8 +302,8 @@ def completeness_missing_value_plot_peptide(
     )
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
     if not sample_cols:
-        sample_cols = list(pivot.columns.astype(str))
-    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols) if sample_cols else pd.DataFrame()
+        raise ValueError("Selected peptide samples have no usable quantity values.")
+    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols)
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Peptide",
@@ -380,8 +348,8 @@ def completeness_missing_value_plot_precursor(
     )
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
     if not sample_cols:
-        sample_cols = list(pivot.columns.astype(str))
-    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols) if sample_cols else pd.DataFrame()
+        raise ValueError("Selected peptide samples have no usable quantity values.")
+    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols)
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Precursor",

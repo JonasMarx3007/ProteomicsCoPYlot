@@ -1,3 +1,4 @@
+import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, ColorField, Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
@@ -261,7 +262,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           widthCm: debouncedCoverage.widthCm,
           heightCm: debouncedCoverage.heightCm,
           dpi: debouncedCoverage.dpi,
-          conditions: debouncedCoverage.conditions.join(","),
+          conditions: JSON.stringify(debouncedCoverage.conditions),
         }),
       };
     }
@@ -376,7 +377,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       const params: Record<string, string | number | boolean> = {
         includeId: debouncedCoverage.includeId,
         mode: debouncedCoverage.mode,
-        conditions: debouncedCoverage.conditions.join(","),
+        conditions: JSON.stringify(debouncedCoverage.conditions),
       };
       return {
         tab: "coverage",
@@ -496,7 +497,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       onContextModeChange("");
       return;
     }
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts =
       activeTab === "phosphositePlot"
         ? [
@@ -527,9 +528,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             `mode=${coverage.mode}`,
             `includeId=${coverage.includeId ? "true" : "false"}`,
             `randomSeed=${coverage.randomSeed}`,
-            `conditions=${coverage.conditions.map((value) => sanitize(value)).join(",")}`,
+            `conditions=${JSON.stringify(coverage.conditions)}`,
           ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     hasPhosphoDataset,

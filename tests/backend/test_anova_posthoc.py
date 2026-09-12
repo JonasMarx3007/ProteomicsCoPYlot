@@ -102,6 +102,18 @@ def test_no_significant_rows_yields_no_post_hoc_and_says_so() -> None:
     result = _run(_frame(), METADATA, postHoc="tukey", pValueThreshold=1e-300)
     assert result.postHocRows == []
     assert any("Tukey" in w for w in result.warnings)
+    assert any("No rows passed" in w for w in result.warnings)
+
+
+def test_significant_constant_groups_do_not_report_no_anova_hits():
+    frame = _frame(n=1)
+    for index, condition in enumerate(CONDITIONS):
+        frame[[f"{condition}_{i}" for i in range(REPS)]] = 10. + 2 * index
+    result = _run(frame, METADATA, postHoc="tukey")
+    assert result.significantCount == 1
+    assert result.postHocRows == []
+    assert any("no usable Tukey HSD comparisons" in w for w in result.warnings)
+    assert not any("No rows passed" in w for w in result.warnings)
 
 
 def test_two_conditions_skip_tukey_with_an_explanation() -> None:

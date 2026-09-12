@@ -1,10 +1,10 @@
 ﻿
 import { useEffect, useMemo, useRef, useState } from "react";
 import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
-import { TEST_TYPE_OPTIONS, restoreTestType } from "../../lib/statisticalTests";
+import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
 import { buildPlotUrl, getStatisticalOptions, isAbortError, pairingIsReady, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
-import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import type {
   AnalysisVolcanoPoint,
   AnalysisVolcanoResponse,
@@ -246,6 +246,7 @@ export default function AnalysisPage({
   const persistedVolcano = (persisted.volcanoSettings as Record<string, unknown>) ?? {};
   const persistedVolcanoControl = (persisted.volcanoControlSettings as Record<string, unknown>) ?? {};
   const { kindOptions } = useCurrentDatasetsSnapshot();
+  const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
     const value = asString(persisted.kind, "protein");
     return value === "protein" || value === "phospho" || value === "phosprot"
@@ -274,7 +275,7 @@ export default function AnalysisPage({
     };
   });
   const [volcanoControlSettings, setVolcanoControlSettings] = useState<VolcanoControlSettings>(() => {
-    const testType = restoreTestType(persistedVolcanoControl.testType);
+    const testType = controlTestType(restoreTestType(persistedVolcanoControl.testType));
     const pValueMode = asString(persistedVolcanoControl.pValueMode, "corrected");
     return {
       condition1: asString(persistedVolcanoControl.condition1),
@@ -300,8 +301,8 @@ export default function AnalysisPage({
       : "volcano";
   });
 
-  const volcanoRequestKey = JSON.stringify({ kind, identifier, ...volcanoSettings });
-  const volcanoControlRequestKey = JSON.stringify({ kind, identifier, ...volcanoControlSettings });
+  const volcanoRequestKey = JSON.stringify({ revision, kind, identifier, ...volcanoSettings });
+  const volcanoControlRequestKey = JSON.stringify({ revision, kind, identifier, ...volcanoControlSettings });
   const [volcanoDataState, setVolcanoDataState] = useState<{
     key: string;
     data: AnalysisVolcanoResponse;
@@ -465,6 +466,7 @@ export default function AnalysisPage({
           testType: volcanoSettings.testType,
           useUncorrected: volcanoSettings.pValueMode === "uncorrected",
         }, { signal: controller.signal }).then((data) => {
+          if (controller.signal.aborted) return;
           setVolcanoDataState({ key: volcanoRequestKey, data });
         })
       );
@@ -485,6 +487,7 @@ export default function AnalysisPage({
           testType: volcanoControlSettings.testType,
           useUncorrected: volcanoControlSettings.pValueMode === "uncorrected",
         }, { signal: controller.signal }).then((data) => {
+          if (controller.signal.aborted) return;
           setVolcanoControlDataState({ key: volcanoControlRequestKey, data });
         })
       );
@@ -997,7 +1000,7 @@ export default function AnalysisPage({
                     proteins.length > 0
                       ? buildPlotUrl("/api/analysis/lineplot.png", {
                           kind,
-                          proteins: proteins.join(","),
+                          proteins: JSON.stringify(proteins),
                           conditions: conditionsCsv,
                           identifier: plotIdentifier,
                         })
@@ -1618,7 +1621,7 @@ function VolcanoBundleControls({
         <SelectField
           label="Test type"
           value={settings.testType}
-          options={TEST_TYPE_OPTIONS}
+          options={isControl ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS}
           onChange={(value) => onChange({ testType: value as StatsTestType })}
         />
         <SelectField

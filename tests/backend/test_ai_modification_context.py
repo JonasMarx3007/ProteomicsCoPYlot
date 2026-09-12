@@ -75,7 +75,7 @@ def test_ai_modification_context_uses_shared_counts_and_correct_scientific_terms
         }
     )
     metadata = pd.DataFrame(
-        {"id": ["1"], "label": ["control_1"], "condition": ["control"]}
+        {"sample": ["sample_1.raw"], "id": ["1"], "label": ["control_1"], "condition": ["control"]}
     )
     monkeypatch.setattr(ai_functions, "get_peptide_frame", lambda: frame.copy())
     monkeypatch.setattr(
@@ -142,7 +142,7 @@ def test_ai_missed_cleavage_context_uses_selected_backend_rule(monkeypatch) -> N
         }
     )
     metadata = pd.DataFrame(
-        {"id": ["1"], "label": ["control_1"], "condition": ["control"]}
+        {"sample": ["sample_1.raw"], "id": ["1"], "label": ["control_1"], "condition": ["control"]}
     )
     monkeypatch.setattr(ai_functions, "get_peptide_frame", lambda: frame.copy())
     monkeypatch.setattr(

@@ -266,6 +266,7 @@ def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultR
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
         log2_auto_detected=computed.log2_auto_detected,
+        phosprot_aggregation=current_dataset.phosprot_aggregation if payload.kind == "phosprot" else None,
     )
 
     return _response_from_stored(stored)

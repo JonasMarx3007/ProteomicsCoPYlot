@@ -112,6 +112,7 @@ def viewer_auth_status_route() -> ViewerAuthStatusResponse:
 from app.services.session_context import (
     get_session_id,
     session_cookie_name,
+    session_cookie_path,
     session_cookie_secure,
 )
 
@@ -128,7 +129,7 @@ def _set_rotated_session_cookie(response: Response) -> None:
         httponly=True,
         secure=session_cookie_secure(),
         samesite="lax",
-        path="/",
+        path=session_cookie_path(),
     )
 
 

@@ -116,13 +116,6 @@ def save_annotation(
     metadata_profile_name: str | None = None,
     phosprot_aggregation: str | None = None,
 ) -> StoredAnnotation:
-    resolved_package = _ensure_package(package_name)
-    resolved_profile = _resolve_metadata_profile(resolved_package, metadata_profile_name)
-    state = _profile_state(
-        resolved_package,
-        metadata_profile_name=resolved_profile,
-    )
-
     stored = StoredAnnotation(
         kind=kind,
         source_data=source_data.copy(),
@@ -140,8 +133,18 @@ def save_annotation(
         created_at=datetime.now(timezone.utc).isoformat(),
         phosprot_aggregation=phosprot_aggregation,
     )
-    state[kind] = stored
-    invalidate_runtime_cache(f"annotation:{resolved_package}:{resolved_profile}:{kind}:updated")
+    return store_prepared_annotation(stored, package_name=package_name, metadata_profile_name=metadata_profile_name)
+
+
+def store_prepared_annotation(
+    stored: StoredAnnotation,
+    *,
+    package_name: str | None = None,
+    metadata_profile_name: str | None = None,
+) -> StoredAnnotation:
+    state = _profile_state(package_name, metadata_profile_name=metadata_profile_name)
+    state[stored.kind] = stored
+    invalidate_runtime_cache("annotation:updated")
     return stored
 
 

@@ -4,6 +4,7 @@ from app.services.html_security import GENERATED_HTML_META
 
 import base64
 import logging
+import math
 import json
 import html
 import os
@@ -30,6 +31,7 @@ from app.services.functions import (
     phospho_coverage_png,
     phosphosite_plot_png,
     qc_abundance_plot,
+    qc_abundance_interactive_html,
     qc_boxplot_plot,
     qc_correlation_plot,
     qc_coverage_plot,
@@ -549,8 +551,42 @@ def _qc_plot_style(settings: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _abundance_report(kind, settings, advanced, warnings, title):
+    options = _qc_plot_style(settings)
+    options.update(condition=_to_str(settings.get("condition"), "All Conditions"),
+                   height_cm=_to_float(settings.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
+                   advanced=advanced)
+    if settings.get("type") == "Interactive":
+        options.pop("dpi")
+        return _safe_plotly(renderer=lambda: qc_abundance_interactive_html(kind=kind, **options),
+                            fallback_title=title, warnings=warnings)
+    return _safe_png(renderer=lambda: qc_abundance_plot(kind=kind, **options),
+                     fallback_title=title, warnings=warnings)
+
+
+def _missing_plot_options(settings: Mapping[str, Any], *, peptide=False) -> dict[str, Any]:
+    names = {"binCount": "bin_count", "header": "header", "text": "text", "textSize": "text_size",
+             "color": "color", "widthCm": "width_cm", "heightCm": "height_cm", "dpi": "dpi"}
+    if peptide:
+        names["quantityColumn"] = "quantity_column"
+    options = {target: settings[source] for source, target in names.items() if source in settings}
+    for key, low, high in [("bin_count", 0, 1000), ("text_size", 1, 100),
+                           ("width_cm", 1, 60), ("height_cm", 1, 60), ("dpi", 72, 1200)]:
+        if key in options:
+            value = float(options[key])
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"Missing-value report setting {key} must be between {low} and {high}.")
+            if key in {"bin_count", "text_size", "dpi"}:
+                if not value.is_integer():
+                    raise ValueError(f"Missing-value report setting {key} must be an integer.")
+                value = int(value)
+            options[key] = value
+    return options
+
+
 def _pca_plot_options(settings: Mapping[str, Any]) -> dict[str, Any]:
     return {
+        **({"scaling": _to_str(settings["scaling"], "auto")} if "scaling" in settings else {}),
         "header": _to_bool(settings.get("header"), True),
         "legend": _to_bool(settings.get("legend"), True),
         "plot_dim": _to_str(settings.get("plotDim"), "2D"),
@@ -753,6 +789,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         peptide_rt = _module_settings(report_context, "peptide", "rtPlot")
         peptide_modification = _module_settings(report_context, "peptide", "modification")
         peptide_missed_cleavage = _module_settings(report_context, "peptide", "missedCleavage")
+        peptide_coverage = _module_settings(report_context, "peptide", "coverage")
 
         _append_plot_section(
             html_parts=html_parts,
@@ -763,7 +800,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="CoveragePep",
             content_html=_safe_png(
-                renderer=lambda: qc_peptide_coverage_plot(advanced=qc_coverage_advanced),
+                renderer=lambda: qc_peptide_coverage_plot(
+                    advanced=qc_coverage_advanced,
+                    **({"quantity_column": peptide_coverage["quantityColumn"]}
+                       if "quantityColumn" in peptide_coverage else {})),
                 fallback_title="Peptide Coverage Plot",
                 warnings=warnings,
             ),
@@ -777,7 +817,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePep",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot_peptide(advanced=completeness_missing_advanced),
+                renderer=lambda: completeness_missing_value_plot_peptide(advanced=completeness_missing_advanced,
+                    **_missing_plot_options(report_context.completenessSettings, peptide=True)),
                 fallback_title="Peptide Missing Value Plot",
                 warnings=warnings,
             ),
@@ -918,7 +959,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValueProt",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="protein", advanced=completeness_missing_advanced),
+                renderer=lambda: completeness_missing_value_plot(kind="protein", advanced=completeness_missing_advanced,
+                    **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Protein Missing Value Plot",
                 warnings=warnings,
             ),
@@ -1064,7 +1106,6 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 )
             ),
         )
-        protein_abundance_height_cm = _to_float(protein_abundance.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{protein_block}.7",
@@ -1073,17 +1114,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             general_comment_key="AbundanceProt",
             text_entries=text_entries,
             text_key="AbundanceProt",
-            content_html=_safe_png(
-                renderer=lambda: qc_abundance_plot(
-                    kind="protein",
-                    **_qc_plot_style(protein_abundance),
-                    condition="All Conditions",
-                    height_cm=protein_abundance_height_cm,
-                    advanced=qc_abundance_advanced,
-                ),
-                fallback_title="Protein Abundance Plot",
-                warnings=warnings,
-            ),
+            content_html=_abundance_report("protein", protein_abundance, qc_abundance_advanced,
+                                           warnings, "Protein Abundance Plot"),
         )
         _append_plot_section(
             html_parts=html_parts,
@@ -1227,7 +1259,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePhos",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="phospho", advanced=completeness_missing_advanced),
+                renderer=lambda: completeness_missing_value_plot(kind="phospho", advanced=completeness_missing_advanced,
+                    **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Phospho Missing Value Plot",
                 warnings=warnings,
             ),
@@ -1373,7 +1406,6 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 )
             ),
         )
-        phospho_abundance_height_cm = _to_float(phospho_abundance.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{phospho_block}.9",
@@ -1382,17 +1414,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             general_comment_key="AbundancePhos",
             text_entries=text_entries,
             text_key="AbundancePhos",
-            content_html=_safe_png(
-                renderer=lambda: qc_abundance_plot(
-                    kind="phospho",
-                    **_qc_plot_style(phospho_abundance),
-                    condition="All Conditions",
-                    height_cm=phospho_abundance_height_cm,
-                    advanced=qc_abundance_advanced,
-                ),
-                fallback_title="Phospho Abundance Plot",
-                warnings=warnings,
-            ),
+            content_html=_abundance_report("phospho", phospho_abundance, qc_abundance_advanced,
+                                           warnings, "Phospho Abundance Plot"),
         )
         _append_plot_section(
             html_parts=html_parts,
