@@ -56,6 +56,7 @@ server {
     # Project viewer portal (password -> project).
     location /viewer/ {
         rewrite ^/viewer/?(.*)$ /$1 break;
+        proxy_cookie_path /api/tabs/ /viewer/api/tabs/;
         proxy_pass http://127.0.0.1:18081;
     }
 

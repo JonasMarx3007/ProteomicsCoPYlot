@@ -40,7 +40,7 @@ SNAPSHOTS = {
 }
 
 
-def render_case(monkeypatch, kinds, mode):
+def render_case(monkeypatch, kinds, mode, *, pca_scaling=None, selected_settings=False):
     monkeypatch.setattr(report, 'datetime', SimpleNamespace(now=lambda: datetime(2026, 9, 9)))
     comments = {key: [f'{key} <general> & text'] for key in report.GENERAL_COMMENTS}
     monkeypatch.setattr(report, 'GENERAL_COMMENTS', comments)
@@ -80,6 +80,8 @@ def render_case(monkeypatch, kinds, mode):
         'umapNNeighbors': 999, 'umapMinDist': -1, 'tsnePerplexity': 2000, 'tsneLearningRate': 1,
         'dbscanEps': 0, 'dbscanMinSamples': 999, 'randomState': 123, 'widthCm': 90, 'heightCm': 2, 'dpi': 50,
     }
+    if pca_scaling is not None:
+        settings['scaling'] = pca_scaling
     context = SummaryReportContext(
         qcSettings={kind: {'pca': settings} for kind in ('protein', 'phospho')},
         advancedPlotMode=mode != 'default', qcAdvancedSettingsByTab={'pca': {'title': '<custom> & title'}},
@@ -98,6 +100,12 @@ def render_case(monkeypatch, kinds, mode):
             context.qcSettings[kind].update({
                 tab: plot_settings for tab in ('hist', 'box', 'cv', 'abundance', 'correlation')
             })
+    if selected_settings:
+        for kind in ('protein', 'phospho'):
+            context.qcSettings[kind]['abundance'] = {'condition': 'B', 'type': 'Interactive' if mode == 'interactive' else 'Normal'}
+        context.qcSettings['peptide'] = {'coverage': {'quantityColumn': 'LFQ intensity'}}
+        context.completenessSettings = {'quantityColumn': 'LFQ intensity', 'binCount': 1, 'header': False,
+            'text': False, 'textSize': 12, 'color': '#123456', 'widthCm': 25, 'heightCm': 15, 'dpi': 144}
     result = report.report_function(SummaryReportRequest(
         title='Report <title> & test', author='Author <name>', reportContext=context,
         textEntries={'Introduction': 'Intro <safe>\nsecond line', 'PCAProtAbove': 'Before <PCA>',
@@ -116,3 +124,79 @@ def test_report_output_and_renderer_arguments_are_unchanged(monkeypatch, kinds, 
     key = mode + ':' + ','.join(kinds)
     actual = json.dumps([result.model_dump(), calls], sort_keys=True).encode()
     assert hashlib.sha256(actual).hexdigest() == SNAPSHOTS[key]
+
+
+@pytest.mark.parametrize('mode', ['default', 'interactive'])
+@pytest.mark.parametrize('scaling', ['centered', 'unit_variance', 'auto'])
+def test_report_pca_forwards_selected_scaling(monkeypatch, mode, scaling):
+    result, calls = render_case(monkeypatch, ('protein', 'phospho'), mode, pca_scaling=scaling)
+    projections = [json.loads(call) for call in calls if json.loads(call)[0] in ('qc_pca_plot', 'qc_pca_interactive_html')]
+    assert len(projections) == 2
+    assert all(call[2]['scaling'] == scaling for call in projections)
+    assert all(call[0] == ('qc_pca_interactive_html' if mode == 'interactive' else 'qc_pca_plot') for call in projections)
+    assert not result.warnings
+
+
+@pytest.mark.parametrize('mode', ['default', 'interactive'])
+def test_report_retains_abundance_quantity_and_missingness(monkeypatch, mode):
+    result, calls = render_case(monkeypatch, ('peptide', 'protein', 'phospho'), mode, selected_settings=True)
+    parsed = [json.loads(call) for call in calls]
+    abundance = [call for call in parsed if call[0].startswith('qc_abundance')]
+    assert len(abundance) == 2
+    for name, _, options in abundance:
+        assert options['condition'] == 'B'
+        assert name == ('qc_abundance_interactive_html' if mode == 'interactive' else 'qc_abundance_plot')
+        assert ('dpi' in options) == (mode != 'interactive')
+    missing = [call for call in parsed if call[0].startswith('completeness_missing_value_plot')]
+    assert len(missing) == 3
+    for name, _, options in missing:
+        assert options['bin_count'] == 1
+        assert options['header'] is False and options['text'] is False
+        assert options['text_size'] == 12 and options['color'] == '#123456'
+        assert (options['width_cm'], options['height_cm'], options['dpi']) == (25, 15, 144)
+        assert options.get('quantity_column') == ('LFQ intensity' if name.endswith('_peptide') else None)
+    coverage = next(call for call in parsed if call[0] == 'qc_peptide_coverage_plot')
+    assert coverage[2]['quantity_column'] == 'LFQ intensity'
+    assert not result.warnings
+
+
+def test_selected_quantity_changes_real_missingness_bars_and_stale_selection_warns(monkeypatch):
+    from app.services import completeness_tools, peptide_tools
+    frame = pd.DataFrame({'File.Name': ['r1', 'r2', 'r1', 'r2'],
+        'Stripped.Sequence': ['AAA', 'AAA', 'BBB', 'BBB'],
+        'Precursor.Quantity': [1, 1, 1, 1], 'LFQ intensity': [1, 0, 0, 1]})
+    monkeypatch.setattr(peptide_tools, 'get_peptide_frame', lambda: frame)
+    monkeypatch.setattr(completeness_tools, '_peptide_sample_columns', lambda _: ['r1', 'r2'])
+    seen = []
+    def capture(fig, plt, **kwargs):
+        ax = fig.axes[0]
+        seen.append(([label.get_text() for label in ax.get_xticklabels()], [bar.get_height() for bar in ax.patches]))
+        plt.close(fig)
+        return b'png'
+    monkeypatch.setattr(completeness_tools, '_to_png_bytes', capture)
+    report.completeness_missing_value_plot_peptide(**report._missing_plot_options({'quantityColumn': 'LFQ intensity'}, peptide=True))
+    assert seen[-1] == (['1'], [2])
+    report.completeness_missing_value_plot_peptide()
+    assert seen[-1] == (['0'], [2])
+    warnings = []
+    report._safe_png(renderer=lambda: report.completeness_missing_value_plot_peptide(quantity_column='Removed intensity'),
+                     fallback_title='Missingness', warnings=warnings)
+    assert len(warnings) == 1 and 'Removed intensity' in warnings[0]
+    assert len(seen) == 2
+
+
+@pytest.mark.parametrize('render_type', ['Normal', 'Interactive'])
+def test_abundance_stale_condition_warns_without_expanding_scope(monkeypatch, render_type):
+    from app.services import plot_images
+    monkeypatch.setattr(plot_images, '_abundance_mean_intensities', lambda _: (
+        pd.DataFrame({'GeneNames': ['A'], 'B': [2.]}), ['B'], 'Protein', 'GeneNames'))
+    warnings = []
+    result = report._abundance_report('protein', {'condition': 'Removed', 'type': render_type}, None, warnings, 'Abundance')
+    assert len(warnings) == 1 and 'Removed' in warnings[0]
+    assert 'Could not render' in result
+
+
+@pytest.mark.parametrize('settings', [{'binCount': 1000000000}, {'widthCm': float('inf')}, {'dpi': 100000}, {'binCount': 1.5}])
+def test_missing_report_settings_reject_unsafe_render_sizes(settings):
+    with pytest.raises(ValueError):
+        report._missing_plot_options(settings)

@@ -3,20 +3,22 @@
 # Python translation/rewrite: Denys Oliinyk and Yue Yang.
 # Modified Python version; see Git history for dates and NOTICE for attribution.
 import time
+import warnings
 import numpy as np
 import itertools
 import re
 import os
 import pandas as pd
 
-def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
+def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
     """Collapse Spectronaut phosphosites, removing missing sentinels before log2.
 
     cutoff defaults to 0 (all sites); use 0.75 for Class I sites.
     collapse_level selects protein groups ('PG') or proteins ('P').
     """
+    emit = print if progress is None else progress
     st = time.time()
-    print('Preliminary check of dataset:')
+    emit('Preliminary check of dataset:')
     # Preliminary check of dataset columns. If some of the columns are absent, exit the function
     must_have = list(['R.FileName', 'EG.PrecursorId',
                       'EG.TotalQuantity (Settings)',
@@ -26,9 +28,9 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
                       'PG.ProteinGroups'])
     for exp in must_have:
         if exp in list(data.columns):
-            print(exp + ' ' + 'is in columns')
+            emit(exp + ' ' + 'is in columns')
         else:
-            print(exp + ' ' + 'is not in columns:' + ' ' + 'please, provide' + ' ' + exp + ' ' + 'column')
+            emit(exp + ' ' + 'is not in columns:' + ' ' + 'please, provide' + ' ' + exp + ' ' + 'column')
             raise ValueError('Collapse stopped due to the absence of needed columns')
     ###################
     # Getting some preliminary functions
@@ -82,7 +84,7 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
         return (res)
 
     ##################
-    print('Start of dataset preprocessing:' + ' ' + 'dataset consists of' + ' ' + str(
+    emit('Start of dataset preprocessing:' + ' ' + 'dataset consists of' + ' ' + str(
         data.shape[0]) + ' ' + 'ID rows in' + ' ' + str(len(list(data['R.FileName'].unique()))) + ' ' + 'samples')
     # identifying the number of modifications per sequence
     data['PTM_0_num'] = data['EG.PrecursorId'].apply(lambda row: len(row.split('[Phospho (STY)]')) - 1)
@@ -104,7 +106,7 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
     data['PTM_localization'] = data['EG.PTMAssayProbability'].astype(np.float64)
     txt_names = list(data.columns)
     txt_names.remove('EG.TotalQuantity (Settings)')
-    print('Preprocessing of dataset is done;' + ' ' + str(num2) + ' ' + 'nonphosphorylated IDs were removed')
+    emit('Preprocessing of dataset is done;' + ' ' + str(num2) + ' ' + 'nonphosphorylated IDs were removed')
     ####################
     df2 = pd.pivot_table(data, index=['PTM_group', 'PTM_0_pos_val'],
                          columns=['R.FileName'],
@@ -128,7 +130,7 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
     df5 = pd.pivot_table(data, index=['PTM_group', 'PTM_0_pos_val'],
                          values=['UPD_seq'], aggfunc='first')
     data = pd.concat([df2, df4, df3, df5], axis=1).reset_index()
-    print('Long-to-wide formatting done')
+    emit('Long-to-wide formatting done')
     ####################
     class CustomWarning(Warning): # update @Yue Yang
      pass
@@ -137,9 +139,13 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
     underscore_count = data['PG.Genes'].str.contains('_', na=False).sum()
     if underscore_count > 0:  # update @Yue Yang
      data['PG.Genes'] = data['PG.Genes'].str.replace('_', '#', regex=False)
-     warnings.warn(f"{underscore_count} gene names contained underscores and have been replaced with '#'.", CustomWarning)
+     message = f"{underscore_count} gene names contained underscores and have been replaced with '#'."
+     if progress is None:
+      warnings.warn(message, CustomWarning)
+     else:
+      emit(message)
     else:
-     print("No gene names contained underscores.")
+     emit("No gene names contained underscores.")
     data['PTM_Genprot'] = data['PG.Genes']
     num3 = data.shape[0] # update @Yue Yang
     data['PTM_pep_pos'] = data['PEP.PeptidePosition'].astype(str).apply(
@@ -158,7 +164,7 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
         lambda x: fun3(x['PG.ProteinGroups'], x['PTM_Genprot'], x['PTM_0_aa'], x['PTM_0_pos_val'],
                        x['PTM_pep_pos'], x['PTM_mult123']), axis=1)
     num4 = num3 - data.shape[0] # update @Yue Yang
-    print('Preparation for collapsing done;' + ' ' + str(
+    emit('Preparation for collapsing done;' + ' ' + str(
         num4) + ' ' + 'phosphopeptides filtered due to insufficient information') # update @Yue Yang
     #################
     cols = []
@@ -204,9 +210,9 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
         data = data.drop(['Site', 'Mult'], axis=1)
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
-        print('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
+        emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
         et = time.time()
-        print('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
+        emit('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
         return (data)
     if collapse_level == 'PG':
         data['Protein_name'] = data['PTM_Collapse_key'].apply(lambda row: list(row.split('~'))[0])
@@ -223,32 +229,25 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG'):
         data = data.drop(['Site', 'Mult'], axis=1)
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
-        print('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
+        emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
         et = time.time()
-        print('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
+        emit('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
         return (data)
 
 
-def process_and_export(file_path, output_path=None, cutoff=0):
+def process_and_export(file_path, output_path=None, cutoff=0, *, progress=None):
+    emit = print if progress is None else progress
     file_path = file_path.strip('"')
-    try:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"The file '{file_path}' does not exist.")
-
-        print(f"Reading file: {file_path}")
-        data = pd.read_csv(file_path, sep='\t')
-
-        print("Applying peptide collapse ...")
-        collapsed_data = peptideCollapse(data, cutoff=cutoff)
-
-        if output_path is None:
-            base_name, _ = os.path.splitext(file_path)
-            output_path = f"{base_name}_collapsed.tsv"
-
-        print(f"Exporting collapsed data to: {output_path}")
-        collapsed_data.to_csv(output_path, index=False, sep='\t')
-
-        print("File processed and exported successfully.")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"The file '{file_path}' does not exist.")
+    emit(f"Reading file: {file_path}")
+    data = pd.read_csv(file_path, sep='\t')
+    emit("Applying peptide collapse ...")
+    collapsed_data = peptideCollapse(data, cutoff=cutoff, progress=progress)
+    if output_path is None:
+        base_name, _ = os.path.splitext(file_path)
+        output_path = f"{base_name}_collapsed.tsv"
+    emit(f"Exporting collapsed data to: {output_path}")
+    collapsed_data.to_csv(output_path, index=False, sep='\t')
+    emit("File processed and exported successfully.")
+    return collapsed_data

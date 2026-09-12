@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services.html_security import GENERATED_HTML_META
 
 from app.services.plot_export import (
+    cm_to_inch as _cm_to_inch,
     to_png_bytes as _to_png_bytes,
 )
 
@@ -15,6 +16,7 @@ import pandas as pd
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
+    comparison_contrast,
     analysis_data_source,
     extract_sample_id as _extract_id_or_number,
     imputed_data_available,
@@ -245,7 +247,7 @@ def phosphosite_plot_png(
 ) -> bytes:
     plt, _ = _get_plt()
     summary = phosphosite_plot_table(cutoff=cutoff)
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if summary.empty:
         ax.text(0.5, 0.5, "No phospho rows available", ha="center", va="center")
@@ -273,8 +275,6 @@ def _coverage_counts(
     conditions: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     frame, meta, _ = _phospho_context()
-    if "PTM_localization" not in frame.columns:
-        raise ValueError("Phospho dataset must contain PTM_localization for coverage plots.")
 
     meta_filtered, selected_conditions = _filter_meta_conditions(meta, conditions)
     meta_filtered["sample_idx"] = meta_filtered.groupby("condition").cumcount() + 1
@@ -295,20 +295,27 @@ def _coverage_counts(
     if not sample_labels:
         raise ValueError("No samples available in phospho dataset for coverage plot.")
 
-    localization = pd.to_numeric(frame["PTM_localization"], errors="coerce")
-    class_i = labeled_frame.loc[localization >= 0.75, sample_labels]
-    not_class_i = labeled_frame.loc[localization < 0.75, sample_labels]
+    localization = pd.to_numeric(frame.get("PTM_localization", pd.Series(np.nan, index=frame.index)), errors="coerce")
+    localization = localization.where(localization.between(0, 1))
+    observed = labeled_frame[sample_labels].apply(pd.to_numeric, errors="coerce")
+    observed = observed.where(np.isfinite(observed))
+    annotation = get_annotation("phospho")
+    if not bool(getattr(annotation, "is_log2_transformed", False)):
+        observed = observed.mask(observed == 0)
+    class_i = observed.loc[localization >= 0.75]
+    not_class_i = observed.loc[localization < 0.75]
 
     counts = pd.DataFrame(
         {
             "Sample": sample_labels,
             "Class I": class_i.notna().sum().reindex(sample_labels, fill_value=0).astype(int).tolist(),
             "Not Class I": not_class_i.notna().sum().reindex(sample_labels, fill_value=0).astype(int).tolist(),
+            "Unclassified": observed.loc[localization.isna()].notna().sum().tolist(),
         }
     )
     sample_to_condition = dict(zip(meta_filtered["new_sample"], meta_filtered["condition"]))
     counts["Condition"] = counts["Sample"].map(sample_to_condition).fillna("sample")
-    counts["Total"] = counts["Class I"] + counts["Not Class I"]
+    counts["Total"] = counts[["Class I", "Not Class I", "Unclassified"]].sum(axis=1)
 
     summary = (
         counts.groupby("Condition", as_index=False)
@@ -317,6 +324,10 @@ def _coverage_counts(
             classISd=("Class I", "std"),
             notClassIMean=("Not Class I", "mean"),
             notClassISd=("Not Class I", "std"),
+            unclassifiedMean=("Unclassified", "mean"),
+            unclassifiedSd=("Unclassified", "std"),
+            totalMean=("Total", "mean"),
+            totalSd=("Total", "std"),
         )
         .fillna(0.0)
     )
@@ -346,28 +357,24 @@ def phospho_coverage_png(
 ) -> bytes:
     plt, _ = _get_plt()
     counts, summary = _coverage_counts(include_id=include_id, conditions=conditions)
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if str(mode).lower() == "summary":
         rng = np.random.default_rng(random_seed)
         conds = summary["Condition"].astype(str).tolist()
         x = np.arange(len(conds))
-        width = 0.35
-        class_i_mean = summary["classIMean"].to_numpy(dtype=float)
-        class_i_sd = summary["classISd"].to_numpy(dtype=float)
-        not_class_i_mean = summary["notClassIMean"].to_numpy(dtype=float)
-        not_class_i_sd = summary["notClassISd"].to_numpy(dtype=float)
-
-        ax.bar(x - width / 2, class_i_mean, width=width, yerr=class_i_sd, capsize=3, color=color_class_i, label="Class I")
-        ax.bar(x + width / 2, not_class_i_mean, width=width, yerr=not_class_i_sd, capsize=3, color=color_not_class_i, label="Not Class I")
-
-        for idx, condition in enumerate(conds):
-            y_class = counts.loc[counts["Condition"] == condition, "Class I"].to_numpy(dtype=float)
-            y_not = counts.loc[counts["Condition"] == condition, "Not Class I"].to_numpy(dtype=float)
-            if y_class.size:
-                ax.scatter(rng.normal(idx - width / 2, 0.04, y_class.size), y_class, color="black", alpha=0.6, s=8)
-            if y_not.size:
-                ax.scatter(rng.normal(idx + width / 2, 0.04, y_not.size), y_not, color="black", alpha=0.6, s=8)
+        categories = [("Class I", "classI", color_class_i), ("Not Class I", "notClassI", color_not_class_i)]
+        if counts["Unclassified"].any():
+            categories.append(("Unclassified", "unclassified", "#94a3b8"))
+        width = .7 / len(categories)
+        for index, (category, prefix, color) in enumerate(categories):
+            offset = (index - (len(categories) - 1) / 2) * width
+            ax.bar(x + offset, summary[prefix + "Mean"], width=width,
+                   yerr=summary[prefix + "Sd"], capsize=3, color=color, label=category)
+            for idx, condition in enumerate(conds):
+                values = counts.loc[counts["Condition"] == condition, category].to_numpy(dtype=float)
+                ax.scatter(rng.normal(idx + offset, .04, values.size), values,
+                           color="black", alpha=.6, s=8)
         ax.set_xticks(x)
         ax.set_xticklabels(conds, rotation=45, ha="right")
         if header:
@@ -379,6 +386,9 @@ def phospho_coverage_png(
         not_vals = counts["Not Class I"].to_numpy(dtype=float)
         ax.bar(x, class_vals, color=color_class_i, label="Class I")
         ax.bar(x, not_vals, bottom=class_vals, color=color_not_class_i, label="Not Class I")
+        if counts["Unclassified"].any():
+            ax.bar(x, counts["Unclassified"], bottom=class_vals + not_vals,
+                   color="#94a3b8", label="Unclassified")
         ax.set_xticks(x)
         ax.set_xticklabels(counts["Sample"].astype(str).tolist(), rotation=90, fontsize=7)
         ax.set_xlabel("Sample")
@@ -431,7 +441,7 @@ def phospho_distribution_png(
 ) -> bytes:
     plt, _ = _get_plt()
     table = phospho_distribution_table(cutoff=cutoff)
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if table.empty:
         ax.text(0.5, 0.5, "No phosphosite distribution data available", ha="center", va="center")
@@ -458,10 +468,11 @@ def phospho_sty_table() -> pd.DataFrame:
 
     keys = frame["PTM_Collapse_key"].astype(str)
     letters = keys.str.extract(r"~[^_]+_([STY])\d+_")[0]
-    if letters.isna().all():
-        letters = keys.str.extract(r"([STY])\d+")[0]
+    letters = letters.fillna(keys.str.extract(r"(?:^|_)([STY])\d+(?:_|$)")[0])
 
     counts = letters.value_counts().reindex(["S", "T", "Y"], fill_value=0)
+    if letters.isna().any():
+        counts.loc["Unparsed"] = int(letters.isna().sum())
     total = int(counts.sum())
     percentages = (counts / total * 100.0) if total > 0 else counts.astype(float)
     return pd.DataFrame(
@@ -482,7 +493,7 @@ def phospho_sty_png(
 ) -> bytes:
     plt, mtick = _get_plt()
     table = phospho_sty_table()
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     colors = {"S": "#4C78A8", "T": "#F58518", "Y": "#54A24B"}
     bar_colors = [colors.get(label, "#64748b") for label in table["Residue"].tolist()]
     ax.bar(table["Residue"], table["Count"], color=bar_colors, edgecolor="black", linewidth=0.6)
@@ -497,12 +508,14 @@ def phospho_sty_png(
     ax.set_axisbelow(True)
     _apply_advanced_axes(ax, advanced)
 
-    ax2 = ax.twinx()
-    ax2.set_ylabel("Percentage (%)")
-    ax2.set_ylim(0, 100)
-    ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
-    ax2.spines["top"].set_visible(False)
-    _apply_advanced_axes(ax2, advanced)
+    total_count = int(table["Count"].sum())
+    if total_count > 0:
+        ax2 = ax.secondary_yaxis(
+            "right", functions=(lambda count: count * 100 / total_count,
+                                lambda percent: percent * total_count / 100),
+        )
+        ax2.set_ylabel("Percentage (%)")
+        ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
 
     y_max = float(table["Count"].max()) if not table.empty else 0.0
     offset = 0.02 * y_max if y_max > 0 else 0.1
@@ -527,9 +540,9 @@ def _convert_to_centered(seq: object) -> str:
     mod_pos = star_index - 1
     left = clean_seq[:mod_pos]
     right = clean_seq[mod_pos + 1 :]
-    left_tail = left[-6:] if len(left) >= 6 else "_" * (6 - len(left)) + left
-    right_tail = right[:6] if len(right) >= 6 else right + "_" * (6 - len(right))
-    return f"_{left_tail}{mod_residue}{right_tail}_"
+    left_tail = left[-7:].rjust(7, "_")
+    right_tail = right[:7].ljust(7, "_")
+    return f"{left_tail}{mod_residue}{right_tail}"
 
 
 def _ksea_control_table(
@@ -710,7 +723,7 @@ def ksea_plot_png(
         test_type=test_type,
         use_uncorrected=use_uncorrected,
     )
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     color_map = {
         "Downregulated": "#2563eb",
         "Not significant": "#94a3b8",
@@ -759,17 +772,51 @@ def ksea_plot_png(
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
 
-def _normalized_column_name(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
+    frame = pd.DataFrame(index=data.index)
+    names = {
+        column: re.sub(r"[^a-z0-9]", "", str(column).lower().replace("₂", "2"))
+        for column in data.columns
+    }
+    if not data.columns.is_unique:
+        raise ValueError("KSEA result column names must be unique.")
 
+    def numeric_field(aliases, *, effect=False):
+        result = pd.Series(np.nan, index=data.index, dtype=float)
+        found = False
+        for column, name in names.items():
+            if name not in aliases:
+                continue
+            found = True
+            supplied = data[column].notna() & data[column].astype(str).str.strip().ne("")
+            values = pd.to_numeric(data[column], errors="coerce")
+            if (supplied & ~np.isfinite(values)).any():
+                raise ValueError(f"KSEA column '{column}' must contain finite numeric values.")
+            if effect and name == "frequencyfactor":
+                if (supplied & (values <= 0)).any():
+                    raise ValueError("Raw Frequency Factor values must be positive.")
+                values = np.log2(values.where(supplied))
+            elif not effect and (supplied & ((values < 0) | (values > 1))).any():
+                raise ValueError("Adjusted p-values must be between 0 and 1.")
+            conflict = supplied & result.notna() & ~np.isclose(result, values, rtol=1e-10, atol=1e-12)
+            if conflict.any():
+                raise ValueError("Conflicting KSEA result columns; provide consistent values.")
+            result = result.where(result.notna(), values.where(supplied))
+        if not found or result.isna().any():
+            raise ValueError("Each KSEA row requires a frequency factor and adjusted p-value.")
+        return result
 
-def _resolve_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    normalized_map = {_normalized_column_name(column): str(column) for column in df.columns}
-    for candidate in candidates:
-        hit = normalized_map.get(_normalized_column_name(candidate))
-        if hit:
-            return hit
-    return None
+    if data.empty:
+        return pd.DataFrame(columns=["Kinase", "Log2(Frequency Factor)", "Adjusted p-value"])
+    frame["Log2(Frequency Factor)"] = numeric_field({"log2frequencyfactor", "frequencyfactor"}, effect=True)
+    frame["Adjusted p-value"] = numeric_field({"adjustedpvalue", "adjustedp"})
+    labels = pd.Series(pd.NA, index=data.index, dtype="object")
+    for alias in ("kinase", "genename", "gene"):
+        for column, name in names.items():
+            if name == alias:
+                labels = labels.fillna(data[column].where(data[column].astype(str).str.strip().ne("")))
+    frame["Kinase"] = labels.fillna(frame["Log2(Frequency Factor)"].astype(str)).astype(str)
+    return frame
 
 
 def ksea_uploaded_volcano_html(
@@ -780,52 +827,18 @@ def ksea_uploaded_volcano_html(
     header: bool = True,
     condition1: str = "",
     condition2: str = "",
+    condition1_control: str = "",
+    condition2_control: str = "",
     annotate_hits: bool = False,
     advanced: dict | None = None,
 ) -> str:
     go = _get_plotly_go()
-    df = pd.concat([st_results.copy(), tnc_results.copy()], ignore_index=True)
+    df = pd.concat([_normalize_ksea_results(st_results), _normalize_ksea_results(tnc_results)], ignore_index=True)
     if df.empty:
         raise ValueError("Uploaded KSEA result files are empty.")
 
-    log2_col = _resolve_column(
-        df,
-        [
-            "Log₂(Frequency Factor)",
-            "Log2(Frequency Factor)",
-            "Log2 Frequency Factor",
-            "Frequency Factor",
-        ],
-    )
-    pval_col = _resolve_column(
-        df,
-        [
-            "Adjusted p-value",
-            "Adjusted p value",
-            "Adjusted pvalue",
-            "Adjusted p",
-        ],
-    )
-    kinase_col = _resolve_column(df, ["Kinase", "Gene Name", "Gene"])
-    if not log2_col or not pval_col:
-        raise ValueError(
-            "Uploaded results must contain frequency-factor and adjusted p-value columns."
-        )
-    if not kinase_col:
-        kinase_col = log2_col
-
-    frame = pd.DataFrame(
-        {
-            "kinase": df[kinase_col].astype(str),
-            "log2ff": pd.to_numeric(df[log2_col], errors="coerce"),
-            "adj_pval": pd.to_numeric(df[pval_col], errors="coerce"),
-        }
-    ).dropna(subset=["log2ff", "adj_pval"])
-    if frame.empty:
-        raise ValueError("Uploaded KSEA result files do not contain usable numeric rows.")
-
-    frame["adj_pval"] = np.clip(frame["adj_pval"], 1e-300, 1.0)
-    frame["neg_log10_pval"] = -np.log10(frame["adj_pval"])
+    frame = df.rename(columns={"Kinase": "kinase", "Log2(Frequency Factor)": "log2ff", "Adjusted p-value": "adj_pval"})
+    frame["neg_log10_pval"] = -np.log10(frame["adj_pval"].clip(lower=1e-300))
 
     def classify(row: pd.Series) -> str:
         if float(row["adj_pval"]) < p_value_threshold:
@@ -889,12 +902,14 @@ def ksea_uploaded_volcano_html(
     if header:
         if condition1 and condition2:
             title = f"KSEA Volcano Plot: {condition1} vs. {condition2}"
+            if condition1_control and condition2_control:
+                title += f" (controls: {condition1_control} vs {condition2_control})"
         else:
             title = "KSEA Volcano Plot"
 
     x_label = "Log2(Frequency Factor)"
     if condition1 and condition2:
-        x_label = f"Log2(Frequency Factor) ({condition2} - {condition1})"
+        x_label = f"Log2(Frequency Factor) (contrast: {comparison_contrast(condition1, condition2, condition1_control, condition2_control)})"
 
     fig.update_layout(
         title=title,
@@ -1075,7 +1090,7 @@ def phosprot_regulation_png(
         max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites,
     )
-    fig, ax = plt.subplots(figsize=(max(1, width_cm / 2.54), max(1, height_cm / 2.54)))
+    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     if table.empty:
         ax.text(
             0.5,

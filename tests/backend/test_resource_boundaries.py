@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,123 @@ def test_plot_conversion_rejects_excessive_generated_image(monkeypatch) -> None:
 
     response = asyncio.run(main.plot_download_format_middleware(_plot_request(), call_next))
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA", "P"])
+def test_plot_conversion_preserves_alpha_and_composites_white(mode) -> None:
+    from PIL import Image
+
+    source = Image.new("RGBA", (600, 300), (0, 0, 0, 0))
+    source.paste((200, 0, 0, 255), (200, 100, 400, 200))
+    source.paste((0, 0, 0, 128), (400, 100, 500, 200))
+    source = source.convert(mode)
+    buf = io.BytesIO()
+    source.save(buf, format="PNG", dpi=(300, 300))
+    png = buf.getvalue()
+    assert main._convert_png_bytes(png, "png") == (png, "image/png")
+    webp, media = main._convert_png_bytes(png, "webp")
+    assert media == "image/webp"
+    with Image.open(io.BytesIO(webp)) as result:
+        assert result.size == source.size
+        for point in [(0, 0), (300, 150), (450, 150)]:
+            assert result.getpixel(point) == source.convert("RGBA").getpixel(point)
+    for fmt in ("jpg", "jpeg", "pdf"):
+        data, media = main._convert_png_bytes(png, fmt)
+        if fmt == "pdf":
+            box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", data)
+            assert box is not None
+            assert list(map(float, box[1].split())) == pytest.approx([0, 0, 144, 72], abs=0.01)
+            # Pillow embeds the composited RGB raster as a JPEG stream.
+            start, end = data.index(b"\xff\xd8"), data.index(b"\xff\xd9") + 2
+            data = data[start:end]
+        with Image.open(io.BytesIO(data)) as result:
+            assert result.size == source.size
+            assert result.mode == "RGB"
+            assert result.getpixel((0, 0)) == (255, 255, 255)
+            assert result.getpixel((450, 150)) == pytest.approx((127, 127, 127), abs=2)
+            if fmt != "pdf":
+                assert result.info["dpi"] == (300, 300)
+
+
+def test_plot_pdf_size_without_resolution_metadata() -> None:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (600, 300), "white").save(buf, format="PNG")
+    pdf, _ = main._convert_png_bytes(buf.getvalue(), "pdf")
+    box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", pdf)
+    assert list(map(float, box[1].split())) == [0, 0, 600, 300]
+
+
+def test_pdf_download_is_native_and_cache_cannot_replace_png_preview(monkeypatch) -> None:
+    import matplotlib.pyplot as plt
+    from app.api import routes_plots
+    from app.services.plot_export import to_png_bytes, plot_output_format
+    from app.services.runtime_cache import cached_function, invalidate_runtime_cache
+
+    rendered = []
+    def render(kind, **kwargs):
+        rendered.append(plot_output_format.get())
+        fig, ax = plt.subplots(figsize=(3.35, 2.36))
+        ax.plot([0, 1, 2], [1, 3, 2])
+        ax.scatter([0, 1, 2], [1, 3, 2], rasterized=True)
+        ax.set_xlabel("Sample")
+        ax.set_ylabel("Intensity")
+        fig.tight_layout()
+        return to_png_bytes(fig, plt, dpi=150, tight=False)
+
+    invalidate_runtime_cache()
+    monkeypatch.setattr(routes_plots, "qc_coverage_plot", cached_function(render))
+    try:
+        with TestClient(main.app) as client:
+            for fmt in ("png", "pdf", "png", "pdf"):
+                response = client.get(f"/api/plots/qc/protein/coverage.png?downloadFormat={fmt}")
+                assert response.status_code == 200, response.text[:200]
+                if fmt == "png":
+                    assert response.headers["content-type"] == "image/png"
+                    assert response.content.startswith(b"\x89PNG")
+                else:
+                    assert response.headers["content-type"] == "application/pdf"
+                    assert response.content.startswith(b"%PDF-")
+                    assert b"/FontFile2" in response.content
+                    assert b"/Subtype /Image" not in response.content
+                    box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", response.content)
+                    assert list(map(float, box[1].split())) == pytest.approx([0, 0, 241.2, 169.92])
+        assert rendered == ["png", "pdf"]
+        assert plot_output_format.get() == "png"
+    finally:
+        invalidate_runtime_cache()
+
+
+def test_plot_figure_is_closed_when_serialization_fails(monkeypatch) -> None:
+    import matplotlib.pyplot as plt
+    from app.services.plot_export import to_png_bytes
+
+    fig = plt.figure()
+    monkeypatch.setattr(fig, "savefig", lambda *a, **k: (_ for _ in ()).throw(ValueError("synthetic")))
+    with pytest.raises(ValueError, match="synthetic"):
+        to_png_bytes(fig, plt)
+    assert not plt.fignum_exists(fig.number)
+
+
+def test_rendered_plot_keeps_physical_canvas_size_in_pdf() -> None:
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    from app.services.plot_export import to_png_bytes
+
+    fig, ax = plt.subplots(figsize=(3.35, 2.36))
+    fig._copylot_transparent_background = True
+    ax.plot([0, 1, 2], [0, 2, 1])
+    png = to_png_bytes(fig, plt, dpi=300, tight=False)
+    with Image.open(io.BytesIO(png)) as source:
+        width, height = source.size
+        xdpi, ydpi = source.info["dpi"]
+        assert source.getpixel((0, 0))[3] == 0
+    pdf, _ = main._convert_png_bytes(png, "pdf")
+    box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", pdf)
+    assert list(map(float, box[1].split())) == pytest.approx(
+        [0, 0, width * 72 / xdpi, height * 72 / ydpi], abs=0.001
+    )
 
 
 def test_health_reports_frontend_availability_without_filesystem_path() -> None:

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import anyio
 import os
+import time
+from contextvars import ContextVar
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import AsyncIterator, Deque
+from starlette.responses import JSONResponse
 
 from app.services.session_context import get_session_id
 
 
 _DEFAULT_QUEUE_TIMEOUT_SECONDS = 20.0
+provider_deadline: ContextVar[float | None] = ContextVar("provider_deadline", default=None)
 
 
 class HeavyWorkloadBusyError(RuntimeError):
@@ -258,3 +263,62 @@ def is_heavy_request(method: str, path: str) -> bool:
     return normalized in _HEAVY_EXACT or any(
         normalized.startswith(prefix) for prefix in _HEAVY_PREFIXES
     )
+
+
+class ProviderWorkloadMiddleware:
+    """Separate provider admission, held until the complete ASGI response exits."""
+
+    def __init__(self, app):
+        self.app = app
+        self.gate = _WorkloadGate(
+            limit=_positive_env_int("COPYLOT_PROVIDER_MAX_CONCURRENCY", 4),
+            max_queue=_positive_env_int("COPYLOT_PROVIDER_MAX_QUEUE", 8, minimum=0),
+        )
+
+    async def __call__(self, scope, receive, send):
+        paths = {
+            "/api/chat/stream", "/api/chat/ollama", "/api/chat/ollama-stream",
+            "/api/chat/models", "/api/chat/models/install", "/api/chat/models/remove",
+            "/api/chat/model-capability", "/api/chat/gpu-status",
+        }
+        if (scope["type"] != "http" or scope.get("method") == "OPTIONS"
+                or scope.get("path", "").rstrip("/") not in paths):
+            await self.app(scope, receive, send)
+            return
+        try:
+            async with self.gate.slot(
+                _positive_env_float("COPYLOT_PROVIDER_QUEUE_TIMEOUT_SECONDS", 20),
+                get_session_id(),
+            ):
+                management = scope.get("path", "").rstrip("/") in {
+                    "/api/chat/models/install", "/api/chat/models/remove",
+                }
+                seconds = _positive_env_float(
+                    "COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT" if management else "COPYLOT_PROVIDER_TIMEOUT_SECONDS",
+                    1800 if management else 180,
+                )
+                token = provider_deadline.set(time.monotonic() + seconds)
+                started = False
+
+                async def send_response(message):
+                    nonlocal started
+                    if message["type"] == "http.response.start":
+                        started = True
+                    await send(message)
+
+                try:
+                    with anyio.fail_after(seconds):
+                        await self.app(scope, receive, send_response)
+                except TimeoutError:
+                    if started:
+                        raise
+                    await JSONResponse(
+                        {"detail": "AI provider operation exceeded its time limit."}, status_code=504,
+                    )(scope, receive, send)
+                finally:
+                    provider_deadline.reset(token)
+        except HeavyWorkloadBusyError:
+            await JSONResponse(
+                {"detail": "AI provider capacity is busy. Try again shortly."},
+                status_code=503, headers={"Retry-After": "5"},
+            )(scope, receive, send)

@@ -241,7 +241,7 @@ def test_backend_and_notebook_paired_statistics_match_identity_and_missingness(
     )
     assert notebook_result["n_pairs"].tolist() == [3, 4, 4, 4]
     assert notebook_result["log2FC"].tolist() == [5.0, 0.0, 2.0, 1.0]
-    assert notebook_result["pval"].iloc[1] == 1.0
+    assert np.isnan(notebook_result["pval"].iloc[1])
     assert notebook_result["pval"].iloc[2] == 0.0
 
     reordered = metadata.sample(frac=1, random_state=7).reset_index(drop=True)

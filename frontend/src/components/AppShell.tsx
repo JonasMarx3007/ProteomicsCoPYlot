@@ -222,6 +222,8 @@ export default function AppShell({
   const [gpuStatusMessage, setGpuStatusMessage] = useState<string | null>(null);
   const [gpuRemoteEndpoint, setGpuRemoteEndpoint] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => chatAbortRef.current?.abort(), []);
   const chatOllamaEndpointAppliedRef = useRef(DEFAULT_DEV_OLLAMA_ENDPOINT);
   const contextCacheRef = useRef<Record<string, ModuleContextResponse>>({});
   const contextPendingRef = useRef<Record<string, Promise<ModuleContextResponse | null>>>({});
@@ -240,6 +242,7 @@ export default function AppShell({
   );
 
   const resetChatForModelChange = useCallback(() => {
+    chatAbortRef.current?.abort();
     setChatMessages([{ role: "assistant", content: CHAT_READY_MESSAGE }]);
     setChatInput("");
     setChatError(null);
@@ -557,10 +560,6 @@ export default function AppShell({
       );
       return;
     }
-    if (!usingOllama && !chatApiKey.trim()) {
-      setChatError("No API key provided. Add your API key in AI settings first.");
-      return;
-    }
     if (!usingOllama) {
       setCloudConsentBusy(true);
       try {
@@ -592,6 +591,8 @@ export default function AppShell({
     setChatInput("");
     setChatError(null);
     setChatLoading(true);
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
 
     try {
       let contextPrompt = "";
@@ -623,13 +624,14 @@ export default function AppShell({
           provider: chatProvider,
           model: selectedModel,
           gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
-          apiKey: usingOllama ? undefined : chatApiKey.trim(),
+          apiKey: usingOllama ? undefined : chatApiKey.trim() || undefined,
           temperature: usingOllama ? undefined : Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
           maxTokens: usingOllama ? undefined : Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : undefined,
           ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
           analysisContext: contextPrompt || undefined,
         },
         (chunk) => {
+          if (controller.signal.aborted) return;
           setChatMessages((current) => {
             if (current.length === 0) return current;
             const next = [...current];
@@ -642,8 +644,10 @@ export default function AppShell({
             }
             return next;
           });
-        }
+        },
+        controller.signal
       );
+      if (controller.signal.aborted) return;
       if (usingOllama) {
         setChatModel(response.model || chatModel);
       } else {
@@ -670,10 +674,11 @@ export default function AppShell({
         }
         return next;
       });
-      if (!consentRequired) {
+      if (!consentRequired && !controller.signal.aborted) {
         setChatError(err instanceof Error ? err.message : "Failed to load chatbot response");
       }
     } finally {
+      chatAbortRef.current = null;
       setChatLoading(false);
     }
   }
@@ -1092,17 +1097,17 @@ export default function AppShell({
               />
               <button
                 type="button"
-                onClick={() => void sendChatMessage()}
+                onClick={() => chatLoading ? chatAbortRef.current?.abort() : void sendChatMessage()}
                 disabled={
-                  chatLoading ||
+                  !chatLoading && (
                   cloudConsentBusy ||
                   !chatInput.trim() ||
-                  !selectedChatModel ||
-                  (!usingOllama && !chatApiKey.trim())
+                  !selectedChatModel
+                  )
                 }
                 className="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
               >
-                {chatLoading ? "Sending..." : "Send"}
+                {chatLoading ? "Stop" : "Send"}
               </button>
             </div>
           </aside>

@@ -16,6 +16,98 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services import workload_manager
 from app import main as main_module
+
+
+@pytest.mark.parametrize("path", [
+    "/api/chat/stream", "/api/chat/ollama", "/api/chat/ollama-stream",
+    "/api/chat/models", "/api/chat/models/install", "/api/chat/models/remove",
+    "/api/chat/model-capability", "/api/chat/gpu-status",
+])
+def test_provider_admission_lasts_through_response_and_releases_on_failure(monkeypatch, path):
+    monkeypatch.setenv("COPYLOT_PROVIDER_MAX_CONCURRENCY", "1")
+    monkeypatch.setenv("COPYLOT_PROVIDER_MAX_QUEUE", "0")
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            entered.set()
+            await release.wait()
+            raise OSError("disconnected during body")
+
+        middleware = workload_manager.ProviderWorkloadMiddleware(app)
+        scope = {"type": "http", "method": "POST", "path": path}
+        async def receive():
+            return {"type": "http.disconnect"}
+        async def discard(message):
+            pass
+        active = asyncio.create_task(middleware(scope, receive, discard))
+        await entered.wait()
+        messages = []
+        async def capture(message):
+            messages.append(message)
+        await middleware(scope, receive, capture)
+        assert messages[0]["status"] == 503
+        assert middleware.gate.active == 1
+        release.set()
+        with pytest.raises(OSError):
+            await active
+        assert middleware.gate.active == middleware.gate.waiting == 0
+
+    asyncio.run(scenario())
+
+
+def test_provider_gate_does_not_consume_analysis_capacity(monkeypatch):
+    async def scenario():
+        seen = []
+        async def app(scope, receive, send):
+            seen.append(middleware.gate.active)
+        middleware = workload_manager.ProviderWorkloadMiddleware(app)
+        for path in ("/api/plots/qc/test.png", "/api/chat/module-context", "/api/health"):
+            await middleware({"type": "http", "method": "GET", "path": path}, None, None)
+        assert seen == [0, 0, 0]
+    asyncio.run(scenario())
+
+
+def test_provider_deadline_propagates_to_workers_and_resets(monkeypatch):
+    import time
+    monkeypatch.setenv("COPYLOT_PROVIDER_TIMEOUT_SECONDS", "7")
+
+    async def scenario():
+        async def app(scope, receive, send):
+            deadline = await run_in_threadpool(workload_manager.provider_deadline.get)
+            assert 6 < deadline - time.monotonic() <= 7
+        middleware = workload_manager.ProviderWorkloadMiddleware(app)
+        await middleware({"type": "http", "method": "POST", "path": "/api/chat/stream"}, None, None)
+        assert workload_manager.provider_deadline.get() is None
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_provider_deadline_releases_slot_without_second_headers(monkeypatch, started):
+    monkeypatch.setenv("COPYLOT_PROVIDER_TIMEOUT_SECONDS", "0.03")
+
+    async def scenario():
+        messages = []
+        async def send(message):
+            messages.append(message)
+        async def app(scope, receive, send):
+            if started:
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+            await asyncio.sleep(10)
+        middleware = workload_manager.ProviderWorkloadMiddleware(app)
+        scope = {"type": "http", "method": "POST", "path": "/api/chat/stream"}
+        if started:
+            with pytest.raises(TimeoutError):
+                await middleware(scope, None, send)
+            assert len(messages) == 1
+        else:
+            await middleware(scope, None, send)
+            assert messages[0]["status"] == 504
+        assert middleware.gate.active == middleware.gate.waiting == 0
+        assert workload_manager.provider_deadline.get() is None
+    asyncio.run(scenario())
 from app.services.session_context import (
     get_session_id,
     reset_session_id,

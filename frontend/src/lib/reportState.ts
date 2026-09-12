@@ -14,7 +14,7 @@ const REPORT_SCOPE_KEY = "pcopylot.report.datasetScope.v1";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
-    const raw = globalThis.localStorage?.getItem(key);
+    const raw = globalThis.sessionStorage?.getItem(key);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as T;
     return parsed ?? fallback;
@@ -25,7 +25,7 @@ function readJson<T>(key: string, fallback: T): T {
 
 function writeJson(key: string, value: unknown) {
   try {
-    globalThis.localStorage?.setItem(key, JSON.stringify(value));
+    globalThis.sessionStorage?.setItem(key, JSON.stringify(value));
   } catch {
     // Ignore storage write failures (private mode, quota, etc.).
   }
@@ -33,7 +33,7 @@ function writeJson(key: string, value: unknown) {
 
 function readRaw(key: string): string | null {
   try {
-    return globalThis.localStorage?.getItem(key) ?? null;
+    return globalThis.sessionStorage?.getItem(key) ?? null;
   } catch {
     return null;
   }
@@ -41,7 +41,7 @@ function readRaw(key: string): string | null {
 
 function writeRaw(key: string, value: string) {
   try {
-    globalThis.localStorage?.setItem(key, value);
+    globalThis.sessionStorage?.setItem(key, value);
   } catch {
     // Ignore storage write failures (private mode, quota, etc.).
   }
@@ -49,7 +49,7 @@ function writeRaw(key: string, value: string) {
 
 function removeKey(key: string) {
   try {
-    globalThis.localStorage?.removeItem(key);
+    globalThis.sessionStorage?.removeItem(key);
   } catch {
     // Ignore storage write failures (private mode, quota, etc.).
   }
@@ -104,7 +104,7 @@ export function saveQcReportSettings(
     QC_SETTINGS_KEY,
     {}
   );
-  all[kind] = settings;
+  all[kind] = { ...all[kind], ...settings };
   writeJson(QC_SETTINGS_KEY, all);
 }
 
@@ -182,6 +182,7 @@ export function getSummaryReportContext(): SummaryReportContext {
   return {
     qcSettings,
     volcanoEntries,
+    completenessSettings: readPersistedUiState<{ missingPlot?: Record<string, unknown> }>("completeness.v1", {}).missingPlot ?? {},
     advancedPlotMode: getAdvancedPlotMode(),
     advancedPlotSettingsByKey: getAdvancedPlotSettingsByKey(),
     qcAdvancedSettingsByTab: readAdvancedUiState("qc.pipeline.v1"),

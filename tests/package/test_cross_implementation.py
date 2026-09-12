@@ -421,11 +421,11 @@ def test_volcano_variance_models_agree(results, test_type: str) -> None:
     merged = python_result.merge(r_result, on="ProteinNames", suffixes=("_py", "_r"))
     assert len(merged) == len(python_result) == len(r_result)
     for column in ("log2FC", "pval", "adj_pval"):
-        difference = np.abs(
-            merged[f"{column}_py"].to_numpy(dtype=float)
-            - merged[f"{column}_r"].to_numpy(dtype=float)
-        ).max()
-        assert difference < TOLERANCE, f"{test_type}: {column} differs by {difference:.2e}"
+        np.testing.assert_allclose(
+            merged[f"{column}_py"].to_numpy(dtype=float),
+            merged[f"{column}_r"].to_numpy(dtype=float),
+            rtol=0, atol=TOLERANCE, equal_nan=True, err_msg=f"{test_type}: {column}",
+        )
 
 
 @requires_r
@@ -459,11 +459,11 @@ def test_control_volcano_agrees(results) -> None:
     merged = python_result.merge(r_result, on="ProteinNames", suffixes=("_py", "_r"))
     assert len(merged) == len(python_result) == len(r_result)
     for column in ("log2FC", "pval", "adj_pval"):
-        difference = np.abs(
-            merged[f"{column}_py"].to_numpy(dtype=float)
-            - merged[f"{column}_r"].to_numpy(dtype=float)
-        ).max()
-        assert difference < TOLERANCE, f"control volcano {column} differs by {difference:.2e}"
+        np.testing.assert_allclose(
+            merged[f"{column}_py"].to_numpy(dtype=float),
+            merged[f"{column}_r"].to_numpy(dtype=float),
+            rtol=0, atol=TOLERANCE, equal_nan=True, err_msg=f"control volcano {column}",
+        )
 
 
 @requires_r
@@ -480,12 +480,10 @@ def test_pipeline_variance_models_agree(
     merged = python_result.merge(r_result, on=key_column, suffixes=("_py", "_r"))
     assert len(merged) == len(python_result) == len(r_result)
     for column in ("log2FC", "pval", "adj_pval"):
-        difference = np.abs(
-            merged[f"{column}_py"].to_numpy(dtype=float)
-            - merged[f"{column}_r"].to_numpy(dtype=float)
-        ).max()
-        assert difference < TOLERANCE, (
-            f"{name}: {column} differs by {difference:.2e} between public Python and R"
+        np.testing.assert_allclose(
+            merged[f"{column}_py"].to_numpy(dtype=float),
+            merged[f"{column}_r"].to_numpy(dtype=float),
+            rtol=0, atol=TOLERANCE, equal_nan=True, err_msg=f"{name}: {column}",
         )
 
 
@@ -776,7 +774,8 @@ def test_paired_constant_and_missing_edges(tmp_path) -> None:
     _, counts, backend_p = paired_t_test(differences[:6])
     np.testing.assert_allclose(actual.pval, backend_p, rtol=1e-9, atol=1e-12)
     np.testing.assert_array_equal(actual.n_pairs, counts)
-    assert actual.pval.iloc[:3].tolist() == [0., 0., 1.]
+    assert actual.pval.iloc[:2].tolist() == [0., 0.]
+    assert np.isnan(actual.pval.iloc[2])
     assert 0 < actual.pval.iloc[3] < 1e-30
     np.testing.assert_allclose(actual.pval.iloc[4:],
                                [ttest_1samp(row[np.isfinite(row)], 0).pvalue for row in differences[4:6]])

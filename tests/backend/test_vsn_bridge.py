@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.services import r_vsn
 from app.services.functions import normalize_data
+from app.services.annotation_processor import prepare_normalized_log2_data, compute_annotation
+from app.schemas.annotation import ConditionAssignment
+from app.services.r_runtime import detect_r_runtime
 
 SAMPLES = [f"s{i}" for i in range(4)]
 
@@ -44,6 +48,75 @@ def test_availability_report_is_self_consistent() -> None:
         assert info.get("reason") is None
     else:
         assert str(info.get("reason") or "").strip()
+
+
+@pytest.mark.parametrize("is_log2", [False, True])
+def test_vsn_boundary_preserves_observations_and_missingness(monkeypatch, is_log2):
+    source = pd.DataFrame({"id": ["P1", "P2", "P3"], "A": [0., 1.23456789012345, np.nan]})
+    before = source.copy()
+
+    def normalize(linear):
+        if is_log2:
+            assert linear.loc[0, "A"] == 1.
+        else:
+            assert pd.isna(linear.loc[0, "A"])
+            assert linear.loc[1, "A"] == source.loc[1, "A"]
+        assert pd.isna(linear.loc[2, "A"])
+        return pd.DataFrame(42., index=linear.index, columns=linear.columns)
+
+    monkeypatch.setattr(r_vsn, "vsn_normalize_linear", normalize)
+    result = prepare_normalized_log2_data(source, ["A"], is_log2, "vsn")
+    assert pd.isna(result.loc[0, "A"]) == (not is_log2)
+    assert result.loc[1, "A"] == 42.
+    assert pd.isna(result.loc[2, "A"])
+    pd.testing.assert_frame_equal(source, before)
+    pd.testing.assert_series_equal(source["id"], result["id"])
+
+
+@pytest.mark.skipif(not _vsn_ready(), reason="Bioconductor vsn is not installed")
+@pytest.mark.parametrize("is_log2", [False, True])
+def test_real_vsn_annotation_filter_keeps_scale_contract(is_log2):
+    source = _log2_frame()
+    if not is_log2:
+        source[SAMPLES] = np.power(2., source[SAMPLES])
+    source.loc[0, SAMPLES[0]] = 0.
+    source.loc[1, SAMPLES[0]] = np.nan
+    result = compute_annotation(
+        source, [ConditionAssignment(name="A", columns=SAMPLES)],
+        is_log2, len(SAMPLES), "overall", normalization="vsn",
+    )
+    assert pd.isna(result.log2_data.loc[0, SAMPLES[0]]) == (not is_log2)
+    assert pd.isna(result.log2_data.loc[1, SAMPLES[0]])
+    assert ("P0" in result.filtered_data.ProteinNames.values) == is_log2
+    assert "P1" not in result.filtered_data.ProteinNames.values
+
+
+@pytest.mark.skipif(not _vsn_ready(), reason="Bioconductor vsn is not installed")
+def test_r_notebook_vsn_preserves_raw_missingness_and_log2_zero():
+    script = '''
+      source("proteomicscopylot/notebook_functions.R")
+      set.seed(3)
+      d <- as.data.frame(matrix(rnorm(480, 20, 2), ncol=4))
+      names(d) <- paste0("s", 0:3)
+      samples <- names(d)
+      raw <- 2^d
+      raw[1, 1] <- 0
+      raw[2, 1] <- NA_real_
+      raw_before <- raw
+      plain <- log2(raw)
+      plain[1, 1] <- NA_real_
+      output <- normalize_data(plain, samples, "vsn", linear_source=raw)
+      stopifnot(identical(raw, raw_before))
+      stopifnot(is.na(output[1,1]), is.na(output[2,1]))
+      stopifnot(all(is.finite(as.matrix(output[-c(1,2),]))))
+      d[1,1] <- 0
+      d[2,1] <- NA_real_
+      output_log <- normalize_data(d, samples, "vsn")
+      stopifnot(is.finite(output_log[1,1]), is.na(output_log[2,1]))
+    '''
+    result = subprocess.run([detect_r_runtime()["executable"], "-e", script],
+                            cwd=ROOT, capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stderr
 
 
 def test_unavailable_vsn_raises_an_actionable_error(monkeypatch: pytest.MonkeyPatch) -> None:

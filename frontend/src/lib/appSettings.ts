@@ -7,15 +7,6 @@ const ADVANCED_PLOT_MODE_KEY = "copylot:advancedPlotMode";
 const ACTIVE_ADVANCED_PLOT_SETTINGS_KEY = "copylot:activeAdvancedPlotSettings";
 const ADVANCED_PLOT_SETTINGS_BY_KEY = "copylot:advancedPlotSettingsByKey";
 
-function readString(key: string): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-
 function readSessionString(key: string): string {
   if (typeof window === "undefined") return "";
   try {
@@ -25,28 +16,10 @@ function readSessionString(key: string): string {
   }
 }
 
-function writeString(key: string, value: string) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Ignore storage failures; the in-memory UI state still updates.
-  }
-}
-
 function writeSessionString(key: string, value: string) {
   if (typeof window === "undefined") return;
   try {
     window.sessionStorage.setItem(key, value);
-  } catch {
-    // Ignore storage failures; the in-memory UI state still updates.
-  }
-}
-
-function removeString(key: string) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(key);
   } catch {
     // Ignore storage failures; the in-memory UI state still updates.
   }
@@ -87,40 +60,25 @@ export function initializeAdvancedPlotState() {
     removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
     return;
   }
-  removeString(ADVANCED_PLOT_MODE_KEY);
-  removeString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
-  removeString(ADVANCED_PLOT_SETTINGS_BY_KEY);
   removeSessionString(ADVANCED_PLOT_MODE_KEY);
   removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
   removeSessionString(ADVANCED_PLOT_SETTINGS_BY_KEY);
 }
 
 export function getAdvancedPlotMode(): boolean {
-  if (IS_VIEWER_MODE) return readSessionString(ADVANCED_PLOT_MODE_KEY) === "1";
-  return readString(ADVANCED_PLOT_MODE_KEY) === "1";
+  return readSessionString(ADVANCED_PLOT_MODE_KEY) === "1";
 }
 
 export function setAdvancedPlotMode(enabled: boolean) {
-  if (IS_VIEWER_MODE) {
-    writeSessionString(ADVANCED_PLOT_MODE_KEY, enabled ? "1" : "0");
-    if (!enabled) {
-      removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
-    }
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("copylot:advancedPlotModeChanged"));
-    }
-    return;
-  }
-  writeString(ADVANCED_PLOT_MODE_KEY, enabled ? "1" : "0");
+  writeSessionString(ADVANCED_PLOT_MODE_KEY, enabled ? "1" : "0");
+  if (!enabled) removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("copylot:advancedPlotModeChanged"));
   }
 }
 
 export function getAdvancedPlotSettingsByKey(): Record<string, AdvancedPlotSettings> {
-  const raw = IS_VIEWER_MODE
-    ? readSessionString(ADVANCED_PLOT_SETTINGS_BY_KEY)
-    : readString(ADVANCED_PLOT_SETTINGS_BY_KEY);
+  const raw = readSessionString(ADVANCED_PLOT_SETTINGS_BY_KEY);
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -133,11 +91,7 @@ export function getAdvancedPlotSettingsByKey(): Record<string, AdvancedPlotSetti
 }
 
 export function setAdvancedPlotSettingsByKey(settings: Record<string, AdvancedPlotSettings>) {
-  if (IS_VIEWER_MODE) {
-    writeSessionString(ADVANCED_PLOT_SETTINGS_BY_KEY, JSON.stringify(settings));
-    return;
-  }
-  writeString(ADVANCED_PLOT_SETTINGS_BY_KEY, JSON.stringify(settings));
+  writeSessionString(ADVANCED_PLOT_SETTINGS_BY_KEY, JSON.stringify(settings));
 }
 
 export function setActiveAdvancedPlotSettings(settings: AdvancedPlotSettings | null) {

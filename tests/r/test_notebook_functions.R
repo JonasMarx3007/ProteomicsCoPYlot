@@ -343,7 +343,7 @@ pair_result <- volcano_data_f(
 )
 stopifnot(identical(pair_result$n_pairs, c(3L, 4L, 4L, 4L)))
 stopifnot(isTRUE(all.equal(pair_result$log2FC, c(5, 0, 2, 1))))
-stopifnot(identical(pair_result$pval[2:3], c(1, 0)))
+stopifnot(is.na(pair_result$pval[2]), pair_result$pval[3] == 0)
 reordered_result <- volcano_data_f(
   pair_data,
   pair_meta[c(8, 2, 5, 1, 6, 4, 7, 3), ],
@@ -480,6 +480,66 @@ for (scale_mode in c("robust_site_median", "mean", "sum_ignore_na", "sum_propaga
   observed <- observed[is.finite(observed)]
   stopifnot(length(observed) > 0)
   stopifnot(max(observed) < 60)
+}
+
+for (protein in c("P", "P.1", "P+1")) {
+  for (shared in c(FALSE, TRUE)) {
+    coverage_data <- data.frame(
+      ProteinNames = c(
+        protein, paste0(protein, "-2"), paste0(protein, "X"), paste0("X", protein),
+        if (shared) paste0("OTHER; ", protein, " ") else "OTHER", NA, protein
+      ),
+      Stripped.Sequence = c("AAA", "CCC", "CCC", "CCC", "CCC", "CCC", NA)
+    )
+    coverage_db <- data.frame(name = protein, V1 = "AAACCC")
+    coverage_path <- tempfile(fileext = ".tsv")
+    write.table(coverage_data, coverage_path, sep = "\t", row.names = FALSE, quote = FALSE)
+    coverage_value <- tryCatch(
+      calculate_coverage(coverage_path, coverage_db, protein),
+      finally = unlink(coverage_path)
+    )
+    stopifnot(coverage_value == if (shared) 100 else 50)
+    coverage_text <- vis_coverage(coverage_data, coverage_db, protein)
+    stopifnot(grepl(if (shared) "AAACCC\nAAACCC" else "AAA---\nAAACCC", coverage_text, fixed = TRUE))
+  }
+}
+
+coverage_cases <- list(
+  list("AAAA", "AAA", c(1L, 2L), 100),
+  list("AAACAAA", "AAA", c(1L, 5L), 85.71),
+  list("CAAAC", "AAA", 2L, 60),
+  list("AAAA", "WWW", integer(0), 0),
+  list("AAAA", "AAAAA", integer(0), 0)
+)
+for (case in coverage_cases) {
+  sequence <- case[[1]]
+  peptide <- case[[2]]
+  stopifnot(identical(.peptide_starts(sequence, peptide), case[[3]]))
+  stopifnot(length(.peptide_starts(sequence, "")) == 0)
+  coverage_data <- data.frame(ProteinNames = "P", Stripped.Sequence = peptide)
+  coverage_db <- data.frame(name = "P", V1 = sequence)
+  coverage_path <- tempfile(fileext = ".tsv")
+  write.table(coverage_data, coverage_path, sep = "\t", row.names = FALSE, quote = FALSE)
+  coverage_value <- tryCatch(
+    calculate_coverage(coverage_path, coverage_db, "P"),
+    finally = unlink(coverage_path)
+  )
+  stopifnot(coverage_value == case[[4]])
+  lines <- strsplit(vis_coverage(coverage_data, coverage_db, "P"), "\n")[[1]]
+  tracks <- lines[2:(length(lines) - 1L)]
+  covered <- vapply(seq_len(nchar(sequence)), function(i) {
+    any(substring(tracks, i, i) != "-")
+  }, logical(1))
+  stopifnot(round(mean(covered) * 100, 2) == case[[4]])
+  if (identical(case[[3]], c(1L, 2L))) stopifnot(identical(tracks, c("-AAA", "AAA-")))
+}
+
+for (method in c("unpaired", "unpaired_welch", "paired")) {
+  message <- tryCatch({
+    volcano_data_f(data.frame(), data.frame(), "A", "A", test_type = method)
+    ""
+  }, error = function(e) conditionMessage(e))
+  stopifnot(identical(message, "Please select two different conditions."))
 }
 
 cat("R notebook helper smoke tests passed\n")

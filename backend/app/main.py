@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from app.services.html_security import GENERATED_HTML_CSP
+from app.services.plot_export import plot_output_format
 
 from fastapi import FastAPI, Request
 from anyio import to_thread
@@ -33,6 +34,8 @@ from app.services.session_context import (
     normalize_session_id,
     reset_session_id,
     session_cookie_name,
+    session_cookie_path,
+    TabSessionMiddleware,
     session_cookie_secure,
     session_header_name,
     session_isolation_enabled,
@@ -60,6 +63,7 @@ from app.services.viewer_portal import (
     viewer_session_authenticated,
 )
 from app.services.workload_manager import (
+    ProviderWorkloadMiddleware,
     HeavyWorkloadBusyError,
     heavy_workload_scope,
     is_heavy_request,
@@ -230,19 +234,23 @@ def _convert_png_bytes(content: bytes, target_format: str) -> tuple[bytes, str]:
 
     from PIL import Image
 
-    image = Image.open(io.BytesIO(content))
-    if fmt in {"jpg", "jpeg", "webp", "pdf"} and image.mode in {"RGBA", "LA", "P"}:
-        image = image.convert("RGB")
+    with Image.open(io.BytesIO(content)) as source:
+        dpi = source.info.get("dpi", (72, 72))
+        image = source.convert("RGBA")
+    if fmt in {"jpg", "jpeg", "pdf"}:
+        # Raster exports without alpha use white, including antialiased edges.
+        background = Image.new("RGBA", image.size, "white")
+        image = Image.alpha_composite(background, image).convert("RGB")
 
     out = io.BytesIO()
     if fmt in {"jpg", "jpeg"}:
-        image.save(out, format="JPEG", quality=95)
+        image.save(out, format="JPEG", quality=95, dpi=dpi)
         media_type = "image/jpeg"
     elif fmt == "webp":
-        image.save(out, format="WEBP", quality=95)
+        image.save(out, format="WEBP", lossless=True)
         media_type = "image/webp"
     else:
-        image.save(out, format="PDF")
+        image.save(out, format="PDF", dpi=dpi)
         media_type = "application/pdf"
     return out.getvalue(), media_type
 
@@ -416,7 +424,7 @@ async def session_scope_middleware(request: Request, call_next):
                 httponly=True,
                 secure=session_cookie_secure(),
                 samesite="lax",
-                path="/",
+                path=session_cookie_path(),
             )
         return response
 
@@ -491,8 +499,10 @@ async def session_scope_middleware(request: Request, call_next):
         async with session_operation_scope(resolved, exclusive=exclusive):
             response = await call_next(request)
         effective = get_browser_session_id()
-        if protected_auth and (
-            tool_session_authenticated() or viewer_session_authenticated()
+        if (
+            tool_access_enabled() and tool_session_authenticated()
+        ) or (
+            viewer_portal_enabled() and viewer_session_authenticated()
         ):
             touch_and_cleanup_sessions(resolved)
     finally:
@@ -505,7 +515,7 @@ async def session_scope_middleware(request: Request, call_next):
             httponly=True,
             secure=session_cookie_secure(),
             samesite="lax",
-            path="/",
+            path=session_cookie_path(),
         )
     return response
 
@@ -566,7 +576,13 @@ async def security_headers_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def plot_download_format_middleware(request: Request, call_next):
-    response = await call_next(request)
+    native_pdf = (request.method == "GET" and request.url.path.startswith("/api/plots/")
+                  and request.query_params.get("downloadFormat", "").strip().lower() == "pdf")
+    token = plot_output_format.set("pdf" if native_pdf else "png")
+    try:
+        response = await call_next(request)
+    finally:
+        plot_output_format.reset(token)
     if request.method != "GET":
         return response
     if response.status_code < 200 or response.status_code >= 300:
@@ -629,6 +645,9 @@ async def plot_download_format_middleware(request: Request, call_next):
         media_type=converted_media_type,
         headers=passthrough_headers,
     )
+
+app.add_middleware(ProviderWorkloadMiddleware)
+app.add_middleware(TabSessionMiddleware)
 
 app.include_router(datasets_router)
 app.include_router(annotations_router)

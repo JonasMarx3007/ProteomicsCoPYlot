@@ -18,7 +18,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
 from app.services.condition_palette_store import build_condition_color_map
-from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind
+from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind, original_intensity_frame
 from app.services.functions import (
     _phosprot_values_are_centred,
     resolve_feature_scaling,
@@ -27,7 +27,6 @@ from app.services.functions import (
     choose_best_source,
     extract_sample_id as _extract_id_or_number,
     impute_values_with_diagnostics,
-    inverse_log2_transform_data,
     qqnorm_plot_data,
     raw_zero_to_nan,
 )
@@ -146,20 +145,7 @@ def _imputation_source(kind: AnnotationKind):
 
 
 def _original_scale_frame(kind: AnnotationKind):
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is None:
-        return raw
-
-    if bool(getattr(annotation, "is_log2_transformed", False)):
-        transformed = annotation.log2_data if not annotation.log2_data.empty else raw
-        sample_columns = [
-            c for c in annotation.metadata["sample"].tolist() if c in transformed.columns
-        ]
-        if sample_columns:
-            return inverse_log2_transform_data(transformed, sample_columns)
-        return raw
-    return annotation.source_data.copy()
+    return original_intensity_frame(_get_current_frame(kind), get_annotation(kind))
 
 
 def _distribution_frame(kind: AnnotationKind):
@@ -1085,6 +1071,8 @@ def imputation_overall_fit_plot(
     )
 
     values = diagnostics.overall_observed
+    if values.size == 0:
+        raise ValueError("No observed values available to plot an imputation distribution.")
     histogram_bin_edges = _imputation_histogram_bin_edges(values, diagnostics.after_imputed)
     draw_components = diagnostics.draw_components if show_imputation_draw else []
 
@@ -1504,27 +1492,22 @@ def qc_intensity_histogram_plot(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def qc_peptide_coverage_plot(
-    include_id: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict[str, Any] | None = None,
-    quantity_column: str | None = None,
-) -> bytes:
-    from matplotlib.patches import Rectangle
-
+def _peptide_coverage_summary(include_id=False, quantity_column=None, level="peptide"):
     from app.services.peptide_tools import (
-        _extract_id_or_number as _extract_peptide_id,
+        _sample_rename_map,
         get_peptide_frame,
     )
 
-    plt = _get_plt()
+    if level not in {"peptide", "precursor"}:
+        raise ValueError("Coverage level must be peptide or precursor.")
     frame = get_peptide_frame()
     file_col = _peptide_file_column(frame)
-    seq_col = _peptide_sequence_column(frame)
+    if level == "precursor":
+        from app.services.completeness_tools import _peptide_precursor_column
+
+        seq_col = _peptide_precursor_column(frame)
+    else:
+        seq_col = _peptide_sequence_column(frame)
     quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
     meta = _peptide_coverage_metadata(frame, include_id=include_id)
 
@@ -1537,12 +1520,12 @@ def qc_peptide_coverage_plot(
     if pivot.empty:
         raise ValueError("No peptide entries are available for coverage plotting.")
 
-    pivot = pivot.copy()
-    pivot.columns = [_extract_peptide_id(column) for column in pivot.columns]
-
+    pivot = raw_zero_to_nan(pivot, list(pivot.columns))
     labels = meta["label"].astype(str).tolist()
-    rename_map = dict(zip(meta["id"].astype(str), labels))
-    pivot = pivot.rename(columns=rename_map)
+    rename_map = _sample_rename_map(
+        pivot.columns, meta.rename(columns={"label": "new_sample"}), seq_col
+    )
+    pivot = pivot[list(rename_map)].rename(columns=rename_map)
     selected = [label for label in labels if label in pivot.columns]
     if not selected:
         raise ValueError("Peptide metadata does not match peptide sample columns.")
@@ -1553,6 +1536,26 @@ def qc_peptide_coverage_plot(
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=selected, ordered=True)
     summary = summary.sort_values("Sample")
     peptides_count = int(pivot.shape[0])
+
+    return summary, peptides_count, meta
+
+
+def qc_peptide_coverage_plot(
+    include_id: bool = False,
+    header: bool = True,
+    legend: bool = True,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
+    advanced: dict[str, Any] | None = None,
+    quantity_column: str | None = None,
+    level: str = "peptide",
+) -> bytes:
+    from matplotlib.patches import Rectangle
+
+    plt = _get_plt()
+    summary, peptides_count, meta = _peptide_coverage_summary(include_id, quantity_column, level)
+    selected = summary["Sample"].astype(str).tolist()
 
     conditions = meta["condition"].astype(str).dropna().tolist()
     ordered_conditions = list(dict.fromkeys(conditions))
@@ -1567,8 +1570,8 @@ def qc_peptide_coverage_plot(
     ax.bar(range(len(summary)), summary["Value"].to_numpy(dtype=float), color=bar_colors)
     ax.axhline(y=peptides_count, color=_advanced_text(advanced, "referenceLineColor") or "red", linestyle="--")
     if header:
-        ax.set_title("Peptides per sample")
-    ax.set_ylabel("Number of peptides")
+        ax.set_title(f"{level.capitalize()}s per sample")
+    ax.set_ylabel(f"Number of {level}s")
     ax.set_xticks(range(len(summary)))
     ax.set_xticklabels(
         [
@@ -2474,11 +2477,7 @@ def _abundance_mean_intensities(
     if not valid_conditions:
         raise ValueError("No conditions available for abundance plot.")
 
-    if len(valid_conditions) > 1:
-        keep_mask = mean_intensities[valid_conditions].isna().sum(axis=1) < (len(valid_conditions) - 1)
-        mean_intensities = mean_intensities.loc[keep_mask]
-    else:
-        mean_intensities = mean_intensities.dropna(subset=[valid_conditions[0]])
+    mean_intensities = mean_intensities.dropna(subset=valid_conditions, how="all")
 
     return mean_intensities, valid_conditions, workflow, key_col
 
@@ -2674,9 +2673,10 @@ def qc_correlation_plot(
         raise ValueError("Correlation matrix could not be computed from selected sample columns.")
 
     ordered_corr = correlation_matrix
-    if has_scipy and len(correlation_matrix) > 1:
+    incomplete = not np.isfinite(correlation_matrix.to_numpy()).all()
+    if has_scipy and len(correlation_matrix) > 1 and not incomplete:
         distance_matrix = 1 - correlation_matrix
-        distance_matrix = distance_matrix.fillna(1.0).clip(lower=0.0, upper=2.0)
+        distance_matrix = distance_matrix.clip(lower=0.0, upper=2.0)
         distance_matrix = (distance_matrix + distance_matrix.T) / 2.0
         distance_np = distance_matrix.to_numpy(copy=True)
         np.fill_diagonal(distance_np, 0.0)
@@ -2690,13 +2690,12 @@ def qc_correlation_plot(
         except Exception:
             ordered_corr = correlation_matrix
 
-    ordered_corr = ordered_corr.fillna(0.0)
-
-    if full_range:
+    finite_correlations = ordered_corr.to_numpy()[np.isfinite(ordered_corr.to_numpy())]
+    if full_range or finite_correlations.size == 0:
         vmin, vmax = -1.0, 1.0
     else:
-        vmin = float(np.nanmin(ordered_corr.values))
-        vmax = float(np.nanmax(ordered_corr.values))
+        vmin = float(finite_correlations.min())
+        vmax = float(finite_correlations.max())
         if math.isclose(vmin, vmax):
             vmin, vmax = -1.0, 1.0
 
@@ -2714,7 +2713,8 @@ def qc_correlation_plot(
     cmap_name = _advanced_text(advanced, "correlationColorMap") or "coolwarm"
     if cmap_name not in color_map_options:
         cmap_name = "coolwarm"
-    cmap = plt.get_cmap(cmap_name)
+    cmap = plt.get_cmap(cmap_name).copy()
+    cmap.set_bad("#eeeeee")
     color_norm = plt.Normalize(vmin=vmin, vmax=vmax)
     method_normalized = str(method).strip().lower()
     x_labels = [
@@ -2745,6 +2745,8 @@ def qc_correlation_plot(
         for i in range(n):
             for j in range(n):
                 r = float(ordered_corr.iloc[i, j])
+                if not np.isfinite(r):
+                    continue
                 ellipse = Ellipse(
                     (j + 0.5, i + 0.5),
                     width=0.9,
@@ -2760,7 +2762,11 @@ def qc_correlation_plot(
     else:
         raise ValueError("method must be 'Matrix' or 'Ellipse'")
 
-    ax.set_xlabel("Samples")
+    missing_rows, missing_cols = np.where(~np.isfinite(ordered_corr.to_numpy()))
+    offset = 0.5 if method_normalized == "ellipse" else 0
+    for i, j in zip(missing_rows, missing_cols):
+        ax.text(j + offset, i + offset, "NA", ha="center", va="center", fontsize=7, color="#666666")
+    ax.set_xlabel("Samples" + ("\nNA: correlation unavailable; clustering skipped (metadata order)" if incomplete else ""))
     ax.set_ylabel("Samples")
     _apply_advanced_axes(ax, advanced)
     plt.tight_layout()

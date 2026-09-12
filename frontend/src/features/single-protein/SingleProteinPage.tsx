@@ -1,3 +1,4 @@
+import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
 import { collectColumns } from "../../lib/tableData";
@@ -236,7 +237,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           identifier: box.identifier,
           dataSource,
           protein: box.protein,
-          conditions: box.conditions.join(","),
+          conditions: JSON.stringify(box.conditions),
           outliers: box.outliers,
           dots: box.dots,
           randomSeed: box.randomSeed,
@@ -257,8 +258,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         url: buildPlotUrl(`/api/plots/single-protein/${effectiveKind}/lineplot.png`, {
           identifier: line.identifier,
           dataSource,
-          proteins: line.proteins.join(","),
-          conditions: line.conditions.join(","),
+          proteins: JSON.stringify(line.proteins),
+          conditions: JSON.stringify(line.conditions),
           includeId: line.includeId,
           header: line.header,
           legend: line.legend,
@@ -277,7 +278,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         identifier: heatmap.identifier,
         dataSource,
         protein: heatmap.protein,
-        conditions: heatmap.conditions.join(","),
+        conditions: JSON.stringify(heatmap.conditions),
         includeId: heatmap.includeId,
         header: heatmap.header,
         filterM1: heatmap.filterM1,
@@ -308,7 +309,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         identifier: box.identifier,
         dataSource,
         protein: box.protein,
-        conditions: box.conditions.join(","),
+        conditions: JSON.stringify(box.conditions),
       };
       return {
         kind: effectiveKind,
@@ -322,8 +323,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       const params: Record<string, string | number | boolean> = {
         identifier: line.identifier,
         dataSource,
-        proteins: line.proteins.join(","),
-        conditions: line.conditions.join(","),
+        proteins: JSON.stringify(line.proteins),
+        conditions: JSON.stringify(line.conditions),
         includeId: line.includeId,
       };
       return {
@@ -338,7 +339,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       identifier: heatmap.identifier,
       dataSource,
       protein: heatmap.protein,
-      conditions: heatmap.conditions.join(","),
+      conditions: JSON.stringify(heatmap.conditions),
       includeId: heatmap.includeId,
       filterM1: heatmap.filterM1,
       clusterRows: heatmap.clusterRows,
@@ -390,7 +391,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       onContextModeChange("");
       return;
     }
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts =
       activeTab === "boxplot"
         ? [
@@ -399,7 +400,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             `tab=boxplot`,
             `identifier=${box.identifier}`,
             `protein=${sanitize(box.protein)}`,
-            `conditions=${box.conditions.map((value) => sanitize(value)).join(",")}`,
+            `conditions=${JSON.stringify(box.conditions)}`,
             `outliers=${box.outliers ? "true" : "false"}`,
             `dots=${box.dots ? "true" : "false"}`,
             `randomSeed=${box.randomSeed}`,
@@ -412,8 +413,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             `dataSource=${dataSource}`,
             `tab=lineplot`,
             `identifier=${line.identifier}`,
-            `proteins=${line.proteins.map((value) => sanitize(value)).join(",")}`,
-            `conditions=${line.conditions.map((value) => sanitize(value)).join(",")}`,
+            `proteins=${JSON.stringify(line.proteins)}`,
+            `conditions=${JSON.stringify(line.conditions)}`,
             `includeId=${line.includeId ? "true" : "false"}`,
             `header=${line.header ? "true" : "false"}`,
             `legend=${line.legend ? "true" : "false"}`,
@@ -424,7 +425,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             `tab=heatmap`,
             `identifier=${heatmap.identifier}`,
             `protein=${sanitize(heatmap.protein)}`,
-            `conditions=${heatmap.conditions.map((value) => sanitize(value)).join(",")}`,
+            `conditions=${JSON.stringify(heatmap.conditions)}`,
             `includeId=${heatmap.includeId ? "true" : "false"}`,
             `header=${heatmap.header ? "true" : "false"}`,
             `filterM1=${heatmap.filterM1 ? "true" : "false"}`,
@@ -432,7 +433,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             `clusterCols=${heatmap.clusterCols ? "true" : "false"}`,
             `valueType=${heatmap.valueType}`,
           ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     activeTab,

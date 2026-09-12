@@ -81,6 +81,81 @@ def test_a_genuine_intensity_of_one_is_not_deleted() -> None:
     assert 0.0 in [round(float(v), 6) for v in values]
 
 
+def test_gene_underscore_survives_collapse():
+    table = _table(1000.)
+    table["PG.Genes"] = "GENE_A"
+    with pytest.warns(Warning, match="underscores"):
+        result = _collapse(peptideCollapse, table)
+    assert set(result["Gene_group"]) == {"GENE_A"}
+    assert result["PTM_Collapse_key"].str.contains("~GENE_A_", regex=False).all()
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_overlapping_collapse_logs_are_request_local(monkeypatch, tmp_path, fail_second):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.services import external_tools
+
+    barrier = Barrier(2)
+    original_stdout = sys.stdout
+    def convert(input_path, output_path, cutoff, *, progress):
+        marker = Path(input_path).stem
+        progress(marker)
+        barrier.wait(timeout=10)
+        assert sys.stdout is original_stdout
+        if marker == "second" and fail_second:
+            raise ValueError("second failed")
+        result = pd.DataFrame({"id": [marker], "value": [np.nan]})
+        result.to_csv(output_path, sep="\t", index=False)
+        return result
+    monkeypatch.setattr(external_tools, "process_and_export", convert)
+    paths = [tmp_path / f"{name}.tsv" for name in ("first", "second")]
+    for path in paths:
+        _table(0).to_csv(path, sep="\t", index=False)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = [pool.submit(external_tools.run_peptide_collapse,
+                           PeptideCollapseRequest(inputPath=str(path))) for path in paths]
+        first = jobs[0].result(timeout=15)
+        assert first.success and first.logs == "first"
+        assert first.preview == [{"id": "first", "value": None}]
+        if fail_second:
+            with pytest.raises(ValueError, match="second failed"):
+                jobs[1].result(timeout=15)
+        else:
+            second = jobs[1].result(timeout=15)
+            assert second.success and second.logs == "second"
+    assert sys.stdout is original_stdout
+
+
+def test_converter_returns_exported_frame_and_propagates_write_failure(tmp_path, monkeypatch):
+    from app.services.external_functions import process_and_export
+    source = tmp_path / "source.tsv"
+    output = tmp_path / "result.tsv"
+    _table(0).to_csv(source, sep="\t", index=False)
+    messages = []
+    result = process_and_export(str(source), str(output), progress=messages.append)
+    pd.testing.assert_frame_equal(result, pd.read_csv(output, sep="\t"), check_dtype=False)
+    def fail_write(*args, **kwargs):
+        raise OSError("write failed")
+    monkeypatch.setattr(pd.DataFrame, "to_csv", fail_write)
+    with pytest.raises(OSError, match="write failed"):
+        process_and_export(str(source), str(output), progress=messages.append)
+
+
+def test_malformed_upload_fails_and_cleans_its_directory(tmp_path, monkeypatch):
+    from app.api import routes_external
+    from fastapi.testclient import TestClient
+    from app.main import app
+    work = tmp_path / "owned-upload"
+    work.mkdir()
+    monkeypatch.setattr(routes_external.tempfile, "mkdtemp", lambda **kwargs: str(work))
+    with TestClient(app) as client:
+        response = client.post("/api/external/peptide-collapse/upload",
+            files={"file": ("bad.tsv", b"wrong\n1\n", "text/tab-separated-values")})
+    assert response.status_code == 400
+    assert not work.exists()
+
+
 def test_a_filtered_cell_does_not_crash_the_collapse() -> None:
     values = _quantities(_collapse(peptideCollapse, _table("Filtered")))
     assert np.isnan(values).sum() == 1

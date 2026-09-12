@@ -120,12 +120,21 @@ this policy against the forwarded client address.
 | `COPYLOT_UPLOAD_MAX_BYTES` | 512 MiB | Size limit applied to the upload as it arrives. |
 | `COPYLOT_UPLOAD_MAX_CELLS` | 50,000,000 | Row x column limit applied to the parsed table. |
 
-**Session isolation is on by default.** With it off, every request resolves to the
-session id `global`, so two browsers on the same machine share one state and the
-second one reads and can overwrite the first one's uploaded data. Set
-`COPYLOT_SESSION_ISOLATION=0` only for a genuinely single-user desktop run — for
-instance if you rely on opening the same dataset in two tabs. A
-password-protected deployment refuses to start with it disabled.
+**Session isolation is on by default and required by the browser UI.** Each tab
+has its own API namespace and path-scoped HttpOnly cookie, so tabs can open
+different projects. Refresh resets only that tab. The routing ID in a plot or
+download URL is not a login credential; another browser still needs authentication.
+Cookies and routing IDs are not included in saved analysis state.
+
+When a reverse proxy strips a URL prefix, rewrite the scoped cookie path too.
+The supplied nginx `/viewer/` location uses
+`proxy_cookie_path /api/tabs/ /viewer/api/tabs/;`. Adapt that prefix for other
+subpath deployments; do not flatten all tab cookies to a shared root path.
+
+`COPYLOT_SESSION_ISOLATION=0` retains shared-state behavior only for legacy,
+single-user API clients; the tab-scoped browser UI refuses it. Password-protected
+deployments also refuse this configuration. Existing direct `/api/` clients
+continue to use their original cookie/header session behavior.
 
 **Host header allowlist.** The server answers only to `localhost`, `127.0.0.1`,
 `::1` and `0.0.0.0`, with or without a port. This is the standard defence against
@@ -156,6 +165,45 @@ cmd /c "set VITE_APP_MODE=viewer&& npm run build"
 ```
 
 AI builds additionally set `VITE_AI_ENABLED=1`. Runtime AI mode requires `COPYLOT_AI_MODE=1` and an available Ollama endpoint.
+
+Provider responses are limited by `COPYLOT_PROVIDER_RESPONSE_MAX_BYTES` (default
+8 MiB). This applies to each buffered HTTP response and to the combined Ollama
+stream, including continuation replies. `COPYLOT_PROVIDER_LINE_MAX_BYTES`
+(default 1 MiB) additionally limits individual streaming lines. Both settings
+accept positive byte counts. Oversized responses fail rather than being silently
+truncated. These are output-size limits, not total request deadlines or a promise
+that disconnecting cancels work already accepted by a provider.
+
+Provider routes have a separate per-process concurrency budget:
+`COPYLOT_PROVIDER_MAX_CONCURRENCY` (default 4), `COPYLOT_PROVIDER_MAX_QUEUE`
+(default 8, 0 disables waiting), and `COPYLOT_PROVIDER_QUEUE_TIMEOUT_SECONDS`
+(default 20). A slot remains occupied through streaming and cleanup. Saturation
+returns HTTP 503 with a retry hint; scientific analysis uses its own budget.
+Chat's Stop button aborts the browser request, but cannot guarantee cancellation
+of work already accepted by an external model service.
+
+`COPYLOT_PROVIDER_TIMEOUT_SECONDS` (default 180) sets the admitted provider
+operation's time budget, shared across metadata lookups and chat continuations.
+Model installation/removal instead uses `COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT`
+(default 1800). Queue waiting has its own timeout. Connected HTTP responses have
+a deadline watchdog that shuts down stalled/trickling connections. The response
+lifecycle is also timed; an expired stream ends rather than receiving replacement
+HTTP headers. System DNS resolution and external provider cancellation are not
+guaranteed to obey this application deadline.
+
+Model-management command output is collected incrementally using the response
+byte limit above. Commands are killed and reaped on timeout or excessive output;
+failed command diagnostics are not exposed verbatim to clients. This terminates
+the CLI process, not necessarily work already accepted by the Ollama daemon.
+
+Static Matplotlib PDF downloads are serialized directly from the figure, with
+embedded TrueType fonts and vector drawing objects. Browser previews remain PNG;
+image-based plot elements (such as image-rendered heatmaps) can still contain
+pixels inside a native PDF. The notebook and interactive Plotly export paths are
+unchanged. Static exports preserve their figure canvas dimensions (bitmap output
+is rounded to whole pixels). Layout is fitted within that canvas, without
+silently shrinking fonts. If labels cannot fit, increase the figure dimensions
+or reduce text size; the export fails explicitly rather than clipping content.
 
 ## Windows one-file builds
 

@@ -97,6 +97,12 @@ export function annotationKindOptions(
   }));
 }
 
+export function useDatasetRevision() {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => subscribeDatasetStateChanged(() => setRevision(value => value + 1)), []);
+  return revision;
+}
+
 export function useCurrentDatasetsSnapshot() {
   const [datasets, setDatasets] = useState<CurrentDatasetsResponse | null>(null);
   const [loading, setLoading] = useState(true);

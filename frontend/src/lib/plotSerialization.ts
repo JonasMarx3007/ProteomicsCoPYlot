@@ -1,5 +1,14 @@
 import type { AdvancedPlotSettings } from "./types";
 
+export function contextMode(parts: string[]): string {
+  return JSON.stringify(Object.fromEntries(parts.map((part) => {
+    const separator = part.indexOf("=");
+    const key = part.slice(0, separator);
+    const value = part.slice(separator + 1);
+    return [key, (key === "conditions" || key === "proteins") ? JSON.parse(value) : value];
+  })));
+}
+
 export function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
   if (!value) return undefined;
   const text = value.text?.trim();

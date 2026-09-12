@@ -1,11 +1,19 @@
 import { expect } from '@playwright/test';
 
+export function tabRequest(page) {
+  const request = async (method, path, options) => {
+    const id = await page.evaluate(() => sessionStorage.getItem('copylot.tab.id'));
+    return page.request[method](`/api/tabs/${id}${path}`, options);
+  };
+  return { get: (path, options) => request('get', path, options), post: (path, options) => request('post', path, options) };
+}
+
 export async function verifyAuthStartup(page, authPath) {
   await page.addInitScript((authPath) => {
     const original = window.fetch;
     window.authOrder = [];
     window.fetch = async (...args) => {
-      const path = new URL(args[0] instanceof Request ? args[0].url : args[0], location.href).pathname;
+      const path = new URL(args[0] instanceof Request ? args[0].url : args[0], location.href).pathname.replace(/^\/api\/tabs\/[a-f0-9]{32}/, '');
       const tracked = path.startsWith(authPath + '/');
       if (tracked) window.authOrder.push(`${path}:start`);
       const response = await original(...args);

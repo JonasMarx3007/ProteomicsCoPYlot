@@ -22,6 +22,28 @@ METADATA = pd.DataFrame(
 FLOOR_ROWS = range(1900, 1912)
 
 
+@pytest.mark.parametrize("method", ["unpaired", "unpaired_welch", "paired"])
+def test_self_comparisons_are_rejected_before_calculation(method):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from proteomicscopylot import notebook_functions as nb
+
+    with TestClient(app) as client:
+        response = client.post("/api/stats/volcano/run", json={
+            "kind": "protein", "condition1": "A", "condition2": "A", "testType": method,
+        })
+    assert response.status_code == 422
+    assert "Please select two different conditions." in response.text
+    with pytest.raises(ValueError, match="Please select two different conditions"):
+        st._volcano_dataframe(
+            kind="protein", condition1="A", condition2="A", identifier="workflow",
+            p_value_threshold=.05, log2fc_threshold=1, test_type=method, use_uncorrected=False,
+            frame_override=pd.DataFrame(), metadata_override=pd.DataFrame(),
+        )
+    with pytest.raises(ValueError, match="Please select two different conditions"):
+        nb.volcano_data_f(pd.DataFrame(), pd.DataFrame(), "A", "A", test_type=method)
+
+
 def _frame(n: int = 2000) -> pd.DataFrame:
     rng = np.random.default_rng(17)
     base = rng.normal(22, 2, n)
@@ -115,3 +137,105 @@ def test_existing_columns_are_untouched(column: str) -> None:
     result = _volcano(_frame())
     assert column in result.columns
     assert result[column].notna().all()
+
+
+@pytest.mark.parametrize("test_type", ["unpaired", "unpaired_welch", "paired"])
+@pytest.mark.parametrize("with_controls", [False, True])
+def test_degenerate_tests_match_scipy_and_preserve_missing_results(test_type, with_controls):
+    from scipy import stats
+    from proteomicscopylot.notebook_functions import volcano_data_f, volcano_data_f_control
+
+    a = np.array([[10, 10, 10], [10, 10, 10], [10, 10, 10], [10, 11, 13]])
+    b = np.array([[12, 12, 12], [10, 10, 10], [10, 12, 14], [12, 15, 13]])
+    frame = pd.DataFrame(np.column_stack([a, b]), columns=SAMPLES)
+    frame.insert(0, "ProteinNames", ["different", "identical", "one_constant", "variable"])
+    meta = METADATA.assign(pair_id=[1, 2, 3, 1, 2, 3])
+    controls = {}
+    if with_controls:
+        for group in ["CA", "CB"]:
+            samples = [f"{group}_{i}" for i in range(3)]
+            frame[samples] = 10.0
+            meta = pd.concat([meta, pd.DataFrame({"sample": samples, "condition": group, "pair_id": [1,2,3]})])
+        controls = {"condition1_control": "CA", "condition2_control": "CB"}
+    with patch.object(st, "_stats_source", return_value=("filtered", frame, meta, [])):
+        result = st._volcano_dataframe(
+            kind="protein", condition1="A", condition2="B", identifier="workflow",
+            p_value_threshold=.05, log2fc_threshold=1, test_type=test_type,
+            use_uncorrected=False, data_source="data", **controls,
+        )[2]
+    expected = (stats.ttest_rel(b, a, axis=1) if test_type == "paired" else
+                stats.ttest_ind(b, a, axis=1, equal_var=test_type == "unpaired" and not with_controls)).pvalue
+    np.testing.assert_allclose(result.pval, expected, equal_nan=True)
+    notebook_function = volcano_data_f_control if with_controls else volcano_data_f
+    notebook = notebook_function(frame, meta, "A", "B", test_type=test_type, **controls)
+    np.testing.assert_allclose(notebook.pval, expected, equal_nan=True)
+    finite = np.isfinite(expected)
+    adjusted = stats.false_discovery_control(expected[finite])
+    np.testing.assert_allclose(result.adj_pval[finite], adjusted)
+    np.testing.assert_allclose(notebook.adj_pval[finite], adjusted)
+    assert result.significance.iloc[1] == "Unavailable"
+    assert np.isnan(result.adj_pval.iloc[1])
+    response = st._volcano_response("protein", "filtered", "ProteinNames", result, [])
+    assert response.rows[1]["pval"] is None
+    assert response.rows[1]["adj_pval"] is None
+    assert 'NaN' not in response.model_dump_json()
+    figure = st._volcano_figure(
+        result, label_column="ProteinNames", condition1="A", condition2="B",
+        p_value_threshold=.05, log2fc_threshold=1, use_uncorrected=False, highlight_terms=[],
+    )
+    plotted_y = [value for trace in figure.data for value in trace.y]
+    assert len(plotted_y) == 3
+    assert max(plotted_y) == 300
+    assert np.isfinite(plotted_y).all()
+    if not with_controls and test_type != "paired":
+        from app.schemas.stats import SimulationRequest
+        payload = SimulationRequest(kind="protein", condition1="A", condition2="B",
+                                    testType=test_type, useUncorrected=False)
+        with patch.object(st, "_stats_source", return_value=("filtered", frame, meta, [])):
+            simulated = st.run_simulation(payload)
+        np.testing.assert_allclose(
+            [row["pval"] if row["pval"] is not None else np.nan for row in simulated.rows],
+            expected, equal_nan=True,
+        )
+        assert simulated.rows[1]["significance"] == "Unavailable"
+        assert simulated.rows[1]["adj_pval"] is None
+
+
+def test_r_notebook_zero_standard_error_convention():
+    import subprocess
+    from app.services.r_runtime import detect_r_runtime
+
+    runtime = detect_r_runtime()
+    if not runtime.get("available"):
+        pytest.skip("Rscript unavailable")
+    script = r'''
+      source("proteomicscopylot/notebook_functions.R")
+      d <- data.frame(ProteinNames=c("different", "identical", "one_constant", "variable"),
+        A_0=c(10,10,10,10), A_1=c(10,10,10,11), A_2=c(10,10,10,13),
+        B_0=c(12,10,10,12), B_1=c(12,10,12,15), B_2=c(12,10,14,13))
+      m <- data.frame(sample=names(d)[-1], condition=rep(c("A","B"),each=3), pair_id=rep(1:3,2))
+      for (group in c("CA","CB")) {
+        samples <- paste0(group,"_",0:2)
+        d[samples] <- 10
+        m <- rbind(m,data.frame(sample=samples,condition=group,pair_id=1:3))
+      }
+      for (design in c("unpaired","unpaired_welch","paired")) for (controls in c(FALSE,TRUE)) {
+        out <- if (controls) volcano_data_f_control(d,m,"A","B","CA","CB",test_type=design) else
+          volcano_data_f(d,m,"A","B",test_type=design)
+        stopifnot(out$pval[1] == 0, is.na(out$pval[2]), is.na(out$adj_pval[2]),
+          all(is.finite(out$pval[c(3,4)])), out$significance[2] == "Unavailable",
+          out$neg_log10_adj_pval[1] == 300,
+          isTRUE(all.equal(out$adj_pval[c(1,3,4)],p.adjust(out$pval[c(1,3,4)],"BH"))))
+      }
+    '''
+    result = subprocess.run([runtime["executable"], "-e", script], cwd=ROOT,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_bh_preserves_an_entirely_unavailable_family():
+    from proteomicscopylot.notebook_functions import _adjust_finite_pvalues
+
+    for adjust in [st._bh_adjust, _adjust_finite_pvalues]:
+        assert np.isnan(adjust(np.array([np.nan, np.nan]))).all()
+        assert adjust(np.array([])).size == 0

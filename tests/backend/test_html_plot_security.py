@@ -50,7 +50,8 @@ def test_direct_plot_html_is_sandboxed_but_api_json_is_not():
         response = client.post('/api/plots/phospho/ksea-volcano.html', files={
             'fileSt': ('st.csv', table, 'text/csv'),
             'fileTnc': ('y.csv', table, 'text/csv'),
-        })
+        }, data={"condition1": "A", "condition2": "B", "condition1Control": "C", "condition2Control": "D"})
         assert response.status_code == 200, response.text
+        assert "(B - D) - (A - C)" in response.text
         assert response.headers['content-security-policy'] == GENERATED_HTML_CSP + '; sandbox allow-scripts allow-downloads'
         assert 'content-security-policy' not in client.get('/api/health').headers

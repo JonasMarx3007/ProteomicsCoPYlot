@@ -2,14 +2,6 @@ const UI_STATE_PREFIX = "pcopylot.ui.";
 
 function storageAvailable(): boolean {
   try {
-    return typeof globalThis.localStorage !== "undefined";
-  } catch {
-    return false;
-  }
-}
-
-function sessionStorageAvailable(): boolean {
-  try {
     return typeof globalThis.sessionStorage !== "undefined";
   } catch {
     return false;
@@ -25,7 +17,7 @@ export function readPersistedUiState<T>(key: string, fallback: T): T {
   if (!storageAvailable()) return fallback;
   const storageKey = fullKey(key);
   try {
-    const raw = globalThis.localStorage.getItem(storageKey);
+    const raw = globalThis.sessionStorage.getItem(storageKey);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as T;
     return parsed ?? fallback;
@@ -38,39 +30,21 @@ export function writePersistedUiState(key: string, value: unknown): void {
   if (!storageAvailable()) return;
   const storageKey = fullKey(key);
   try {
-    globalThis.localStorage.setItem(storageKey, JSON.stringify(value));
-  } catch {
-    // ignore localStorage failures
-  }
-}
-
-export function readPersistedSessionUiState<T>(key: string, fallback: T): T {
-  if (!sessionStorageAvailable()) return fallback;
-  try {
-    const raw = globalThis.sessionStorage.getItem(fullKey(key));
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as T;
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-export function writePersistedSessionUiState(key: string, value: unknown): void {
-  if (!sessionStorageAvailable()) return;
-  try {
-    globalThis.sessionStorage.setItem(fullKey(key), JSON.stringify(value));
+    globalThis.sessionStorage.setItem(storageKey, JSON.stringify(value));
   } catch {
     // ignore sessionStorage failures
   }
 }
 
+export const readPersistedSessionUiState = readPersistedUiState;
+export const writePersistedSessionUiState = writePersistedUiState;
+
 export function clearPersistedUiState(key: string): void {
   if (!storageAvailable()) return;
   const storageKey = fullKey(key);
   try {
-    globalThis.localStorage.removeItem(storageKey);
+    globalThis.sessionStorage.removeItem(storageKey);
   } catch {
-    // ignore localStorage failures
+    // ignore sessionStorage failures
   }
 }

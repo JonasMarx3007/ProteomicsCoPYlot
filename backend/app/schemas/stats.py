@@ -58,6 +58,12 @@ class VolcanoRequest(BaseModel):
     useUncorrected: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_distinct_conditions(self) -> "VolcanoRequest":
+        if self.condition1 == self.condition2:
+            raise ValueError("Please select two different conditions.")
+        return self
+
 
 class VolcanoControlRequest(BaseModel):
     kind: AnnotationKind
