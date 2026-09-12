@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import anyio
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -42,6 +43,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    def __init__(self, content, **kwargs):
+        super().__init__(content, **kwargs)
+        self.source = content
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(self.source.close)
 
 
 @router.get("/cloud-consent/{provider}", response_model=CloudAiConsentStatusResponse)
@@ -89,7 +103,7 @@ def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
     except Exception as exc:
         LOGGER.exception("Failed to start chat stream")
         raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
-    return StreamingResponse(
+    return _ClosingStreamingResponse(
         chunk_stream,
         media_type="text/plain; charset=utf-8",
         headers={
@@ -112,7 +126,7 @@ def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
     except Exception as exc:
         LOGGER.exception("Failed to start chat stream")
         raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
-    return StreamingResponse(
+    return _ClosingStreamingResponse(
         chunk_stream,
         media_type="text/plain; charset=utf-8",
         headers={

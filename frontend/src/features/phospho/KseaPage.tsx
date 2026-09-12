@@ -1,7 +1,7 @@
 import { Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType } from "../../lib/statisticalTests";
+import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 import type { StatsTestType } from "../../lib/types";
 import {
   getPhosphoOptions,
@@ -12,13 +12,13 @@ import {
 } from "../../lib/api";
 import PaginatedTable from "../../components/PaginatedTable";
 import PairingEditor from "../../components/PairingEditor";
-import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { PhosphoOptionsResponse } from "../../lib/types";
 
 type KseaSourceMode = "volcano" | "volcano_control";
-type KseaDataSource = "auto" | "imputed";
+type KseaDataSource = "data" | "imputed";
 
 type Props = {
   advancedPlotOptions?: ReactNode;
@@ -30,6 +30,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
     []
   );
   const { datasets } = useCurrentDatasetsSnapshot();
+  const revision = useDatasetRevision();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
@@ -42,18 +43,19 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
   );
   const [dataSource, setDataSource] = useState<KseaDataSource>(() =>
     // "data" is the historical spelling for this control's default.
-    persisted.dataSource === "imputed" ? "imputed" : "auto"
+    persisted.dataSource === "imputed" ? "imputed" : "data"
   );
   const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1.0));
-  const [testType, setTestType] = useState<StatsTestType>(() =>
+  const [selectedTestType, setTestType] = useState<StatsTestType>(() =>
     restoreTestType(persisted.testType)
   );
+  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
 
-  const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
+  const [tableResult, setTableResult] = useState<{ rows: Record<string, unknown>[]; requestKey: string } | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
 
@@ -112,7 +114,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
       .then((payload) => {
         setOptions(payload);
         setDataSource((current) =>
-          current === "imputed" && !payload.imputedAvailable ? "auto" : current
+          current === "imputed" && !payload.imputedAvailable ? "data" : current
         );
       })
       .catch((err) => {
@@ -183,16 +185,17 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
     useUncorrected,
   ]);
   const debouncedTableRequest = useDebouncedValue(tableRequest, 650);
+  const tableRows = tableResult?.requestKey === JSON.stringify({ revision, ...tableRequest }) ? tableResult.rows : [];
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
-      setTableRows([]);
+      setTableResult(null);
       setTableLoading(false);
       setTableError("No phospho dataset loaded.");
       return;
     }
     if (!debouncedTableRequest) {
-      setTableRows([]);
+      setTableResult(null);
       setTableLoading(false);
       setTableError(null);
       return;
@@ -202,11 +205,12 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
     setTableError(null);
     getPhosphoTable("ksea", debouncedTableRequest, { signal: controller.signal })
       .then((payload) => {
-        setTableRows(payload.rows ?? []);
+        if (controller.signal.aborted) return;
+        setTableResult({ rows: payload.rows ?? [], requestKey: JSON.stringify({ revision, ...debouncedTableRequest }) });
       })
       .catch((err) => {
-        if (isAbortError(err)) return;
-        setTableRows([]);
+        if (controller.signal.aborted || isAbortError(err)) return;
+        setTableResult(null);
         setTableError(err instanceof Error ? err.message : "Failed to load KSEA table");
       })
       .finally(() => {
@@ -219,6 +223,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
   }, [
     hasPhosphoDataset,
     debouncedTableRequest,
+    revision,
   ]);
 
   const tsvDownload = useMemo(() => {
@@ -262,6 +267,8 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
         header: volcanoHeader,
         condition1,
         condition2,
+        condition1Control: sourceMode === "volcano_control" ? condition1Control : "",
+        condition2Control: sourceMode === "volcano_control" ? condition2Control : "",
         annotateHits,
       });
       setVolcanoHtml(html);
@@ -308,7 +315,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
                   onChange={(event) => setDataSource(event.target.value as KseaDataSource)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
                 >
-                  <option value="auto">Data</option>
+                  <option value="data">Data</option>
                   {options?.imputedAvailable ? (
                     <option value="imputed">Imputed Data</option>
                   ) : null}
@@ -372,8 +379,8 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
               <SelectField
                 label="Test Type"
                 value={testType}
-                options={TEST_TYPE_VALUES}
-                optionLabels={TEST_TYPE_LABELS}
+                options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS.map(({ value }) => value) : TEST_TYPE_VALUES}
+                optionLabels={sourceMode === "volcano_control" ? Object.fromEntries(CONTROL_TEST_TYPE_OPTIONS.map(({ value, label }) => [value, label])) : TEST_TYPE_LABELS}
                 onChange={(value) => setTestType(value as StatsTestType)}
               />
             </div>
@@ -402,7 +409,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
                     : "Please select two different conditions to generate the table."
                 }
               />
-            ) : tableLoading ? (
+            ) : tableLoading || tableRequest !== debouncedTableRequest ? (
               <NeutralNotice message="Loading KSEA input table..." />
             ) : tableError ? (
               <ErrorNotice message={tableError} />
@@ -432,7 +439,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
               ? "Select Condition 1/2 plus both controls (four different conditions) and download the prepared KSEA table (TSV)."
               : "Select two conditions and download the prepared KSEA table (TSV)."}
           </li>
-          <li>Open <a className="text-sky-700 underline" href="https://www.phosphosite.org/kinaseLibraryAction" target="_blank" rel="noreferrer">PhosphoSitePlus Kinase Library</a>.</li>
+          <li>Open <a className="text-sky-700 underline" href="https://kinase-library.phosphosite.org/kinase-library/fisher-enrichment-analysis" target="_blank" rel="noreferrer">PhosphoSitePlus Kinase Library</a>.</li>
           <li>Go to <strong>Fisher Enrichment Analysis</strong> and upload the downloaded table.</li>
           <li>Set columns as in the original workflow:
             <div>Motif column: <code>UPD_seq</code></div>

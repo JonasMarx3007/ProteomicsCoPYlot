@@ -1,5 +1,5 @@
 import { test, expect, webkit } from '@playwright/test';
-import { verifyAuthStartup } from './authStartup.mjs';
+import { verifyAuthStartup, tabRequest } from './authStartup.mjs';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 
@@ -19,6 +19,37 @@ const sites = ['UPD_seq,PTM_localization,Protein_group,Gene_group,PTM_Collapse_k
 const field = (page, label, tag = 'select') => page.getByLabel(label, { exact: true }).or(
   page.locator('label:not(:has(input, select, textarea))').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).locator('..').locator(tag));
 const tab = (page, name) => page.getByRole('button', { name, exact: true });
+
+test('peptide upload offers peptide and precursor coverage and missing-value plots', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Dataset type', { exact: true }).selectOption('peptide');
+  const csv = 'File.Name,Stripped.Sequence,Precursor.Id,Precursor.Quantity\n' +
+    'r1,PEPA,PEPA_2,10\nr1,PEPA,PEPA_3,20\nr1,PEPB,PEPB_2,0\n' +
+    'r2,PEPA,PEPA_2,0\nr2,PEPA,PEPA_3,30\nr2,PEPB,PEPB_2,5\n';
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'synthetic-peptides.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  });
+  const uploaded = page.waitForResponse(r => r.url().endsWith('/api/datasets/peptide-file'));
+  await tab(page, 'Upload').last().click();
+  expect((await uploaded).ok()).toBeTruthy();
+  await tab(page, 'Annotation').click();
+  await page.getByLabel('Dataset level', { exact: true }).selectOption('peptide');
+  await page.getByLabel('Condition name', { exact: true }).fill('A');
+  await page.getByLabel('Peptide file names', { exact: true }).selectOption(['r1', 'r2']);
+  const annotation = page.waitForResponse(r => r.url().endsWith('/api/peptide/metadata/generate'));
+  await tab(page, 'Generate Peptide Annotation').click();
+  expect((await annotation).ok()).toBeTruthy();
+
+  for (const [section, path] of [['QC Pipeline', 'qc'], ['Completeness', 'completeness']]) {
+    await tab(page, section).click();
+    for (const level of ['peptide', 'precursor']) {
+      await field(page, 'Dataset level').selectOption(level);
+      const plot = page.locator('main img').first();
+      await expect(plot).toHaveAttribute('src', new RegExp(`/api/plots/${path}/${level}/`));
+      await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+    }
+  }
+});
 
 test('tool startup waits for logout before checking authentication', async ({ page }) => {
   await verifyAuthStartup(page, '/api/tool/auth');
@@ -121,7 +152,7 @@ for (const section of ['QC Pipeline', 'Completeness']) {
   });
 }
 
-test('shared plot controls preserve numeric editing, bounds, toggles and multiple selection', async ({ page }) => {
+test('shared plot controls preserve numeric editing, bounds, toggles and multiple selection', async ({ page }, info) => {
   await annotated(page);
   await tab(page, 'Single Protein').click();
   await expect(page.getByRole('table').getByRole('cell', { name: 'A', exact: true })).toBeVisible();
@@ -164,21 +195,179 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
   await expect(legend).toBeChecked();
   await plotReady();
   expect(tableRequests).toBe(requestsBeforeLegend);
-  await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /conditions=B&/);
+  const plotDownload = page.getByRole('link', { name: 'Download Plot', exact: true });
+  await expect.poll(async () => {
+    const url = new URL(await plotDownload.getAttribute('href'), page.url());
+    return JSON.parse(url.searchParams.get('conditions'));
+  }).toEqual(['B']);
+  const downloaded = page.waitForEvent('download');
+  await plotDownload.click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe('single_protein_boxplot_phospho.png');
+  await download.saveAs(info.outputPath('single-protein-export.png'));
+  const bytes = await readFile(await download.path());
+  expect(bytes.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  expect(bytes.readUInt32BE(16)).toBe(Math.round(12.5 / 2.54 * 72));
   await expect(page.getByRole('table').getByRole('cell', { name: 'B', exact: true })).toBeVisible();
   await expect(page.getByRole('table').getByRole('cell', { name: 'A', exact: true })).toHaveCount(0);
+});
+
+for (const [panel, endpoint, setting, value, parameter] of [
+  ['ANOVA', 'anova', 'P-value threshold', '0.01', 'pValueThreshold'],
+  ['Simulation', 'simulation', 'Variance multiplier', '2', 'varianceMultiplier'],
+  ['Simulation', 'simulation', 'Sample size override (0 = observed)', '8', 'sampleSizeOverride'],
+]) {
+  test(`${panel} hides old results until the changed request completes: ${setting}`, async ({ page }) => {
+    await annotated(page);
+    await tab(page, 'Statistical Analysis').click();
+    await tab(page, panel).click();
+    if (panel === 'Simulation') {
+      await field(page, 'Condition 1').selectOption('A');
+      await field(page, 'Condition 2').selectOption('B');
+    }
+    await expect(page.getByText('Rows', { exact: true })).toBeVisible();
+    let pending;
+    await page.route(`**/api/stats/${endpoint}/run`, async route => {
+      if (route.request().postDataJSON()[parameter] === Number(value)) pending = route;
+      else await route.continue();
+    });
+    await field(page, setting, 'input').fill(value);
+    await field(page, setting, 'input').press('Tab');
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    await expect(page.getByText('Rows', { exact: true })).toHaveCount(0);
+    const response = await pending.fetch();
+    expect(response.ok()).toBeTruthy();
+    await pending.fulfill({ response });
+    await expect(page.getByText('Rows', { exact: true })).toBeVisible();
+  });
+}
+
+for (const consumer of ['volcano', 'ksea', 'ora', 'analysis']) {
+  test(`saved valid-to-valid pairing refreshes ${consumer} results`, async ({ page }) => {
+    await annotated(page);
+    if (consumer === 'ora') {
+      const aggregate = await tabRequest(page).post('/api/annotations/phosprot/aggregate', {
+        data: { mode: 'mean', source: 'non_imputed' },
+      });
+      expect(aggregate.ok()).toBeTruthy();
+    }
+    let calls = 0;
+    let hold = false;
+    let pending;
+    const endpoint = consumer === 'ksea' ? '**/api/plots/phospho/ksea-table?*'
+      : consumer === 'ora' ? '**/api/stats/ora/run'
+      : consumer === 'analysis' ? '**/api/analysis/volcano/data' : '**/api/stats/volcano/run';
+    await page.route(endpoint, async route => {
+      calls++;
+      if (hold) pending = route;
+      else if (consumer === 'ksea') await route.fulfill({ json: { rows: [{ comparison: 'before' }] } });
+      else await route.continue();
+    });
+    await tab(page, consumer === 'ksea' ? 'Phospho-specific'
+      : consumer === 'analysis' ? 'Analysis' : 'Statistical Analysis').click();
+    if (consumer === 'ksea') await tab(page, 'KSEA').click();
+    if (consumer === 'ora') await tab(page, 'GO Enrichment (ORA)').click();
+    if (consumer === 'analysis') await tab(page, '+ Add Plot').click();
+    await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+    await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+    await page.getByRole('combobox', { name: consumer === 'ksea' ? 'Test Type' : 'Test type', exact: true }).selectOption('paired');
+    const output = consumer === 'ksea'
+      ? page.getByRole('link', { name: 'Download KSEA Table (TSV)' })
+      : consumer === 'ora' ? page.getByText('ORA Provenance', { exact: true })
+      : consumer === 'analysis' ? page.getByText(/^Total rows:/)
+      : page.getByText('Result Table', { exact: true });
+    await expect(output).toBeVisible();
+    const before = calls;
+    await page.getByLabel('Sample paired with A1', { exact: true }).selectOption('');
+    await page.getByLabel('Sample paired with A2', { exact: true }).selectOption('B1');
+    await page.getByLabel('Sample paired with A1', { exact: true }).selectOption('B2');
+    hold = true;
+    const saved = page.waitForResponse(r => r.url().endsWith('/api/annotations/pairing'));
+    await page.getByRole('button', { name: 'Save pairing', exact: true }).click();
+    expect((await saved).ok()).toBeTruthy();
+    await expect.poll(() => calls).toBeGreaterThan(before);
+    await expect(output).toHaveCount(0);
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    if (consumer === 'ksea') await pending.fulfill({ json: { rows: [{ comparison: 'after' }] } });
+    else await pending.fulfill({ response: await pending.fetch() });
+    await expect(output).toBeVisible();
+  });
+}
+
+test('KSEA Data produces a real export with full sequence context', async ({ page }) => {
+  const validSites = sites.replace(/SEQ\d+S/g, 'AAAAAAAs*AAAAAAA');
+  await annotated(page, '3', { table: validSites });
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  const download = page.getByRole('link', { name: 'Download KSEA Table (TSV)' });
+  await expect(download).toBeVisible();
+  const href = await download.getAttribute('href');
+  const exported = decodeURIComponent(href.split(',').slice(1).join(','));
+  expect(exported).toContain('UPD_seq');
+  expect(exported).toContain('AAAAAAASAAAAAAA');
+  expect(exported.trim().split('\n')).toHaveLength(25);
+  await tab(page, 'Data').click();
+  await tab(page, 'Imputation').click();
+  await actionResponse(page, '/api/data-tools/imputation/run', () => tab(page, 'Impute Data Values').click());
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  const imputedResponse = page.waitForResponse(r => r.url().includes('/api/plots/phospho/ksea-table?') &&
+    new URL(r.url()).searchParams.get('dataSource') === 'imputed');
+  await page.getByRole('combobox', { name: 'Data Source', exact: true }).selectOption('imputed');
+  expect((await imputedResponse).ok()).toBeTruthy();
+  await expect(download).toBeVisible();
+});
+
+test('KSEA export stays bound to the completed selection during debounce and loading', async ({ page }) => {
+  await annotated(page);
+  let pending;
+  await page.route('**/api/plots/phospho/ksea-table?*', async route => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get('condition1') === 'B') {
+      pending = route;
+    } else {
+      await route.fulfill({ json: { rows: [{ comparison: 'A_vs_B', value: 1 }] } });
+    }
+  });
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  const link = page.getByRole('link', { name: 'Download KSEA Table (TSV)' });
+  await expect(link).toHaveAttribute('download', 'KSEA_A_vs_B.tsv');
+  await expect(link).toHaveAttribute('href', /A_vs_B/);
+  await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('B');
+  await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('A');
+  await expect(link).toHaveCount(0);
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  await expect(link).toHaveCount(0);
+  await pending.fulfill({ json: { rows: [{ comparison: 'B_vs_A', value: 2 }] } });
+  await expect(link).toHaveAttribute('download', 'KSEA_B_vs_A.tsv');
+  const downloadEvent = page.waitForEvent('download');
+  await link.click();
+  const download = await downloadEvent;
+  expect(download.suggestedFilename()).toBe('KSEA_B_vs_A.tsv');
+  const chunks = [];
+  for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+  const contents = Buffer.concat(chunks).toString('utf8');
+  expect(contents).toContain('B_vs_A');
+  expect(contents).not.toContain('A_vs_B');
 });
 
 test('uploaded hostile kinase labels stay inert and interactive plots cannot access the app', async ({ page }) => {
   const attack = "</script><script>window.injected=1</script><img src=x onerror='window.injected=2'>";
   const table = `Kinase,Log2(Frequency Factor),Adjusted p-value\n${attack},2,0.01\nAKT1,-2,0.02\n`;
+  const rawTable = `Gene Name,Frequency Factor,Adjusted p value\n${attack},4,0.01\nAKT1,0.25,0.02\n`;
   await annotated(page);
   await tab(page, 'Phospho-specific').click();
   await tab(page, 'KSEA').click();
   await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
   await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
   for (const label of ['Serine/Threonine Result File', 'Tyrosine/Non-canonical Result File']) {
-    await page.getByLabel(label).setInputFiles({ name: 'synthetic.csv', mimeType: 'text/csv', buffer: Buffer.from(table) });
+    await page.getByLabel(label).setInputFiles({ name: 'synthetic.csv', mimeType: 'text/csv',
+      buffer: Buffer.from(label === 'Serine/Threonine Result File' ? table : rawTable) });
   }
   await page.getByLabel('Annotate Hits', { exact: true }).check();
   const rendered = page.waitForResponse(r => r.url().endsWith('/api/plots/phospho/ksea-volcano.html'));
@@ -192,6 +381,9 @@ test('uploaded hostile kinase labels stay inert and interactive plots cannot acc
   const frame = iframe.contentFrame();
   await expect(frame.locator('.main-svg').first()).toBeVisible();
   const plot = frame.locator('.js-plotly-plot');
+  expect(await plot.evaluate(element => element.calcdata.flatMap((trace, index) =>
+    element._fullData[index].mode === 'markers' ? trace.map(point => point.x) : [])
+    .sort((a, b) => a - b))).toEqual([-2, -2, 2, 2]);
   const result = await plot.evaluate(async (element) => {
     window.Plotly.Fx.hover(element, [{ curveNumber: 0, pointNumber: 0 }]);
     await window.Plotly.relayout(element, { 'xaxis.range': [-5, 5] });
@@ -257,7 +449,7 @@ test('cancelled native save and open dialogs never report success or clear unsav
     window.showOpenFilePicker = async () => { throw new DOMException('Cancelled', 'AbortError'); };
   });
   await annotated(page);
-  const before = await (await page.request.get('/api/annotations/current/phospho')).json();
+  const before = await (await tabRequest(page).get('/api/annotations/current/phospho')).json();
   await tab(page, 'Restore').click();
   for (const name of ['Save State...', 'Save State As...', 'Save Portable State...']) {
     await tab(page, name).click();
@@ -267,7 +459,7 @@ test('cancelled native save and open dialogs never report success or clear unsav
   await tab(page, 'Open Save File...').click();
   await expect(tab(page, 'Open Save File...')).toBeEnabled();
   await expect(tab(page, 'Restore').last()).toBeDisabled();
-  expect(await (await page.request.get('/api/annotations/current/phospho')).json()).toEqual(before);
+  expect(await (await tabRequest(page).get('/api/annotations/current/phospho')).json()).toEqual(before);
   const leaving = page.waitForEvent('dialog');
   await page.close({ runBeforeUnload: true });
   const warning = await leaving;
@@ -283,7 +475,7 @@ test('portable save restores through required replacement upload without changin
     Object.defineProperty(window, 'showOpenFilePicker', { value: undefined, configurable: true });
   });
   await annotated(page);
-  const expected = await (await page.request.get('/api/annotations/current/phospho')).json();
+  const expected = await (await tabRequest(page).get('/api/annotations/current/phospho')).json();
   await tab(page, 'Restore').click();
   const downloaded = page.waitForEvent('download');
   page.once('dialog', dialog => dialog.accept());
@@ -308,20 +500,20 @@ test('portable save restores through required replacement upload without changin
   const missingBody = await missing.json();
   expect(missingBody.ok).toBe(false);
   expect(missingBody.missingFiles).toHaveLength(1);
-  expect((await page.request.get('/api/annotations/current/phospho')).status()).toBe(404);
+  expect((await tabRequest(page).get('/api/annotations/current/phospho')).status()).toBe(404);
   await expect(tab(page, 'Restore').last()).toBeDisabled();
   const replacements = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Missing Files' }) });
   await replacements.locator('input[type=file]').setInputFiles({ name: 'synthetic-sites.csv', mimeType: 'text/csv', buffer: Buffer.from(sites) });
   const restored = await actionResponse(page, '/api/restore/import', () => tab(page, 'Restore').last().click());
   expect(restored.body.ok).toBe(true);
   await expect(page.getByText(/Restore complete\./)).toBeVisible();
-  const actual = await (await page.request.get('/api/annotations/current/phospho')).json();
+  const actual = await (await tabRequest(page).get('/api/annotations/current/phospho')).json();
   delete actual.warnings;
   delete expected.warnings;
   expectRoundTrip(actual, expected);
 });
 async function actionResponse(page, path, action) {
-  const pending = page.waitForResponse(r => new URL(r.url()).pathname === path && r.request().method() === 'POST');
+  const pending = page.waitForResponse(r => new URL(r.url()).pathname.endsWith(path) && r.request().method() === 'POST');
   await action();
   const response = await pending;
   expect(response.ok(), await response.text()).toBeTruthy();
@@ -362,6 +554,8 @@ for (const source of ['non_imputed', 'imputed']) {
       await expect(field(page, 'Dataset level')).toHaveValue('phospho');
       const result = await actionResponse(page, '/api/data-tools/imputation/run', () => tab(page, 'Impute Data Values').click());
       expect(result.sent.kind).toBe('phospho');
+      expect(result.sent.sampleWise).toBe(true);
+      await expect(page.getByLabel('Sample-wise imputation')).toBeChecked();
       await tab(page, 'Annotation').click();
     }
     await field(page, 'Source data').selectOption(source);
@@ -369,7 +563,7 @@ for (const source of ['non_imputed', 'imputed']) {
     expect(aggregate.sent).toMatchObject({ source, mode: 'robust_site_median' });
     // Download the actual result: the imputed path must preserve a value at A1
     // without inflating its original observation count.
-    const csv = await page.request.get('/api/annotations/current/phosprot/source/download');
+    const csv = await tabRequest(page).get('/api/annotations/current/phosprot/source/download');
     expect(csv.ok()).toBeTruthy();
     const lines = (await csv.text()).trim().split(/\r?\n/).map(line => line.split(','));
     const headers = lines[0];
@@ -426,7 +620,7 @@ async function analysisSnapshot(page) {
   const snapshot = {};
   // Read-only export also exposes the full stored imputed matrix and collapse
   // provenance, which the annotation-preview endpoint does not return.
-  const exported = await page.request.post('/api/restore/export', { data: { uiState: {} } });
+  const exported = await tabRequest(page).post('/api/restore/export', { data: { uiState: {} } });
   expect(exported.ok()).toBeTruthy();
   const state = JSON.parse(gunzipSync(await exported.body()).toString('utf8'));
   snapshot.storedAnnotations = state.backend.packages.flatMap(pkg => pkg.annotations.map(annotation => ({
@@ -434,13 +628,13 @@ async function analysisSnapshot(page) {
     phosprotAggregation: annotation.phosprotAggregation,
   })));
   for (const kind of ['phospho', 'phosprot']) {
-    const annotation = await page.request.get(`/api/annotations/current/${kind}`);
+    const annotation = await tabRequest(page).get(`/api/annotations/current/${kind}`);
     expect(annotation.ok()).toBeTruthy();
     snapshot[kind] = await annotation.json();
     // Restore recomputes annotation notices (e.g. "using uploaded metadata")
     // instead of persisting the last operation's prose. Compare analysis state.
     delete snapshot[kind].warnings;
-    const csv = await page.request.get(`/api/annotations/current/${kind}/filtered/download`);
+    const csv = await tabRequest(page).get(`/api/annotations/current/${kind}/filtered/download`);
     expect(csv.ok()).toBeTruthy();
     // This synthetic fixture has no quoted delimiters. Keep headers, identities
     // and empty cells exact; parse numeric cells for round-trip tolerance.
@@ -511,7 +705,7 @@ async function holdNextResponse(page, path) {
     await route.fulfill({ response });
   });
   return { ready, async release() {
-    const received = page.waitForResponse(r => new URL(r.url()).pathname === path);
+    const received = page.waitForResponse(r => new URL(r.url()).pathname.endsWith(path));
     release();
     await received;
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -648,7 +842,7 @@ test('save download and UI restore preserve analysis and settings; invalid resto
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
   await expect(field(page, 'Dataset type')).toBeVisible();
-  expect((await page.request.get('/api/annotations/current/phosprot')).status()).toBe(404);
+  expect((await tabRequest(page).get('/api/annotations/current/phosprot')).status()).toBe(404);
   await tab(page, 'Restore').click();
   await page.locator('input[type=file]').setInputFiles({ name: download.suggestedFilename(), mimeType: 'application/octet-stream', buffer: bytes });
   const imported = page.waitForResponse(r => r.url().endsWith('/api/restore/import'));

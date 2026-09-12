@@ -111,7 +111,7 @@ export default function ImputationPage() {
           setDownShift(1.8);
           setWidth(0.3);
           setSeed(1337);
-          setSampleWise(false);
+          setSampleWise(true);
         }
       } catch (error) {
         if (isAbortError(error)) return;
@@ -121,7 +121,7 @@ export default function ImputationPage() {
         setDownShift(1.8);
         setWidth(0.3);
         setSeed(1337);
-        setSampleWise(false);
+        setSampleWise(true);
       } finally {
         if (!controller.signal.aborted) {
           setSettingsReady(true);

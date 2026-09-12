@@ -1,4 +1,6 @@
+import { contextMode } from "../../lib/plotSerialization";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
+import { collectColumns, rowsToQuotedCsv } from "../../lib/tableData";
 import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
 import PaginatedTable from "../../components/PaginatedTable";
 import PairingEditor from "../../components/PairingEditor";
@@ -15,7 +17,7 @@ import {
   runVolcanoControlAnalysis,
 } from "../../lib/api";
 import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
-import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import {
   addVolcanoReportEntry,
   listVolcanoReportEntries,
@@ -46,7 +48,7 @@ import type {
   SummaryVolcanoEntry,
 } from "../../lib/types";
 
-import { TEST_TYPE_OPTIONS, SIMULATION_TEST_TYPE_OPTIONS, restoreTestType } from "../../lib/statisticalTests";
+import { TEST_TYPE_OPTIONS, SIMULATION_TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 
 function restoreSimulationTestType(value: unknown): SimulationTestType {
   return value === "unpaired_welch" ? "unpaired_welch" : "unpaired";
@@ -397,19 +399,8 @@ function ImageSection({ title, url }: { title: string; url: string }) {
 function TableSection({ title, rows, filename }: { title: string; rows: Record<string, unknown>[]; filename: string }) {
   const csvUrl = useMemo(() => {
     if (!rows.length) return null;
-    const columns = Array.from(
-      rows.reduce((set, row) => {
-        Object.keys(row).forEach((key) => set.add(key));
-        return set;
-      }, new Set<string>())
-    );
-    const lines = [
-      columns.join(","),
-      ...rows.map((row) =>
-        columns.map((column) => `"${String(row[column] ?? "").replaceAll("\"", "\"\"")}"`).join(",")
-      ),
-    ];
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(lines.join("\n"))}`;
+    const csv = rowsToQuotedCsv(rows, collectColumns(rows));
+    return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
   }, [rows]);
 
   return (
@@ -482,6 +473,7 @@ function VolcanoPanel({
     () => readPersistedUiState<Record<string, unknown>>("stats.volcano.v1", {}),
     []
   );
+  const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
@@ -506,9 +498,10 @@ function VolcanoPanel({
     const value = String(persisted.identifier ?? "workflow").trim();
     return value === "genes" ? "genes" : "workflow";
   });
-  const [testType, setTestType] = useState<StatsTestType>(() => {
+  const [selectedTestType, setTestType] = useState<StatsTestType>(() => {
     return restoreTestType(persisted.testType);
   });
+  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
@@ -612,7 +605,7 @@ function VolcanoPanel({
 
   useEffect(() => {
     if (!onContextModeChange) return;
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts = [
       `source=${sourceMode}`,
       `kind=${kind}`,
@@ -627,7 +620,7 @@ function VolcanoPanel({
       `log2fcThreshold=${log2fcThreshold}`,
       `useUncorrected=${useUncorrected ? "true" : "false"}`,
     ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     sourceMode,
@@ -644,7 +637,7 @@ function VolcanoPanel({
     useUncorrected,
   ]);
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
-  const currentRequestKey = requestPayload ? JSON.stringify(requestPayload) : "";
+  const currentRequestKey = requestPayload ? JSON.stringify({ revision, ...requestPayload }) : "";
   const result = currentRequestKey && resultState?.key === currentRequestKey ? resultState.data : null;
 
   const currentReportEntry = useMemo<SummaryVolcanoEntry>(
@@ -781,7 +774,8 @@ function VolcanoPanel({
               useUncorrected: debouncedRequestPayload.useUncorrected,
               highlightTerms: debouncedRequestPayload.highlightTerms,
             }, { signal: controller.signal });
-        setResultState({ key: JSON.stringify(debouncedRequestPayload), data: response });
+        if (controller.signal.aborted) return;
+        setResultState({ key: JSON.stringify({ revision, ...debouncedRequestPayload }), data: response });
         setError(null);
       } catch (err) {
         if (isAbortError(err)) return;
@@ -797,6 +791,7 @@ function VolcanoPanel({
     };
   }, [
     debouncedRequestPayload,
+    revision,
   ]);
 
   const plotUrl = useMemo(() => {
@@ -828,7 +823,7 @@ function VolcanoPanel({
       useUncorrected: debouncedRequestPayload.useUncorrected,
       highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
     });
-  }, [debouncedRequestPayload, advancedPlotSignal]);
+  }, [debouncedRequestPayload, advancedPlotSignal, revision]);
 
   return (
     <div className="space-y-6">
@@ -872,7 +867,7 @@ function VolcanoPanel({
 
         <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
-          <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={TEST_TYPE_OPTIONS} />
+          <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
           <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
         </div>
@@ -980,6 +975,7 @@ function AnovaPanel({
     () => readPersistedUiState<Record<string, unknown>>("stats.anova.v1", {}),
     []
   );
+  const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
@@ -1015,8 +1011,9 @@ function AnovaPanel({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const currentResultKey = JSON.stringify({
+    revision,
     kind,
-    sourceMode,
+    source: sourceMode,
     dataSource,
     identifier,
     pValueThreshold,
@@ -1130,7 +1127,7 @@ function AnovaPanel({
       `nClusters=${Math.max(1, Math.round(nClusters))}`,
       `postHoc=${postHoc}`,
     ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [onContextModeChange, sourceMode, kind, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, displayedSelectedCluster, nClusters, postHoc]);
 
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
@@ -1140,7 +1137,8 @@ function AnovaPanel({
     const controller = new AbortController();
     runAnovaAnalysis(debouncedRequestPayload, { signal: controller.signal })
       .then((response) => {
-        setResultState({ key: currentResultKey, data: response });
+        if (controller.signal.aborted) return;
+        setResultState({ key: JSON.stringify({ revision, ...debouncedRequestPayload }), data: response });
         setError(null);
       })
       .catch((err) => {
@@ -1151,7 +1149,7 @@ function AnovaPanel({
     return () => {
       controller.abort();
     };
-  }, [debouncedRequestPayload, currentResultKey]);
+  }, [debouncedRequestPayload, revision]);
 
   const plotUrl = buildPlotUrl(`/api/plots/stats/${kind}/anova.png`, {
     source: sourceMode,
@@ -1312,6 +1310,7 @@ function OraPanel({
     () => readPersistedUiState<Record<string, unknown>>("stats.ora.v1", {}),
     []
   );
+  const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
@@ -1333,9 +1332,10 @@ function OraPanel({
   });
   const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
-  const [testType, setTestType] = useState<StatsTestType>(() => {
+  const [selectedTestType, setTestType] = useState<StatsTestType>(() => {
     return restoreTestType(persisted.testType);
   });
+  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
@@ -1355,6 +1355,7 @@ function OraPanel({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const currentResultKey = JSON.stringify({
+    revision,
     kind,
     sourceMode,
     dataSource,
@@ -1511,7 +1512,7 @@ function OraPanel({
 
   useEffect(() => {
     if (!onContextModeChange) return;
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts = [
       `source=${sourceMode}`,
       `kind=${kind}`,
@@ -1532,7 +1533,7 @@ function OraPanel({
       `maxTermSize=${maxTermSize}`,
       `backgroundMode=${backgroundMode}`,
     ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     sourceMode,
@@ -1581,6 +1582,7 @@ function OraPanel({
       backgroundMode,
     } satisfies EnrichmentRequest, { signal: controller.signal })
       .then((response) => {
+        if (controller.signal.aborted) return;
         setResultState({ key: currentResultKey, data: response });
         setError(null);
       })
@@ -1790,7 +1792,7 @@ function OraPanel({
                 </div>
               )}
               <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-                <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={TEST_TYPE_OPTIONS} />
+                <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
                 <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
                 <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
               </div>
@@ -2085,11 +2087,11 @@ function PathwayHeatmapPanel({
 
   useEffect(() => {
     if (!onContextModeChange) return;
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts = [
       `kind=${kind}`,
       `pathway=${sanitize(pathway)}`,
-      `conditions=${selectedConditions.map((value) => sanitize(value)).join(",")}`,
+      `conditions=${JSON.stringify(selectedConditions)}`,
       `valueType=${valueType}`,
       `dataSource=${dataSource}`,
       `removeEmpty=${removeEmpty ? "true" : "false"}`,
@@ -2098,7 +2100,7 @@ function PathwayHeatmapPanel({
       `clusterRows=${clusterRows ? "true" : "false"}`,
       `clusterCols=${clusterCols ? "true" : "false"}`,
     ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     kind,
@@ -2116,7 +2118,7 @@ function PathwayHeatmapPanel({
   const heatmapUrl = buildPlotUrl(`/api/plots/stats/${kind}/pathway-heatmap.png`, {
     pathway,
     dataSource,
-    conditions: selectedConditions.join(","),
+    conditions: JSON.stringify(selectedConditions),
     valueType,
     includeId,
     header,
@@ -2225,6 +2227,7 @@ function SimulationPanel({
     () => readPersistedUiState<Record<string, unknown>>("stats.simulation.v1", {}),
     []
   );
+  const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     return value === "protein" || value === "phospho" || value === "phosprot" ? value : "protein";
@@ -2259,7 +2262,9 @@ function SimulationPanel({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const currentResultKey = JSON.stringify({
+    revision,
     kind,
+    source: "volcano",
     dataSource,
     condition1,
     condition2,
@@ -2352,7 +2357,8 @@ function SimulationPanel({
 
     runSimulationAnalysis(debouncedRequestPayload, { signal: controller.signal })
       .then((response) => {
-        setResultState({ key: currentResultKey, data: response });
+        if (controller.signal.aborted) return;
+        setResultState({ key: JSON.stringify({ revision, ...debouncedRequestPayload }), data: response });
         setError(null);
       })
       .catch((err) => {
@@ -2366,7 +2372,7 @@ function SimulationPanel({
     };
   }, [
     debouncedRequestPayload,
-    currentResultKey,
+    revision,
   ]);
 
   const plotUrl = useMemo(() => {
@@ -2384,7 +2390,7 @@ function SimulationPanel({
       varianceMultiplier: debouncedRequestPayload.varianceMultiplier,
       sampleSizeOverride: debouncedRequestPayload.sampleSizeOverride,
     });
-  }, [debouncedRequestPayload, advancedPlotSignal]);
+  }, [debouncedRequestPayload, advancedPlotSignal, revision]);
 
   useEffect(() => {
     writePersistedUiState("stats.simulation.v1", {

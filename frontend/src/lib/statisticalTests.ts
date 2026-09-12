@@ -8,6 +8,13 @@ export const TEST_TYPE_OPTIONS: { value: StatsTestType; label: string }[] = [
   { value: "paired", label: "Paired t-test (matched samples)" },
 ];
 export const TEST_TYPE_VALUES = TEST_TYPE_OPTIONS.map((option) => option.value);
+export const CONTROL_TEST_TYPE_OPTIONS = [
+  { value: "unpaired_welch", label: "Unpaired (propagated variance)" },
+  { value: "paired", label: "Paired (propagated control variance)" },
+];
+export function controlTestType(value: StatsTestType): StatsTestType {
+  return value === "unpaired" ? "unpaired_welch" : value;
+}
 export const TEST_TYPE_LABELS = Object.fromEntries(TEST_TYPE_OPTIONS.map(({ value, label }) => [value, label]));
 export const SIMULATION_TEST_TYPE_OPTIONS = TEST_TYPE_OPTIONS.filter(({ value }) => value !== "paired");
 

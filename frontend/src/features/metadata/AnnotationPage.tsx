@@ -1,5 +1,5 @@
 import SummaryCard from "../../components/SummaryCard";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   aggregatePhosprot,
   createMetadataProfile,
@@ -76,6 +76,8 @@ export default function AnnotationPage() {
     { id: 1, name: "", columns: [] },
   ]);
   const [isLog2Transformed, setIsLog2Transformed] = useState(true);
+  const scaleChosen = useRef(false);
+  const scaleRequest = useRef(0);
   const [filterConfig, setFilterConfig] = useState<AnnotationFilterConfig>(DEFAULT_FILTER);
   // VSN is delegated to Bioconductor `vsn` via Rscript, so it is only offered
   // when R and the package are actually present rather than failing at run time.
@@ -237,6 +239,12 @@ export default function AnnotationPage() {
   }, [availableKinds, kind]);
 
   useEffect(() => {
+    scaleChosen.current = false;
+    scaleRequest.current += 1;
+    return () => { scaleRequest.current += 1; };
+  }, [kind, activeDataset?.filename, activeDatasetSource, currentDatasets?.activePackage]);
+
+  useEffect(() => {
     let cancelled = false;
     if (kind === "peptide") {
       setResult(null);
@@ -250,7 +258,10 @@ export default function AnnotationPage() {
       .then((stored) => {
         if (cancelled) return;
         setResult(stored);
-        setIsLog2Transformed(stored.isLog2Transformed);
+        if (!scaleChosen.current) {
+          scaleChosen.current = true;
+          setIsLog2Transformed(stored.isLog2Transformed);
+        }
         if (stored.filter) {
           setFilterConfig({ ...DEFAULT_FILTER, ...stored.filter });
         }
@@ -258,13 +269,14 @@ export default function AnnotationPage() {
       .catch(() => {
         if (cancelled) return;
         setResult(null);
-        setIsLog2Transformed(true);
+        if (!scaleChosen.current) setIsLog2Transformed(true);
       });
     return () => { cancelled = true; };
   }, [
     kind,
     activeDataset?.filename,
     activeDatasetSource,
+    currentDatasets?.activePackage,
     currentDatasets?.activeMetadataProfile,
   ]);
 
@@ -324,6 +336,7 @@ export default function AnnotationPage() {
   }
 
   function updateLog2FromConditions(nextConditions: ConditionDraft[]) {
+    scaleRequest.current += 1;
     if (kind === "peptide") return;
     const sampleColumns = Array.from(
       new Set(nextConditions.flatMap((condition) => condition.columns))
@@ -333,10 +346,11 @@ export default function AnnotationPage() {
   }
 
   async function applyDetectedLog2State(sampleColumns: string[]) {
-    if (!activeDataset || kind === "peptide") return;
+    if (!activeDataset || kind === "peptide" || scaleChosen.current) return;
+    const request = ++scaleRequest.current;
     try {
       const detection = await detectAnnotationLog2Scale({ kind, sampleColumns });
-      if (typeof detection.isLog2Transformed === "boolean") {
+      if (request === scaleRequest.current && !scaleChosen.current && typeof detection.isLog2Transformed === "boolean") {
         setIsLog2Transformed(detection.isLog2Transformed);
       }
     } catch {
@@ -723,7 +737,11 @@ export default function AnnotationPage() {
               <input
                 type="checkbox"
                 checked={isLog2Transformed}
-                onChange={(e) => setIsLog2Transformed(e.target.checked)}
+                onChange={(e) => {
+                  scaleChosen.current = true;
+                  scaleRequest.current += 1;
+                  setIsLog2Transformed(e.target.checked);
+                }}
               />
               Dataset is already log2 transformed
             </label>

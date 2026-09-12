@@ -1,3 +1,4 @@
+import { contextMode } from "../../lib/plotSerialization";
 import { ColorField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
 import { collectColumns } from "../../lib/tableData";
@@ -352,7 +353,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       onContextModeChange("");
       return;
     }
-    const sanitize = (value: string) => String(value ?? "").replaceAll("|", "/").trim();
+    const sanitize = (value: string) => String(value ?? "");
     const parts =
       activeTab === "pearson"
         ? [
@@ -383,7 +384,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             `color2=${sanitize(venn.color2)}`,
             `color3=${sanitize(venn.color3)}`,
           ];
-    onContextModeChange(parts.join("|"));
+    onContextModeChange(contextMode(parts));
   }, [
     onContextModeChange,
     activeTab,

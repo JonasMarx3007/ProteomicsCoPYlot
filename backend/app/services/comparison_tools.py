@@ -3,14 +3,16 @@ from __future__ import annotations
 from app.services.html_security import GENERATED_HTML_META
 
 from app.services.plot_export import (
+    to_png_bytes as _to_png_bytes,
     cm_to_inch as _cm_to_inch,
     cm_to_px as _cm_to_px,
 )
 
-import io
 
 import numpy as np
 import pandas as pd
+from textwrap import fill
+
 
 from app.schemas.annotation import AnnotationKind
 from app.services.functions import (
@@ -20,6 +22,11 @@ from app.services.functions import (
 )
 from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
 from app.services.runtime_cache import apply_cached_wrappers
+
+
+def _wrap_label(label: str, width_cm: float) -> str:
+    return fill(label, width=max(10, int(width_cm * 3)),
+                expand_tabs=False, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False)
 
 
 def _get_plt():
@@ -56,24 +63,6 @@ def _get_plotly():
         raise ModuleNotFoundError(
             "plotly is required for interactive comparison plots. Install it with: pip install plotly"
         ) from exc
-
-
-def _to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    buf = io.BytesIO()
-    save_kwargs = {"format": "png", "dpi": max(72, int(dpi))}
-    if getattr(fig, "_copylot_transparent_background", False):
-        save_kwargs["transparent"] = True
-        save_kwargs["facecolor"] = "none"
-    if tight:
-        save_kwargs["bbox_inches"] = "tight"
-    fig.savefig(buf, **save_kwargs)
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-
-
 
 
 def _plotly_html(fig) -> str:
@@ -399,10 +388,10 @@ def pearson_correlation_png(
         alpha=0.65,
         edgecolors="none",
     )
-    ax.set_xlabel(left)
-    ax.set_ylabel(right)
+    ax.set_xlabel(_wrap_label(left, width_cm))
+    ax.set_ylabel(_wrap_label(right, height_cm))
     if header:
-        ax.set_title(f"Pearson Correlation: {left} vs {right}")
+        ax.set_title(_wrap_label(f"Pearson Correlation: {left} vs {right}", width_cm))
     note = f"r = {corr:.4f}\nN = {len(pairs)}" if np.isfinite(corr) else f"r = n/a\nN = {len(pairs)}"
     ax.text(
         0.02,
@@ -685,7 +674,7 @@ def venn_png(
     if set3 is None:
         venn2(
             [set1, set2],
-            set_labels=(label1, label2),
+            set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2)),
             set_colors=(color1, color2),
             alpha=0.5,
             ax=ax,
@@ -693,7 +682,7 @@ def venn_png(
     else:
         venn3(
             [set1, set2, set3],
-            set_labels=(label1, label2, label3),
+            set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2, label3)),
             set_colors=(color1, color2, color3),
             alpha=0.5,
             ax=ax,

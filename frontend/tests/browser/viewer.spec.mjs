@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { verifyAuthStartup } from './authStartup.mjs';
+import { verifyAuthStartup, tabRequest } from './authStartup.mjs';
 
 test('viewer startup waits for logout before checking authentication', async ({ page }) => {
   await verifyAuthStartup(page, '/api/viewer/auth');
@@ -8,18 +8,65 @@ test('viewer startup waits for logout before checking authentication', async ({ 
   await expect(page.getByText('Viewer mode is read-only.', { exact: false })).toBeVisible();
 });
 
+test('viewer tabs keep independent projects, plots and downloads across refresh', async ({ page, context, browser }) => {
+  async function login(target, password) {
+    await target.getByLabel('Password', { exact: true }).fill(password);
+    await target.getByRole('button', { name: 'Open Viewer', exact: true }).click();
+    await expect(target.getByText('Viewer mode is read-only.', { exact: false })).toBeVisible();
+  }
+  const rows = async target => (await (await tabRequest(target).get('/api/annotations/current/protein')).json()).filteredRows;
+  await page.goto('/');
+  await login(page, 'synthetic-browser-test-only');
+  const tabA = await page.evaluate(() => sessionStorage.getItem('copylot.tab.id'));
+  await page.evaluate(() => sessionStorage.setItem('pcopylot.report.qcSettings.v1', 'tab-A-settings'));
+  const opened = context.waitForEvent('page');
+  await page.evaluate(() => window.open('/', '_blank'));
+  const second = await opened;
+  await expect(second.getByRole('button', { name: 'Open Viewer', exact: true })).toBeVisible();
+  const tabB = await second.evaluate(() => sessionStorage.getItem('copylot.tab.id'));
+  expect(tabB).not.toBe(tabA);
+  expect(await second.evaluate(() => sessionStorage.getItem('pcopylot.report.qcSettings.v1'))).toBeNull();
+  expect(await rows(page)).toBe(12);
+  await login(second, 'synthetic-second-password');
+  expect(await rows(second)).toBe(6);
+  expect(await rows(page)).toBe(12);
+  await second.evaluate(() => sessionStorage.setItem('pcopylot.report.qcSettings.v1', 'tab-B-settings'));
+  expect(await page.evaluate(() => sessionStorage.getItem('pcopylot.report.qcSettings.v1'))).toBe('tab-A-settings');
+  for (const [target, marker] of [[page, 'SYNTHETIC'], [second, 'SECOND']]) {
+    await target.getByRole('button', { name: 'QC Pipeline', exact: true }).click();
+    const plot = target.locator('main img').first();
+    await expect(plot).toBeVisible();
+    await expect.poll(() => plot.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+    const csv = await tabRequest(target).get('/api/annotations/current/protein/source/download');
+    expect(csv.ok()).toBeTruthy();
+    expect(await csv.text()).toContain(marker);
+  }
+  const isolated = await browser.newContext();
+  try {
+    expect((await isolated.request.get(`http://127.0.0.1:5188/api/tabs/${tabA}/api/datasets/current`)).status()).toBe(401);
+  } finally { await isolated.close(); }
+  await second.reload();
+  await expect(second.getByRole('button', { name: 'Open Viewer', exact: true })).toBeVisible();
+  expect(await second.evaluate(() => sessionStorage.getItem('copylot.tab.id'))).toBe(tabB);
+  expect(await rows(page)).toBe(12);
+  await login(second, 'synthetic-second-password');
+  await tabRequest(second).post('/api/viewer/auth/logout');
+  expect((await tabRequest(second).get('/api/datasets/current')).status()).toBe(401);
+  expect(await rows(page)).toBe(12);
+});
+
 test('authenticated viewer is read-only', async ({ page, browser }) => {
   await page.goto('/');
   await expect(page.getByRole('button', { name: 'Open Viewer', exact: true })).toBeVisible();
-  expect((await page.request.get('/api/datasets/current')).status()).toBe(401);
+  expect((await tabRequest(page).get('/api/datasets/current')).status()).toBe(401);
   await page.getByLabel('Password', { exact: true }).fill('wrong-test-password');
   await page.getByRole('button', { name: 'Open Viewer', exact: true }).click();
   await expect(page.getByText('Invalid viewer password.', { exact: true })).toBeVisible();
-  expect((await page.request.get('/api/annotations/current/protein')).status()).toBe(401);
+  expect((await tabRequest(page).get('/api/annotations/current/protein')).status()).toBe(401);
   await page.getByLabel('Password', { exact: true }).fill('synthetic-browser-test-only');
   await page.getByRole('button', { name: 'Open Viewer', exact: true }).click();
   await expect(page.getByText('Viewer mode is read-only.', { exact: false })).toBeVisible();
-  const before = await page.request.get('/api/annotations/current/protein');
+  const before = await tabRequest(page).get('/api/annotations/current/protein');
   expect(before.ok()).toBeTruthy();
   const annotation = await before.json();
   expect(annotation.filteredRows).toBe(12);
@@ -36,14 +83,14 @@ test('authenticated viewer is read-only', async ({ page, browser }) => {
     ['/api/datasets/packages/create', { packageName: 'Forbidden' }],
     ['/api/annotations/phosprot/aggregate', { source: 'non_imputed', mode: 'mean' }],
   ]) {
-    const response = await page.request.post(path, { data });
+    const response = await tabRequest(page).post(path, { data });
     expect(response.status(), `${path}: ${await response.text()}`).toBe(403);
   }
-  const upload = await page.request.post('/api/datasets/upload', { multipart: {
+  const upload = await tabRequest(page).post('/api/datasets/upload', { multipart: {
     kind: 'protein', file: { name: 'forbidden.csv', mimeType: 'text/csv', buffer: Buffer.from('ProteinNames,A1\nNO,1') },
   } });
   expect(upload.status()).toBe(403);
-  expect(await (await page.request.get('/api/annotations/current/protein')).json()).toEqual(annotation);
+  expect(await (await tabRequest(page).get('/api/annotations/current/protein')).json()).toEqual(annotation);
   await page.getByRole('button', { name: 'Statistical Analysis', exact: true }).click();
   await page.locator('label').filter({ hasText: /^Condition 2$/ }).locator('..').locator('select').selectOption('B');
   await expect(page.getByText('Result Table', { exact: true })).toBeVisible();
@@ -51,7 +98,7 @@ test('authenticated viewer is read-only', async ({ page, browser }) => {
   try {
     expect((await isolated.request.get('http://127.0.0.1:5188/api/datasets/current')).status()).toBe(401);
   } finally { await isolated.close(); }
-  const logout = await page.request.post('/api/viewer/auth/logout');
+  const logout = await tabRequest(page).post('/api/viewer/auth/logout');
   expect(logout.ok()).toBeTruthy();
-  expect((await page.request.get('/api/datasets/current')).status()).toBe(401);
+  expect((await tabRequest(page).get('/api/datasets/current')).status()).toBe(401);
 });

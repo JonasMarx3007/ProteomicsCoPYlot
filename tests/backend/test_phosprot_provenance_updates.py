@@ -16,6 +16,10 @@ from app.services import annotation_store, data_tools, phosprot_tools, plot_imag
 from app.services.dataset_store import reset_all_datasets, save_table_dataset
 from app.services.functions import _phosprot_values_are_centred
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
+from app.services.dataset_store import get_current_dataset
+from app.services.metadata_upload_store import create_profile, set_active_profile
+from app.api.routes_annotations import generate_annotation
+from app.schemas.annotation import AnnotationGenerateRequest
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +84,7 @@ def test_aggregation_update_plot_restore(tmp_path, monkeypatch, mode, source):
     frame = original.source_data.copy(deep=True)
     path = tmp_path / "phosprot.csv"
     frame.to_csv(path, index=False)
-    save_table_dataset(path.name, "phosprot", frame, source_path=path)
+    save_table_dataset(path.name, "phosprot", frame, source_path=path, phosprot_aggregation=mode)
     sites_path = tmp_path / "sites.csv"
     sites.to_csv(sites_path, index=False)
     save_table_dataset(sites_path.name, "phospho", sites, source_path=sites_path)
@@ -94,6 +98,13 @@ def test_aggregation_update_plot_restore(tmp_path, monkeypatch, mode, source):
         assert ("Ratio to Site Median" in figure.layout.yaxis.title.text) == (mode == "robust_site_median")
         return current
 
+    check_interpretation()
+    request = AnnotationGenerateRequest(
+        kind="phosprot", isLog2Transformed=True,
+        conditions=[{"name": "A", "columns": samples[:2]}, {"name": "B", "columns": samples[2:]}],
+        filter=AnnotationFilterConfig(minPresent=0),
+    )
+    generate_annotation(request)
     check_interpretation()
     for operation in ("blocked_impute", "pair"):
         before = annotation_store.get_annotation("phosprot")
@@ -124,9 +135,88 @@ def test_aggregation_update_plot_restore(tmp_path, monkeypatch, mode, source):
     reset_all_datasets()
     restore_state.apply_restore_state(state, {})
     restored = check_interpretation()
+    assert get_current_dataset("phosprot").phosprot_aggregation == mode
     pd.testing.assert_frame_equal(restored.filtered_data[samples], expected.filtered_data[samples])
     assert restored.imputed_data.empty
     pd.testing.assert_frame_equal(restored.metadata, expected.metadata)
+    generate_annotation(request)
+    check_interpretation()
+
+
+def _seed_phosprot_upload():
+    frame = pd.DataFrame({"Protein_group": ["P1"], "A": [10.], "B": [12.]})
+    annotation_store.save_annotation(
+        kind="phospho", source_data=frame, log2_data=frame, filtered_data=frame,
+        metadata=pd.DataFrame({"sample": ["A", "B"], "condition": ["A", "B"]}),
+        is_log2_transformed=True, metadata_source="manual", filter_config=AnnotationFilterConfig(minPresent=0),
+        auto_detected=False, warnings=[],
+    )
+    phosprot_tools.upload_phosprot(frame, "valid.csv", True)
+    return frame
+
+
+@pytest.mark.parametrize("failure", ["samples", "scale", "filter"])
+def test_rejected_upload_preserves_dataset_and_all_profile_annotations(monkeypatch, failure):
+    frame = _seed_phosprot_upload()
+    before_dataset = get_current_dataset("phosprot")
+    before_annotation = annotation_store.get_annotation("phosprot")
+    annotation_store.store_prepared_annotation(before_annotation, metadata_profile_name="other")
+
+    def fail(*args, **kwargs):
+        raise ValueError("Synthetic validation failure")
+
+    if failure == "samples":
+        frame = frame.rename(columns={"A": "unknownA", "B": "unknownB"})
+    else:
+        monkeypatch.setattr(phosprot_tools, "resolve_log2_state" if failure == "scale" else "filter_data", fail)
+    with pytest.raises(ValueError):
+        phosprot_tools.upload_phosprot(frame, "rejected.csv", True)
+    assert get_current_dataset("phosprot") is before_dataset
+    assert annotation_store.get_annotation("phosprot") is before_annotation
+    assert annotation_store.get_annotation("phosprot", metadata_profile_name="other") is before_annotation
+
+
+def test_successful_replacement_clears_stale_profiles_and_replaces_provenance():
+    frame = _seed_phosprot_upload()
+    previous = annotation_store.get_annotation("phosprot")
+    previous.phosprot_aggregation = "robust_site_median"
+    annotation_store.store_prepared_annotation(previous, metadata_profile_name="other")
+    replacement = frame.assign(A=20.)
+    current = phosprot_tools.upload_phosprot(replacement, "replacement.csv", True)
+    assert get_current_dataset("phosprot").filename == "replacement.csv"
+    assert get_current_dataset("phosprot").phosprot_aggregation == "uploaded"
+    assert current.phosprot_aggregation == "uploaded"
+    pd.testing.assert_frame_equal(current.source_data, replacement)
+    assert annotation_store.get_annotation("phosprot", metadata_profile_name="other") is None
+
+
+def test_rejected_aggregation_preserves_current_dataset(monkeypatch):
+    frame = _seed_phosprot_upload()
+    previous_dataset = get_current_dataset("phosprot")
+    previous_annotation = annotation_store.get_annotation("phosprot")
+    monkeypatch.setattr(phosprot_tools, "transform_phosprot", lambda *args, **kwargs: frame.copy())
+
+    def fail(*args, **kwargs):
+        raise ValueError("Synthetic filter failure")
+
+    monkeypatch.setattr(phosprot_tools, "filter_data", fail)
+    with pytest.raises(ValueError, match="filter failure"):
+        phosprot_tools.aggregate_from_phospho("mean")
+    assert get_current_dataset("phosprot") is previous_dataset
+    assert annotation_store.get_annotation("phosprot") is previous_annotation
+
+
+def test_reannotation_in_new_profile_uses_dataset_provenance():
+    _seed_phosprot_upload()
+    get_current_dataset("phosprot").phosprot_aggregation = "robust_site_median"
+    create_profile("other")
+    set_active_profile("other")
+    generate_annotation(AnnotationGenerateRequest(
+        kind="phosprot", isLog2Transformed=True,
+        conditions=[{"name": "A", "columns": ["A"]}, {"name": "B", "columns": ["B"]}],
+        filter=AnnotationFilterConfig(minPresent=0),
+    ))
+    assert annotation_store.get_annotation("phosprot").phosprot_aggregation == "robust_site_median"
 
 
 @pytest.mark.parametrize("method", ["quantile", "numerical"])

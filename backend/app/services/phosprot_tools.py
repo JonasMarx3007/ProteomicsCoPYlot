@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Literal
 
 import numpy as np
@@ -12,7 +13,7 @@ from app.schemas.annotation import (
     PhosprotAggregationSource,
     phosprot_filter_config,
 )
-from app.services.annotation_store import get_annotation, save_annotation
+from app.services.annotation_store import StoredAnnotation, clear_annotation, get_annotation, store_prepared_annotation
 from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
@@ -333,6 +334,7 @@ def _shared_filter_config(phospho_annotation) -> AnnotationFilterConfig:
 
 def _store_phosprot_annotation(
     frame: pd.DataFrame,
+    filename: str,
     is_log2_transformed: bool | None,
     warning_prefix: str,
     upstream_normalization: str | None = None,
@@ -388,9 +390,9 @@ def _store_phosprot_annotation(
             f"Phosphosite-level normalization was '{normalization}' before collapse. "
             "No phosphoprotein-level normalization was applied after collapse."
         )
-    return save_annotation(
+    stored = StoredAnnotation(
         kind="phosprot",
-        source_data=frame,
+        source_data=frame.copy(),
         metadata=metadata,
         log2_data=log2_data,
         filtered_data=filtered_data,
@@ -401,7 +403,13 @@ def _store_phosprot_annotation(
         warnings=warnings,
         log2_auto_detected=log2_auto_detected,
         phosprot_aggregation=aggregation,
+        imputation=None,
+        imputed_data=pd.DataFrame(),
+        created_at=datetime.now(timezone.utc).isoformat(),
     )
+    save_table_dataset(filename=filename, kind="phosprot", frame=frame, phosprot_aggregation=aggregation)
+    clear_annotation("phosprot", clear_all_profiles=True)
+    return store_prepared_annotation(stored)
 
 
 def aggregate_from_phospho(
@@ -461,11 +469,6 @@ def aggregate_from_phospho(
             " imputation problem in the phosphosite input rather than at the aggregation."
         )
 
-    save_table_dataset(
-        filename=f"phosprot_aggregated_{source}_{mode}.csv",
-        kind="phosprot",
-        frame=phosprot,
-    )
     method_note = ""
     if mode == "robust_site_median":
         method_note = (
@@ -487,6 +490,7 @@ def aggregate_from_phospho(
         )
     return _store_phosprot_annotation(
         frame=phosprot,
+        filename=f"phosprot_aggregated_{source}_{mode}.csv",
         is_log2_transformed=result_is_log2,
         warning_prefix=(
             "Phosphoprotein dataset was aggregated from "
@@ -504,7 +508,6 @@ def upload_phosprot(
     is_log2_transformed: bool | None = None,
 ) -> object:
     _shared_phospho_annotation()
-    save_table_dataset(filename=filename, kind="phosprot", frame=frame)
     warning_prefix = (
         "Phosphoprotein dataset was uploaded manually. "
         "Log2 state was auto-detected from the uploaded dataset."
@@ -513,6 +516,7 @@ def upload_phosprot(
     )
     return _store_phosprot_annotation(
         frame=frame,
+        filename=filename,
         is_log2_transformed=is_log2_transformed,
         warning_prefix=warning_prefix,
         aggregation="uploaded",

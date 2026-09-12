@@ -81,6 +81,7 @@ import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
 import { normalizePlotSizeParams } from "./plotLimits";
 import { isAnalysisMutation, unsavedAnalysis } from "./unsavedAnalysis";
+import { TAB_API_PREFIX } from "./tabSession";
 
 // Local wrapper only (not a global fetch replacement). A failed/aborted write
 // remains conservatively dirty because the server may already have committed it.
@@ -93,7 +94,7 @@ async function fetch(input: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? ""}${TAB_API_PREFIX}`;
 let DATASET_SCOPE_NONCE = 0;
 
 export type ApiRequestOptions = {
@@ -1639,10 +1640,12 @@ export async function streamChatMessage(
     ollamaUrl?: string;
     analysisContext?: string;
   },
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  signal?: AbortSignal
 ): Promise<{ provider: ChatProvider; model: string; content: string }> {
   const provider: ChatProvider = payload.provider ?? "ollama";
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    signal,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2083,6 +2086,8 @@ export async function renderKseaVolcanoFromFiles(payload: {
   header: boolean;
   condition1: string;
   condition2: string;
+  condition1Control?: string;
+  condition2Control?: string;
   annotateHits: boolean;
 }): Promise<string> {
   const form = new FormData();
@@ -2092,6 +2097,8 @@ export async function renderKseaVolcanoFromFiles(payload: {
   form.append("header", String(payload.header));
   form.append("condition1", payload.condition1);
   form.append("condition2", payload.condition2);
+  form.append("condition1Control", payload.condition1Control ?? "");
+  form.append("condition2Control", payload.condition2Control ?? "");
   form.append("annotateHits", String(payload.annotateHits));
 
   const response = await fetch(`${API_BASE}/api/plots/phospho/ksea-volcano.html`, {

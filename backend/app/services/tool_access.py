@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 
 from app.services.password_hashing import validate_password_hash, verify_password
-from app.services.session_context import get_session_id, rotate_session_id
+from app.services.session_context import get_session_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -157,10 +157,11 @@ def _grant_authenticated_session() -> str:
     Rotating here is what stops session fixation: the pre-login id never becomes
     an authenticated one, so planting it achieves nothing.
     """
-    with _SESSION_LOCK:
-        _SESSION_AUTH.discard(get_session_id())
-        replacement = rotate_session_id()
-        _SESSION_AUTH.add(replacement)
+    from app.services.session_cleanup import authenticated_session_rotation
+
+    with authenticated_session_rotation() as replacement:
+        with _SESSION_LOCK:
+            _SESSION_AUTH.add(replacement)
     return replacement
 
 

@@ -542,6 +542,7 @@ def export_state_blob(
             dataset_payload[kind] = {
                 "filename": str(getattr(stored, "filename", "") or ""),
                 "path": None if portable else _ensure_exportable_table_path(stored),
+                "phosprotAggregation": getattr(stored, "phosprot_aggregation", None),
             }
         peptide_stored = current.get("peptide")
         dataset_payload["peptide"] = (
@@ -1032,6 +1033,7 @@ def _apply_prepared_restore_state(
                 frame=frame,
                 package_name=package_name,
                 source_path=source_path,
+                phosprot_aggregation=_coerce_phosprot_aggregation(datasets[kind].get("phosprotAggregation")) if kind == "phosprot" else None,
             )
             restored_datasets.append(f"{package_name}:{kind}")
 

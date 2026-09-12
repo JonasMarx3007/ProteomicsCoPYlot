@@ -21,6 +21,7 @@ class StoredTableDataset:
     frame: pd.DataFrame
     suggested_is_log2_transformed: bool | None = None
     source_path: str | None = None
+    phosprot_aggregation: str | None = None
 
 
 @dataclass
@@ -152,6 +153,7 @@ def save_table_dataset(
     *,
     package_name: str | None = None,
     source_path: str | None = None,
+    phosprot_aggregation: str | None = None,
 ) -> StoredTableDataset:
     resolved_package = _normalize_package_name(package_name)
     state = _package_state(resolved_package)
@@ -161,6 +163,7 @@ def save_table_dataset(
         kind=kind,
         frame=frame,
         source_path=str(source_path).strip() or None if source_path is not None else None,
+        phosprot_aggregation=phosprot_aggregation,
     )
     state[kind] = stored
     invalidate_runtime_cache(f"dataset:{resolved_package}:{kind}:updated")

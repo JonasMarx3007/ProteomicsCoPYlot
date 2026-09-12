@@ -960,16 +960,28 @@ def _fasta_sequence(db: pd.DataFrame, protein: str) -> str | None:
     return None
 
 
+def _peptide_starts(sequence: str, peptide: str):
+    if not peptide:
+        return
+    start = sequence.find(peptide)
+    while start != -1:
+        yield start
+        start = sequence.find(peptide, start + 1)
+
+
+def _protein_peptides(frame: pd.DataFrame, protein: str) -> list[str]:
+    members = frame[_protein_names_column(frame)].fillna("").astype(str).str.split(";")
+    selected = members.map(lambda names: protein in [name.strip() for name in names])
+    return frame.loc[selected, _stripped_sequence_column(frame)].dropna().astype(str).unique().tolist()
+
+
 def _coverage_visualization(
     frame: pd.DataFrame,
     db: pd.DataFrame,
     protein: str,
     chunk_size: int = 30,
 ) -> str:
-    protein_col = _protein_names_column(frame)
-    seq_col = _stripped_sequence_column(frame)
-    filtered = frame[frame[protein_col].astype(str).str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)]
-    found_sequences = filtered[seq_col].dropna().astype(str).unique()
+    found_sequences = _protein_peptides(frame, protein)
 
     sequence = _fasta_sequence(db, protein)
     if sequence is None:
@@ -979,8 +991,8 @@ def _coverage_visualization(
     result_sequences = ["-" * n]
 
     for peptide in found_sequences:
-        for match in re.finditer(re.escape(peptide), sequence):
-            start_pos, end_pos = match.start(), match.end()
+        for start_pos in _peptide_starts(sequence, peptide):
+            end_pos = start_pos + len(peptide)
             placed = False
             for index, result_sequence in enumerate(result_sequences):
                 if result_sequence[start_pos:end_pos] == "-" * len(peptide):
@@ -1045,12 +1057,7 @@ def peptide_sequence_coverage(
         raise ValueError("A protein must be selected for sequence coverage.")
 
     frame = get_peptide_frame()
-    protein_col = _protein_names_column(frame)
-    seq_col = _stripped_sequence_column(frame)
-    filtered = frame[
-        frame[protein_col].astype(str).str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)
-    ]
-    peptides = filtered[seq_col].dropna().astype(str).unique().tolist()
+    peptides = _protein_peptides(frame, protein)
     if not peptides:
         raise ValueError(f"No peptides were found for protein '{protein}'.")
 
@@ -1061,8 +1068,8 @@ def peptide_sequence_coverage(
 
     coverage_mask = [0] * len(sequence)
     for peptide in peptides:
-        for match in re.finditer(re.escape(peptide), sequence):
-            for index in range(match.start(), match.end()):
+        for start in _peptide_starts(sequence, peptide):
+            for index in range(start, start + len(peptide)):
                 coverage_mask[index] = 1
 
     coverage_percent = round((sum(coverage_mask) / len(sequence)) * 100.0, 2)

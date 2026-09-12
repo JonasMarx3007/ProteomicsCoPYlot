@@ -35,6 +35,76 @@ def _frame(seed: int = 17, n_features: int = 400, missing: float = 0.15) -> pd.D
 COMMON_MEDIAN_TOLERANCE = {"median": 1e-9, "quantile": 1e-3}
 
 
+@pytest.mark.parametrize("method", ["none", "median", "quantile", "vsn"])
+@pytest.mark.parametrize("log2_upload", [False, True])
+def test_cv_and_abundance_use_uploaded_intensities(monkeypatch, method, log2_upload):
+    from app.services import plot_images, table_functions
+    from app.services.annotation_processor import prepare_normalized_log2_data
+    from proteomicscopylot.notebook_functions import inverse_log2_transform_data
+
+    columns = ["A1", "A2", "A3"]
+    linear = pd.DataFrame({"ProteinNames": ["P1", "P2", "P3", "P4"],
+                           "A1": [1., 2., 4., np.nan], "A2": [2., 4., 8., np.nan],
+                           "A3": [4., 8., 16., np.nan]})
+    uploaded = linear.copy()
+    if log2_upload:
+        uploaded[columns] = np.log2(uploaded[columns])
+    meta = pd.DataFrame({"sample": columns, "condition": "A"})
+    if method == "vsn":
+        # Source selection must never invert a VSN result, whatever it contains.
+        monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data: data * 0 + 99)
+    normalized = prepare_normalized_log2_data(uploaded, columns, log2_upload, method)
+    annotation = SimpleNamespace(source_data=uploaded, metadata=meta,
+        is_log2_transformed=log2_upload, log2_data=normalized,
+        filtered_data=normalized.iloc[:1], imputed_data=normalized.fillna(50))
+    for module in [plot_images, table_functions]:
+        monkeypatch.setattr(module, "get_annotation", lambda kind: annotation)
+        monkeypatch.setattr(module, "_get_current_frame", lambda kind: annotation.imputed_data)
+        monkeypatch.setattr(module, "_get_sample_columns", lambda kind, frame: columns)
+        pd.testing.assert_frame_equal(module._original_scale_frame("protein"), linear)
+    cv = table_functions.prepare_cov_df(table_functions._original_scale_frame("protein")[columns], meta)
+    expected_cv = table_functions.prepare_cov_df(linear[columns], meta)
+    pd.testing.assert_frame_equal(cv, expected_cv)
+    abundance, _, _, _ = plot_images._abundance_mean_intensities("protein")
+    np.testing.assert_allclose(abundance.A, np.log10(linear[columns].mean(axis=1).dropna() + 1))
+    notebook_source = inverse_log2_transform_data(uploaded, meta) if log2_upload else uploaded.copy()
+    pd.testing.assert_frame_equal(notebook_source, linear, check_like=True)
+    pd.testing.assert_frame_equal(annotation.source_data, uploaded)
+
+
+def test_r_uploaded_intensity_qc_matches_python_reference():
+    import subprocess
+    from app.services.r_runtime import detect_r_runtime
+
+    runtime = detect_r_runtime()
+    if not runtime.get("available"):
+        pytest.skip("Rscript unavailable")
+    script = r'''
+      source("proteomicscopylot/notebook_functions.R")
+      original <- data.frame(ProteinNames=c("P1","P2","P3"),
+        A1=c(1,2,4), A2=c(2,4,8), A3=c(4,8,16))
+      meta <- data.frame(sample=c("A1","A2","A3"),condition="A")
+      uploaded <- original
+      uploaded[meta$sample] <- log2(uploaded[meta$sample])
+      org_data <- inverse_log2_transform_data(uploaded,meta)
+      data <- normalize_data(uploaded,meta,"median")
+      stopifnot(isTRUE(all.equal(org_data[meta$sample],original[meta$sample])))
+      grDevices::pdf(NULL)
+      trace("boxplot.default", where=asNamespace("graphics"), print=FALSE,
+        tracer=quote(stopifnot(all(abs(unlist(x) - 65.46536707079771) < 1e-8))))
+      cov_plot(org_data,meta,data_scale="linear")
+      untrace("boxplot.default",where=asNamespace("graphics"))
+      trace("points.default",where=asNamespace("graphics"),print=FALSE,
+        tracer=quote(stopifnot(isTRUE(all.equal(as.numeric(y),sort(log10(c(7,14,28)/3+1),decreasing=TRUE))))))
+      abundance_plot(org_data,meta,data_scale="linear",legend=FALSE)
+      untrace("points.default",where=asNamespace("graphics"))
+      grDevices::dev.off()
+    '''
+    result = subprocess.run([runtime["executable"], "-e", script], cwd=ROOT,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("method", ["median", "quantile"])
 def test_normalization_removes_loading_offsets(method: str) -> None:
     frame = _frame()
@@ -215,10 +285,13 @@ def test_phosprot_does_not_apply_inherited_normalization_after_collapse(
         "_shared_phospho_annotation",
         lambda: shared_annotation,
     )
-    monkeypatch.setattr(phosprot_tools, "save_annotation", lambda **kwargs: kwargs)
+    monkeypatch.setattr(phosprot_tools, "store_prepared_annotation", lambda stored: vars(stored))
+    monkeypatch.setattr(phosprot_tools, "save_table_dataset", lambda **kwargs: None)
+    monkeypatch.setattr(phosprot_tools, "clear_annotation", lambda *args, **kwargs: None)
 
     stored = phosprot_tools._store_phosprot_annotation(
         frame=frame,
+        filename="synthetic.csv",
         is_log2_transformed=True,
         warning_prefix="Test phosphoprotein upload.",
     )
@@ -289,7 +362,8 @@ def test_phosprot_collapses_normalized_phosphosite_values_once(
         lambda: shared_annotation,
     )
     monkeypatch.setattr(phosprot_tools, "save_table_dataset", lambda **kwargs: None)
-    monkeypatch.setattr(phosprot_tools, "save_annotation", lambda **kwargs: kwargs)
+    monkeypatch.setattr(phosprot_tools, "store_prepared_annotation", lambda stored: vars(stored))
+    monkeypatch.setattr(phosprot_tools, "clear_annotation", lambda *args, **kwargs: None)
 
     stored = phosprot_tools.aggregate_from_phospho(
         mode="sum_ignore_na",

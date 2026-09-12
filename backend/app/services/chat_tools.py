@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import ipaddress
+import http.client
 import os
 import re
 import shutil
 import subprocess
+import socket
 import time
+from threading import Lock, Timer
 from collections.abc import Iterator
 import urllib.error
 import urllib.parse
@@ -22,6 +26,143 @@ from app.schemas.chat import (
     OllamaModelsResponse,
 )
 from app.services.cloud_ai_consent import require_cloud_ai_consent
+from app.services.workload_manager import provider_deadline
+
+
+class _NoProviderRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _DeadlineConnection:
+    def connect(self):
+        super().connect()
+        sock = self.sock
+
+        def expire():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        self.watchdog = Timer(max(0, self.deadline - time.monotonic()), expire)
+        self.watchdog.daemon = True
+        self.watchdog.start()
+
+
+class _DeadlineHTTPConnection(_DeadlineConnection, http.client.HTTPConnection):
+    pass
+
+
+class _DeadlineHTTPSConnection(_DeadlineConnection, http.client.HTTPSConnection):
+    pass
+
+
+class _TimedResponse:
+    def __init__(self, response, connection):
+        self.response = response
+        self.connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self.response, name)
+
+    def _read(self, method, size):
+        if time.monotonic() >= self.connection.deadline:
+            raise ValueError("Provider operation exceeded its time limit.")
+        result = getattr(self.response, method)(size)
+        if time.monotonic() >= self.connection.deadline:
+            raise ValueError("Provider operation exceeded its time limit.")
+        return result
+
+    def read(self, size=-1):
+        return self._read("read", size)
+
+    def readline(self, size=-1):
+        return self._read("readline", size)
+
+    def close(self):
+        self.connection.watchdog.cancel()
+        self.response.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class _DeadlineHandlers(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
+    def _open(self, request, connection_class, **kwargs):
+        connections = []
+
+        def connection(*args, **options):
+            conn = connection_class(*args, **options)
+            conn.deadline = request._copylot_deadline
+            connections.append(conn)
+            return conn
+
+        try:
+            response = self.do_open(connection, request, **kwargs)
+            return _TimedResponse(response, connections[0])
+        except BaseException:
+            for conn in connections:
+                if hasattr(conn, "watchdog"):
+                    conn.watchdog.cancel()
+            raise
+
+    def http_open(self, request):
+        return self._open(request, _DeadlineHTTPConnection)
+
+    def https_open(self, request):
+        return self._open(request, _DeadlineHTTPSConnection, context=self._context)
+
+
+_PROVIDER_OPENER = urllib.request.build_opener(_NoProviderRedirects(), _DeadlineHandlers())
+
+
+def _read_provider_body(response) -> bytes:
+    limit = max(1, _env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("Provider response exceeds the configured size limit.")
+    return body
+
+
+class _ProviderStream:
+    def __init__(self, chunks, response):
+        self.chunks = chunks
+        self.response = response
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.chunks)
+
+    def close(self):
+        try:
+            self.chunks.close()
+        finally:
+            self.response.close()
+
+
+def _open_provider_request(request, *, timeout, provider="Ollama"):
+    now = time.monotonic()
+    deadline = min(provider_deadline.get() or now + timeout, now + timeout)
+    if deadline <= now:
+        raise ValueError("Provider operation exceeded its time limit.")
+    request._copylot_deadline = deadline
+    try:
+        return _PROVIDER_OPENER.open(request, timeout=deadline - now)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        exc.close()
+        if 300 <= status < 400:
+            raise ValueError(f"{provider} redirect blocked. Configure the final endpoint directly.") from None
+        raise ValueError(f"{provider} request failed (HTTP {status}).") from None
+    except urllib.error.URLError:
+        raise ValueError(f"Could not reach {provider}. Check the endpoint and connection.") from None
+
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
@@ -68,6 +209,30 @@ _MODELS_CACHE_TTL_SECONDS = 30.0
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
 _MODEL_CAPABILITY_CACHE_TTL_SECONDS = 300.0
 _MODEL_CAPABILITY_CACHE: dict[str, tuple[float, ModelCapabilityResponse]] = {}
+_CACHE_LOCK = Lock()
+_CACHE_GENERATION = 0
+_CACHE_MAX_ENTRIES = 128
+
+
+def _cache_get(cache, key, ttl):
+    with _CACHE_LOCK:
+        now = time.monotonic()
+        for expired in [k for k, (created, _) in cache.items() if now - created > ttl]:
+            del cache[expired]
+        hit = cache.get(key)
+        return (hit[1] if hit is not None else None), _CACHE_GENERATION
+
+
+def _cache_put(cache, key, value, generation):
+    with _CACHE_LOCK:
+        if generation != _CACHE_GENERATION or len(key) > 1024:
+            return
+        cache.pop(key, None)
+        while len(cache) >= _CACHE_MAX_ENTRIES:
+            del cache[next(iter(cache))]
+        cache[key] = (time.monotonic(), value)
+
+
 _MODEL_TIER_OVERRIDES: dict[str, int] = {
     "qwen3-coder:latest": 2,
     "qwen3.6:35b-a3b": 3,
@@ -384,35 +549,23 @@ def _resolve_ollama_base_url(endpoint_override: str | None = None) -> str:
 
 
 def _is_local_ollama_endpoint(endpoint_override: str | None = None) -> bool:
-    base_url = _resolve_ollama_base_url(endpoint_override).lower()
-    for local_host in ("127.0.0.1", "localhost", "::1"):
-        if f"://{local_host}" in base_url:
-            return True
-    return False
+    host = (urllib.parse.urlsplit(_resolve_ollama_base_url(endpoint_override)).hostname or "").lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _fetch_ollama_models_uncached(endpoint_override: str | None = None) -> list[str]:
     base_url = _resolve_ollama_base_url(endpoint_override)
     endpoint = f"{base_url}/api/tags"
     request = urllib.request.Request(endpoint, method="GET")
-    try:
-        response = urllib.request.urlopen(request, timeout=12)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        if detail:
-            raise ValueError(f"Failed to load Ollama models ({exc.code}): {detail}") from exc
-        raise ValueError(f"Failed to load Ollama models (HTTP {exc.code}).") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(
-            f"Could not reach Ollama at {endpoint}. Ensure Ollama is running."
-        ) from exc
+    response = _open_provider_request(request, timeout=12)
 
     with response:
-        payload = response.read().decode("utf-8", errors="replace")
+        payload = _read_provider_body(response).decode("utf-8", errors="replace")
     try:
         parsed = json.loads(payload)
     except Exception as exc:
@@ -438,25 +591,24 @@ def _fetch_ollama_models_uncached(endpoint_override: str | None = None) -> list[
 
 
 def _ollama_available_models(endpoint_override: str | None = None) -> list[str]:
-    global _MODELS_CACHE
     cache_key = _resolve_ollama_base_url(endpoint_override) or "default"
-    hit = _MODELS_CACHE.get(cache_key)
+    hit, generation = _cache_get(_MODELS_CACHE, cache_key, _MODELS_CACHE_TTL_SECONDS)
     if hit is not None:
-        cached_at, names = hit
-        if (time.time() - cached_at) <= _MODELS_CACHE_TTL_SECONDS:
-            return names
+        return hit
     names = _fetch_ollama_models_uncached(endpoint_override)
-    _MODELS_CACHE[cache_key] = (time.time(), names)
+    _cache_put(_MODELS_CACHE, cache_key, names, generation)
     return names
 
 
 def _invalidate_models_cache(endpoint_override: str | None = None) -> None:
-    global _MODELS_CACHE
-    if endpoint_override:
-        cache_key = _resolve_ollama_base_url(endpoint_override) or "default"
+    global _CACHE_GENERATION
+    cache_key = _resolve_ollama_base_url(endpoint_override) or "default"
+    with _CACHE_LOCK:
+        _CACHE_GENERATION += 1
         _MODELS_CACHE.pop(cache_key, None)
-        return
-    _MODELS_CACHE = {}
+        prefix = f"ollama|{cache_key}|"
+        for key in [k for k in _MODEL_CAPABILITY_CACHE if k.startswith(prefix)]:
+            del _MODEL_CAPABILITY_CACHE[key]
 
 
 def ollama_models(endpoint_override: str | None = None) -> OllamaModelsResponse:
@@ -507,12 +659,9 @@ def _ollama_model_metadata(model: str, endpoint_override: str | None = None) -> 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        response = urllib.request.urlopen(request, timeout=12)
-    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
-        raise ValueError(f"Could not inspect model '{model}' at {base_url}.") from exc
+    response = _open_provider_request(request, timeout=12)
     with response:
-        raw = response.read().decode("utf-8", errors="replace")
+        raw = _read_provider_body(response).decode("utf-8", errors="replace")
     try:
         parsed = json.loads(raw)
     except Exception as exc:
@@ -555,9 +704,9 @@ def model_capability(
     if not model_name:
         raise ValueError("A model must be selected before its capabilities can be detected.")
     cache_key = f"{provider}|{_resolve_ollama_base_url(endpoint_override) if provider == 'ollama' else ''}|{model_name}"
-    cached = _MODEL_CAPABILITY_CACHE.get(cache_key)
-    if cached is not None and (time.time() - cached[0]) <= _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
-        return cached[1]
+    cached, generation = _cache_get(_MODEL_CAPABILITY_CACHE, cache_key, _MODEL_CAPABILITY_CACHE_TTL_SECONDS)
+    if cached is not None:
+        return cached
 
     context_window: int | None = None
     parameter_count_b: float | None = None
@@ -643,8 +792,64 @@ def model_capability(
         source=source,  # type: ignore[arg-type]
         reason=reason,
     )
-    _MODEL_CAPABILITY_CACHE[cache_key] = (time.time(), result)
+    _cache_put(_MODEL_CAPABILITY_CACHE, cache_key, result, generation)
     return result
+
+
+def _run_bounded_command(args, *, env, timeout) -> str:
+    limit = max(1, _env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
+    output = bytearray()
+    deadline = min(provider_deadline.get() or time.monotonic() + timeout, time.monotonic() + timeout)
+    if time.monotonic() >= deadline:
+        raise ValueError("Model command exceeded its time limit.")
+    with subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ) as process:
+        try:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise ValueError("Model command exceeded its time limit.")
+                available = _pipe_available(process.stdout)
+                if available:
+                    chunk = os.read(process.stdout.fileno(), min(available, limit - len(output) + 1))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > limit:
+                        raise ValueError("Model command output exceeds the configured size limit.")
+                elif process.poll() is not None:
+                    break
+                else:
+                    time.sleep(0.01)
+            try:
+                process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise ValueError("Model command exceeded its time limit.") from None
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+        if process.returncode != 0:
+            raise ValueError(f"Model command failed (exit code {process.returncode}).")
+    return output.decode("utf-8", errors="replace").strip()
+
+
+def _pipe_available(pipe) -> int:
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        available = ctypes.c_ulong()
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(pipe.fileno()))
+        if not ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+            if ctypes.windll.kernel32.GetLastError() in {109, 232}:
+                return 0
+            raise ctypes.WinError()
+        return available.value
+    import select
+
+    return 65536 if select.select([pipe], [], [], 0)[0] else 0
 
 
 def _run_ollama_model_command(command: str, model_name: str, endpoint_override: str | None = None) -> str:
@@ -653,51 +858,33 @@ def _run_ollama_model_command(command: str, model_name: str, endpoint_override: 
         raise ValueError("Ollama CLI was not found on PATH.")
     timeout_seconds = max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS))
     env = os.environ.copy()
-    if endpoint_override:
-        env["OLLAMA_HOST"] = _resolve_ollama_base_url(endpoint_override)
-    process = subprocess.run(
+    env["OLLAMA_HOST"] = _resolve_ollama_base_url(endpoint_override)
+    return _run_bounded_command(
         [ollama_bin, command, model_name],
-        capture_output=True,
-        text=True,
         timeout=timeout_seconds,
-        check=False,
         env=env,
     )
-    stdout = str(process.stdout or "").strip()
-    stderr = str(process.stderr or "").strip()
-    if process.returncode != 0:
-        detail = stderr or stdout or f"Ollama command failed with exit code {process.returncode}."
-        raise ValueError(detail)
-    return stderr or stdout
 
 
 def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: str) -> str:
     base_url = _resolve_ollama_base_url(endpoint_override)
     if action == "install":
         endpoint = f"{base_url}/api/pull"
+        method = "POST"
         body: dict[str, object] = {"name": model_name, "stream": False}
     else:
         endpoint = f"{base_url}/api/delete"
+        method = "DELETE"
         body = {"name": model_name}
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
-        method="POST",
+        method=method,
     )
-    try:
-        response = urllib.request.urlopen(request, timeout=max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        raise ValueError(f"Ollama {action} failed ({exc.code}): {detail or 'no details'}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(f"Could not reach Ollama at {base_url}.") from exc
+    response = _open_provider_request(request, timeout=max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
     with response:
-        payload = response.read().decode("utf-8", errors="replace").strip()
+        payload = _read_provider_body(response).decode("utf-8", errors="replace").strip()
     return payload
 
 
@@ -752,7 +939,7 @@ def ollama_remove_model(model_name: str, endpoint_override: str | None = None) -
 
 
 def _detect_gpu_status_uncached(endpoint_override: str | None = None) -> OllamaGpuStatusResponse:
-    if endpoint_override and not _is_local_ollama_endpoint(endpoint_override):
+    if not _is_local_ollama_endpoint(endpoint_override):
         return OllamaGpuStatusResponse(
             gpuEligible=False,
             gpuEnabledDefault=False,
@@ -825,15 +1012,12 @@ def _detect_gpu_status_uncached(endpoint_override: str | None = None) -> OllamaG
 
 
 def ollama_gpu_status(endpoint_override: str | None = None) -> OllamaGpuStatusResponse:
-    global _GPU_STATUS_CACHE
     cache_key = _resolve_ollama_base_url(endpoint_override) or "default"
-    hit = _GPU_STATUS_CACHE.get(cache_key)
+    hit, generation = _cache_get(_GPU_STATUS_CACHE, cache_key, _GPU_STATUS_CACHE_TTL_SECONDS)
     if hit is not None:
-        cached_at, payload = hit
-        if (time.time() - cached_at) <= _GPU_STATUS_CACHE_TTL_SECONDS:
-            return payload
-    payload = _detect_gpu_status_uncached(endpoint_override)
-    _GPU_STATUS_CACHE[cache_key] = (time.time(), payload)
+        return hit
+    payload = _detect_gpu_status_uncached(cache_key)
+    _cache_put(_GPU_STATUS_CACHE, cache_key, payload, generation)
     return payload
 
 
@@ -931,7 +1115,7 @@ def _open_ollama_request(
         ]
         if not messages:
             raise ValueError("Chat request has no valid messages.")
-    is_remote_endpoint = bool(endpoint_override) and not _is_local_ollama_endpoint(endpoint_override)
+    is_remote_endpoint = not _is_local_ollama_endpoint(endpoint)
     requested_num_gpu = _env_int("COPYLOT_OLLAMA_NUM_GPU", -1)
     num_gpu: int | None
     if is_remote_endpoint:
@@ -966,22 +1150,8 @@ def _open_ollama_request(
         method="POST",
     )
 
-    try:
-        response = urllib.request.urlopen(request, timeout=180)
-        return model, response, messages
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        if detail:
-            raise ValueError(f"Ollama request failed ({exc.code}): {detail}") from exc
-        raise ValueError(f"Ollama request failed with HTTP {exc.code}.") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(
-            f"Could not reach Ollama at {endpoint}. Ensure Ollama is running and model '{model}' is available."
-        ) from exc
+    response = _open_provider_request(request, timeout=180)
+    return model, response, messages
 
 
 def ollama_chat(payload: OllamaChatRequest) -> OllamaChatResponse:
@@ -989,7 +1159,7 @@ def ollama_chat(payload: OllamaChatRequest) -> OllamaChatResponse:
 
     def _read_non_stream(res) -> tuple[str, str, str]:
         with res:
-            response_payload = res.read().decode("utf-8", errors="replace")
+            response_payload = _read_provider_body(res).decode("utf-8", errors="replace")
         try:
             parsed = json.loads(response_payload)
         except json.JSONDecodeError as exc:
@@ -1043,11 +1213,20 @@ def ollama_chat_stream(payload: OllamaChatRequest) -> tuple[str, Iterator[str]]:
         current_response = response
         done_reason = ""
         attempts = 0
+        total_bytes = 0
+        byte_limit = max(1, _env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
+        line_limit = max(1, _env_int("COPYLOT_PROVIDER_LINE_MAX_BYTES", 1024 * 1024))
 
         while True:
             done_reason = ""
             with current_response:
-                for raw_line in current_response:
+                while True:
+                    raw_line = current_response.readline(min(line_limit, byte_limit - total_bytes) + 1)
+                    if not raw_line:
+                        break
+                    total_bytes += len(raw_line)
+                    if len(raw_line) > line_limit or total_bytes > byte_limit:
+                        raise ValueError("Provider stream exceeds the configured size limit.")
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
@@ -1078,7 +1257,7 @@ def ollama_chat_stream(payload: OllamaChatRequest) -> tuple[str, Iterator[str]]:
                 messages_override=continuation_messages,
             )
 
-    return model, _iter_chunks()
+    return model, _ProviderStream(_iter_chunks(), response)
 
 
 def _extract_system_and_dialogue(
@@ -1120,7 +1299,7 @@ def _openai_content_to_text(content: object) -> str:
 
 def _read_json_response(response, invalid_json_message: str) -> dict[str, object]:
     with response:
-        payload = response.read().decode("utf-8", errors="replace")
+        payload = _read_provider_body(response).decode("utf-8", errors="replace")
     try:
         parsed = json.loads(payload)
     except Exception as exc:
@@ -1154,17 +1333,7 @@ def _openai_chat_text(
         },
         method="POST",
     )
-    try:
-        response = urllib.request.urlopen(request, timeout=180)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        raise ValueError(f"OpenAI request failed ({exc.code}): {detail or 'no details'}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError("Could not reach OpenAI API endpoint.") from exc
+    response = _open_provider_request(request, timeout=180, provider="OpenAI")
     parsed = _read_json_response(response, "OpenAI returned invalid JSON.")
     choices = parsed.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -1208,17 +1377,7 @@ def _anthropic_chat_text(
         },
         method="POST",
     )
-    try:
-        response = urllib.request.urlopen(request, timeout=180)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        raise ValueError(f"Anthropic request failed ({exc.code}): {detail or 'no details'}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError("Could not reach Anthropic API endpoint.") from exc
+    response = _open_provider_request(request, timeout=180, provider="Anthropic")
     parsed = _read_json_response(response, "Anthropic returned invalid JSON.")
     blocks = parsed.get("content")
     if not isinstance(blocks, list) or not blocks:
@@ -1279,17 +1438,7 @@ def _gemini_chat_text(
         },
         method="POST",
     )
-    try:
-        response = urllib.request.urlopen(request, timeout=180)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            detail = ""
-        raise ValueError(f"Gemini request failed ({exc.code}): {detail or 'no details'}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError("Could not reach Gemini API endpoint.") from exc
+    response = _open_provider_request(request, timeout=180, provider="Gemini")
     parsed = _read_json_response(response, "Gemini returned invalid JSON.")
     candidates = parsed.get("candidates")
     if not isinstance(candidates, list) or not candidates:

@@ -11,6 +11,33 @@ from app.services import phospho_tools, stats_tools
 CONDITIONS = ("condition-1", "control-1", "condition-2", "control-2")
 
 
+@pytest.mark.parametrize("sequence,expected", [
+    ("AAAAAAAs*AAAAAAA", "AAAAAAASAAAAAAA"),
+    ("s*AAAAAAA", "_______SAAAAAAA"),
+    ("AAAAAAAt*", "AAAAAAAT_______"),
+    ("ACDy*EFG", "____ACDYEFG____"),
+])
+def test_ksea_preserves_all_available_flanks(sequence, expected):
+    from proteomicscopylot.notebook_functions import convert_to_centered
+    assert phospho_tools._convert_to_centered(sequence) == expected
+    assert convert_to_centered(sequence) == expected
+
+
+@pytest.mark.parametrize("control", [False, True])
+def test_volcano_figure_labels_actual_contrast(control):
+    frame = pd.DataFrame(columns=["significance"])
+    fig = stats_tools._volcano_figure(
+        frame, label_column="Genes", condition1="A", condition2="B",
+        condition1_control="C" if control else None,
+        condition2_control="D" if control else None,
+        p_value_threshold=0.05, log2fc_threshold=1,
+        use_uncorrected=False, highlight_terms=[],
+    )
+    contrast = "(B - D) - (A - C)" if control else "B - A"
+    assert fig.layout.xaxis.title.text == f"log2 fold change ({contrast})"
+    assert ("controls: C vs D" in fig.layout.title.text) is control
+
+
 def _control_fixture(
     feature_count: int,
     *,

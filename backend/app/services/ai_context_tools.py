@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import re
-import time
 from typing import Any
 
 import pandas as pd
@@ -11,9 +10,7 @@ from app.schemas.chat import ModelContextTier, ModuleContextResponse
 from app.services import ai_functions
 from app.services.dataset_store import get_all_current_datasets
 from app.services import table_functions as _table_functions
-
-_CONTEXT_CACHE_TTL_SECONDS = 30.0
-_CONTEXT_CACHE: dict[str, tuple[float, ModuleContextResponse]] = {}
+from app.services.runtime_cache import cached_call
 
 _MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
     "peptide.rtPlot": ["peptide_rt_plot"],
@@ -226,7 +223,8 @@ def _context_prompt(
         ),
     ]
     if mode:
-        lines.append(_readable_context_line(f"active_parameters|{mode}"))
+        lines.append(f"Active parameters: {mode}" if mode.lstrip().startswith("{")
+                     else _readable_context_line(f"active_parameters|{mode}"))
     if context_texts:
         lines.append("Calculated module evidence and interpretation constraints:")
         for function_name, context_text in context_texts:
@@ -238,49 +236,6 @@ def _context_prompt(
             )
             lines.extend(_readable_context_line(line) for line in staged_lines)
     return "\n".join(lines), " / ".join(function_names) if function_names else "no_functions"
-
-
-def _dataset_snapshot_token() -> str:
-    try:
-        all_data = get_all_current_datasets()
-    except Exception:
-        return "snapshot:unknown"
-    parts: list[str] = []
-    for kind in sorted(all_data.keys()):
-        item = all_data.get(kind)
-        if item is None:
-            parts.append(f"{kind}:none")
-            continue
-        filename = str(getattr(item, "filename", "") or "")
-        rows = str(getattr(item, "rows", "") or "")
-        cols = str(getattr(item, "columns", "") or "")
-        parts.append(f"{kind}:{filename}:{rows}:{cols}")
-    return "|".join(parts)
-
-
-def _context_cache_key(
-    module_key: str,
-    workflow: str,
-    mode: str | None,
-    context_tier: ModelContextTier,
-) -> str:
-    mode_key = str(mode or "").strip() or "none"
-    return f"{module_key}::{workflow}::{mode_key}::{context_tier}::{_dataset_snapshot_token()}"
-
-
-def _get_cached_context(cache_key: str) -> ModuleContextResponse | None:
-    hit = _CONTEXT_CACHE.get(cache_key)
-    if hit is None:
-        return None
-    ts, payload = hit
-    if (time.time() - ts) > _CONTEXT_CACHE_TTL_SECONDS:
-        _CONTEXT_CACHE.pop(cache_key, None)
-        return None
-    return payload
-
-
-def _store_cached_context(cache_key: str, payload: ModuleContextResponse) -> None:
-    _CONTEXT_CACHE[cache_key] = (time.time(), payload)
 
 
 def _infer_workflow_scope(module_key: str, workflow_hint: str | None = None) -> str:
@@ -381,11 +336,16 @@ def build_module_context(
     workflow = _infer_workflow_scope(normalized_key, workflow_hint)
     mode = _normalize_mode_hint(mode_hint)
     tier = _normalize_context_tier(context_tier)
-    cache_key = _context_cache_key(normalized_key, workflow, mode, tier)
-    cached = _get_cached_context(cache_key)
-    if cached is not None:
-        return cached
+    return cached_call(
+        "ai-module-context",
+        (normalized_key, workflow, mode, tier),
+        lambda: _build_module_context(normalized_key, workflow, mode, tier),
+    )
 
+
+def _build_module_context(
+    normalized_key: str, workflow: str, mode: str | None, tier: ModelContextTier,
+) -> ModuleContextResponse:
     module_title = _module_title_from_key(normalized_key)
     function_names = [
         "general_proteomics_context",
@@ -409,7 +369,7 @@ def build_module_context(
         mode=mode,
         context_tier=tier,
     )
-    response = ModuleContextResponse(
+    return ModuleContextResponse(
         moduleKey=normalized_key,
         moduleTitle=module_title,
         manualTitle=None,
@@ -420,5 +380,3 @@ def build_module_context(
         contextData={"functions": function_payloads, "contextTier": tier},
         warnings=warnings,
     )
-    _store_cached_context(cache_key, response)
-    return response

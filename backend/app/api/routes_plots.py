@@ -30,6 +30,7 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
+    parse_selection_list,
     comparison_pearson_html,
     comparison_pearson_png,
     comparison_venn_png,
@@ -119,7 +120,7 @@ router = APIRouter(prefix="/api/plots", tags=["plots"])
 def _png_response(content: bytes) -> Response:
     return Response(
         content=content,
-        media_type="image/png",
+        media_type="application/pdf" if content.startswith(b"%PDF-") else "image/png",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
@@ -314,7 +315,7 @@ def stats_pathway_heatmap_route(
     advanced: str = "",
 ) -> Response:
     try:
-        condition_list = [value.strip() for value in conditions.split(",") if value.strip()]
+        condition_list = parse_selection_list(conditions)
         return _png_response(
             pathway_heatmap_png(
                 kind=kind,
@@ -506,7 +507,7 @@ def peptide_missed_cleavage_route(
 
 
 def _csv_values(raw: str) -> list[str]:
-    return [value.strip() for value in str(raw).split(",") if value.strip()]
+    return parse_selection_list(raw)
 
 
 @router.get("/imputation/{kind}/before-missing.png")
@@ -734,7 +735,7 @@ def completeness_missing_heatmap_route(
 
 @router.get("/qc/{kind}/coverage.png")
 def qc_coverage_route(
-    kind: DatasetKind,
+    kind: CompletenessDatasetKind,
     includeId: bool = False,
     header: bool = True,
     legend: bool = True,
@@ -751,7 +752,7 @@ def qc_coverage_route(
     try:
         kind_normalized = kind.strip().lower()
         advanced_settings = parse_advanced_plot_settings(advanced)
-        if kind_normalized == "peptide":
+        if kind_normalized in {"peptide", "precursor"}:
             return _png_response(
                 qc_peptide_coverage_plot(
                     include_id=includeId,
@@ -762,6 +763,7 @@ def qc_coverage_route(
                     dpi=dpi,
                     advanced=advanced_settings,
                     quantity_column=quantityColumn or None,
+                    level=kind_normalized,
                 )
             )
         if kind_normalized in {"protein", "phospho", "phosprot"}:
@@ -1749,6 +1751,8 @@ def phospho_ksea_uploaded_volcano_route(
     header: bool = Form(True),
     condition1: str = Form(""),
     condition2: str = Form(""),
+    condition1Control: str = Form(""),
+    condition2Control: str = Form(""),
     annotateHits: bool = Form(False),
     advanced: str = Form(""),
 ) -> HTMLResponse:
@@ -1768,6 +1772,8 @@ def phospho_ksea_uploaded_volcano_route(
                 header=header,
                 condition1=condition1,
                 condition2=condition2,
+                condition1_control=condition1Control,
+                condition2_control=condition2Control,
                 annotate_hits=annotateHits,
                 advanced=parse_advanced_plot_settings(advanced),
             )

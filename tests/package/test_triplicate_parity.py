@@ -32,6 +32,9 @@ def _r_functions(path: Path) -> set[str]:
 _WEB_APP_RENDERING = re.compile(r"(_png|_html|_plot|_heatmap)$|^qc_")
 
 BACKEND_ONLY_ANALYSIS = frozenset({
+    "comparison_contrast",  # UI contrast label, not a separate statistical method.
+    "intensity_unit_label",  # UI units for stored phosphoprotein provenance.
+    "parse_selection_list",  # JSON/legacy HTTP selection transport.
     "analysis_data_source",
     "build_metadata_from_conditions",
     "choose_best_source",
@@ -52,6 +55,7 @@ BACKEND_ONLY_ANALYSIS = frozenset({
 })
 
 PIP_ONLY = frozenset({
+    "adjust_finite_pvalues",  # R adjusts finite p-values inline in volcano calculations.
     "different_genes_column",
     "guarded_t_statistic",
     "negative_log10",

@@ -393,10 +393,6 @@ def paired_t_test(differences):
     se = np.sqrt(variance / n_pairs)
     t_statistic = _guarded_t_statistic(mean_diff, se)
     pvalues = 2.0 * t.sf(np.abs(t_statistic), n_pairs - 1.0)
-    constant = variance == 0
-    pvalues[constant & (mean_diff == 0)] = 1.0
-    pvalues[constant & (mean_diff != 0)] = 0.0
-    pvalues = np.nan_to_num(pvalues, nan=1.0, posinf=1.0, neginf=1.0)
     return mean_diff, n_pairs, np.asarray(pvalues, dtype=float)
 
 
@@ -885,6 +881,9 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
     If you need linear values for another workflow, impute first and
     inverse-transform afterwards -- not the other way round.
 
+    Uses sample SD (n-1). Sample-wise draws skip empty, singleton and constant
+    columns with a warning. Explicit global draws require a usable pooled SD.
+
     For phosphoprotein workflows, impute phosphosites before transform_phosprot,
     never the collapsed phosphoprotein matrix. Keep the non-imputed site matrix
     for independent coverage checks, and aggregate with data_scale="log2".
@@ -904,13 +903,16 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
     rng = np.random.default_rng(seed)
     data = data.copy()
     annotated_columns = meta["sample"].tolist()
-    data_filtered = data[annotated_columns]
+    data_filtered = data[annotated_columns].copy()
     combined_data = data_filtered.values.flatten()
     missing_value_mask = data_filtered.isna()
     data_without_na = data_filtered.loc[~data_filtered.isna().any(axis=1)]
     data_with_na = data_filtered.loc[data_filtered.isna().any(axis=1)]
     combined_data_without_na = data_without_na.values.flatten()
     combined_data_with_na = data_with_na.values.flatten()
+
+    if ret in (1, 2, 3) and not np.isfinite(combined_data).any():
+        raise ValueError("No observed values available to plot an imputation distribution.")
 
     if ret == 1:
         fig, ax = plt.subplots()
@@ -923,29 +925,41 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
         ax.set_ylabel("Density")
         return fig
 
-    mean_val = np.nanmean(combined_data)
-    sd_val = np.nanstd(combined_data)
-    quantile_val = np.nanquantile(combined_data, q)
+    observed = combined_data[~np.isnan(combined_data)]
+    mean_val = np.mean(observed) if observed.size else np.nan
+    sd_val = np.std(observed, ddof=1) if observed.size > 1 else np.nan
+    quantile_val = np.quantile(observed, q) if observed.size else np.nan
+    if not sample_wise and (observed.size < 2 or not np.isfinite(sd_val) or sd_val <= 0 or np.ptp(observed) == 0):
+        raise ValueError("Global imputation requires at least two observed values with nonzero spread.")
 
     if ret == 2:
         fig, ax = plt.subplots()
         ax.hist(combined_data[~np.isnan(combined_data)],
                 bins=50, density=True, alpha=0.6, color="blue", histtype='stepfilled')
         x = np.linspace(np.nanmin(combined_data), np.nanmax(combined_data), 200)
-        ax.plot(x, (1/(sd_val*np.sqrt(2*np.pi))) * np.exp(-0.5*((x-mean_val)/sd_val)**2),
-                color="red", label="Normal fit")
+        if np.isfinite(sd_val) and sd_val > 0:
+            ax.plot(x, (1/(sd_val*np.sqrt(2*np.pi))) * np.exp(-0.5*((x-mean_val)/sd_val)**2),
+                    color="red", label="Normal fit")
         ax.set_title("Overall data distribution and norm fit")
         ax.set_xlabel("log2 Intensity")
         ax.set_ylabel("Density")
         ax.legend()
         return fig
 
+    skipped_samples = []
     if sample_wise:
         for col in annotated_columns:
             col_vals = data_filtered[col]
-            col_sd = np.nanstd(col_vals)
             num_na = col_vals.isna().sum()
             if num_na > 0:
+                col_observed = col_vals.dropna().to_numpy()
+                if col_observed.size < 2 or np.ptp(col_observed) == 0:
+                    skipped_samples.append(str(col))
+                    continue
+                col_sd = np.std(col_observed, ddof=1)
+                if not np.isfinite(col_sd) or col_sd <= 0:
+                    skipped_samples.append(str(col))
+                    continue
                 if method == "numerical":
                     center = np.nanmean(col_vals) - down_shift * col_sd
                     draw_sd = col_sd * width
@@ -969,6 +983,11 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
             if num_na > 0:
                 data_filtered.loc[col_vals.isna(), col] = rng.normal(center, draw_sd, num_na)
 
+    if skipped_samples:
+        warnings.warn(
+            "Missing values left unchanged: fewer than two observations or no usable spread in sample(s): "
+            + ", ".join(skipped_samples), RuntimeWarning, stacklevel=2,
+        )
     imputed_data = data_filtered[missing_value_mask]
     non_imputed_data = data_filtered[~missing_value_mask]
     imputed_combined = imputed_data.values.flatten()
@@ -1220,8 +1239,30 @@ def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, h
     return fig
 
 
+def _peptide_sample_map(columns, samples):
+    columns = [str(column) for column in columns]
+    samples = [str(sample) for sample in samples]
+    mapping = {column: column for column in columns if column in samples}
+    remaining_columns = [column for column in columns if column not in mapping]
+    remaining_samples = [sample for sample in samples if sample not in columns]
+    if remaining_columns and remaining_samples:
+        by_id = sample_id_map(remaining_columns)
+        sample_id_map(remaining_samples)
+        for sample in remaining_samples:
+            column = by_id.get(extract_sample_id(sample))
+            if column is not None:
+                mapping[column] = sample
+    if samples and not mapping:
+        raise ValueError("Peptide metadata does not match peptide sample columns.")
+    return mapping
+
+
 def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
-                      plot_colors=None, width=10, height=6, dpi=100):
+                      plot_colors=None, width=10, height=6, dpi=100, quantity_column='Precursor.Quantity', level='peptide'):
+
+    if level not in {"peptide", "precursor"}:
+        raise ValueError("Coverage level must be peptide or precursor.")
+    feature_column = 'Precursor.Id' if level == 'precursor' else 'Stripped.Sequence'
 
     if isinstance(data2_path, pd.DataFrame):
         data = data2_path.copy()
@@ -1240,40 +1281,40 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
         meta['new_sample'] = meta['condition'] + "_" + cnt.astype(str)
 
     ordered_new_samples = list(meta['new_sample'])
-    id_to_new = dict(zip(meta['id'], meta['new_sample']))
     sample_to_new = dict(zip(meta['sample'], meta['new_sample']))
     new_to_condition = dict(zip(meta['new_sample'], meta['condition']))
 
     if "File.Name" in data.columns:
-        pivot = data.pivot_table(index='Stripped.Sequence', columns='File.Name',
-                                 values='Precursor.Quantity', aggfunc='max')
+        pivot = data.pivot_table(index=feature_column, columns='File.Name',
+                                 values=quantity_column, aggfunc='max')
         peptides_count = pivot.shape[0]
-        pivot.columns = [extract_id_or_number(str(c)) for c in pivot.columns]
-        rename_map = {c: id_to_new[c] for c in pivot.columns if c in id_to_new}
+        rename_map = {column: sample_to_new[sample] for column, sample in
+                      _peptide_sample_map(pivot.columns, meta['sample']).items()}
         pivot = pivot.rename(columns=rename_map)
         annotated_cols = [c for c in ordered_new_samples if c in pivot.columns]
         data_filtered = pivot[annotated_cols].reset_index()
     else:
-        if 'Stripped.Sequence' in data.columns:
-            peptides_count = data['Stripped.Sequence'].nunique()
+        if feature_column in data.columns:
+            peptides_count = data[feature_column].nunique()
         else:
             peptides_count = data.shape[0]
-        rename_map = {s: sample_to_new[s] for s in meta['sample'] if s in data.columns}
+        rename_map = {column: sample_to_new[sample] for column, sample in
+                      _peptide_sample_map(data.columns.drop(feature_column, errors='ignore'), meta['sample']).items()}
         d2 = data.rename(columns=rename_map)
         annotated_cols = [c for c in ordered_new_samples if c in d2.columns]
         data_filtered = d2[annotated_cols].copy()
-        if 'Stripped.Sequence' in data.columns:
-            data_filtered = pd.concat([data[['Stripped.Sequence']].reset_index(drop=True),
+        if feature_column in data.columns:
+            data_filtered = pd.concat([data[[feature_column]].reset_index(drop=True),
                                        data_filtered.reset_index(drop=True)], axis=1)
         else:
-            data_filtered = data_filtered.reset_index().rename(columns={'index': 'Stripped.Sequence'})
+            data_filtered = data_filtered.reset_index().rename(columns={'index': feature_column})
 
     for c in data_filtered.columns:
-        if c != 'Stripped.Sequence':
+        if c != feature_column:
             data_filtered[c] = pd.to_numeric(data_filtered[c], errors='coerce')
             data_filtered[c] = np.where(data_filtered[c].notna() & (data_filtered[c] != 0), 1, 0)
 
-    plot_data = data_filtered.melt(id_vars='Stripped.Sequence', var_name='Sample', value_name='Value')
+    plot_data = data_filtered.melt(id_vars=feature_column, var_name='Sample', value_name='Value')
     summary = plot_data.groupby('Sample')['Value'].sum().reset_index()
     summary['Sample'] = pd.Categorical(summary['Sample'], categories=ordered_new_samples, ordered=True)
     summary = summary.sort_values('Sample')
@@ -1292,8 +1333,8 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
     ax.bar(range(len(summary)), summary['Value'].values, color=bar_colors)
     ax.axhline(y=peptides_count, color='red', linestyle='--')
     if header:
-        ax.set_title("Peptides per sample")
-    ax.set_ylabel("Number of peptides")
+        ax.set_title(f"{level.capitalize()}s per sample")
+    ax.set_ylabel(f"Number of {level}s")
     ax.set_xticks(range(len(summary)))
     ax.set_xticklabels([str(s) for s in summary['Sample'].astype(str)], rotation=90)
 
@@ -1852,7 +1893,10 @@ def abundance_axis_label(workflow, centered=False):
 
 def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20, height_cm=10, dpi=300,
                    legend=True, header=True, data_scale="log2", centered=False):
+    """Rank arithmetic mean linear intensities (or site-median ratios when centered)."""
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
+    if str(data_scale).strip().lower() == "log2":
+        data[meta['sample']] = np.exp2(data[meta['sample']])
     unique_conditions = meta['condition'].unique()
 
     if plot_colors is not None:
@@ -1885,16 +1929,9 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
         means_log = np.log10(means + 1)
         mean_intensities[condition] = means_log
 
-    if mean_intensities.shape[1] > 2:
-        mean_intensities = mean_intensities[
-            mean_intensities.iloc[:, 1:].isna().sum(axis=1) < mean_intensities.shape[1] - 2
-        ]
-    else:
-        mean_intensities = mean_intensities.dropna(subset=[mean_intensities.columns[1]])
-
     long_intensities = mean_intensities.melt(
         id_vars=[key_col], var_name="Condition", value_name="log10Intensity"
-    )
+    ).dropna(subset=["log10Intensity"])
     long_intensities['Rank'] = long_intensities.groupby('Condition')['log10Intensity'] \
                                                 .rank(ascending=False, method='first')
     long_intensities['Condition'] = pd.Categorical(
@@ -1930,8 +1967,11 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
 
 def interactive_abundance_plot(data, meta, condition, workflow="Protein", search=None, max_ptms=5,
                                data_scale="log2", centered=False):
+    """Rank arithmetic mean linear intensities (or site-median ratios when centered)."""
     annotated_columns = meta.loc[meta["condition"] == condition, "sample"].tolist()
     data = _prepare_intensity_data(data, annotated_columns, data_scale)
+    if str(data_scale).strip().lower() == "log2":
+        data[annotated_columns] = np.exp2(data[annotated_columns])
 
     if workflow == "Protein":
         feature_col = "ProteinNames"
@@ -2029,20 +2069,30 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
     data = data.rename(columns=rename_map)
 
     annotated_columns = meta['new_sample'].tolist()
-    data_filtered = data[annotated_columns]
-
+    data_filtered = data[annotated_columns].dropna(axis=1, how='all')
+    if data_filtered.shape[1] < 2:
+        raise ValueError("At least two non-empty sample columns are required for correlation plot.")
     correlation_matrix = data_filtered.corr(method='pearson')
-    distance_matrix = 1 - correlation_matrix
-    linkage_matrix = linkage(squareform(distance_matrix), method='complete')
-    ordered_indices = leaves_list(linkage_matrix)
-    ordered_corr = correlation_matrix.iloc[ordered_indices, ordered_indices]
+    incomplete = not np.isfinite(correlation_matrix.to_numpy()).all()
+    ordered_corr = correlation_matrix
+    if not incomplete:
+        distance_matrix = (1 - correlation_matrix).clip(lower=0, upper=2).to_numpy(copy=True)
+        np.fill_diagonal(distance_matrix, 0)
+        linkage_matrix = linkage(squareform(distance_matrix), method='complete')
+        ordered_indices = leaves_list(linkage_matrix)
+        ordered_corr = correlation_matrix.iloc[ordered_indices, ordered_indices]
 
-    vmin, vmax = (-1, 1) if full_range else (ordered_corr.min().min(), ordered_corr.max().max())
+    finite = ordered_corr.to_numpy()[np.isfinite(ordered_corr.to_numpy())]
+    vmin, vmax = (-1, 1) if full_range or not finite.size else (finite.min(), finite.max())
+    if np.isclose(vmin, vmax):
+        vmin, vmax = -1, 1
 
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
 
     if method == "Matrix":
-        cax = ax.matshow(ordered_corr, cmap='coolwarm', vmin=vmin, vmax=vmax)
+        cmap = plt.get_cmap('coolwarm').copy()
+        cmap.set_bad('#eeeeee')
+        cax = ax.matshow(ordered_corr, cmap=cmap, vmin=vmin, vmax=vmax)
         plt.xticks(range(len(ordered_corr.columns)), ordered_corr.columns, rotation=90, ha='center', va='bottom')
         plt.yticks(range(len(ordered_corr.index)), ordered_corr.index)
         fig.colorbar(cax)
@@ -2060,6 +2110,8 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
         for i in range(n):
             for j in range(n):
                 r = ordered_corr.iloc[i, j]
+                if not np.isfinite(r):
+                    continue
                 width_ellipse = 0.9
                 height_ellipse = 0.9 * (1 - abs(r))
                 angle = 45 if r > 0 else -45
@@ -2078,6 +2130,13 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
 
     else:
         raise ValueError("method must be 'matrix' or 'ellipse'")
+
+    missing_rows, missing_cols = np.where(~np.isfinite(ordered_corr.to_numpy()))
+    offset = 0.5 if method == "Ellipse" else 0
+    for i, j in zip(missing_rows, missing_cols):
+        ax.text(j + offset, i + offset, "NA", ha="center", va="center", fontsize=7, color='#666666')
+    if incomplete:
+        ax.set_xlabel("NA: correlation unavailable; clustering skipped (metadata order)")
 
     plt.tight_layout()
     return fig
@@ -2112,6 +2171,7 @@ def _satterthwaite(components):
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         dof = se_squared**2 / denominator
+    dof = np.where(se_squared == 0, 1.0, dof)
     return np.sqrt(se_squared), dof
 
 
@@ -2131,6 +2191,15 @@ def _resolve_volcano_label_column(data, workflow, label_column=None):
     raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
 
 
+def _adjust_finite_pvalues(pvalues):
+    pvalues = np.asarray(pvalues, dtype=float)
+    finite = np.isfinite(pvalues)
+    adjusted = np.full(pvalues.shape, np.nan)
+    if finite.any():
+        adjusted[finite] = multipletests(pvalues[finite], method="fdr_bh")[1]
+    return adjusted
+
+
 def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                    workflow="Protein", paired="Unpaired", uncorrected=False,
                    test_type=None, label_column=None):
@@ -2141,6 +2210,8 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     it is omitted the older `paired` argument is used, so existing calls keep
     their behaviour.
     """
+    if condition1 == condition2:
+        raise ValueError("Please select two different conditions.")
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
     if test_type is None:
@@ -2208,13 +2279,10 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
 
-    # statsmodels' BH propagates NaN to *every* entry, so a single undefined
-    # p-value (a constant row) would silently blank all adjusted p-values and
-    # make everything read "Not significant". Coerce first, matching the backend.
-    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
-    adj_pvals = pvals if uncorrected else multipletests(pvals, method='fdr_bh')[1]
+    adj_pvals = pvals if uncorrected else _adjust_finite_pvalues(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
     significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
     significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
 
@@ -2225,8 +2293,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         "adj_pval": adj_pvals,
         "significance": significance,
         "neg_log10_adj_pval": negative_log10(adj_pvals),
-        # Marks rows whose significance comes from absent within-group variation
-        # rather than effect size. The p-value is unchanged and correct.
+        # This warning does not change the test result.
         "zero_variance": constant_within_group(arr_x) | constant_within_group(arr_y),
     }
 
@@ -2358,11 +2425,10 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
 
-    # See the note above: NaN would otherwise blank every adjusted p-value.
-    pvals = np.nan_to_num(pvals, nan=1.0, posinf=1.0, neginf=1.0)
-    adj_pvals = pvals if uncorrected else multipletests(pvals, method="fdr_bh")[1]
+    adj_pvals = pvals if uncorrected else _adjust_finite_pvalues(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
     significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
     significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
 
@@ -3679,8 +3745,16 @@ def proteins_in_pathway(
         cluster_cols=False,
         value_type="z",
         header=True,
-        id=True
+        id=True,
+        gene_column=None
 ):
+    if gene_column is None:
+        candidates = [name for name in ("GeneNames", "Gene_group") if name in data.columns]
+        if len(candidates) != 1:
+            raise ValueError("Specify gene_column when gene labels are missing or ambiguous.")
+        gene_column = candidates[0]
+    if gene_column not in data.columns:
+        raise ValueError("Selected gene_column is missing.")
     pathway_row = db[db['description'].str.lower() == pathway.lower()]
     if pathway_row.empty:
         raise ValueError(f"No pathway found exactly matching '{pathway}' in db")
@@ -3716,7 +3790,7 @@ def proteins_in_pathway(
 
     heatmap_data, source_feature_counts = _aggregate_pathway_gene_values(
         data,
-        gene_column="GeneNames",
+        gene_column=gene_column,
         sample_columns=sample_cols,
         pathway_genes=genes,
     )
@@ -3883,9 +3957,9 @@ def convert_to_centered(seq: str) -> str:
     mod_pos = star_index - 1
     left = clean_seq[:mod_pos]
     right = clean_seq[mod_pos + 1:]
-    left_tail = left[-6:] if len(left) >= 6 else "_" * (6 - len(left)) + left
-    right_tail = right[:6] if len(right) >= 6 else right + "_" * (6 - len(right))
-    return f"_{left_tail}{mod_residue}{right_tail}_"
+    left_tail = left[-7:].rjust(7, "_")
+    right_tail = right[:7].ljust(7, "_")
+    return f"{left_tail}{mod_residue}{right_tail}"
 
 
 def _ksea_format_volcano(volcano_df):
@@ -4329,13 +4403,25 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     return fig
 
 
+def _peptide_starts(sequence, peptide):
+    if not peptide:
+        return
+    start = sequence.find(peptide)
+    while start != -1:
+        yield start
+        start = sequence.find(peptide, start + 1)
+
+
+def _protein_peptides(data, protein):
+    members = data["ProteinNames"].fillna("").astype(str).str.split(";")
+    selected = members.map(lambda names: protein in [name.strip() for name in names])
+    return data.loc[selected, "Stripped.Sequence"].dropna().astype(str).unique().tolist()
+
+
 def calculate_coverage(data_path, db, protein):
     data = read_data(data_path).copy()
 
-    # na=False: a missing ProteinNames yields NA from str.contains, and masking with
-    # a non-boolean array raises on object dtype (the pandas < 3 default).
-    peptides = data[data["ProteinNames"].str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)][
-        "Stripped.Sequence"].unique()
+    peptides = _protein_peptides(data, protein)
 
     try:
         sequence_row = db.loc[db["name"] == protein, "V1"]
@@ -4347,8 +4433,8 @@ def calculate_coverage(data_path, db, protein):
 
     coverage_mask = [0] * len(sequence)
     for pep in peptides:
-        for match in re.finditer(re.escape(pep), sequence):
-            start, end = match.start(), match.end()
+        for start in _peptide_starts(sequence, pep):
+            end = start + len(pep)
             for i in range(start, end):
                 coverage_mask[i] = 1
 
@@ -4356,9 +4442,7 @@ def calculate_coverage(data_path, db, protein):
 
 
 def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size: int = 30) -> str:
-    # na=False for the same reason as in calculate_coverage above.
-    data = data[data['ProteinNames'].str.contains(rf"\b{re.escape(protein)}\b", regex=True, na=False)]
-    found_seq = data['Stripped.Sequence'].unique()
+    found_seq = _protein_peptides(data, protein)
 
     try:
         sequence_row = db.loc[db['name'] == protein, 'V1']
@@ -4372,8 +4456,8 @@ def vis_coverage(data: pd.DataFrame, db: pd.DataFrame, protein: str, chunk_size:
     result_seqs = ["-" * n]
 
     for pep in found_seq:
-        for match in re.finditer(re.escape(pep), sequence):
-            start_pos, end_pos = match.start(), match.end()
+        for start_pos in _peptide_starts(sequence, pep):
+            end_pos = start_pos + len(pep)
             placed = False
             for i, seq in enumerate(result_seqs):
                 if seq[start_pos:end_pos] == "-" * len(pep):
@@ -4735,60 +4819,44 @@ def phossite_on_prot_regulation(
 
 
 #PHOSPHO-SPECIFIC
+def _phossite_coverage_counts(data, meta, is_log2=True):
+    samples = meta["sample"].astype(str).tolist()
+    values = data[samples].apply(pd.to_numeric, errors="coerce")
+    values = values.where(np.isfinite(values))
+    if not is_log2:
+        values = values.mask(values == 0)
+    localization = pd.to_numeric(data.get("PTM_localization", pd.Series(np.nan, index=data.index)), errors="coerce")
+    localization = localization.where(localization.between(0, 1))
+    return pd.DataFrame({
+        "Class I": values.loc[localization >= .75].notna().sum(),
+        "Not Class I": values.loc[localization < .75].notna().sum(),
+        "Unclassified": values.loc[localization.isna()].notna().sum(),
+    })
+
+
 def phossite_coverage_plot(
     data, meta, id=False, header=True, legend=True,
     width=20, height=10, dpi=300,
-    color_classI="blue", color_notclassI="orange"
+    color_classI="blue", color_notclassI="orange", is_log2=True
 ):
-    conditions = meta["condition"].unique()
-    meta["sample"] = meta["sample"].astype(str)
-    meta["id"] = meta["sample"].apply(lambda x: extract_id_or_number(x))
-
+    counts = _phossite_coverage_counts(data, meta, is_log2)
+    labels = meta["condition"].astype(str) + "_" + meta.groupby("condition").cumcount().astype(str)
     if id:
-        meta["new_sample"] = meta.groupby("condition").cumcount().astype(str)
-        meta["new_sample"] = meta["condition"].astype(str) + "_" + meta["new_sample"] + "\n(" + meta["id"].astype(str) + ")"
-    else:
-        meta["new_sample"] = meta.groupby("condition").cumcount().astype(str)
-        meta["new_sample"] = meta["condition"].astype(str) + "_" + meta["new_sample"]
-
-    rename_dict = dict(zip(meta["sample"], meta["new_sample"]))
-    data = data.rename(columns=rename_dict)
-    annotated_columns = meta["new_sample"].tolist()
-
-    data_classI = data.loc[data["PTM_localization"] >= 0.75, annotated_columns]
-    data_notclassI = data.loc[data["PTM_localization"] < 0.75, annotated_columns]
-
-    count_classI = data_classI.notna().sum()
-    count_notclassI = data_notclassI.notna().sum()
-
-    plot_data = pd.DataFrame({
-        "sample": annotated_columns * 2,
-        "PTM_localization": ["Class I"] * len(annotated_columns) + ["Not Class I"] * len(annotated_columns),
-        "count": list(count_classI) + list(count_notclassI)
-    })
-
-    plot_data["sample"] = pd.Categorical(plot_data["sample"], categories=meta["new_sample"], ordered=True)
-
-    plot_title = "Phosphosites per sample" if header else ""
-    y_label = "Number of phosphosites" if header else "Number"
-
+        labels += "\n(" + meta["sample"].astype(str).map(extract_id_or_number).astype(str) + ")"
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-    classI_data = plot_data[plot_data["PTM_localization"] == "Class I"]
-    notclassI_data = plot_data[plot_data["PTM_localization"] == "Not Class I"]
-
-    x = range(len(annotated_columns))
-    bars1 = ax.bar(x, classI_data["count"], color=color_classI, label="Class I")
-    bars2 = ax.bar(x, notclassI_data["count"], bottom=classI_data["count"], color=color_notclassI, label="Not Class I")
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(meta["new_sample"], rotation=90, fontsize=5)
+    bottom = np.zeros(len(counts))
+    for category, color in zip(counts.columns, [color_classI, color_notclassI, "#94a3b8"]):
+        if category == "Unclassified" and not counts[category].any():
+            continue
+        ax.bar(np.arange(len(counts)), counts[category], bottom=bottom, color=color, label=category)
+        bottom += counts[category].to_numpy()
+    ax.set_xticks(np.arange(len(counts)))
+    ax.set_xticklabels(labels, rotation=90, fontsize=5)
     ax.set_xlabel("Sample")
-    ax.set_ylabel(y_label)
-    ax.set_title(plot_title)
-
+    ax.set_ylabel("Number of phosphosites" if header else "Number")
+    ax.set_title("Phosphosites per sample" if header else "")
     if legend:
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-
+        ax.legend(loc="center left", bbox_to_anchor=(1, .5))
     plt.tight_layout()
     return fig
 
@@ -4796,15 +4864,18 @@ def phossite_coverage_plot(
 def sty_plot(data):
     sty = data["PTM_Collapse_key"].astype(str)
     letter = sty.str.extract(r'~[^_]+_([STY])\d+_')[0]
+    letter = letter.fillna(sty.str.extract(r"(?:^|_)([STY])\d+(?:_|$)")[0])
 
     counts = letter.value_counts().reindex(["S", "T", "Y"], fill_value=0)
+    if letter.isna().any():
+        counts.loc["Unparsed"] = int(letter.isna().sum())
     total = counts.sum()
     perc = (counts / total * 100) if total > 0 else counts.astype(float)
 
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=140)
 
     colors = {"S": "#4C78A8", "T": "#F58518", "Y": "#54A24B"}
-    bar_colors = [colors[k] for k in counts.index]
+    bar_colors = [colors.get(k, "#64748b") for k in counts.index]
 
     ax.bar(counts.index, counts.values, color=bar_colors, edgecolor="black", linewidth=0.6)
 
@@ -4817,11 +4888,14 @@ def sty_plot(data):
     ax.grid(axis="y", alpha=0.25, linewidth=0.8)
     ax.set_axisbelow(True)
 
-    ax2 = ax.twinx()
-    ax2.set_ylabel("Percentage (%)")
-    ax2.set_ylim(0, 100)
-    ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
-    ax2.spines["top"].set_visible(False)
+    total_count = int(total)
+    if total_count > 0:
+        ax2 = ax.secondary_yaxis(
+            "right", functions=(lambda count: count * 100 / total_count,
+                                lambda percent: percent * total_count / 100),
+        )
+        ax2.set_ylabel("Percentage (%)")
+        ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
 
     y_max = max(counts.values) if len(counts.values) else 0
     offset = 0.02 * y_max if y_max > 0 else 0.1
@@ -4836,69 +4910,32 @@ def sty_plot(data):
 def phossite_coverage_plot_summary(
     data, meta, header=True, legend=True,
     width=20, height=10, dpi=300,
-    color_classI="blue", color_notclassI="orange", seed=69
+    color_classI="blue", color_notclassI="orange", seed=69, is_log2=True
 ):
-    meta = meta.copy()
-    meta["sample"] = meta["sample"].astype(str)
-
-    meta["new_sample"] = meta.groupby("condition").cumcount().add(1).astype(str)
-    meta["new_sample"] = meta.apply(lambda row: f'{row.condition}_{row["new_sample"]}', axis=1)
-
-    rename_vector = dict(zip(meta["sample"], meta["new_sample"]))
-    data = data.copy()
-    data.columns = [rename_vector.get(col, col) for col in data.columns]
-    annotated_columns = meta["new_sample"]
-
-    data_classI = data[data["PTM_localization"] >= 0.75][annotated_columns]
-    data_notclassI = data[data["PTM_localization"] < 0.75][annotated_columns]
-
-    count_classI = data_classI.notna().sum()
-    count_notclassI = data_notclassI.notna().sum()
-
-    plot_data = pd.DataFrame({
-        "sample": list(annotated_columns) * 2,
-        "PTM_localization": ["Class I"] * len(annotated_columns) + ["Not Class I"] * len(annotated_columns),
-        "count": list(count_classI) + list(count_notclassI)
-    })
-    plot_data["condition"] = plot_data["sample"].str.extract(r'(^.*?)_')[0]
-
-    summarized_plot_data = plot_data.groupby(["condition", "PTM_localization"]).agg(
-        mean_count=("count", "mean"),
-        sd_count=("count", "std")
-    ).reset_index()
-
-    plot_title = "Phosphosites per condition" if header else ""
-    y_label = "Number of phosphosites" if header else "Number"
-
+    counts = _phossite_coverage_counts(data, meta, is_log2)
+    counts["condition"] = meta["condition"].astype(str).to_numpy()
+    conditions = counts["condition"].unique()
+    categories = ["Class I", "Not Class I"]
+    if counts["Unclassified"].any():
+        categories.append("Unclassified")
     fig, ax = plt.subplots(figsize=(width / 2.54, height / 2.54), dpi=dpi)
-
-    conditions = summarized_plot_data["condition"].unique()
-    locs = np.arange(len(conditions))
-    width_bar = 0.35
-
-    classI_means = summarized_plot_data[summarized_plot_data["PTM_localization"] == "Class I"]["mean_count"].values
-    classI_sd = summarized_plot_data[summarized_plot_data["PTM_localization"] == "Class I"]["sd_count"].values
-    notclassI_means = summarized_plot_data[summarized_plot_data["PTM_localization"] == "Not Class I"]["mean_count"].values
-    notclassI_sd = summarized_plot_data[summarized_plot_data["PTM_localization"] == "Not Class I"]["sd_count"].values
-
-    bars1 = ax.bar(locs - width_bar/2, classI_means, width=width_bar, yerr=classI_sd, capsize=3, color=color_classI, label="Class I")
-    bars2 = ax.bar(locs + width_bar/2, notclassI_means, width=width_bar, yerr=notclassI_sd, capsize=3, color=color_notclassI, label="Not Class I")
-
     rng = np.random.default_rng(seed)
-    for i, condition in enumerate(conditions):
-        y_classI = plot_data[(plot_data["condition"] == condition) & (plot_data["PTM_localization"] == "Class I")]["count"].values
-        y_notclassI = plot_data[(plot_data["condition"] == condition) & (plot_data["PTM_localization"] == "Not Class I")]["count"].values
-        ax.scatter(rng.normal(i - width_bar/2, 0.05, len(y_classI)), y_classI, color='black', alpha=0.7)
-        ax.scatter(rng.normal(i + width_bar/2, 0.05, len(y_notclassI)), y_notclassI, color='black', alpha=0.7)
-
-    ax.set_xticks(locs)
-    ax.set_xticklabels(conditions, rotation=45, ha='right')
-    ax.set_ylabel(y_label)
-    ax.set_title(plot_title)
-
+    bar_width = .7 / len(categories)
+    for j, category in enumerate(categories):
+        groups = [counts.loc[counts["condition"] == condition, category] for condition in conditions]
+        means = [group.mean() for group in groups]
+        sds = [group.std() if len(group) > 1 else 0 for group in groups]
+        positions = np.arange(len(conditions)) + (j - (len(categories) - 1) / 2) * bar_width
+        ax.bar(positions, means, width=bar_width, yerr=sds, capsize=3,
+               color=[color_classI, color_notclassI, "#94a3b8"][j], label=category)
+        for position, group in zip(positions, groups):
+            ax.scatter(rng.normal(position, .05, len(group)), group, color="black", alpha=.7)
+    ax.set_xticks(np.arange(len(conditions)))
+    ax.set_xticklabels(conditions, rotation=45, ha="right")
+    ax.set_ylabel("Number of phosphosites" if header else "Number")
+    ax.set_title("Phosphosites per condition" if header else "")
     if legend:
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-
+        ax.legend(loc="center left", bbox_to_anchor=(1, .5))
     plt.tight_layout()
     return fig
 
@@ -4935,6 +4972,53 @@ def simple_phos_site_plot(data, filter_value=0, width_cm=15, height_cm=10, dpi=1
     return fig
 
 
+def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
+    frame = pd.DataFrame(index=data.index)
+    names = {
+        column: re.sub(r"[^a-z0-9]", "", str(column).lower().replace("₂", "2"))
+        for column in data.columns
+    }
+    if not data.columns.is_unique:
+        raise ValueError("KSEA result column names must be unique.")
+
+    def numeric_field(aliases, *, effect=False):
+        result = pd.Series(np.nan, index=data.index, dtype=float)
+        found = False
+        for column, name in names.items():
+            if name not in aliases:
+                continue
+            found = True
+            supplied = data[column].notna() & data[column].astype(str).str.strip().ne("")
+            values = pd.to_numeric(data[column], errors="coerce")
+            if (supplied & ~np.isfinite(values)).any():
+                raise ValueError(f"KSEA column '{column}' must contain finite numeric values.")
+            if effect and name == "frequencyfactor":
+                if (supplied & (values <= 0)).any():
+                    raise ValueError("Raw Frequency Factor values must be positive.")
+                values = np.log2(values.where(supplied))
+            elif not effect and (supplied & ((values < 0) | (values > 1))).any():
+                raise ValueError("Adjusted p-values must be between 0 and 1.")
+            conflict = supplied & result.notna() & ~np.isclose(result, values, rtol=1e-10, atol=1e-12)
+            if conflict.any():
+                raise ValueError("Conflicting KSEA result columns; provide consistent values.")
+            result = result.where(result.notna(), values.where(supplied))
+        if not found or result.isna().any():
+            raise ValueError("Each KSEA row requires a frequency factor and adjusted p-value.")
+        return result
+
+    if data.empty:
+        return pd.DataFrame(columns=["Kinase", "Log2(Frequency Factor)", "Adjusted p-value"])
+    frame["Log2(Frequency Factor)"] = numeric_field({"log2frequencyfactor", "frequencyfactor"}, effect=True)
+    frame["Adjusted p-value"] = numeric_field({"adjustedpvalue", "adjustedp"})
+    labels = pd.Series(pd.NA, index=data.index, dtype="object")
+    for alias in ("kinase", "genename", "gene"):
+        for column, name in names.items():
+            if name == alias:
+                labels = labels.fillna(data[column].where(data[column].astype(str).str.strip().ne("")))
+    frame["Kinase"] = labels.fillna(frame["Log2(Frequency Factor)"].astype(str)).astype(str)
+    return frame
+
+
 def ksea_volcano(
         data_st,
         data_tnc,
@@ -4943,11 +5027,11 @@ def ksea_volcano(
         condition1=None,
         condition2=None
 ):
-    df = pd.concat([data_st, data_tnc], ignore_index=True)
-    if "Log₂(Frequency Factor)" not in df.columns or "Adjusted p-value" not in df.columns:
-        raise ValueError("Input must contain 'Log₂(Frequency Factor)' and 'Adjusted p-value' columns")
-
-    df["neg_log10_pval"] = -np.log10(df["Adjusted p-value"])
+    df = pd.concat([_normalize_ksea_results(data_st), _normalize_ksea_results(data_tnc)], ignore_index=True)
+    if df.empty:
+        raise ValueError("Uploaded KSEA result files are empty.")
+    df = df.rename(columns={"Log2(Frequency Factor)": "Log₂(Frequency Factor)"})
+    df["neg_log10_pval"] = -np.log10(df["Adjusted p-value"].clip(lower=1e-300))
 
     def classify(row):
         if row["Adjusted p-value"] < pval_thresh:
@@ -5186,14 +5270,14 @@ def missing_value_plot(data, meta, bin=0, header=True, text=True, text_size=3.88
 
 
 def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
-                            text_size=8, width=10, height=6, dpi=100, color='blue'):
+                            text_size=8, width=10, height=6, dpi=100, color='blue', quantity_column='Precursor.Quantity'):
     data = sanitize_dataframe(read_data(data_path)).copy()
     meta = meta.copy()
 
     df_wide = data.pivot_table(
         index='File.Name',
         columns='Precursor.Id',
-        values='Precursor.Quantity',
+        values=quantity_column,
         # 'max' matches missing_value_plot_pep above. 'first' depended on input
         # row order, and _raw_zero_to_nan runs immediately after, so which
         # duplicate won decided whether a precursor read as detected.
@@ -5201,14 +5285,11 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
     )
 
     df_wide = df_wide.T
-    df_wide.columns = df_wide.columns.map(lambda x: extract_id_or_number(x))
-    meta['sample'] = meta['sample'].map(lambda x: extract_id_or_number(x))
-
-    annotated_columns = meta['sample'].tolist()
-    data_filtered = df_wide.loc[:, df_wide.columns.isin(annotated_columns)]
+    sample_map = _peptide_sample_map(df_wide.columns, meta['sample'])
+    data_filtered = df_wide[list(sample_map)].rename(columns=sample_map)
     data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
-    na_count = data_filtered.isna().sum(axis=1)
+    na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
 
     if bin > 0:
         na_count = na_count.apply(lambda x: f">{bin}" if x > bin else str(x))
@@ -5242,7 +5323,7 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
 
 
 def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
-                           text_size=8, width=10, height=6, dpi=100, color='blue'):
+                           text_size=8, width=10, height=6, dpi=100, color='blue', quantity_column='Precursor.Quantity'):
     data = sanitize_dataframe(read_data(data_path)).copy()
     meta = meta.copy()
 
@@ -5250,20 +5331,18 @@ def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
         df_wide = data.pivot_table(
             index='File.Name',
             columns='Stripped.Sequence',
-            values='Precursor.Quantity',
+            values=quantity_column,
             aggfunc='max'
         )
         df_wide = df_wide.T
-        df_wide.columns = df_wide.columns.map(lambda x: extract_id_or_number(x))
     else:
         df_wide = data.copy()
 
-    meta['sample'] = meta['sample'].map(lambda x: extract_id_or_number(x))
-    annotated_columns = meta['sample'].tolist()
-    data_filtered = df_wide.loc[:, df_wide.columns.isin(annotated_columns)]
+    sample_map = _peptide_sample_map(df_wide.columns.drop('Stripped.Sequence', errors='ignore'), meta['sample'])
+    data_filtered = df_wide[list(sample_map)].rename(columns=sample_map)
     data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
-    na_count = data_filtered.isna().sum(axis=1)
+    na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
 
     if bin > 0:
         na_count = na_count.apply(lambda x: f">{bin}" if x > bin else str(x))

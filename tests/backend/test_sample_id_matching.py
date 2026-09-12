@@ -171,7 +171,7 @@ def test_plots_refuse_ambiguous_fuzzy_matching(plot) -> None:
 
 def test_completeness_refuses_ambiguous_fuzzy_matching() -> None:
     frame, _, _, annotation = _patched(COLLIDING_RUNS, FUZZY_NAMES)
-    with patch.object(ct, "get_annotation", return_value=annotation):
+    with patch.object(pt, "get_annotation", return_value=annotation), patch.object(pt, "get_current_dataset", return_value=object()):
         with pytest.raises(ValueError, match="ambiguous"):
             ct._peptide_sample_columns(frame)
 
@@ -179,7 +179,7 @@ def test_completeness_refuses_ambiguous_fuzzy_matching() -> None:
 @pytest.mark.parametrize("runs", [DISTINCT_RUNS, COLLIDING_RUNS], ids=["distinct", "colliding"])
 def test_completeness_keeps_every_run_when_names_match_exactly(runs: list[str]) -> None:
     frame, _, _, annotation = _patched(runs, runs)
-    with patch.object(ct, "get_annotation", return_value=annotation):
+    with patch.object(pt, "get_annotation", return_value=annotation), patch.object(pt, "get_current_dataset", return_value=object()):
         assert sorted(ct._peptide_sample_columns(frame)) == sorted(runs)
 
 
@@ -187,5 +187,30 @@ def test_completeness_still_matches_unambiguous_shortened_names() -> None:
     frame, _, _, annotation = _patched(
         DISTINCT_RUNS, [f"sample_{n}" for n in ("01", "02", "03", "04", "05", "06")]
     )
-    with patch.object(ct, "get_annotation", return_value=annotation):
+    with patch.object(pt, "get_annotation", return_value=annotation), patch.object(pt, "get_current_dataset", return_value=object()):
         assert sorted(ct._peptide_sample_columns(frame)) == sorted(DISTINCT_RUNS)
+
+
+@pytest.mark.parametrize('builder_name', ['peptide_modification_plot', 'peptide_missed_cleavage_plot'])
+def test_ai_uses_exact_sample_mapping_and_rejects_ambiguous_fallback(monkeypatch, builder_name):
+    from app.services import ai_functions
+    builder = getattr(ai_functions, builder_name)
+    with _peptide_environment(COLLIDING_RUNS, COLLIDING_RUNS) as (frame, _, _):
+        monkeypatch.setattr(ai_functions, 'get_peptide_frame', lambda: frame)
+        # Observe the input to the actual shared counting routine, not just success text.
+        name = '_peptide_modification_counts' if 'modification' in builder_name else '_peptide_missed_cleavage_summary'
+        calculate = getattr(ai_functions, name)
+        seen = []
+        def capture(wide, **kwargs):
+            samples = kwargs['sample_columns']
+            assert len(samples) == 6 and len(set(samples)) == 6
+            assert wide[samples[:3]].eq(CTRL_INTENSITY).all().all()
+            assert wide[samples[3:]].eq(TREAT_INTENSITY).all().all()
+            seen.append(True)
+            return calculate(wide, **kwargs)
+        monkeypatch.setattr(ai_functions, name, capture)
+        result = builder()['data']['text']
+        assert seen and 'status=error' not in result
+    with _peptide_environment(COLLIDING_RUNS, FUZZY_NAMES):
+        result = builder()['data']['text']
+        assert 'ambiguous' in result and 'status=error' in result

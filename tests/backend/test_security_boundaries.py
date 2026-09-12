@@ -293,6 +293,51 @@ def test_protected_backend_rejects_shell_bypass_and_anonymous_session_flood(
         assert near_miss.status_code == 401
 
 
+@pytest.mark.parametrize("mode", ["tool", "viewer"])
+def test_anonymous_public_requests_do_not_evict_protected_sessions(monkeypatch, mode):
+    import time
+    import pandas as pd
+    from app.services import session_cleanup, tool_access, viewer_portal, dataset_store
+    from app.services.session_context import set_session_id, reset_session_id
+
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_ENABLED', str(int(mode == 'tool')))
+    monkeypatch.setenv('COPYLOT_VIEWER_PORTAL_ENABLED', str(int(mode == 'viewer')))
+    monkeypatch.setenv('COPYLOT_VIEWER_MODE', str(int(mode == 'viewer')))
+    monkeypatch.setenv('COPYLOT_SESSION_ISOLATION', '1')
+    monkeypatch.setenv('COPYLOT_MAX_SESSIONS', '1')
+    monkeypatch.setenv('COPYLOT_SESSION_IDLE_SECONDS', '60')
+    victim = 'synthetic_authenticated_session'
+    auth = viewer_portal.ViewerSessionAuth(project='synthetic', project_label='Synthetic')
+    monkeypatch.setattr(session_cleanup, '_LAST_SEEN', {victim: time.monotonic()})
+    monkeypatch.setattr(tool_access, '_SESSION_AUTH', {victim} if mode == 'tool' else set())
+    monkeypatch.setattr(viewer_portal, '_SESSION_AUTH', {victim: auth} if mode == 'viewer' else {})
+    monkeypatch.setattr(dataset_store, '_DATASET_SESSIONS', {})
+    monkeypatch.setattr('app.main.ensure_viewer_session_bootstrapped', lambda **kw: auth)
+    monkeypatch.setattr('app.api.routes_viewer_auth.ensure_viewer_session_bootstrapped', lambda **kw: auth)
+    token = set_session_id(victim)
+    try:
+        dataset_store.save_table_dataset('private.csv', 'protein', pd.DataFrame({'ProteinNames': ['PRIVATE']}))
+    finally:
+        reset_session_id(token)
+
+    # Skip lifespan: grants are synthetic; no credential files or viewer project are needed.
+    client = TestClient(app)
+    for index, path in enumerate(['/api/health', '/api/tool/auth/status', '/api/viewer/auth/status'] * 2):
+        client.cookies.clear()
+        assert client.get(path, headers={'X-CoPYlot-Session': f'anonymous_session_{index}'}).status_code == 200
+        assert set(session_cleanup._LAST_SEEN) == {victim}
+        assert victim in dataset_store._DATASET_SESSIONS
+    client.cookies.clear()
+    headers = {'X-CoPYlot-Session': victim}
+    before = session_cleanup._LAST_SEEN[victim]
+    assert client.get('/api/datasets/current', headers=headers).status_code == 200
+    assert session_cleanup._LAST_SEEN[victim] >= before
+    session_cleanup._LAST_SEEN[victim] -= 61
+    assert client.get('/api/datasets/current', headers=headers).status_code == 401
+    assert victim not in session_cleanup._LAST_SEEN
+    assert victim not in dataset_store._DATASET_SESSIONS
+
+
 def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
     monkeypatch,
     tmp_path,
@@ -389,6 +434,142 @@ def test_restore_gzip_expansion_is_bounded(monkeypatch) -> None:
     compressed = gzip.compress(b"x" * 128)
     with pytest.raises(RestoreStateError, match="Expanded restore state"):
         decode_restore_blob(compressed)
+
+
+@pytest.mark.parametrize('mode,method', [('tool', 'login'), ('tool', 'link-login'), ('viewer', 'login'), ('viewer', 'qr-login')])
+@pytest.mark.parametrize('tab', ['', 'a' * 32])
+def test_login_registers_rotated_session_without_followup(monkeypatch, mode, method, tab):
+    import hashlib
+    import pandas as pd
+    from app.services import session_cleanup as cleanup, tool_access, viewer_portal as viewer, dataset_store
+    from app.services.session_context import set_session_id, reset_session_id
+
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_ENABLED', str(int(mode == 'tool')))
+    monkeypatch.setenv('COPYLOT_VIEWER_PORTAL_ENABLED', str(int(mode == 'viewer')))
+    monkeypatch.setenv('COPYLOT_VIEWER_MODE', str(int(mode == 'viewer')))
+    monkeypatch.setenv('COPYLOT_SESSION_ISOLATION', '1')
+    monkeypatch.setenv('COPYLOT_MAX_SESSIONS', '1')
+    monkeypatch.setenv('COPYLOT_SESSION_IDLE_SECONDS', '60')
+    monkeypatch.setattr(cleanup, '_LAST_SEEN', {})
+    monkeypatch.setattr(tool_access, '_SESSION_AUTH', set())
+    monkeypatch.setattr(viewer, '_SESSION_AUTH', {})
+    monkeypatch.setattr(viewer, '_BOOTSTRAPPED_SESSION_PROJECT', {})
+    monkeypatch.setattr(dataset_store, '_DATASET_SESSIONS', {})
+    password_hash = hash_password('synthetic-password', iterations=100_000)
+    token_hash = hashlib.sha256(b'synthetic-token').hexdigest()
+    monkeypatch.setattr(tool_access, '_load_access', lambda *a: {
+        'password_pbkdf2_sha256': password_hash, 'tokens': [token_hash],
+    })
+    monkeypatch.setattr(viewer, '_load_access_entries', lambda *a: [
+        viewer.ViewerAccessEntry('synthetic', 'Synthetic', '', '', password_hash),
+    ])
+    monkeypatch.setattr(viewer, '_load_qr_access_entries', lambda *a: [
+        viewer.ViewerQrAccessEntry('synthetic', 'Synthetic', token_hash),
+    ])
+
+    def load(*args, **kwargs):
+        dataset_store.save_table_dataset('synthetic.csv', 'protein', pd.DataFrame({'ProteinNames': ['PRIVATE']}))
+
+    monkeypatch.setattr(viewer, '_load_project_into_current_session', load)
+    client = TestClient(app)
+    prefix = f'/api/tabs/{tab}' if tab else ''
+    path = f'{prefix}/api/{mode}/auth/{method}'
+    payload = {'password': 'synthetic-password'} if method == 'login' else {'token': 'synthetic-token'}
+    old = None
+    for _ in range(2):
+        response = client.post(path, json=payload)
+        assert response.status_code == 200
+        current = response.json()['sessionId']
+        cookie_name = f'copylot_session_id_{tab}' if tab else 'copylot_session_id'
+        assert client.cookies.get(cookie_name) == current
+        if tab:
+            assert f'Path={prefix}' in response.headers['set-cookie']
+            assert client.get('/api/tabs/' + 'b' * 32 + '/api/datasets/current').status_code == 401
+            assert client.get('/api/datasets/current').status_code == 401
+        assert set(cleanup._LAST_SEEN) == {current}
+        if old:
+            assert old != current
+            assert old not in tool_access._SESSION_AUTH
+            assert old not in viewer._SESSION_AUTH
+            assert old not in dataset_store._DATASET_SESSIONS
+        token = set_session_id(current)
+        try:
+            load()
+        finally:
+            reset_session_id(token)
+        old = current
+    cleanup._LAST_SEEN[current] -= 61
+    assert client.get(prefix + '/api/datasets/current').status_code == 401
+    assert current not in dataset_store._DATASET_SESSIONS
+    assert current not in cleanup._LAST_SEEN
+
+    if mode == 'viewer':
+        def fail_after_loading(*args, **kwargs):
+            load()
+            raise RuntimeError('Synthetic initialization failure')
+        monkeypatch.setattr(viewer, '_load_project_into_current_session', fail_after_loading)
+        assert client.post(path, json=payload).status_code == 500
+        assert not viewer._SESSION_AUTH
+        assert not dataset_store._DATASET_SESSIONS
+        assert not cleanup._LAST_SEEN
+
+
+def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
+    from app.services import ai_context_tools, dataset_store
+
+    access_file = tmp_path / 'context-access.json'
+    access_file.write_text(json.dumps({
+        'password_pbkdf2_sha256': hash_password('synthetic-password', iterations=100_000),
+        'tokens': [],
+    }), encoding='utf-8')
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_ENABLED', '1')
+    monkeypatch.setenv('COPYLOT_TOOL_ACCESS_FILE', str(access_file))
+    monkeypatch.setenv('COPYLOT_SESSION_ISOLATION', '1')
+    monkeypatch.setenv('COPYLOT_VIEWER_PORTAL_ENABLED', '0')
+    monkeypatch.setattr('app.api.routes_chat.ai_mode_enabled', lambda: True)
+    calls = []
+
+    def evidence(name, *args):
+        dataset = dataset_store.get_current_dataset('protein')
+        marker = dataset.frame.iloc[0, 0] if dataset else 'EMPTY'
+        calls.append(marker)
+        return {'function': name, 'summary': marker}, None
+
+    monkeypatch.setattr(ai_context_tools, '_function_payload', evidence)
+
+    def upload(client, marker):
+        response = client.post('/api/datasets/upload', data={'kind': 'protein'}, files={
+            'file': ('results.csv', f'ProteinNames,A1,A2\n{marker},12,13\n', 'text/csv'),
+        })
+        assert response.status_code == 200
+
+    def context(client, marker):
+        response = client.post('/api/chat/module-context', json={'moduleKey': 'qc.coverage', 'workflow': 'protein'})
+        assert response.status_code == 200
+        assert [item['summary'] for item in response.json()['contextData']['functions']] == [marker, marker]
+
+    with TestClient(app) as first, TestClient(app) as second:
+        for client in (first, second):
+            assert client.post('/api/tool/auth/login', json={'password': 'synthetic-password'}).status_code == 200
+        upload(first, 'FIRST_PRIVATE')
+        upload(second, 'SECOND_PRIVATE')
+        context(first, 'FIRST_PRIVATE')
+        context(second, 'SECOND_PRIVATE')
+        assert len(calls) == 4
+        context(first, 'FIRST_PRIVATE')
+        assert len(calls) == 4
+        upload(first, 'REPLACED')
+        context(first, 'REPLACED')
+        assert first.post('/api/datasets/active', json={'packageName': 'Other'}).status_code == 200
+        context(first, 'EMPTY')
+        upload(first, 'OTHER_PACKAGE')
+        context(first, 'OTHER_PACKAGE')
+        assert first.post('/api/datasets/active', json={'packageName': 'Data'}).status_code == 200
+        context(first, 'REPLACED')
+        assert first.post('/api/tool/auth/logout').status_code == 200
+        assert first.post('/api/chat/module-context', json={'moduleKey': 'qc.coverage'}).status_code == 401
+        assert first.post('/api/tool/auth/login', json={'password': 'synthetic-password'}).status_code == 200
+        context(first, 'EMPTY')
 
 
 def test_authenticated_browsers_cannot_read_each_others_packages(monkeypatch, tmp_path):
