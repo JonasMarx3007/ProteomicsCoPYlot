@@ -81,6 +81,17 @@ def test_a_genuine_intensity_of_one_is_not_deleted() -> None:
     assert 0.0 in [round(float(v), 6) for v in values]
 
 
+@pytest.mark.parametrize("sentinel", [np.nan, "Filtered", 0.0])
+def test_entirely_missing_run_is_retained(sentinel):
+    table = _table(1000.)
+    table["EG.TotalQuantity (Settings)"] = table["EG.TotalQuantity (Settings)"].astype(object)
+    table.loc[table["R.FileName"] == "run2", "EG.TotalQuantity (Settings)"] = sentinel
+    result = _collapse(peptideCollapse, table)
+    assert "run2" in result.columns
+    assert result["run2"].isna().all()
+    np.testing.assert_allclose(sorted(result["run1"]), np.log2([1000., 2000., 4000.]))
+
+
 def test_gene_underscore_survives_collapse():
     table = _table(1000.)
     table["PG.Genes"] = "GENE_A"

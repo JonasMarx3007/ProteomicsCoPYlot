@@ -2685,7 +2685,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     out = df[cols_to_use].copy()
     out["f_statistic"] = f_stat
     out["pval"] = pvals
-    out["adj_pval"] = pvals if uncorrected else multipletests(pvals, method="fdr_bh")[1]
+    out["adj_pval"] = pvals if uncorrected else _adjust_finite_pvalues(pvals)
     out["significance"] = np.where(out["adj_pval"] < in_pval, "Significant", "Not significant")
     out["neg_log10_adj_pval"] = -np.log10(np.clip(out["adj_pval"], np.finfo(float).tiny, None))
 
@@ -3889,6 +3889,8 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     n1_real = x_data.notna().sum(axis=1)
     n2_real = y_data.notna().sum(axis=1)
     valid_mask = (n1_real >= 2) & (n2_real >= 2)
+    if not valid_mask.any():
+        raise ValueError("No rows have enough replicate values for the selected simulation.")
     x_data = x_data[valid_mask]
     y_data = y_data[valid_mask]
     data_filtered = data_filtered.loc[valid_mask]
@@ -3904,7 +3906,7 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     t_stat = _guarded_t_statistic(mean2 - mean1, se)
     df = n1 + n2 - 2
     pvals = 2 * t.sf(np.abs(t_stat), df)
-    adj_pvals = multipletests(pvals, method='fdr_bh')[1]
+    adj_pvals = _adjust_finite_pvalues(pvals)
     log2fc = mean2 - mean1
     significance = np.where((adj_pvals < in_pval) & (log2fc > in_log2fc), "Upregulated",
                             np.where((adj_pvals < in_pval) & (log2fc < -in_log2fc), "Downregulated",
@@ -3916,8 +3918,9 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
         'adj_pval': adj_pvals,
         'significance': significance
     })
-    volcano_data['neg_log10_pval'] = -np.log10(volcano_data['adj_pval'])
-    color_mapping = {"Downregulated": "blue", "Not significant": "gray", "Upregulated": "red"}
+    volcano_data.loc[~np.isfinite(pvals), 'significance'] = 'Unavailable'
+    volcano_data['neg_log10_pval'] = -np.log10(volcano_data['adj_pval'].clip(lower=1e-300))
+    color_mapping = {"Downregulated": "blue", "Not significant": "gray", "Upregulated": "red", "Unavailable": "gray"}
     fig = px.scatter(
         volcano_data,
         x='log2FC',
@@ -3927,7 +3930,7 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
         color_discrete_map=color_mapping,
         title=f"{condition1} vs. {condition2}",
     )
-    vline_height = max(volcano_data['neg_log10_pval'].max(), -np.log10(in_pval))
+    vline_height = max(-np.log10(in_pval), volcano_data['neg_log10_pval'].max())
     fig.add_shape(type="line", x0=in_log2fc, x1=in_log2fc, y0=0, y1=vline_height,
                   line=dict(dash='dash', color='black'))
     fig.add_shape(type="line", x0=-in_log2fc, x1=-in_log2fc, y0=0, y1=vline_height,

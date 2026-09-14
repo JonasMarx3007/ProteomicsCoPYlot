@@ -4174,6 +4174,10 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
   n2_real <- rowSums(!is.na(y_data))
   valid <- n1_real >= 2 & n2_real >= 2
 
+  if (!any(valid)) {
+    stop("No rows have enough replicate values for the selected simulation.", call. = FALSE)
+  }
+
   filtered_data <- filtered_data[valid, , drop = FALSE]
   x_data <- x_data[valid, , drop = FALSE]
   y_data <- y_data[valid, , drop = FALSE]
