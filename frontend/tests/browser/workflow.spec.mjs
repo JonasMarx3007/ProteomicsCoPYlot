@@ -242,6 +242,39 @@ for (const [panel, endpoint, setting, value, parameter] of [
   });
 }
 
+for (const change of ['settings', 'revision']) {
+  test(`ORA cluster choices wait for matching ANOVA ${change}`, async ({ page }) => {
+    await annotated(page, '3', { table: sites.replace(/,,/g, ',12,') });
+    const aggregate = await tabRequest(page).post('/api/annotations/phosprot/aggregate', {
+      data: { mode: 'mean', source: 'non_imputed' },
+    });
+    expect(aggregate.ok()).toBeTruthy();
+    await tab(page, 'Statistical Analysis').click();
+    await tab(page, 'GO Enrichment (ORA)').click();
+    await field(page, 'Analysis source').selectOption('anova');
+    const clusters = page.getByRole('combobox', { name: 'Protein cluster', exact: true });
+    await expect.poll(() => clusters.locator('option').count()).toBeGreaterThan(1);
+    let pending;
+    await page.route('**/api/stats/anova/run', route => { pending = route; });
+    if (change === 'settings') {
+      await field(page, 'Clusters', 'input').fill('3');
+      await field(page, 'Clusters', 'input').press('Tab');
+    } else {
+      await page.evaluate(async () => {
+        const { updateAnnotationPairing } = await import('/src/lib/api.ts');
+        await updateAnnotationPairing({ kind: 'phospho', condition1: 'A', condition2: 'B',
+          pairs: [1, 2, 3, 4].map(i => ({ condition1Sample: `A${i}`, condition2Sample: `B${i}` })) });
+      });
+    }
+    await expect(clusters.locator('option')).toHaveCount(1);
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    const response = await pending.fetch();
+    expect(response.ok()).toBeTruthy();
+    await pending.fulfill({ response });
+    await expect.poll(() => clusters.locator('option').count()).toBeGreaterThan(1);
+  });
+}
+
 for (const consumer of ['volcano', 'ksea', 'ora', 'analysis']) {
   test(`saved valid-to-valid pairing refreshes ${consumer} results`, async ({ page }) => {
     await annotated(page);

@@ -1348,7 +1348,7 @@ function OraPanel({
   const [backgroundMode, setBackgroundMode] = useState<"experiment" | "global">(() =>
     String(persisted.backgroundMode ?? "experiment") === "global" ? "global" : "experiment"
   );
-  const [anovaResult, setAnovaResult] = useState<AnovaResultResponse | null>(null);
+  const [anovaState, setAnovaState] = useState<{ key: string; data: AnovaResultResponse } | null>(null);
   const [resultState, setResultState] = useState<{
     key: string;
     data: EnrichmentResultResponse;
@@ -1388,26 +1388,6 @@ function OraPanel({
         : [{ value: "data", label: "Data" }],
     [options?.imputedAvailable]
   );
-  const anovaClusterSizes = (() => {
-    const counts = new Map<string, number>();
-    if (sourceMode !== "anova" || !anovaResult?.clusterRows.length) return counts;
-    anovaResult.clusterRows.forEach((row) => {
-      const value = row.cluster;
-      if (value !== null && value !== undefined && String(value).trim()) {
-        const cluster = String(value);
-        counts.set(cluster, (counts.get(cluster) ?? 0) + 1);
-      }
-    });
-    return counts;
-  })();
-  const availableAnovaClusters = Array.from(anovaClusterSizes.keys()).sort((a, b) => Number(a) - Number(b));
-  const anovaClusterOptions = [
-    { value: "", label: availableAnovaClusters.length ? "Select a cluster" : "No clusters available" },
-    ...availableAnovaClusters.map((cluster) => ({
-      value: cluster,
-      label: `Cluster ${cluster} (n=${anovaClusterSizes.get(cluster) ?? 0})`,
-    })),
-  ];
 
   useEffect(() => {
     if (!kindAvailable) return;
@@ -1470,24 +1450,42 @@ function OraPanel({
     roundedClusterCount,
   ]);
   const debouncedAnovaRequest = useDebouncedValue(anovaRequest, 650);
+  const anovaKey = JSON.stringify({ revision, request: anovaRequest });
+  const anovaResult = sourceMode === "anova" && anovaState?.key === anovaKey ? anovaState.data : null;
+  const anovaClusterSizes = new Map<string, number>();
+  for (const row of anovaResult?.clusterRows ?? []) {
+    if (row.cluster !== null && row.cluster !== undefined && String(row.cluster).trim()) {
+      const cluster = String(row.cluster);
+      anovaClusterSizes.set(cluster, (anovaClusterSizes.get(cluster) ?? 0) + 1);
+    }
+  }
+  const availableAnovaClusters = Array.from(anovaClusterSizes.keys()).sort((a, b) => Number(a) - Number(b));
+  const anovaClusterOptions = [
+    { value: "", label: availableAnovaClusters.length ? "Select a cluster" : "No clusters available" },
+    ...availableAnovaClusters.map((cluster) => ({
+      value: cluster,
+      label: `Cluster ${cluster} (n=${anovaClusterSizes.get(cluster) ?? 0})`,
+    })),
+  ];
 
   useEffect(() => {
     if (sourceMode !== "anova" || !debouncedAnovaRequest) return;
     const controller = new AbortController();
     runAnovaAnalysis(debouncedAnovaRequest, { signal: controller.signal })
       .then((response) => {
-        setAnovaResult(response);
+        if (controller.signal.aborted) return;
+        setAnovaState({ key: JSON.stringify({ revision, request: debouncedAnovaRequest }), data: response });
         setError(null);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
-        setAnovaResult(null);
+        setAnovaState(null);
         setError(err instanceof Error ? err.message : "Failed to generate ANOVA clusters");
       });
     return () => {
       controller.abort();
     };
-  }, [debouncedAnovaRequest, sourceMode]);
+  }, [debouncedAnovaRequest, sourceMode, revision]);
 
   const controlSelectionValid =
     sourceMode !== "volcano_control" ||

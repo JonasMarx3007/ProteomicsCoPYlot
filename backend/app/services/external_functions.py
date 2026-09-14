@@ -108,6 +108,8 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
                          columns=['R.FileName'],
                          values=['EG.TotalQuantity (Settings)'],
                          aggfunc='first')
+    df2 = df2.reindex(columns=pd.MultiIndex.from_product(
+        [['EG.TotalQuantity (Settings)'], fine_names], names=df2.columns.names))
     # Spectronaut writes 0 and the string 'Filtered' for a measurement it did not
     # make. Both have to go before the transform: log2(0) is -inf, which notna()
     # counts as an observation, and a genuine intensity of 1 becomes log2 0, which
@@ -163,9 +165,7 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
     emit('Preparation for collapsing done;' + ' ' + str(
         num4) + ' ' + 'phosphopeptides filtered due to insufficient information') # update @Yue Yang
     #################
-    cols = []
-    for c in fine_names:
-        cols.append([col for col in data.columns if c in col][0])
+    cols = [('EG.TotalQuantity (Settings)', run) for run in fine_names]
 
     df1 = data.set_index('PTM_Collapse_key')
     df2 = df1[df1.columns[df1.columns.isin(cols)]]
