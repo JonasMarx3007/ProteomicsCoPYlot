@@ -1,8 +1,43 @@
 import pandas as pd
 import pytest
+import numpy as np
+import io
 
 from app.services.dataset_reader import sanitize_dataframe
 from app.services.functions import build_metadata_from_conditions
+
+
+@pytest.mark.parametrize("vendor", ["diann", "spectronaut"])
+@pytest.mark.parametrize("extension", ["tsv", "parquet"])
+def test_export_matrix_missingness_and_run_identity(vendor, extension):
+    from app.services.dataset_reader import read_dataframe
+    from app.services.annotation_processor import compute_annotation_from_metadata
+    from proteomicscopylot import notebook_functions as notebook
+    identifiers = ("Protein.Ids", "Genes") if vendor == "diann" else ("PG.ProteinGroups", "PG.Genes")
+    samples = [r"C:\batch1\sample.d", r"C:\batch2\sample.d", "sample 3.PG.Quantity", "empty_run"]
+    raw = pd.DataFrame({identifiers[0]: ["P1;P2", "P3", "P4", "P5"],
+                        identifiers[1]: ["GENE_A;GENE_B", "G3", "G4", "G5"],
+                        samples[0]: [1., 0., 1.2e8, np.nan],
+                        samples[1]: [2., np.nan, 1.2e8, np.nan],
+                        samples[2]: [4., 8., 1.2e8, np.nan],
+                        samples[3]: [np.nan]*4})
+    stream = io.BytesIO()
+    if extension == "tsv":
+        stream.write(raw.to_csv(sep="\t", index=False).encode("utf-8-sig"))
+    else:
+        raw.to_parquet(stream, index=False)
+    stream.seek(0)
+    loaded = read_dataframe(f"matrix.{extension}", stream)
+    meta = pd.DataFrame({"sample": samples, "condition": ["A", "A", "B", "B"]}).iloc[::-1]
+    result = compute_annotation_from_metadata(loaded, meta, False, 1, "overall")
+    expected = notebook.log2_transform_data(loaded, meta)
+    np.testing.assert_allclose(result.log2_data[samples], expected[samples], equal_nan=True)
+    assert result.log2_data.loc[0, samples[0]] == 0
+    assert np.isnan(result.log2_data.loc[1, samples[0]])
+    assert result.log2_data[samples[3]].isna().all()
+    assert result.metadata["sample"].tolist() == meta["sample"].tolist()
+    assert result.filtered_data.ProteinNames.tolist() == ["P1;P2", "P3", "P4"]
+    assert result.filtered_data.GeneNames.iloc[0] == "GENE_A;GENE_B"
 
 
 @pytest.mark.parametrize("columns", [

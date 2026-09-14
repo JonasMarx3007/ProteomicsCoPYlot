@@ -14,6 +14,91 @@ ROOT = Path(__file__).resolve().parents[2]
 R_SCRIPT = ROOT / "tests" / "r" / "cross_implementation.R"
 
 CONDITIONS = ("Ctrl", "Treat", "Third")
+
+
+@pytest.mark.parametrize("family", ["mixed", "undefined"])
+def test_notebook_degenerate_families_match_backend_and_r(tmp_path, family, monkeypatch):
+    from app.schemas.stats import SimulationRequest, AnovaRequest
+    from app.services import stats_tools
+    from unittest.mock import patch
+    notebook = _notebook()
+    samples = [f"{c}{i}" for c in "AB" for i in range(3)]
+    meta = pd.DataFrame({"sample": samples, "condition": list("AAABBB")})
+    values = np.array([
+        [1, 2, 3, 5, 6, 7], [5, 5, 5, 5, 5, 5], [1, 1, 1, 5, 5, 5],
+        [0, 1, np.nan, 2, 3, np.nan], [1, np.nan, np.nan, 2, 3, 4],
+        [np.nan, np.nan, np.nan, 2, 3, 4],
+    ], dtype=float)
+    data = pd.DataFrame(values, columns=samples)
+    data.insert(0, "ProteinNames", ["P1;P2", "equal", "unequal", "zero", "sparse", "missing_A"])
+    if family == "undefined":
+        data = data.iloc[[1]].copy()
+    before = data.copy(deep=True)
+    captured = []
+    scatter = notebook.px.scatter
+    def capture(frame, **kwargs):
+        captured.append(frame.copy())
+        return scatter(frame, **kwargs)
+    monkeypatch.setattr(notebook.px, "scatter", capture)
+    fig = notebook.volcano_plot_sim(data, meta, "A", "B")
+    actual = captured[0].set_index("Feature")
+    with patch.object(stats_tools, "_stats_source", return_value=("filtered", data, meta, [])):
+        expected = stats_tools._simulation_dataframe(SimulationRequest(
+            kind="protein", condition1="A", condition2="B"))[2].set_index("ProteinNames")
+        backend_anova = stats_tools._anova_dataframe(AnovaRequest(kind="protein"))[2]
+    assert actual.index.tolist() == expected.index.tolist()
+    np.testing.assert_allclose(actual[["pval", "adj_pval", "log2FC"]], expected[["pval", "adj_pval", "log2FC"]], equal_nan=True)
+    assert actual.loc["equal", "significance"] == "Unavailable"
+    assert np.isnan(actual.loc["equal", "adj_pval"])
+    for trace in fig.data:
+        assert not np.isinf(np.asarray(trace.y, dtype=float)).any()
+    for shape in fig.layout.shapes:
+        assert np.isfinite([shape.x0, shape.x1, shape.y0, shape.y1]).all()
+    anova = notebook.anova_data_f(data, meta)
+    assert set(anova.ProteinNames) == set(backend_anova.ProteinNames)
+    if family == "mixed":
+        assert actual.loc["P1;P2", "significance"] == "Upregulated"
+        assert actual.loc["unequal", "neg_log10_pval"] == 300
+    else:
+        assert anova.empty
+    pd.testing.assert_frame_equal(data, before)
+    if RSCRIPT is None:
+        pytest.skip("Rscript unavailable")
+    data.to_csv(tmp_path / "data.csv", index=False)
+    meta.to_csv(tmp_path / "meta.csv", index=False)
+    script = '''
+      args <- commandArgs(trailingOnly=TRUE)
+      source("proteomicscopylot/notebook_functions.R")
+      d <- read.csv(file.path(args[1], "data.csv"), check.names=FALSE)
+      m <- read.csv(file.path(args[1], "meta.csv"), check.names=FALSE)
+      volcano_plot <- function(volcano_df, ...) volcano_df
+      result <- volcano_plot_sim(d,m,"A","B")
+      write.csv(result,file.path(args[1],"simulation.csv"),row.names=FALSE)
+      write.csv(anova_data_f(d,m),file.path(args[1],"anova.csv"),row.names=FALSE)
+    '''
+    run = subprocess.run([RSCRIPT, "-e", script, str(tmp_path)], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+    r = pd.read_csv(tmp_path / "simulation.csv").set_index("ProteinNames")
+    np.testing.assert_allclose(actual[["pval", "adj_pval", "log2FC"]], r.loc[actual.index, ["pval", "adj_pval", "log2FC"]], equal_nan=True)
+    assert set(pd.read_csv(tmp_path / "anova.csv").ProteinNames) == set(anova.ProteinNames)
+    sparse = data.copy()
+    sparse[samples[1:3]] = np.nan
+    with pytest.raises(ValueError, match="enough replicate"):
+        notebook.volcano_plot_sim(sparse, meta, "A", "B")
+    with patch.object(stats_tools, "_stats_source", return_value=("filtered", sparse, meta, [])):
+        with pytest.raises(ValueError, match="enough replicate"):
+            stats_tools._simulation_dataframe(SimulationRequest(kind="protein", condition1="A", condition2="B"))
+    sparse.to_csv(tmp_path / "data.csv", index=False)
+    script = '''
+      args <- commandArgs(trailingOnly=TRUE)
+      source("proteomicscopylot/notebook_functions.R")
+      d <- read.csv(file.path(args[1],"data.csv"))
+      m <- read.csv(file.path(args[1],"meta.csv"))
+      error <- tryCatch({volcano_plot_sim(d,m,"A","B"); ""}, error=conditionMessage)
+      stopifnot(grepl("enough replicate",error))
+    '''
+    run = subprocess.run([RSCRIPT, "-e", script, str(tmp_path)], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
 REPLICATES = 4
 TOLERANCE = 1e-9
 TEST_TYPES = (
