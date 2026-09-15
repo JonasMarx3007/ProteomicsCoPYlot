@@ -27,7 +27,8 @@ SECRET = "synthetic-browser-api-key-for-redaction-test"
 def test_only_replacement_assistant_contract_is_exposed():
     from app.schemas.assistant import AssistantRequest
 
-    paths = {route.path for route in app.routes}
+    schema = app.openapi()
+    paths = set(schema["paths"])
     assert "/api/chat/assistant" in paths
     assert not paths.intersection({
         "/api/chat/ollama", "/api/chat/ollama-stream",
@@ -35,7 +36,7 @@ def test_only_replacement_assistant_contract_is_exposed():
     })
     assert not {"temperature", "maxTokens", "analysisContext"}.intersection(AssistantRequest.model_fields)
     assert not {"OllamaChatResponse", "ModuleContextRequest", "ModuleContextResponse"}.intersection(
-        app.openapi()["components"]["schemas"]
+        schema["components"]["schemas"]
     )
 
 
