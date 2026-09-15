@@ -6,7 +6,6 @@ type ManualEmbedProps = {
   title: string;
   summaryLabel?: string;
   buttonLabel?: string;
-  heightPx?: number;
   defaultOpen?: boolean;
 };
 
@@ -15,13 +14,10 @@ export default function ManualEmbed({
   title,
   summaryLabel = "Module Manual",
   buttonLabel = "Manual",
-  heightPx = 720,
   defaultOpen = false,
 }: ManualEmbedProps) {
   const [open, setOpen] = useState(defaultOpen);
   const titleId = useId();
-  const resolvedHeight = Math.max(420, Math.round(heightPx));
-
 
   return (
     <>
@@ -37,10 +33,10 @@ export default function ManualEmbed({
       </button>
 
       {open ? (
-        <Modal labelledBy={titleId} onClose={() => setOpen(false)} className="max-w-6xl">
-          <div className="bg-white shadow-2xl">
+        <Modal labelledBy={titleId} onClose={() => setOpen(false)} className="copylot-manual">
+          <div className="h-full bg-white">
             <div className="flex h-full flex-col">
-              <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
                 <div>
                   <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{summaryLabel}</div>
                   <h2 id={titleId} className="text-sm font-semibold text-slate-900">{title}</h2>
@@ -70,12 +66,11 @@ export default function ManualEmbed({
                   </button>
                 </div>
               </div>
-              <div className="flex-1 p-3">
+              <div className="min-h-0 flex-1">
                 <iframe
                   src={`${pdfPath}#view=FitH`}
                   title={title}
-                  className="h-full w-full rounded-xl border border-slate-200"
-                  style={{ minHeight: resolvedHeight }}
+                  className="block h-full w-full border-0"
                 />
               </div>
             </div>

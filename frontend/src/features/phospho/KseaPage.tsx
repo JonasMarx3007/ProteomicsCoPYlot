@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import { Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -21,10 +22,11 @@ type KseaSourceMode = "volcano" | "volcano_control";
 type KseaDataSource = "data" | "imputed";
 
 type Props = {
+  onContextModeChange?: (mode: string) => void;
   advancedPlotOptions?: ReactNode;
 };
 
-export default function KseaPage({ advancedPlotOptions }: Props) {
+export default function KseaPage({ advancedPlotOptions, onContextModeChange }: Props) {
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("phospho.ksea.v1", {}),
     []
@@ -65,8 +67,15 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
   const [volcanoHeader, setVolcanoHeader] = useState(() => Boolean(persisted.volcanoHeader ?? true));
   const [annotateHits, setAnnotateHits] = useState(() => Boolean(persisted.annotateHits ?? false));
   const [volcanoHtml, setVolcanoHtml] = useState("");
+  const [externalEvidenceToken, setExternalEvidenceToken] = useState("");
   const [volcanoLoading, setVolcanoLoading] = useState(false);
   const [volcanoError, setVolcanoError] = useState<string | null>(null);
+  useEffect(() => {
+    onContextModeChange?.(JSON.stringify({ kind: "phospho", source: sourceMode, dataSource,
+      condition1, condition2, condition1Control, condition2Control, pValueThreshold,
+      log2fcThreshold, testType, useUncorrected, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken }));
+  }, [onContextModeChange, sourceMode, dataSource, condition1, condition2, condition1Control,
+    condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, volcanoHtml, externalEvidenceToken]);
 
   useEffect(() => {
     writePersistedUiState("phospho.ksea.v1", {
@@ -271,9 +280,11 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
         condition2Control: sourceMode === "volcano_control" ? condition2Control : "",
         annotateHits,
       });
-      setVolcanoHtml(html);
+      setVolcanoHtml(html.html);
+      setExternalEvidenceToken(html.evidenceToken);
     } catch (err) {
       setVolcanoHtml("");
+      setExternalEvidenceToken("");
       setVolcanoError(err instanceof Error ? err.message : "Failed to generate KSEA volcano");
     } finally {
       setVolcanoLoading(false);
@@ -299,18 +310,18 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
                 <span className="mb-2 block font-medium text-slate-700">Source</span>
-                <select
+                <AssistantSelect
                   value={sourceMode}
                   onChange={(event) => setSourceMode(event.target.value as KseaSourceMode)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
                 >
                   <option value="volcano">Volcano</option>
                   <option value="volcano_control">Volcano Control</option>
-                </select>
+                </AssistantSelect>
               </label>
               <label className="block text-sm">
                 <span className="mb-2 block font-medium text-slate-700">Data Source</span>
-                <select
+                <AssistantSelect
                   value={dataSource}
                   onChange={(event) => setDataSource(event.target.value as KseaDataSource)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -319,7 +330,7 @@ export default function KseaPage({ advancedPlotOptions }: Props) {
                   {options?.imputedAvailable ? (
                     <option value="imputed">Imputed Data</option>
                   ) : null}
-                </select>
+                </AssistantSelect>
               </label>
             </div>
             {sourceMode === "volcano_control" ? (
@@ -537,7 +548,7 @@ function SelectField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -547,7 +558,7 @@ function SelectField({
             {optionLabels[option] ?? option}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </label>
   );
 }
@@ -582,7 +593,7 @@ function NumericField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -618,7 +629,7 @@ function FileField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="file"
         accept=".csv,.tsv,.txt"
         onChange={(event) => onFile(event.currentTarget.files?.[0] ?? null)}

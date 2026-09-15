@@ -7,13 +7,13 @@ import type {
   ChatProvider,
   CloudAiConsentStatus,
   ModelCapabilityResponse,
-  ModelContextTier,
-  ModuleContextResponse,
+
 } from "../lib/types";
+import AssistantEvidence from "./AssistantEvidence";
 import {
   CloudAiConsentRequiredError,
   getCloudAiConsentStatus,
-  getAiModuleContext,
+
   getModelCapability,
   getOllamaGpuStatus,
   getOllamaModels,
@@ -21,9 +21,10 @@ import {
   removeOllamaModel,
   grantCloudAiConsent,
   revokeCloudAiConsent,
-  streamChatMessage,
+  type AssistantResult,
 } from "../lib/api";
-import { subscribeDatasetStateChanged } from "../lib/datasetEvents";
+import { runAssistant } from "../lib/runAssistant";
+import { AssistantConversation } from "../lib/assistantConversation";
 
 type AppShellProps = {
   activeSection: SidebarSection;
@@ -34,6 +35,8 @@ type AppShellProps = {
   activeWorkflowScope?: string;
   activeContextMode?: string;
   aiEnabled?: boolean;
+  assistantDestinations?: Record<string, string>;
+  onAssistantNavigate?: (destination: string) => void;
   rightPanel?: "none" | "list" | "chat";
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
   children: ReactNode;
@@ -43,33 +46,14 @@ type AppShellProps = {
 const CHAT_READY_MESSAGE = "AI chat is ready. Ask me about your data, plots, or next analysis steps.";
 const MAX_MODEL_HISTORY_MESSAGES = 8;
 const CHAT_INPUT_MAX_CHARS = 32_000;
-const DEFAULT_DEV_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
-const DEFAULT_DEV_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
+const DEFAULT_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
+const DEFAULT_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
 const API_PROVIDER_DEFAULT_MODELS: Record<Exclude<ChatProvider, "ollama">, string> = {
   openai: "gpt-4o-mini",
   anthropic: "claude-3-5-sonnet-latest",
   gemini: "gemini-2.0-flash",
 };
-function contextRequestKey(
-  moduleKey: string,
-  workflowScope: string,
-  contextMode: string,
-  contextTier: ModelContextTier = "compact"
-): string {
-  const moduleValue = String(moduleKey || "").trim();
-  const workflowValue = String(workflowScope || "").trim().toLowerCase();
-  const modeValue = String(contextMode || "").trim().toLowerCase();
-  if (!moduleValue) {
-    if (workflowValue && modeValue) return `workflow:${workflowValue}::mode:${modeValue}::${contextTier}`;
-    if (workflowValue) return `workflow:${workflowValue}::${contextTier}`;
-    if (modeValue) return `mode:${modeValue}::${contextTier}`;
-    return "";
-  }
-  if (workflowValue && modeValue) return `${moduleValue}::${workflowValue}::${modeValue}::${contextTier}`;
-  if (workflowValue) return `${moduleValue}::${workflowValue}::${contextTier}`;
-  if (modeValue) return `${moduleValue}::${modeValue}::${contextTier}`;
-  return `${moduleValue}::${contextTier}`;
-}
+
 
 function ModelCapabilityIndicator({ capability }: { capability: ModelCapabilityResponse | null }) {
   const level = capability?.level ?? 0;
@@ -78,10 +62,10 @@ function ModelCapabilityIndicator({ capability }: { capability: ModelCapabilityR
   return (
     <div
       className="inline-flex items-end gap-1"
-      title={capability ? `${capability.reason}. Evidence profile: ${capability.contextTier}.` : "Detecting model capabilities"}
+      title={capability ? capability.reason : "Detecting model capabilities"}
       aria-label={`Model capability: ${label}`}
     >
-      <span className="mr-1 text-[11px] text-slate-500">Capability: {label}</span>
+      <span className="mr-1 text-[11px] text-slate-500">Capability: {label} ({capability?.assessment ?? "unknown"})</span>
       {[1, 2, 3].map((bar) => (
         <span
           key={bar}
@@ -96,81 +80,6 @@ function ModelCapabilityIndicator({ capability }: { capability: ModelCapabilityR
   );
 }
 
-function normalizeThinkingMarkup(content: string): string {
-  let text = String(content ?? "");
-  if (!text) return "";
-  text = text.replace(
-    /```(?:thinking|reasoning|thought)\s*([\s\S]*?)```/gi,
-    (_match, body: string) => `<think>${String(body ?? "")}</think>`
-  );
-  text = text.replace(/<\s*(thinking|reasoning|thought)(?:\s+[^>]*)?>/gi, "<think>");
-  text = text.replace(/<\s*\/\s*(thinking|reasoning|thought)\s*>/gi, "</think>");
-  text = text.replace(/<\s*think(?:\s+[^>]*)?>/gi, "<think>");
-  text = text.replace(/<\s*\/\s*think\s*>/gi, "</think>");
-  return text;
-}
-
-function splitAssistantContent(content: string): { thinking: string; answer: string } {
-  const text = normalizeThinkingMarkup(content);
-  if (!text) return { thinking: "", answer: "" };
-  const tagRegex = /<\/?think>/gi;
-  let cursor = 0;
-  let inThinking = false;
-  const thinkingParts: string[] = [];
-  const answerParts: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = tagRegex.exec(text)) !== null) {
-    const index = match.index;
-    if (index > cursor) {
-      const chunk = text.slice(cursor, index);
-      if (chunk) {
-        if (inThinking) {
-          thinkingParts.push(chunk);
-        } else {
-          answerParts.push(chunk);
-        }
-      }
-    }
-    inThinking = String(match[0]).toLowerCase() === "<think>";
-    cursor = tagRegex.lastIndex;
-  }
-
-  if (cursor < text.length) {
-    const tail = text.slice(cursor);
-    if (tail) {
-      if (inThinking) {
-        thinkingParts.push(tail);
-      } else {
-        answerParts.push(tail);
-      }
-    }
-  }
-
-  const thinking = thinkingParts.join("").replace(/\n{3,}/g, "\n\n").trim();
-  const answer = answerParts.join("").replace(/\n{3,}/g, "\n\n").trim();
-  return { thinking, answer };
-}
-
-function stripThinkingBlocks(content: string): string {
-  const text = normalizeThinkingMarkup(content);
-  if (!text) return "";
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/<think>[\s\S]*$/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function normalizeMessageForModel(message: ChatMessage): ChatMessage {
-  const role = message.role;
-  const base = String(message.content ?? "");
-  if (role === "assistant") {
-    return { role, content: stripThinkingBlocks(base) };
-  }
-  return { role, content: base.trim() };
-}
-
 export default function AppShell({
   activeSection,
   onSectionChange,
@@ -183,6 +92,8 @@ export default function AppShell({
   rightPanel = "none",
   onRightPanelChange,
   children,
+  assistantDestinations = {},
+  onAssistantNavigate,
 }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -196,12 +107,10 @@ export default function AppShell({
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatProvider, setChatProvider] = useState<ChatProvider>("ollama");
   const [chatModel, setChatModel] = useState("");
-  const [chatOllamaEndpoint, setChatOllamaEndpoint] = useState(DEFAULT_DEV_OLLAMA_ENDPOINT);
-  const [chatOllamaEndpointActive, setChatOllamaEndpointActive] = useState(DEFAULT_DEV_OLLAMA_ENDPOINT);
+  const [chatOllamaEndpoint, setChatOllamaEndpoint] = useState(DEFAULT_OLLAMA_ENDPOINT);
+  const [chatOllamaEndpointActive, setChatOllamaEndpointActive] = useState(DEFAULT_OLLAMA_ENDPOINT);
   const [chatRemoteModel, setChatRemoteModel] = useState(API_PROVIDER_DEFAULT_MODELS.openai);
   const [chatApiKey, setChatApiKey] = useState("");
-  const [chatApiTemperature, setChatApiTemperature] = useState("0.2");
-  const [chatApiMaxTokens, setChatApiMaxTokens] = useState("512");
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
   const [chatModelError, setChatModelError] = useState<string | null>(null);
@@ -224,32 +133,32 @@ export default function AppShell({
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => chatAbortRef.current?.abort(), []);
-  const chatOllamaEndpointAppliedRef = useRef(DEFAULT_DEV_OLLAMA_ENDPOINT);
-  const contextCacheRef = useRef<Record<string, ModuleContextResponse>>({});
-  const contextPendingRef = useRef<Record<string, Promise<ModuleContextResponse | null>>>({});
+  const chatOllamaEndpointAppliedRef = useRef(DEFAULT_OLLAMA_ENDPOINT);
+
   const chatOpen = aiEnabled && rightPanel === "chat";
   const moduleKey = activeModuleKey.trim();
   const workflowScope = String(activeWorkflowScope || "").trim().toLowerCase();
   const contextMode = String(activeContextMode || "").trim();
   const usingOllama = chatProvider === "ollama";
   const selectedChatModel = usingOllama ? chatModel.trim() : chatRemoteModel.trim();
-  const selectedContextTier: ModelContextTier = modelCapability?.contextTier ?? "compact";
-  const activeContextRequestKey = contextRequestKey(
-    moduleKey,
-    workflowScope,
-    contextMode,
-    selectedContextTier
-  );
+  const viewRef = useRef({ module: moduleKey, workflow: workflowScope, mode: contextMode, destinations: assistantDestinations });
+  const conversationRef = useRef(new AssistantConversation());
+  const [evidenceByMessage, setEvidenceByMessage] = useState<Record<number, AssistantResult["evidence"]>>({});
+  useEffect(() => {
+    viewRef.current = { module: moduleKey, workflow: workflowScope, mode: contextMode, destinations: assistantDestinations };
+  }, [moduleKey, workflowScope, contextMode, assistantDestinations]);
 
   const resetChatForModelChange = useCallback(() => {
     chatAbortRef.current?.abort();
     setChatMessages([{ role: "assistant", content: CHAT_READY_MESSAGE }]);
+    setEvidenceByMessage({});
+    conversationRef.current.clear();
     setChatInput("");
     setChatError(null);
     setModelCapability(null);
     setModelCapabilityError(null);
-    contextCacheRef.current = {};
-    contextPendingRef.current = {};
+
+
   }, []);
 
   const applyChatModelList = useCallback((
@@ -298,12 +207,10 @@ export default function AppShell({
       setChatModel("");
       setChatProvider("ollama");
       setChatRemoteModel(API_PROVIDER_DEFAULT_MODELS.openai);
-      setChatOllamaEndpoint(DEFAULT_DEV_OLLAMA_ENDPOINT);
-      setChatOllamaEndpointActive(DEFAULT_DEV_OLLAMA_ENDPOINT);
-      chatOllamaEndpointAppliedRef.current = DEFAULT_DEV_OLLAMA_ENDPOINT;
+      setChatOllamaEndpoint(DEFAULT_OLLAMA_ENDPOINT);
+      setChatOllamaEndpointActive(DEFAULT_OLLAMA_ENDPOINT);
+      chatOllamaEndpointAppliedRef.current = DEFAULT_OLLAMA_ENDPOINT;
       setChatApiKey("");
-      setChatApiTemperature("0.2");
-      setChatApiMaxTokens("512");
       setChatModels([]);
       setChatModelsLoading(false);
       setChatModelError(null);
@@ -338,7 +245,7 @@ export default function AppShell({
     void getOllamaModels(endpoint)
       .then((result) => {
         if (cancelled) return;
-        applyChatModelList(result.models, result.selectedModel, result.warnings, DEFAULT_DEV_OLLAMA_MODEL);
+        applyChatModelList(result.models, result.selectedModel, result.warnings, DEFAULT_OLLAMA_MODEL);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -397,8 +304,8 @@ export default function AppShell({
           if (cancelled) return;
           setModelCapability(capability);
           setModelCapabilityError(null);
-          contextCacheRef.current = {};
-          contextPendingRef.current = {};
+
+
         })
         .catch((err) => {
           if (cancelled) return;
@@ -483,71 +390,6 @@ export default function AppShell({
     };
   }, [aiEnabled, chatProvider, chatOllamaEndpointActive]);
 
-  const fetchModuleContext = useCallback(async (
-    requestedModuleKey: string,
-    requestedWorkflowScope: string,
-    requestedContextMode: string,
-    forceRefresh = false
-  ): Promise<ModuleContextResponse | null> => {
-    if (!aiEnabled || !requestedModuleKey) return null;
-    const requestKey = contextRequestKey(
-      requestedModuleKey,
-      requestedWorkflowScope,
-      requestedContextMode,
-      selectedContextTier
-    );
-    if (!requestKey) return null;
-
-    if (!forceRefresh) {
-      const cached = contextCacheRef.current[requestKey];
-      if (cached) return cached;
-    }
-
-    const pending = contextPendingRef.current[requestKey];
-    if (pending) return pending;
-
-    const nextPromise = getAiModuleContext(
-      requestedModuleKey,
-      requestedWorkflowScope || undefined,
-      requestedContextMode || undefined,
-      selectedContextTier
-    )
-      .then((context) => {
-        contextCacheRef.current[requestKey] = context;
-        return context;
-      })
-      .catch(() => null)
-      .finally(() => {
-        delete contextPendingRef.current[requestKey];
-      });
-    contextPendingRef.current[requestKey] = nextPromise;
-    return nextPromise;
-  }, [aiEnabled, selectedContextTier]);
-
-  useEffect(() => {
-    if (!aiEnabled || !moduleKey) {
-      return;
-    }
-
-    let cancelled = false;
-    void fetchModuleContext(moduleKey, workflowScope, contextMode).then((context) => {
-      if (cancelled || !context) return;
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier, activeContextRequestKey, fetchModuleContext]);
-
-  useEffect(() => {
-    if (!aiEnabled) return undefined;
-    return subscribeDatasetStateChanged(() => {
-      contextCacheRef.current = {};
-      if (!moduleKey) return;
-      void fetchModuleContext(moduleKey, workflowScope, contextMode, true);
-    });
-  }, [aiEnabled, moduleKey, workflowScope, contextMode, selectedContextTier, fetchModuleContext]);
-
   async function sendChatMessage() {
     const message = chatInput.trim();
     if (!message || chatLoading) return;
@@ -581,7 +423,6 @@ export default function AppShell({
     const history = [...chatMessages, nextUserMessage];
     setChatMessages([...history, { role: "assistant", content: "" }]);
     const historyForModelBase = history
-      .map(normalizeMessageForModel)
       .filter(
         (item) =>
           String(item.content ?? "").trim().length > 0 &&
@@ -595,64 +436,23 @@ export default function AppShell({
     chatAbortRef.current = controller;
 
     try {
-      let contextPrompt = "";
-      if (aiEnabled && moduleKey) {
-        const cached = contextCacheRef.current[activeContextRequestKey];
-        if (cached?.contextPrompt) {
-          contextPrompt = cached.contextPrompt;
-        } else {
-          const contextOrNull = await Promise.race<ModuleContextResponse | null>([
-            fetchModuleContext(moduleKey, workflowScope, contextMode),
-            new Promise<null>((resolve) => {
-              window.setTimeout(() => resolve(null), 300);
-            }),
-          ]);
-          if (contextOrNull?.contextPrompt) {
-            contextPrompt = contextOrNull.contextPrompt;
-          }
-        }
-      }
-
-      const historyForModel: ChatMessage[] = historyForModelBase;
-      const parsedTemperature = Number(chatApiTemperature);
-      const parsedMaxTokens = Number(chatApiMaxTokens);
-
-      const response = await streamChatMessage(
-        {
-          message,
-          messages: historyForModel,
-          provider: chatProvider,
-          model: selectedModel,
-          gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
-          apiKey: usingOllama ? undefined : chatApiKey.trim() || undefined,
-          temperature: usingOllama ? undefined : Number.isFinite(parsedTemperature) ? parsedTemperature : undefined,
-          maxTokens: usingOllama ? undefined : Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : undefined,
-          ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
-          analysisContext: contextPrompt || undefined,
-        },
-        (chunk) => {
-          if (controller.signal.aborted) return;
-          setChatMessages((current) => {
-            if (current.length === 0) return current;
-            const next = [...current];
-            const last = next[next.length - 1];
-            if (last && last.role === "assistant") {
-              next[next.length - 1] = {
-                ...last,
-                content: `${last.content}${chunk}`,
-              };
-            }
-            return next;
-          });
-        },
-        controller.signal
-      );
+      const updateAnswer = (content: string) => setChatMessages(current => {
+        const next = [...current];
+        next[history.length] = { role: "assistant", content };
+        return next;
+      });
+      const response = await runAssistant({
+        message, messages: historyForModelBase, provider: chatProvider, model: selectedModel,
+        gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
+        apiKey: usingOllama ? undefined : chatApiKey.trim() || undefined,
+        ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
+      }, () => viewRef.current, destination => {
+        if (!onAssistantNavigate) throw new Error("Navigation is unavailable here.");
+        onAssistantNavigate(destination);
+      }, updateAnswer, controller.signal, conversationRef.current);
       if (controller.signal.aborted) return;
-      if (usingOllama) {
-        setChatModel(response.model || chatModel);
-      } else {
-        setChatRemoteModel(response.model || chatRemoteModel);
-      }
+      setEvidenceByMessage(current => ({ ...current, [history.length]: response.evidence }));
+      updateAnswer(response.answer);
     } catch (err) {
       const consentRequired = err instanceof CloudAiConsentRequiredError;
       if (consentRequired) {
@@ -965,30 +765,7 @@ export default function AppShell({
                             disabled={chatLoading}
                             className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
                           />
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              max={2}
-                              step={0.1}
-                              value={chatApiTemperature}
-                              onChange={(event) => setChatApiTemperature(event.target.value)}
-                              placeholder="Temperature"
-                              disabled={chatLoading}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-                            />
-                            <input
-                              type="number"
-                              min={64}
-                              max={4096}
-                              step={1}
-                              value={chatApiMaxTokens}
-                              onChange={(event) => setChatApiMaxTokens(event.target.value)}
-                              placeholder="Max tokens"
-                              disabled={chatLoading}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-                            />
-                          </div>
+
                           <div className="text-[11px] text-slate-500">
                             API key is used only for this session request flow and is not saved as a local model.
                           </div>
@@ -1048,21 +825,11 @@ export default function AppShell({
                   >
                     {item.role === "assistant" ? (
                       (() => {
-                        const parsed = splitAssistantContent(item.content);
                         return (
                           <div className="space-y-2">
-                            {parsed.thinking ? (
-                              <details className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
-                                <summary className="cursor-pointer select-none text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-                                  Thinking
-                                </summary>
-                                <div className="mt-1 whitespace-pre-wrap break-words text-slate-800">
-                                  {parsed.thinking}
-                                </div>
-                              </details>
-                            ) : null}
-                            {parsed.answer ? (
-                              <div className="whitespace-pre-wrap break-words">{parsed.answer}</div>
+                            <div className="whitespace-pre-wrap break-words">{item.content}</div>
+                            {evidenceByMessage[index]?.length ? (
+                              <AssistantEvidence evidence={evidenceByMessage[index]} />
                             ) : null}
                           </div>
                         );

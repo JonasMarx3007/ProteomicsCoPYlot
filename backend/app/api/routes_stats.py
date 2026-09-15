@@ -95,7 +95,14 @@ def ora_route(payload: EnrichmentRequest) -> EnrichmentResultResponse:
 @router.post("/ora/list/run", response_model=ListEnrichmentResultResponse)
 def ora_list_route(payload: ListEnrichmentRequest) -> ListEnrichmentResultResponse:
     try:
-        return run_enrichment_from_list(payload)
+        from app.services.assistant_snapshots import store_snapshot
+        result = run_enrichment_from_list(payload)
+        data = result.model_dump(exclude={"evidenceToken", "terms", "genes", "backgroundGenes"})
+        data.update(type="canvas_ora", querySize=len(result.genes), totalRows=len(result.terms),
+                    terms=[term.model_dump() for term in result.terms[:10]],
+                    settings=payload.model_dump(exclude={"genes", "backgroundGenes"}))
+        result.evidenceToken = store_snapshot(data)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

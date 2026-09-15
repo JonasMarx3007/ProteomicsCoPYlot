@@ -228,6 +228,7 @@ class ListEnrichmentRequest(BaseModel):
 
 
 class ListEnrichmentResultResponse(BaseModel):
+    evidenceToken: str = ""
     genes: list[str]
     terms: list[EnrichmentTerm]
     backgroundMode: EnrichmentBackgroundMode

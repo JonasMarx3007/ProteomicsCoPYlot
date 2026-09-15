@@ -2185,6 +2185,7 @@ def single_protein_boxplot_plot(
     dpi: int = 300,
     advanced: dict | None = None,
     data_source: str = "data",
+    sample_n: bool = True,
 ) -> bytes:
     from app.services.single_protein_tools import single_protein_boxplot_plot as _impl
 
@@ -2203,6 +2204,7 @@ def single_protein_boxplot_plot(
         dpi=dpi,
         advanced=advanced,
         data_source=data_source,
+        sample_n=sample_n,
     )
 
 

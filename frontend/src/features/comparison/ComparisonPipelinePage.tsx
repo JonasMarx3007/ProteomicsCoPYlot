@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
 import { ColorField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
@@ -476,7 +477,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         <div className="mt-4 grid max-w-2xl gap-4 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Dataset level</span>
-            <select
+            <AssistantSelect
               value={kindOptions.length === 0 ? "" : kind}
               onChange={(event) => setKind(event.target.value as AnnotationKind)}
               disabled={kindOptions.length === 0}
@@ -491,11 +492,11 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                   </option>
                 ))
               )}
-            </select>
+            </AssistantSelect>
           </label>
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Data source</span>
-            <select
+            <AssistantSelect
               value={dataSource}
               onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
               disabled={!hasKind || optionsLoading}
@@ -504,10 +505,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               <option value="log2">Log2 data</option>
               {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
               {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
-            </select>
-            <span className="mt-2 block text-xs text-slate-500">
-              Log2 data is the complete matrix before filtering.
-            </span>
+            </AssistantSelect>
           </label>
         </div>
       </section>
@@ -543,7 +541,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             <h3 className="text-lg font-semibold text-slate-900">{activeTab === "pearson" ? "Pearson Correlation" : "Venn Diagram"}</h3>
             {plotView?.renderMode === "image" ? (
               <div className="flex flex-wrap items-center gap-2">
-                <select
+                <AssistantSelect
                   value={downloadFormat}
                   onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                   className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -553,7 +551,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                       {option.label}
                     </option>
                   ))}
-                </select>
+                </AssistantSelect>
                 <a
                   href={plotDownloadUrl}
                   download={plotDownloadFilename}
@@ -858,7 +856,7 @@ function SelectField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -868,7 +866,7 @@ function SelectField({
             {option || "None"}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </label>
   );
 }
@@ -885,7 +883,7 @@ function TextField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="text"
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -927,7 +925,7 @@ function NumericField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="text"
         lang="en-US"
         inputMode="decimal"

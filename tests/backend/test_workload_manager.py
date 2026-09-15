@@ -19,7 +19,7 @@ from app import main as main_module
 
 
 @pytest.mark.parametrize("path", [
-    "/api/chat/stream", "/api/chat/ollama", "/api/chat/ollama-stream",
+    "/api/chat/assistant",
     "/api/chat/models", "/api/chat/models/install", "/api/chat/models/remove",
     "/api/chat/model-capability", "/api/chat/gpu-status",
 ])
@@ -64,7 +64,7 @@ def test_provider_gate_does_not_consume_analysis_capacity(monkeypatch):
         async def app(scope, receive, send):
             seen.append(middleware.gate.active)
         middleware = workload_manager.ProviderWorkloadMiddleware(app)
-        for path in ("/api/plots/qc/test.png", "/api/chat/module-context", "/api/health"):
+        for path in ("/api/plots/qc/test.png", "/api/chat/cloud-consent/ollama", "/api/health"):
             await middleware({"type": "http", "method": "GET", "path": path}, None, None)
         assert seen == [0, 0, 0]
     asyncio.run(scenario())
@@ -79,7 +79,7 @@ def test_provider_deadline_propagates_to_workers_and_resets(monkeypatch):
             deadline = await run_in_threadpool(workload_manager.provider_deadline.get)
             assert 6 < deadline - time.monotonic() <= 7
         middleware = workload_manager.ProviderWorkloadMiddleware(app)
-        await middleware({"type": "http", "method": "POST", "path": "/api/chat/stream"}, None, None)
+        await middleware({"type": "http", "method": "POST", "path": "/api/chat/assistant"}, None, None)
         assert workload_manager.provider_deadline.get() is None
     asyncio.run(scenario())
 
@@ -97,7 +97,7 @@ def test_provider_deadline_releases_slot_without_second_headers(monkeypatch, sta
                 await send({"type": "http.response.start", "status": 200, "headers": []})
             await asyncio.sleep(10)
         middleware = workload_manager.ProviderWorkloadMiddleware(app)
-        scope = {"type": "http", "method": "POST", "path": "/api/chat/stream"}
+        scope = {"type": "http", "method": "POST", "path": "/api/chat/assistant"}
         if started:
             with pytest.raises(TimeoutError):
                 await middleware(scope, None, send)

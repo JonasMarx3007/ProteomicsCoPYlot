@@ -78,7 +78,7 @@ test("beforeunload asks without changing the saved/analysis state", () => {
 for (const path of ["datasets/upload", "datasets/active", "annotations/generate", "annotations/pairing", "annotations/phosprot/aggregate", "annotations/metadata/current/phospho", "peptide/metadata/generate", "data-tools/imputation/run", "data-tools/id-translation/run", "data-tools/condition-colors/protein", "restore/import"]) {
   test(`tracks persisted mutation ${path}`, () => assert.equal(isAnalysisMutation(`/api/${path}`, "POST"), true));
 }
-for (const path of ["restore/export", "restore/browser-session-reset", "stats/volcano/run", "annotations/log2-detect", "data-tools/imputation/download", "data-tools/id-translation/download", "tool/auth/login", "chat/module-context"]) {
+for (const path of ["restore/export", "restore/browser-session-reset", "stats/volcano/run", "annotations/log2-detect", "data-tools/imputation/download", "data-tools/id-translation/download", "tool/auth/login", "chat/assistant"]) {
   test(`does not dirty analysis for read/auth/export ${path}`, () => assert.equal(isAnalysisMutation(`/api/${path}`, "POST"), false));
 }
 test("GET requests never count as mutations", () => assert.equal(isAnalysisMutation("/api/annotations/current/phospho"), false));

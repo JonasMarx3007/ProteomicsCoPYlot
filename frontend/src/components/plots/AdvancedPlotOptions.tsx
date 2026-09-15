@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../AssistantFields";
 import { useEffect, useState } from "react";
 import type { AdvancedPlotSettings, AdvancedTextElementSettings } from "../../lib/types";
 
@@ -219,7 +220,7 @@ export default function AdvancedPlotOptions({
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
                 <label className="block">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Theme</span>
-                  <select
+                  <AssistantSelect data-assistant-permission="view"
                     value={value.plotTheme || "default"}
                     onChange={(event) => patch({ plotTheme: event.target.value })}
                     className={inputClass}
@@ -229,11 +230,11 @@ export default function AdvancedPlotOptions({
                         {option.label}
                       </option>
                     ))}
-                  </select>
+                  </AssistantSelect>
                 </label>
                 <label className="block">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
-                  <input
+                  <AssistantInput data-assistant-permission="view"
                     type="color"
                     value={isHexColor(value.backgroundColor || "") ? value.backgroundColor : "#ffffff"}
                     onChange={(event) => patch({ backgroundColor: event.target.value })}
@@ -241,7 +242,7 @@ export default function AdvancedPlotOptions({
                   />
                 </label>
                 <label className="mt-6 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                  <input
+                  <AssistantInput data-assistant-permission="view"
                     type="checkbox"
                     checked={Boolean(value.transparentBackground)}
                     onChange={(event) => patch({ transparentBackground: event.target.checked })}
@@ -261,7 +262,7 @@ export default function AdvancedPlotOptions({
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Sides</span>
                   <div className="mt-2 grid grid-cols-2 gap-2">
                     <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                      <input
+                      <AssistantInput data-assistant-permission="view"
                         type="checkbox"
                         checked={axisLineLeft}
                         onChange={(event) => patchAxisFrame({ axisLineLeft: event.target.checked })}
@@ -270,7 +271,7 @@ export default function AdvancedPlotOptions({
                       Left
                     </label>
                     <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                      <input
+                      <AssistantInput data-assistant-permission="view"
                         type="checkbox"
                         checked={axisLineRight}
                         onChange={(event) => patchAxisFrame({ axisLineRight: event.target.checked })}
@@ -279,7 +280,7 @@ export default function AdvancedPlotOptions({
                       Right
                     </label>
                     <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                      <input
+                      <AssistantInput data-assistant-permission="view"
                         type="checkbox"
                         checked={axisLineBottom}
                         onChange={(event) => patchAxisFrame({ axisLineBottom: event.target.checked })}
@@ -288,7 +289,7 @@ export default function AdvancedPlotOptions({
                       Bottom
                     </label>
                     <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                      <input
+                      <AssistantInput data-assistant-permission="view"
                         type="checkbox"
                         checked={axisLineTop}
                         onChange={(event) => patchAxisFrame({ axisLineTop: event.target.checked })}
@@ -300,7 +301,7 @@ export default function AdvancedPlotOptions({
                 </div>
                 <label className="block">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
-                  <input
+                  <AssistantInput data-assistant-permission="view"
                     type="color"
                     value={isHexColor(axisLineColor) ? axisLineColor : "#111827"}
                     onChange={(event) => patchAxisFrame({ axisLineColor: event.target.value })}
@@ -322,7 +323,7 @@ export default function AdvancedPlotOptions({
                 </label>
                 <label className="block">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Style</span>
-                  <select
+                  <AssistantSelect data-assistant-permission="view"
                     value={axisLineStyle}
                     onChange={(event) => patchAxisFrame({ axisLineStyle: event.target.value })}
                     className={inputClass}
@@ -332,7 +333,7 @@ export default function AdvancedPlotOptions({
                         {option.label}
                       </option>
                     ))}
-                  </select>
+                  </AssistantSelect>
                 </label>
               </div>
             </div>
@@ -345,7 +346,7 @@ export default function AdvancedPlotOptions({
           <div className="text-sm font-bold text-slate-900 dark:text-slate-100">Grid lines</div>
           <div className="mt-3 grid gap-3 sm:grid-cols-5">
             <label className="mt-6 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-              <input
+              <AssistantInput data-assistant-permission="view"
                 type="checkbox"
                 checked={gridLineVisible}
                 onChange={(event) => patchGridLines({ gridLineVisible: event.target.checked })}
@@ -355,7 +356,7 @@ export default function AdvancedPlotOptions({
             </label>
             <label className="block">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Direction</span>
-              <select
+              <AssistantSelect data-assistant-permission="view"
                 value={gridLineAxis}
                 onChange={(event) => patchGridLines({ gridLineAxis: event.target.value, gridLineVisible: true })}
                 className={inputClass}
@@ -365,11 +366,11 @@ export default function AdvancedPlotOptions({
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
             </label>
             <label className="block">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
-              <input
+              <AssistantInput data-assistant-permission="view"
                 type="color"
                 value={isHexColor(gridLineColor) ? gridLineColor : "#d1d5db"}
                 onChange={(event) => patchGridLines({ gridLineColor: event.target.value, gridLineVisible: true })}
@@ -391,7 +392,7 @@ export default function AdvancedPlotOptions({
             </label>
             <label className="block">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Style</span>
-              <select
+              <AssistantSelect data-assistant-permission="view"
                 value={gridLineStyle}
                 onChange={(event) => patchGridLines({ gridLineStyle: event.target.value, gridLineVisible: true })}
                 className={inputClass}
@@ -401,7 +402,7 @@ export default function AdvancedPlotOptions({
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
             </label>
           </div>
         </div>
@@ -504,6 +505,7 @@ export default function AdvancedPlotOptions({
                   <NumberInput
                     step="1"
                     value={value.legendXOffset ?? REFERENCE_VALUES.offset}
+                    ariaLabel="Legend X offset (px)"
                     fallback={REFERENCE_VALUES.offset}
                     className={inputClass.replace("mt-1 ", "")}
                     onValidChange={(next) => patch({ legendXOffset: next })}
@@ -511,6 +513,7 @@ export default function AdvancedPlotOptions({
                   <NumberInput
                     step="1"
                     value={value.legendYOffset ?? REFERENCE_VALUES.offset}
+                    ariaLabel="Legend Y offset (px)"
                     fallback={REFERENCE_VALUES.offset}
                     className={inputClass.replace("mt-1 ", "")}
                     onValidChange={(next) => patch({ legendYOffset: next })}
@@ -525,7 +528,7 @@ export default function AdvancedPlotOptions({
           {showReferenceLineColor ? (
             <label className="block">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Reference line color</span>
-              <input
+              <AssistantInput data-assistant-permission="view"
                 type="color"
                 value={value.referenceLineColor || "#ff0000"}
                 onChange={(event) => patch({ referenceLineColor: event.target.value })}
@@ -540,7 +543,7 @@ export default function AdvancedPlotOptions({
         <div className="mt-4 grid gap-4 lg:grid-cols-4">
           <label className="block">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Box border color</span>
-            <input
+            <AssistantInput data-assistant-permission="view"
               type="color"
               value={value.boxBorderColor || "#000000"}
               onChange={(event) => patch({ boxBorderColor: event.target.value })}
@@ -549,7 +552,7 @@ export default function AdvancedPlotOptions({
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Median color</span>
-            <input
+            <AssistantInput data-assistant-permission="view"
               type="color"
               value={value.boxMedianColor || "#b22222"}
               onChange={(event) => patch({ boxMedianColor: event.target.value })}
@@ -560,7 +563,7 @@ export default function AdvancedPlotOptions({
             <>
               <label className="block">
                 <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Outlier dot color</span>
-                <input
+                <AssistantInput data-assistant-permission="view"
                   type="color"
                   value={value.boxOutlierColor || "#ff0000"}
                   onChange={(event) => patch({ boxOutlierColor: event.target.value })}
@@ -569,7 +572,7 @@ export default function AdvancedPlotOptions({
               </label>
               <label className="block">
                 <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Outlier outline color</span>
-                <input
+                <AssistantInput data-assistant-permission="view"
                   type="color"
                   value={value.boxOutlierEdgeColor || "#000000"}
                   onChange={(event) => patch({ boxOutlierEdgeColor: event.target.value })}
@@ -598,7 +601,7 @@ export default function AdvancedPlotOptions({
         <div className="mt-4 grid gap-4 lg:grid-cols-4">
           <label className="block">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Correlation gradient</span>
-            <select
+            <AssistantSelect data-assistant-permission="view"
               value={value.correlationColorMap || "coolwarm"}
               onChange={(event) => patch({ correlationColorMap: event.target.value })}
               className={inputClass}
@@ -611,7 +614,7 @@ export default function AdvancedPlotOptions({
               <option value="BrBG">Brown/teal</option>
               <option value="viridis">Viridis</option>
               <option value="cividis">Cividis</option>
-            </select>
+            </AssistantSelect>
           </label>
         </div>
       ) : null}
@@ -673,7 +676,7 @@ function KnownOverrideRows({
   onChange: (key: string, value: string) => void;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white/85 p-4 dark:border-slate-700 dark:bg-slate-900/70">
+    <div data-assistant-group={title} className="rounded-2xl border border-slate-200 bg-white/85 p-4 dark:border-slate-700 dark:bg-slate-900/70">
       <div className="text-sm font-bold text-slate-900 dark:text-slate-100">{title}</div>
       <div className="mt-3 max-h-64 space-y-2 overflow-auto pr-1">
         {items.map((item) => {
@@ -687,14 +690,14 @@ function KnownOverrideRows({
               </span>
               <div className="flex gap-2">
                 {inputType === "colorText" ? (
-                  <input
+                  <AssistantInput data-assistant-permission="view"
                     type="color"
                     value={isHexColor(current) ? current : "#64748b"}
                     onChange={(event) => onChange(item, event.target.value)}
                     className="h-10 w-12 rounded-lg border border-slate-300 bg-white px-1 dark:border-slate-600 dark:bg-slate-900"
                   />
                 ) : null}
-                <input
+                <AssistantInput data-assistant-permission="view"
                   value={current}
                   onChange={(event) => onChange(item, event.target.value)}
                   placeholder={placeholder}
@@ -727,11 +730,11 @@ function TextElementCard({
   onChange: (next: Partial<AdvancedTextElementSettings>) => void;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white/85 p-4 dark:border-slate-700 dark:bg-slate-900/70">
+    <div data-assistant-group={title} className="rounded-2xl border border-slate-200 bg-white/85 p-4 dark:border-slate-700 dark:bg-slate-900/70">
       <div className="text-sm font-bold text-slate-900 dark:text-slate-100">{title}</div>
       <label className="mt-3 block">
         <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Text</span>
-        <input
+        <AssistantInput data-assistant-permission="view"
           value={value.text ?? ""}
           onChange={(event) => onChange({ text: event.target.value })}
           placeholder={placeholder}
@@ -777,7 +780,7 @@ function TextElementCard({
       </div>
       <div className="mt-3 flex flex-wrap gap-3">
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-          <input
+          <AssistantInput data-assistant-permission="view"
             type="checkbox"
             checked={Boolean(value.bold)}
             onChange={(event) => onChange({ bold: event.target.checked })}
@@ -786,7 +789,7 @@ function TextElementCard({
           Bold
         </label>
         <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-          <input
+          <AssistantInput data-assistant-permission="view"
             type="checkbox"
             checked={Boolean(value.italic)}
             onChange={(event) => onChange({ italic: event.target.checked })}
@@ -806,6 +809,7 @@ function numberToDraft(value: number | undefined, fallback: number): string {
 
 function NumberInput({
   value,
+  ariaLabel,
   fallback,
   onValidChange,
   className = inputClass,
@@ -813,6 +817,7 @@ function NumberInput({
   step,
 }: {
   value: number | undefined;
+  ariaLabel?: string;
   fallback: number;
   onValidChange: (value: number | undefined) => void;
   className?: string;
@@ -838,8 +843,9 @@ function NumberInput({
   }
 
   return (
-    <input
+    <AssistantInput data-assistant-permission="view"
       type="number"
+      aria-label={ariaLabel}
       min={min}
       step={step}
       value={draft}

@@ -129,7 +129,7 @@ def test_cli_management_and_refresh_use_chat_host(monkeypatch, action, command, 
 ])
 @pytest.mark.parametrize('explicit_first', [False, True])
 def test_gpu_policy_uses_resolved_host_not_override_or_call_order(monkeypatch, base, local, explicit_first):
-    from app.schemas.chat import OllamaChatRequest
+    from app.schemas.chat import ChatRequest
     monkeypatch.setenv('COPYLOT_OLLAMA_URL', base + '/api/chat')
     monkeypatch.setattr(chat_tools, '_GPU_STATUS_CACHE', {})
     hardware_probes = []
@@ -145,7 +145,7 @@ def test_gpu_policy_uses_resolved_host_not_override_or_call_order(monkeypatch, b
     monkeypatch.setattr(chat_tools, '_open_provider_request', lambda request, **kw: requests.append(request) or io.BytesIO())
     for value in forms:
         for enabled in (None, False, True):
-            chat_tools._open_ollama_request(OllamaChatRequest(message='test', ollamaUrl=value, gpuEnabled=enabled), stream=False)
+            chat_tools._open_ollama_request(ChatRequest(message='test', ollamaUrl=value, gpuEnabled=enabled), messages=[{"role": "user", "content": "test"}])
     for request in requests:
         options = json.loads(request.data)['options']
         if local:
@@ -156,7 +156,7 @@ def test_gpu_policy_uses_resolved_host_not_override_or_call_order(monkeypatch, b
 
 @pytest.mark.parametrize('enabled,expected', [(None, 7), (True, 7), (False, 0)])
 def test_local_gpu_preference_is_preserved(monkeypatch, enabled, expected):
-    from app.schemas.chat import OllamaChatRequest
+    from app.schemas.chat import ChatRequest
     monkeypatch.setenv('COPYLOT_OLLAMA_URL', 'http://[::1]:11434')
     monkeypatch.setenv('COPYLOT_OLLAMA_GPU_DEFAULT', 'true')
     monkeypatch.setenv('COPYLOT_OLLAMA_NUM_GPU', '7')
@@ -166,7 +166,7 @@ def test_local_gpu_preference_is_preserved(monkeypatch, enabled, expected):
     monkeypatch.setattr(chat_tools, '_resolve_model', lambda *a: 'synthetic')
     captured = []
     monkeypatch.setattr(chat_tools, '_open_provider_request', lambda request, **kw: captured.append(request) or io.BytesIO())
-    chat_tools._open_ollama_request(OllamaChatRequest(message='test', gpuEnabled=enabled), stream=False)
+    chat_tools._open_ollama_request(ChatRequest(message='test', gpuEnabled=enabled), messages=[{"role":"user", "content":"test"}])
     assert json.loads(captured[0].data)['options']['num_gpu'] == expected
 
 

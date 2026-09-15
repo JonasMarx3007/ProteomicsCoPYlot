@@ -7,7 +7,7 @@ from urllib.parse import unquote
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import EnrichmentRequest, StatsTestType
+from app.schemas.stats import AnovaRequest, SimulationRequest, EnrichmentRequest, StatsTestType
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_active_package, get_all_current_datasets
 from app.services.condition_palette_store import build_condition_color_map
@@ -117,21 +117,6 @@ def _workflow_kind(workflow: str) -> AnnotationKind:
     if workflow == "phosphoprotein":
         return "phosprot"
     return "protein"
-
-
-def _context_tier_limit(
-    context_tier: str,
-    *,
-    compact: int,
-    standard: int,
-    extended: int,
-) -> int:
-    key = str(context_tier or "").strip().lower()
-    if key == "extended":
-        return extended
-    if key == "standard":
-        return standard
-    return compact
 
 
 def _normalize_boxplot_mode(mode: str) -> str:
@@ -1028,7 +1013,8 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
         lines.append(
             f"project_dataset|kind={kind}|status=loaded|filename={filename}|{dataset_details}|annotation=available|"
             f"filtered_rows={int(annotation.filtered_data.shape[0])}|samples={sample_count}|conditions={condition_count}|"
-            f"data_are_log2={str(bool(annotation.is_log2_transformed)).lower()}|imputation={imputation_text}"
+            f"data_are_log2={str(bool(annotation.is_log2_transformed)).lower()}|imputation={imputation_text}|"
+            f"normalization={annotation.filter_config.normalization}|normalization_scope=within_this_application_only"
         )
     return _text_payload("general_proteomics_context", "\n".join(lines))
 
@@ -1102,10 +1088,10 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: str = "Mean") -> dict[
         "boxplot_general|per_condition_processing=for_each_entity_extract_condition_values_from_replicates"
     )
     lines.append(
-        "boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=beyond_whiskers"
+        "boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=outermost_observed_values_within_the_1.5_IQR_fences|fences=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=observations_outside_the_fences"
     )
     lines.append(
-        "boxplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
+        "boxplot_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
     )
     lines.append(
         "boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1249,13 +1235,15 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
         "cov_processing|steps=extract_condition_samples_compute_featurewise_mean_and_sd_compute_cv_remove_undefined_values_build_condition_distribution"
     )
     lines.append(
-        "cov_formula|CV=(SD/mean)*100"
+        "cov_formula|CV=(SD/mean)*100|SD=sample_standard_deviation_ddof_1|"
+        "scale=linear_intensity|source=uploaded_intensities_before_normalization_and_imputation|"
+        "log2_uploads=back_transformed_to_linear|missing=excluded_not_zero_filled|nonfinite_CV=excluded"
     )
     lines.append(
-        "cov_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=beyond_whiskers"
+        "cov_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=outermost_observed_values_within_the_1.5_IQR_fences|fences=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=observations_outside_the_fences"
     )
     lines.append(
-        "cov_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
+        "cov_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
     )
     lines.append(
         "cov_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -1293,10 +1281,14 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     if not median_rows.empty:
         lowest = median_rows.loc[median_rows["median"].idxmin()]
         highest = median_rows.loc[median_rows["median"].idxmax()]
+        displayed = median_rows["median"].map(_fmt_value)
+        low_names = ", ".join(median_rows.loc[displayed == _fmt_value(lowest["median"]), "Condition"])
+        high_names = ", ".join(median_rows.loc[displayed == _fmt_value(highest["median"]), "Condition"])
         lines.append(
             "cov_answer_summary|lower_median_cv_means_more_consistent_by_this_descriptive_metric=true|"
-            f"lowest_median_cv_condition={_safe_context_text(lowest['Condition'])}|lowest_median_cv={_fmt_value(lowest['median'])}|"
-            f"highest_median_cv_condition={_safe_context_text(highest['Condition'])}|highest_median_cv={_fmt_value(highest['median'])}|"
+            f"lowest_median_cv_condition={_safe_context_text(low_names)}|lowest_median_cv={_fmt_value(lowest['median'])}|"
+            f"highest_median_cv_condition={_safe_context_text(high_names)}|highest_median_cv={_fmt_value(highest['median'])}|"
+            f"all_medians_equal_at_reported_precision={str(displayed.nunique() == 1).lower()}|"
             "quality_cutoff_applied=false"
         )
 
@@ -1385,7 +1377,6 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
 
 def qc_abundance_plot(
     workflow: str = "protein",
-    context_tier: str = "compact",
     mode: str | None = None,
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
@@ -1447,14 +1438,13 @@ def qc_abundance_plot(
         _abundance_data_lines(
             workflow_key,
             condition=unquote(_parse_mode_pairs(mode).get("condition", "All Conditions")),
-            limit=_context_tier_limit(context_tier, compact=2, standard=3, extended=6),
+            limit=6,
         )
     )
     lines.append(
         "abundance_response_rule|ranked_rows_are_supporting_evidence_not_a_required_output_list|"
         "when_asked_only_which_or_most_abundant_report_rank_1_per_condition|"
-        "report_more_ranks_only_when_the_user_requests_a_count_rank_or_longer_list|"
-        "do_not_repeat_condition_headings_or_restart_a_list_during_continuation"
+        "report_more_ranks_only_when_the_user_requests_a_count_rank_or_longer_list"
     )
 
     return _text_payload("qc_abundance_plot", "\n".join(lines))
@@ -1462,7 +1452,6 @@ def qc_abundance_plot(
 
 def qc_correlation_plot(
     workflow: str = "protein",
-    context_tier: str = "compact",
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
@@ -1531,7 +1520,7 @@ def qc_correlation_plot(
     lines.extend(
         _correlation_data_lines(
             workflow_key,
-            limit=_context_tier_limit(context_tier, compact=3, standard=6, extended=12),
+            limit=12,
         )
     )
 
@@ -2320,10 +2309,142 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
     return _text_payload("completeness_missing_value_tables", "\n".join(lines))
 
 
+def data_distribution_summary(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+    from app.services.data_tools import distribution_summary
+    if workflow == "peptide":
+        raise ValueError("Distribution summary requires protein or phosphorylation data.")
+    result = distribution_summary(_workflow_kind(workflow))
+    lines = [f"distribution_overview|workflow={workflow}|source_used={result.sourceUsed}|aggregation=all_sample_values_pooled",
+             "distribution_answer_summary|" + "|".join(f"{key}={_safe_context_text(value) if value is not None else 'NA'}" for key, value in result.stats.model_dump().items()),
+             f"distribution_missingness|rows_with_missing={result.rowsWithMissing}|rows_without_missing={result.rowsWithoutMissing}",
+             "distribution_inference_rule|std=population_standard_deviation|summary_is_not_a_normality_test|QQ_shape_not_supplied|raw_or_filtered_source_does_not_establish_scale"]
+    lines.extend(f"distribution_warning|message={_safe_context_text(w)}" for w in result.warnings)
+    return _text_payload("data_distribution_summary", "\n".join(lines))
+
+
+def stats_simulation_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+    if workflow == "peptide":
+        raise ValueError("Simulation does not support peptide-level data.")
+    pairs = _parse_mode_pairs(mode)
+    settings = {name: pairs[name.lower()] for name in SimulationRequest.model_fields
+                if name != "kind" and name.lower() in pairs}
+    payload = SimulationRequest(kind=_workflow_kind(workflow), **settings)
+    result = _stats_tools.run_simulation(payload)
+    metric = "raw_p_value" if payload.useUncorrected else "BH_adjusted_p_value"
+    lines = [f"simulation_overview|workflow={workflow}|source_used={result.sourceUsed}|test_type={result.testType}|selected_p_metric={metric}|scope=hypothetical_sensitivity_analysis",
+             "simulation_parameters|" + "|".join(f"{k}={_safe_context_text(v)}" for k, v in payload.model_dump().items()),
+             f"simulation_selected_metric|metric={metric}|hypothetical=true",
+             "simulation_answer_summary|" + "|".join(f"{k}={_safe_context_text(v)}" for k, v in result.model_dump(exclude={"rows", "warnings"}).items()),
+             "simulation_inference_rule|observed_mean_fold_changes_held_fixed|variance_and_sample_size_assumptions_change_pvalues|not_new_observations_or_validated_power_predictions"]
+    for row in result.rows[:5]:
+        fields = {"term": row.get(result.labelColumn), **{k: row.get(k) for k in ("log2FC", "pval", "adj_pval", "significance", "effective_n_condition1", "effective_n_condition2")}}
+        fields["adj_pval_meaning"] = metric
+        lines.append("simulation_term|" + "|".join(f"{k}={_safe_context_text(v) if v is not None else 'NA'}" for k, v in fields.items()))
+    if len(result.rows) > 5:
+        lines.append("simulation_data|status=partial|reason=first_five_rows_only")
+    lines.extend(f"simulation_warning|message={_safe_context_text(w)}" for w in result.warnings)
+    return _text_payload("stats_simulation_plot", "\n".join(lines))
+
+
+def phospho_ksea_export(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+    if workflow != "phosphosite":
+        raise ValueError("KSEA export requires phosphosite data.")
+    pairs = _parse_mode_pairs(mode)
+    names = {"condition1": "condition1", "condition2": "condition2", "source": "source",
+             "dataSource": "data_source", "condition1Control": "condition1_control", "condition2Control": "condition2_control",
+             "pValueThreshold": "p_value_threshold", "log2fcThreshold": "log2fc_threshold", "testType": "test_type", "useUncorrected": "use_uncorrected"}
+    # Reuse the validated differential-analysis contract for shared settings.
+    from app.schemas.stats import VolcanoRequest, VolcanoControlRequest
+    source = pairs.get("source", "volcano")
+    if source not in {"volcano", "volcano_control"}:
+        raise ValueError("Unsupported KSEA source.")
+    request_class = VolcanoControlRequest if source == "volcano_control" else VolcanoRequest
+    request = request_class(kind="phospho", **{k: pairs[k.lower()] for k in request_class.model_fields if k != "kind" and k.lower() in pairs})
+    settings = {key: getattr(request, key, None) for key in names}
+    settings["source"] = source
+    table = _phospho_tools.ksea_table(**{target: settings[key] for key, target in names.items()})
+    metric = "raw_p_value" if request.useUncorrected else "BH_adjusted_p_value"
+    lines = [f"ksea_overview|workflow=phosphosite|selected_p_metric={metric}|scope=external_tool_input_not_kinase_activity_results",
+             "ksea_parameters|" + "|".join(f"{k}={_safe_context_text(settings[k])}" for k in names),
+             f"ksea_answer_summary|export_rows={len(table)}|selected_p_metric={metric}|all_testable_sites_not_only_significant=true",
+             "ksea_inference_rule|export_contains_site_fold_changes_not_kinase_activity|kinase_scores_substrate_counts_and_external_significance_not_available|uploaded_external_plot_not_parsed_by_this_adapter"]
+    lines.append(f"ksea_external_view|browser_reports_plot_present={_safe_context_text(pairs.get('externalplotpresent', 'unknown'))}|external_result_values_not_supplied=true")
+    for row in table.head(5).to_dict(orient="records"):
+        lines.append("ksea_export_row|" + "|".join(f"{k}={_safe_context_text(row[k])}" for k in ("UPD_seq", "log2FC", "pval", "adj_pval", "significance") if k in row))
+    if len(table) > 5:
+        lines.append("ksea_data|status=partial|reason=first_five_export_rows_only")
+    return _text_payload("phospho_ksea_export", "\n".join(lines))
+
+
+def analysis_canvas_context(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+    pairs = _parse_mode_pairs(mode)
+    if "tiles" not in pairs:
+        raise ValueError("Open the canvas to inspect its current composition.")
+    tiles = json.loads(pairs.get("tiles", "[]"))
+    if not isinstance(tiles, list) or any(not isinstance(tile, str) for tile in tiles):
+        raise ValueError("Canvas tile context is invalid.")
+    return _text_payload("analysis_canvas_context", "\n".join([
+        f"canvas_overview|workflow={workflow}|source=browser_reported_composition_not_calculated_results",
+        f"canvas_answer_summary|tile_count={len(tiles)}|tile_types={_safe_context_text(', '.join(tiles[:20]))}",
+        "canvas_inference_rule|overview_is_composition_only|no_combined_statistical_test|consult_separate_tile_evidence_for_values",
+    ]))
+
+
+def stats_anova_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+    workflow_key = _normalize_coverage_workflow(workflow)
+    if workflow_key == "peptide":
+        raise ValueError("ANOVA evidence does not support peptide-level data.")
+    pairs = _parse_mode_pairs(mode)
+    settings = {name: pairs[name.lower()] for name in AnovaRequest.model_fields
+                if name != "kind" and name.lower() in pairs}
+    payload = AnovaRequest(kind=_workflow_kind(workflow_key), **settings)
+    result = _stats_tools.run_anova(payload)
+    selected_cluster = pairs.get("selectedcluster", "none")
+    selected_rows = result.rows
+    if selected_cluster != "none":
+        if payload.source != "anova_cluster":
+            raise ValueError("A selected cluster requires ANOVA cluster mode.")
+        selected_rows = [row for row in result.clusterRows if str(row.get("cluster")) == selected_cluster]
+        if not selected_rows:
+            raise ValueError("The selected ANOVA cluster is unavailable.")
+    elif payload.source == "anova_cluster":
+        selected_rows = result.clusterRows
+    p_metric = "raw_p_value" if payload.useUncorrected else "BH_adjusted_p_value"
+    lines = [
+        f"anova_overview|workflow={workflow_key}|dataset_level={payload.kind}|source={payload.source}|data_source={payload.dataSource}",
+        f"anova_tested|source_used={result.sourceUsed}|label_column={_safe_context_text(result.labelColumn)}",
+        "anova_testing|test=one_way_independent_groups_ANOVA|assumption=equal_population_variances|"
+        "minimum_observations=two_per_condition|undefined_tests=excluded",
+        f"anova_multiple_testing|method={'none' if payload.useUncorrected else 'benjamini_hochberg'}|family=all_finite_ANOVA_tests",
+        f"anova_parameters|p_value_threshold={_fmt_value(payload.pValueThreshold)}|use_uncorrected={str(payload.useUncorrected).lower()}|"
+        f"selected_p_metric={p_metric}|selected_cluster={_safe_context_text(selected_cluster)}|requested_clusters={payload.nClusters}|post_hoc={payload.postHoc}",
+        f"anova_answer_summary|full_analysis_tested={result.totalRows}|full_analysis_significant={result.significantCount}|"
+        f"selected_view_rows={len(selected_rows)}|actual_clusters={result.clusterCount if result.clusterCount is not None else 'not_requested'}|"
+        f"selected_p_metric={p_metric}",
+        "anova_inference_rule|omnibus_significance=at_least_one_condition_mean_differs|"
+        "does_not_identify_which_pair_or_direction|cluster_membership_is_descriptive_not_a_separate_significance_test",
+        f"anova_posthoc_summary|method={result.postHocMethod or 'none'}|comparisons={len(result.postHocRows)}|"
+        f"significant_comparisons={result.postHocSignificantCount}|scope=full_analysis_not_selected_cluster|pairwise_rows_not_included=true",
+    ]
+    for row in selected_rows[:5]:
+        f_statistic = "infinity" if row["f_statistic"] == float("inf") else _fmt_value(row["f_statistic"])
+        lines.append("anova_term|"
+                     f"term={_safe_context_text(row.get(result.labelColumn, ''))}|"
+                     f"f_statistic={f_statistic}|raw_p_value={_fmt_probability(row['pval'])}|"
+                     f"selected_p_value={_fmt_probability(row['adj_pval'])}|selected_p_metric={p_metric}|"
+                     f"significance={_safe_context_text(row['significance'])}")
+    lines.append(f"anova_evidence_limit|reported_rows={min(5, len(selected_rows))}|selected_view_rows={len(selected_rows)}|"
+                 "row_order=application_table_order|no_heatmap_pattern_or_pairwise_claims_without_supporting_evidence")
+    if len(selected_rows) > 5:
+        lines.append("anova_data|status=partial|reason=only_first_five_selected_rows_included")
+    for warning in result.warnings:
+        lines.append(f"anova_warning|message={_safe_context_text(warning)}")
+    return _text_payload("stats_anova_plot", "\n".join(lines))
+
+
 def stats_volcano_plot(
     workflow: str = "protein",
     mode: str | None = None,
-    context_tier: str = "compact",
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _parse_mode_pairs(mode)
@@ -2363,14 +2484,13 @@ def stats_volcano_plot(
         default=1.0,
         minimum=0.0,
     )
-    tier_rank_limit = _context_tier_limit(context_tier, compact=2, standard=5, extended=10)
     max_ranked_per_group = int(
         _float_from_mode(
             mode_pairs,
             "maxranked",
             "max_ranked",
             "ranklimit",
-            default=float(tier_rank_limit),
+            default=10.0,
             minimum=2.0,
             maximum=500.0,
         )
@@ -3920,13 +4040,13 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
         "single_protein_boxplot_general|interpretation_scope=compare_conditions_detect_shifts_outliers_and_distribution_shape_symmetry_spread_skewness"
     )
     lines.append(
-        "single_protein_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=beyond_whiskers"
+        "single_protein_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=outermost_observed_values_within_the_1.5_IQR_fences|fences=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=observations_outside_the_fences"
     )
     lines.append(
         f"single_protein_boxplot_labels|entity_terms={entity_singular}/{entity_plural}"
     )
     lines.append(
-        "single_protein_boxplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
+        "single_protein_boxplot_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
     )
     lines.append(
         "single_protein_boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
@@ -4287,6 +4407,8 @@ def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: str 
 
 
 __all__ = [
+    "data_distribution_summary", "stats_simulation_plot", "phospho_ksea_export", "analysis_canvas_context",
+    "stats_anova_plot",
     "general_proteomics_context",
     "completeness_missing_value_plot",
     "completeness_missing_value_heatmap",

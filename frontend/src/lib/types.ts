@@ -582,6 +582,7 @@ export type ListEnrichmentRequest = {
 };
 
 export type ListEnrichmentResultResponse = {
+  evidenceToken?: string;
   genes: string[];
   terms: EnrichmentTerm[];
   backgroundMode: "experiment" | "global";
@@ -639,6 +640,7 @@ export type SimulationResultResponse = {
 export type AnalysisSource = "volcano" | "volcano_control";
 
 export type AnalysisVolcanoRequest = {
+  dataSource?: VisualizationDataSource;
   kind: AnnotationKind;
   source: AnalysisSource;
   condition1: string;
@@ -897,19 +899,6 @@ export type ChatMessage = {
   content: string;
 };
 
-export type OllamaChatRequest = {
-  messages: ChatMessage[];
-  message: string;
-  provider?: ChatProvider;
-  model?: string;
-  gpuEnabled?: boolean;
-  apiKey?: string;
-  temperature?: number;
-  maxTokens?: number;
-  ollamaUrl?: string;
-  analysisContext?: string;
-};
-
 export type CloudAiConsentStatus = {
   provider: ChatProvider;
   providerLabel: string;
@@ -919,11 +908,6 @@ export type CloudAiConsentStatus = {
   transmitted: string[];
   excluded: string[];
   notice: string;
-};
-
-export type OllamaChatResponse = {
-  model: string;
-  message: ChatMessage;
 };
 
 export type OllamaGpuStatusResponse = {
@@ -943,6 +927,7 @@ export type OllamaModelsResponse = {
 };
 
 export type ModelCapabilityResponse = {
+  assessment: "tested" | "inferred" | "unknown";
   provider: ChatProvider;
   model: string;
   level: 1 | 2 | 3;
@@ -992,18 +977,6 @@ export type OllamaModelManageResponse = {
   detail: string;
   models: string[];
   selectedModel: string | null;
-  warnings: string[];
-};
-
-export type ModuleContextResponse = {
-  moduleKey: string;
-  moduleTitle: string;
-  manualTitle?: string | null;
-  manualPath?: string | null;
-  contextPrompt: string;
-  contextSummary: string;
-  contextTier: ModelContextTier;
-  contextData: Record<string, unknown>;
   warnings: string[];
 };
 

@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import StatsIdentifier, StatsTestType
+from app.schemas.stats import StatsIdentifier, StatsTestType, VolcanoDataSource
 
 AnalysisSource = Literal["volcano", "volcano_control"]
 
@@ -13,6 +13,7 @@ AnalysisSource = Literal["volcano", "volcano_control"]
 class AnalysisVolcanoRequest(BaseModel):
     kind: AnnotationKind
     source: AnalysisSource = "volcano"
+    dataSource: VolcanoDataSource = "data"
     condition1: str
     condition2: str
     condition1Control: str | None = None

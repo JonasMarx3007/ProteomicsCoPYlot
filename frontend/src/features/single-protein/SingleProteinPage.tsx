@@ -1,3 +1,4 @@
+import { AssistantSelect } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
@@ -74,6 +75,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   });
 
   const [box, setBox] = useState({
+    sampleN: Boolean(persistedBox.sampleN ?? true),
     identifier: (String(persistedBox.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
     protein: String(persistedBox.protein ?? ""),
     conditions: Array.isArray(persistedBox.conditions) ? persistedBox.conditions.map((value) => String(value ?? "")) : ([] as string[]),
@@ -240,6 +242,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           conditions: JSON.stringify(box.conditions),
           outliers: box.outliers,
           dots: box.dots,
+          sampleN: box.sampleN,
           randomSeed: box.randomSeed,
           header: box.header,
           legend: box.legend,
@@ -403,6 +406,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             `conditions=${JSON.stringify(box.conditions)}`,
             `outliers=${box.outliers ? "true" : "false"}`,
             `dots=${box.dots ? "true" : "false"}`,
+            `sampleN=${box.sampleN ? "true" : "false"}`,
             `randomSeed=${box.randomSeed}`,
             `header=${box.header ? "true" : "false"}`,
             `legend=${box.legend ? "true" : "false"}`,
@@ -444,6 +448,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     box.conditions,
     box.outliers,
     box.dots,
+    box.sampleN,
     box.randomSeed,
     box.header,
     box.legend,
@@ -506,7 +511,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         <div className="mt-4 grid max-w-2xl gap-4 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Dataset level</span>
-            <select
+            <AssistantSelect
               value={activeTab === "heatmap" ? (hasPhospho ? "phospho" : "") : kind}
               disabled={activeTab === "heatmap" || kindOptions.length === 0}
               onChange={(e) => setKind(e.target.value as AnnotationKind)}
@@ -527,14 +532,14 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
                   </option>
                 ))
               )}
-            </select>
+            </AssistantSelect>
             {activeTab === "heatmap" ? (
               <span className="mt-2 block text-xs text-slate-500">Heatmap uses phospho dataset level.</span>
             ) : null}
           </label>
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Data source</span>
-            <select
+            <AssistantSelect
               value={dataSource}
               onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
               disabled={!hasRequiredDataset || optionsLoading}
@@ -543,10 +548,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               <option value="log2">Log2 data</option>
               {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
               {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
-            </select>
-            <span className="mt-2 block text-xs text-slate-500">
-              Log2 data is the full matrix before filtering and may still contain missing values.
-            </span>
+            </AssistantSelect>
           </label>
         </div>
       </section>
@@ -597,7 +599,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
           {plotView ? (
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <AssistantSelect
                 value={downloadFormat}
                 onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                 className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -607,7 +609,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
               <a
                 href={plotDownloadUrl}
                 download={plotDownloadFilename}
@@ -730,6 +732,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             <Checkbox key="header" label="Toggle Header" checked={box.header} onChange={(value) => setBox({ ...box, header: value })} />,
             <Checkbox key="legend" label="Toggle Legend" checked={box.legend} onChange={(value) => setBox({ ...box, legend: value })} />,
             <Checkbox key="dots" label="Toggle Dots" checked={box.dots} onChange={(value) => setBox({ ...box, dots: value })} />,
+            <Checkbox key="sampleN" label="Toggle Sample n" checked={box.sampleN} onChange={(value) => setBox({ ...box, sampleN: value })} />,
             <Checkbox key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(value) => setBox({ ...box, outliers: value })} />,
           ]}
           sizeRow={
@@ -898,7 +901,7 @@ function SelectField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -908,7 +911,7 @@ function SelectField({
             {labels?.[option] ?? option}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </label>
   );
 }

@@ -865,6 +865,7 @@ def single_protein_boxplot_plot(
     dpi: int = 300,
     advanced: dict | None = None,
     data_source: str = "data",
+    sample_n: bool = True,
 ) -> bytes:
     plt = _get_plt()
     intensities, labels, condition_values, summary_df = _boxplot_data(
@@ -924,7 +925,7 @@ def single_protein_boxplot_plot(
 
     ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(
-        [f"{label}\n(n={condition_values[label].size})" for label in labels],
+        [f"{label} (n={condition_values[label].size})" if sample_n else label for label in labels],
         rotation=45,
         ha="right",
     )

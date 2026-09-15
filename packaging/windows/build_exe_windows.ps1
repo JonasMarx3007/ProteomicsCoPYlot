@@ -41,10 +41,8 @@ else {
 $FileDescription = switch ($ExecutableName) {
   "ProteomicsCoPYlot" { "Proteomics CoPYlot" }
   "ProteomicsCoPYlotAI" { "Proteomics CoPYlot (AI)" }
-  "ProteomicsCoPYlotAIDev20" { "Proteomics CoPYlot (AI Dev20)" }
   "DataViewer" { "Proteomics CoPYlot Data Viewer" }
   "DataViewerAI" { "Proteomics CoPYlot Data Viewer (AI)" }
-  "DataViewerAIDev20" { "Proteomics CoPYlot Data Viewer (AI Dev20)" }
   default { "$ProductName Windows application" }
 }
 $VersionInfoPath = Join-Path $SpecDir "$ExecutableName.version_info.txt"
