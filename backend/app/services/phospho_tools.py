@@ -816,6 +816,18 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
             if name == alias:
                 labels = labels.fillna(data[column].where(data[column].astype(str).str.strip().ne("")))
     frame["Kinase"] = labels.fillna(frame["Log2(Frequency Factor)"].astype(str)).astype(str)
+    for column, name in names.items():
+        if name in {"substratecount", "numberofsubstrates", "nsubstrates"}:
+            values = pd.to_numeric(data[column], errors="coerce")
+            missing = data[column].isna() | data[column].astype(str).str.strip().eq("")
+            if ((~missing & ~np.isfinite(values)) | (values < 0) | (values.notna() & (values % 1 != 0))).any():
+                raise ValueError("Substrate counts must be nonnegative integers.")
+            if "substrate_count" in frame:
+                previous = frame["substrate_count"]
+                if (previous.notna() & values.notna() & previous.ne(values)).any():
+                    raise ValueError("Conflicting substrate counts.")
+                values = previous.fillna(values)
+            frame["substrate_count"] = values
     return frame
 
 
@@ -831,9 +843,13 @@ def ksea_uploaded_volcano_html(
     condition2_control: str = "",
     annotate_hits: bool = False,
     advanced: dict | None = None,
+    evidence_out: dict | None = None,
 ) -> str:
     go = _get_plotly_go()
-    df = pd.concat([_normalize_ksea_results(st_results), _normalize_ksea_results(tnc_results)], ignore_index=True)
+    if not 0 < p_value_threshold <= 1:
+        raise ValueError("KSEA adjusted p-value threshold must be between zero and one.")
+    df = pd.concat([_normalize_ksea_results(st_results).assign(result_group="S/T"),
+                    _normalize_ksea_results(tnc_results).assign(result_group="Y")], ignore_index=True)
     if df.empty:
         raise ValueError("Uploaded KSEA result files are empty.")
 
@@ -849,6 +865,13 @@ def ksea_uploaded_volcano_html(
         return "Not significant"
 
     frame["regulation"] = frame.apply(classify, axis=1)
+    if evidence_out is not None:
+        evidence_out.update({"type": "external_ksea", "threshold": p_value_threshold,
+            "condition1": condition1, "condition2": condition2,
+            "condition1Control": condition1_control, "condition2Control": condition2_control,
+            "totalRows": len(frame), "counts": frame["regulation"].value_counts().to_dict(),
+            "rows": frame.head(10).astype(object).where(pd.notna(frame.head(10)), None).to_dict(orient="records"),
+            "limitations": "Uploaded external results; adjustment procedure is not independently verified. Substrate counts are included only when explicitly supplied; absent counts are unknown. Frequency factor is not a direct activity measurement."})
     color_map = {
         "Upregulated": "red",
         "Downregulated": "blue",

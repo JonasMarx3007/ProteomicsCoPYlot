@@ -18,7 +18,7 @@ export default defineConfig({
   webServer: [
     { command: `"${python}" ../tests/browser_server.py`, url: 'http://127.0.0.1:8187/api/health',
       reuseExistingServer: false, timeout: 120_000 },
-    { command: 'npm run dev -- --host 127.0.0.1 --port 5187', url: 'http://127.0.0.1:5187',
+    { command: 'node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5187', url: 'http://127.0.0.1:5187',
       env: { VITE_PROXY_TARGET: 'http://127.0.0.1:8187' }, reuseExistingServer: false },
   ],
 });

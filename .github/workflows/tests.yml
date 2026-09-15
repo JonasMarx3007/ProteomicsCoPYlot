@@ -118,6 +118,14 @@ jobs:
         run: npm run test:viewer
         working-directory: frontend
 
+      - name: Canvas scientific parity and state regressions
+        run: npx playwright test --grep "end-to-end evidence|canvas layout preserves|canvas plot loading|large canvas|verifies typed canvas additions|offers ambiguous feature"
+        working-directory: frontend
+        env:
+          VITE_AI_ENABLED: "1"
+          COPYLOT_AI_MODE: "1"
+          COPYLOT_BROWSER_ASSISTANT_STUB: "1"
+
       - name: Tool access-link regressions
         run: npx playwright test --config playwright.access.config.mjs
         working-directory: frontend

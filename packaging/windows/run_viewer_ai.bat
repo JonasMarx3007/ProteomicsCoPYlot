@@ -5,13 +5,12 @@ for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check_launch_ports.ps1" -BackendPort %BACKEND_PORT% -FrontendPort %FRONTEND_PORT%
+if errorlevel 1 exit /b 1
 set "BACKEND_WAIT_SECONDS=%COPYLOT_WAIT_FOR_BACKEND_SECONDS%"
 if "%BACKEND_WAIT_SECONDS%"=="" set "BACKEND_WAIT_SECONDS=20"
 set "CHAT_MODEL="
-set "DEV_MODE=0"
-set "DEV_OLLAMA_ENDPOINT="
-set "DEV_ENDPOINT_KEY="
-set "DEV_MODE_FLAG="
 set "VIEWER_PROJECT="
 if exist "%ROOT%local\viewer_config.local.json" (
   set "VIEWER_CONFIG=%ROOT%local\viewer_config.local.json"
@@ -23,26 +22,6 @@ if exist "%ROOT%local\viewer_config.local.json" (
 
 :parse_args
 if "%~1"=="" goto :args_done
-if /I "%~1"=="--dev" (
-  set "DEV_MODE=1"
-  shift
-  goto :parse_args
-)
-if /I "%~1"=="--dev0" (
-  set "DEV_MODE=2"
-  shift
-  goto :parse_args
-)
-if /I "%~1"=="--dev2" (
-  set "DEV_MODE=3"
-  shift
-  goto :parse_args
-)
-if /I "%~1"=="--dev20" (
-  set "DEV_MODE=4"
-  shift
-  goto :parse_args
-)
 if /I "%~1"=="--project" (
   if "%~2"=="" (
     echo Error: --project requires a project name.
@@ -85,7 +64,8 @@ if "!ARG:~0,2!"=="--" (
     shift
     goto :parse_args
   )
-  set "ARG=!CANDIDATE!"
+  echo Error: unknown option "!ARG!".
+  exit /b 2
 )
 
 if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
@@ -128,35 +108,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if "%DEV_MODE%"=="1" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev"
-) else if "%DEV_MODE%"=="2" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev0"
-) else if "%DEV_MODE%"=="3" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV2_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev2"
-) else if "%DEV_MODE%"=="4" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV2_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev20"
-)
-
-if not "%DEV_MODE%"=="0" (
-  set "DEV_CONFIG=%ROOT%local\dev_ai.local.env"
-  if not exist "!DEV_CONFIG!" set "DEV_CONFIG=%ROOT%dev_ai.local.env"
-  if exist "!DEV_CONFIG!" (
-    for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
-      if /I "%%~A"=="!DEV_ENDPOINT_KEY!" set "DEV_OLLAMA_ENDPOINT=%%~B"
-    )
-    if not defined DEV_OLLAMA_ENDPOINT (
-      echo Warning: !DEV_MODE_FLAG! requested but !DEV_ENDPOINT_KEY! is missing in "!DEV_CONFIG!".
-    )
-  ) else (
-    echo Warning: !DEV_MODE_FLAG! requested but dev config file not found: "!DEV_CONFIG!"
-  )
-)
-
 if defined CHAT_MODEL (
   where ollama >nul 2>&1
   if errorlevel 1 (
@@ -170,24 +121,12 @@ if defined CHAT_MODEL (
   )
 )
 
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
-if defined BACKEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %BACKEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
-)
-
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %FRONTEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "FRONTEND_PID=%%P"
-if defined FRONTEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %FRONTEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
-)
-
 if defined CHAT_MODEL (
   echo Starting viewer AI backend on port %BACKEND_PORT%...
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 ) else (
   echo Starting viewer AI backend on port %BACKEND_PORT%...
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
 set "BACKEND_READY=1"
@@ -210,17 +149,7 @@ if "%BACKEND_READY%"=="0" (
   exit /b 1
 )
 
-if "%DEV_MODE%"=="1" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
-) else if "%DEV_MODE%"=="3" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
-) else if "%DEV_MODE%"=="2" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
-) else if "%DEV_MODE%"=="4" (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
-) else (
-  start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
-)
+start "Frontend (Viewer AI)" /D "%ROOT%frontend" cmd /k "set VITE_APP_MODE=viewer && set VITE_AI_ENABLED=1 && set VITE_VIEWER_PORTAL_AUTH=0 && set VITE_RESET_ON_BROWSER_LOAD=0 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT% --force"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"
 

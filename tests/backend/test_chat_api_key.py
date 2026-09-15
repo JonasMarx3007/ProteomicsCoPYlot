@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.main import app
-from app.schemas.chat import OllamaChatRequest
+from app.schemas.chat import ChatRequest
 from app.services.chat_tools import _resolve_api_key
 
 ENV_NAMES = {
@@ -24,8 +24,23 @@ ENV_NAMES = {
 SECRET = "synthetic-browser-api-key-for-redaction-test"
 
 
-def _request(provider: str, key: str | None = None) -> OllamaChatRequest:
-    return OllamaChatRequest(
+def test_only_replacement_assistant_contract_is_exposed():
+    from app.schemas.assistant import AssistantRequest
+
+    paths = {route.path for route in app.routes}
+    assert "/api/chat/assistant" in paths
+    assert not paths.intersection({
+        "/api/chat/ollama", "/api/chat/ollama-stream",
+        "/api/chat/stream", "/api/chat/module-context",
+    })
+    assert not {"temperature", "maxTokens", "analysisContext"}.intersection(AssistantRequest.model_fields)
+    assert not {"OllamaChatResponse", "ModuleContextRequest", "ModuleContextResponse"}.intersection(
+        app.openapi()["components"]["schemas"]
+    )
+
+
+def _request(provider: str, key: str | None = None) -> ChatRequest:
+    return ChatRequest(
         messages=[{"role": "user", "content": "hello"}],
         provider=provider,
         apiKey=key,
@@ -80,22 +95,22 @@ def test_cloud_route_accepts_server_key_only_after_consent(provider, monkeypatch
         calls.append(kwargs)
         assert kwargs['api_key'] == SECRET
         assert SECRET not in str(kwargs['messages'])
-        return 'Synthetic reply'
+        return '{"task":"clarify","clarification":"request"}'
 
     monkeypatch.setattr(chat_tools, f'_{provider}_chat_text', reply)
     with TestClient(app) as client:
-        payload = {'provider': provider, 'message': 'Hello', 'model': 'synthetic-model'}
-        assert client.post('/api/chat/stream', json=payload).status_code == 428
+        payload = {'provider': provider, 'message': 'Hello', 'model': 'synthetic-model', 'view': {'module': 'data.upload'}}
+        assert client.post('/api/chat/assistant', json=payload).status_code == 428
         assert calls == []
         status = client.get(f'/api/chat/cloud-consent/{provider}').json()
         assert client.post(f'/api/chat/cloud-consent/{provider}/grant', json={
             'disclosureVersion': status['disclosureVersion'],
         }).status_code == 200
-        response = client.post('/api/chat/stream', json=payload)
+        response = client.post('/api/chat/assistant', json=payload)
         assert response.status_code == 200
-        assert response.text == 'Synthetic reply'
+        assert response.json()["answer"] == "Which plot or selection would you like me to use?"
         monkeypatch.delenv(ENV_NAMES[provider])
-        missing = client.post('/api/chat/stream', json=payload)
+        missing = client.post('/api/chat/assistant', json=payload)
         assert missing.status_code == 400
         assert ENV_NAMES[provider] in missing.text
         assert SECRET not in missing.text
@@ -111,11 +126,11 @@ def test_key_is_not_echoed_by_validation_errors_or_logs() -> None:
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             malformed = client.post(
-                "/api/chat/ollama",
+                "/api/chat/assistant",
                 json={"provider": "openai", "apiKey": SECRET, "messages": "not-a-list"},
             )
             failing = client.post(
-                "/api/chat/ollama",
+                "/api/chat/assistant",
                 json={
                     "provider": "openai",
                     "apiKey": SECRET,
@@ -151,8 +166,8 @@ def test_upstream_error_cannot_echo_server_key(provider, monkeypatch, caplog):
         assert client.post(f"/api/chat/cloud-consent/{provider}/grant", json={
             "disclosureVersion": status["disclosureVersion"],
         }).status_code == 200
-        response = client.post("/api/chat/stream", json={
-            "provider": provider, "message": "Hello", "model": "synthetic-model",
+        response = client.post("/api/chat/assistant", json={
+            "provider": provider, "message": "Hello", "model": "synthetic-model", "view": {"module": "data.upload"},
         })
     assert response.status_code == 400
     assert "HTTP 401" in response.text

@@ -98,6 +98,9 @@ export default function AnnotationPage() {
     };
   }, []);
   const [result, setResult] = useState<AnnotationResultResponse | null>(null);
+  const visibleWarnings = (result?.warnings ?? []).filter((warning) =>
+    !/^(No normalization was applied\.|Median centering was applied globally|Quantile normalization was applied globally|VSN was applied globally|No phosphoprotein-level normalization was applied\.|Phosphosite-level normalization was )/.test(warning),
+  );
   const [peptideOverview, setPeptideOverview] = useState<PeptideOverviewResponse | null>(null);
   const [peptideResult, setPeptideResult] = useState<PeptideMetadataResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -770,7 +773,6 @@ export default function AnnotationPage() {
             <>
               <p className="mt-1 text-sm text-slate-600">
                 If a metadata file is uploaded for this level, it overrides UI condition mapping during annotation generation.
-                Columns other than sample and pair_id are treated as categorical grouping profiles (maximum five), and all profile combinations are generated automatically.
               </p>
               <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
                 <div>
@@ -844,7 +846,7 @@ export default function AnnotationPage() {
         <summary className="cursor-pointer text-lg font-semibold text-slate-900">Manual Condition Mapping</summary>
         {uploadedMetadata && kind !== "peptide" ? <p className="mt-3 text-sm text-slate-600">
           Uploaded metadata supplies the conditions. The manual settings below are retained but are not used while that metadata is active.
-        </p> : <p className="mt-3 text-sm text-slate-600">Assign sample columns to conditions before generating the annotation.</p>}
+        </p> : null}
 
         <div className="mt-4 space-y-4">
           {conditions.map((condition) => (
@@ -1041,17 +1043,6 @@ export default function AnnotationPage() {
                   <option value="vsn">VSN</option>
                 ) : null}
               </select>
-              <p className="mt-2 text-xs text-slate-500">
-                Applied globally to the log2 values before filtering. Skip it if your export is
-                already normalized (for example MaxLFQ or PG.Normalised).
-                {normalizationCapability?.vsnAvailable
-                  ? ` VSN runs through the Bioconductor vsn package${
-                      normalizationCapability.vsnPackageVersion
-                        ? ` (${normalizationCapability.vsnPackageVersion})`
-                        : ""
-                    }.`
-                  : " VSN is hidden because it requires R with the Bioconductor vsn package."}
-              </p>
             </div>
           )}
         </div>
@@ -1109,12 +1100,11 @@ export default function AnnotationPage() {
               <SummaryCard label="Metadata Rows" value={String(result.metadataRows)} />
               <SummaryCard label="Conditions" value={String(result.conditionCount)} />
               <SummaryCard label="Filtered Rows" value={String(result.filteredRows)} />
-              <SummaryCard label="Metadata Source" value={result.metadataSource} />
             </div>
 
-            {result.warnings.length > 0 && (
+            {visibleWarnings.length > 0 && (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {result.warnings.join(" ")}
+                {visibleWarnings.join(" ")}
               </div>
             )}
           </section>

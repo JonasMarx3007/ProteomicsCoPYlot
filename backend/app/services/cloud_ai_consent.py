@@ -5,7 +5,7 @@ from threading import RLock
 from app.schemas.chat import ChatProvider, CloudAiConsentStatusResponse
 from app.services.session_context import get_browser_session_id
 
-CLOUD_AI_DISCLOSURE_VERSION = "1"
+CLOUD_AI_DISCLOSURE_VERSION = "2"
 CLOUD_PROVIDERS: tuple[ChatProvider, ...] = ("openai", "anthropic", "gemini")
 
 _PROVIDER_LABELS: dict[ChatProvider, str] = {
@@ -18,6 +18,7 @@ _TRANSMITTED = (
     "Your prompt and the visible conversation history",
     "Generated page/project context, including dataset names and dimensions",
     "Relevant protein or site identifiers, sample/condition labels, and calculated summaries",
+    "Available tabs and plot controls, their selected values, and receipts for requested view changes",
 )
 _EXCLUDED = (
     "Uploaded files and full raw or processed abundance matrices",

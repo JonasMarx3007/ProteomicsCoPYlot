@@ -4,60 +4,27 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=5173"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check_launch_ports.ps1" -BackendPort %BACKEND_PORT% -FrontendPort %FRONTEND_PORT%
+if errorlevel 1 exit /b 1
 set "CHAT_MODEL="
-set "DEV_MODE=0"
-set "DEV_OLLAMA_ENDPOINT="
-set "DEV_ENDPOINT_KEY="
-set "DEV_MODE_FLAG="
 
 :parse_args
 if "%~1"=="" goto :args_done
 set "ARG=%~1"
-if /I "!ARG!"=="--dev" (
-  set "DEV_MODE=1"
-) else if /I "!ARG!"=="--dev0" (
-  set "DEV_MODE=2"
-) else if /I "!ARG!"=="--dev2" (
-  set "DEV_MODE=3"
-) else if /I "!ARG!"=="--dev20" (
-  set "DEV_MODE=4"
-) else (
-  if "!ARG:~0,2!"=="--" set "ARG=!ARG:~2!"
-  if not defined CHAT_MODEL set "CHAT_MODEL=!ARG!"
+if "!ARG:~0,2!"=="--" (
+  echo Error: unknown option "!ARG!". Supply a model name without a flag.
+  exit /b 2
 )
+if defined CHAT_MODEL (
+  echo Error: only one model name is supported.
+  exit /b 2
+)
+set "CHAT_MODEL=!ARG!"
 shift
 goto :parse_args
 
 :args_done
-if "%DEV_MODE%"=="1" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev"
-) else if "%DEV_MODE%"=="2" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev0"
-) else if "%DEV_MODE%"=="3" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV2_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev2"
-) else if "%DEV_MODE%"=="4" (
-  set "DEV_ENDPOINT_KEY=COPYLOT_DEV2_OLLAMA_ENDPOINT"
-  set "DEV_MODE_FLAG=--dev20"
-)
-
-if not "%DEV_MODE%"=="0" (
-  set "DEV_CONFIG=%ROOT%local\dev_ai.local.env"
-  if not exist "!DEV_CONFIG!" set "DEV_CONFIG=%ROOT%dev_ai.local.env"
-  if exist "!DEV_CONFIG!" (
-    for /f "usebackq tokens=1,* delims==" %%A in ("!DEV_CONFIG!") do (
-      if /I "%%~A"=="!DEV_ENDPOINT_KEY!" set "DEV_OLLAMA_ENDPOINT=%%~B"
-    )
-    if not defined DEV_OLLAMA_ENDPOINT (
-      echo Warning: !DEV_MODE_FLAG! requested but !DEV_ENDPOINT_KEY! is missing in "!DEV_CONFIG!".
-    )
-  ) else (
-    echo Warning: !DEV_MODE_FLAG! requested but dev config file not found: "!DEV_CONFIG!"
-  )
-)
-
 if defined CHAT_MODEL (
   where ollama >nul 2>&1
   if errorlevel 1 (
@@ -69,18 +36,6 @@ if defined CHAT_MODEL (
       echo Warning: failed to pull model "!CHAT_MODEL!". Continuing startup.
     )
   )
-)
-
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
-if defined BACKEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %BACKEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
-)
-
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %FRONTEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "FRONTEND_PID=%%P"
-if defined FRONTEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %FRONTEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
 )
 
 if defined CHAT_MODEL (
@@ -104,16 +59,6 @@ if "%BACKEND_READY%"=="0" (
   echo Warning: backend on port %BACKEND_PORT% is not ready yet.
 )
 
-if "%DEV_MODE%"=="1" (
-  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
-) else if "%DEV_MODE%"=="3" (
-  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_AI_DEV_MODE=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
-) else if "%DEV_MODE%"=="2" (
-  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
-) else if "%DEV_MODE%"=="4" (
-  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_AI_DEFAULT_OLLAMA_ENDPOINT=!DEV_OLLAMA_ENDPOINT! && set VITE_AI_DEFAULT_OLLAMA_MODEL=llama3.1:8b && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
-) else (
-  start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
-)
+start "Frontend (AI)" /D "%ROOT%frontend" cmd /k "set VITE_AI_ENABLED=1 && set VITE_PROXY_TARGET=http://127.0.0.1:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
 timeout /t 2 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"

@@ -1270,6 +1270,7 @@ def single_protein_boxplot_route(
     heightCm: float = 10,
     dpi: int = 300,
     advanced: str = "",
+    sampleN: bool = True,
 ) -> Response:
     try:
         return _png_response(
@@ -1281,6 +1282,7 @@ def single_protein_boxplot_route(
                 data_source=dataSource,
                 outliers=outliers,
                 dots=dots,
+                sample_n=sampleN,
                 random_seed=randomSeed,
                 header=header,
                 legend=legend,
@@ -1764,9 +1766,12 @@ def phospho_ksea_uploaded_volcano_route(
         ensure_upload_size(fileTnc, label="KSEA Y result file")
         df_st = read_dataframe(fileSt.filename, fileSt.file)
         df_tnc = read_dataframe(fileTnc.filename, fileTnc.file)
-        return HTMLResponse(
+        from app.services.assistant_snapshots import store_snapshot
+        evidence = {}
+        response = HTMLResponse(
             content=ksea_uploaded_volcano_html(
                 st_results=df_st,
+                evidence_out=evidence,
                 tnc_results=df_tnc,
                 p_value_threshold=pValueThreshold,
                 header=header,
@@ -1778,6 +1783,8 @@ def phospho_ksea_uploaded_volcano_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
+        response.headers["X-Copylot-Evidence"] = store_snapshot(evidence)
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ModuleNotFoundError as e:

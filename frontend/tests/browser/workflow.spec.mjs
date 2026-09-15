@@ -3,7 +3,7 @@ import { verifyAuthStartup, tabRequest } from './authStartup.mjs';
 import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 
-// Real UI + real API, no API response stubs. Synthetic log2 values only.
+// Real UI and synthetic log2 data; assistant replies and selected failure cases are mocked.
 // Native-picker cancellation is simulated explicitly in its boundary test.
 const samples = ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4'];
 const metadata = 'sample,condition,pair_id\n' + samples.map(s => `${s},${s[0]},${s[1]}`).join('\n');
@@ -19,6 +19,919 @@ const sites = ['UPD_seq,PTM_localization,Protein_group,Gene_group,PTM_Collapse_k
 const field = (page, label, tag = 'select') => page.getByLabel(label, { exact: true }).or(
   page.locator('label:not(:has(input, select, textarea))').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).locator('..').locator(tag));
 const tab = (page, name) => page.getByRole('button', { name, exact: true });
+
+test('scientific assistant navigates, selects an entity and applies cumulative plot styling', async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; provider answers are synthetic.');
+  await annotated(page);
+  let calls = 0;
+  let selectedProtein;
+  let releaseStaleReply;
+  await page.route('**/api/chat/assistant', async route => {
+    const { view } = route.request().postDataJSON();
+    const action = (label, value, type) => {
+      const control = view.controls.find(c => c.label.includes(label) && (!type || c.type === type));
+      expect(control, `Available controls: ${view.controls.map(c => c.label).join('; ')}`).toBeTruthy();
+      return { type: 'set_control', target: control.id, value };
+    };
+    let actions = [];
+    if (calls === 0) actions = [{ type: 'navigate', target: 'singleProtein.boxplot', value: '' }];
+    if (calls === 1) {
+      const control = view.controls.find(c => c.label === 'Protein / Site');
+      expect(control).toBeTruthy();
+      selectedProtein = control.options.find(value => value && value !== control.value);
+      expect(selectedProtein).toBeTruthy();
+      actions = [action('Protein / Site', selectedProtein)];
+    }
+    if (calls === 2) actions = [{ type: 'advanced_options', target: '', value: true }];
+    if (calls === 3) actions = [action('Top', false, 'checkbox'), action('X tick rotation', '45', 'number')];
+    if (calls === 4) actions = [action('Condition colors / A', '#ff0000', 'color'), action('Sample names / A1', 'Control 1', 'text')];
+    if (calls === 6) {
+      const memory = route.request().postDataJSON().conversationState;
+      expect(memory.status).toBe('completed');
+      expect(memory.selections).toContainEqual({ label: 'Protein / Site', value: selectedProtein });
+      expect(memory.completed.length).toBeGreaterThan(0);
+      await new Promise(resolve => { releaseStaleReply = resolve; });
+    }
+    calls++;
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ model: 'synthetic', answer: actions.length ? '' : 'View updated.', actions, evidence: [], revision: 1 }) });
+  });
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Open the protein boxplot, select a protein, remove the top border, rotate labels, change the condition color and rename sample A1.');
+  await tab(page, 'Send').click();
+  await tab(page, 'Confirm and send').click();
+  await expect(page.getByText(/View updated\./)).toBeVisible({ timeout: 45000 });
+  expect(calls).toBe(6);
+  await expect(page.getByRole('combobox', { name: 'Protein / Site', exact: true })).toHaveValue(selectedProtein);
+  const settings = await page.evaluate(() => JSON.parse(sessionStorage.getItem('copylot:activeAdvancedPlotSettings')));
+  expect(settings).toMatchObject({ axisLineTop: false, xTickLabelRotation: 45, conditionColors: { A: '#ff0000' }, sampleLabels: { A1: 'Control 1' } });
+  const plot = page.locator('main img').first();
+  await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  await page.getByPlaceholder('Ask about this analysis...').fill('Explain the current plot.');
+  await tab(page, 'Send').click();
+  await expect.poll(() => typeof releaseStaleReply).toBe('function');
+  await tab(page, 'Protein Lineplot').click();
+  releaseStaleReply();
+  await expect(page.getByText('The view or analysis changed while I was working. Please retry.', { exact: true })).toBeVisible();
+});
+
+test('scientific assistant explains the updated view after a mixed request', async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; all assistant responses are scripted.');
+  await annotated(page);
+  const requests = [];
+  await page.route('**/api/chat/assistant', async route => {
+    const payload = route.request().postDataJSON();
+    requests.push(payload);
+    const step = requests.length;
+    expect(step).toBeLessThanOrEqual(3);
+    if (step > 1) expect(payload.view.module).toBe('singleProtein.boxplot');
+    if (step === 3) {
+      expect(payload.answerOnly).toBe(true);
+      expect(payload.receipts).toHaveLength(1);
+      expect(payload.receipts[0]).toMatch(/^Opened /);
+      expect(payload.view.mode).toBe(requests[1].view.mode);
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      model: 'scripted-no-inference', revision: 1,
+      explainAfterChanges: step === 1,
+      actions: step === 1 ? [{ type: 'navigate', target: 'singleProtein.boxplot' }] : [],
+      answer: step === 3 ? 'This scripted explanation refers to the updated protein boxplot.' : '',
+      evidence: step === 3 ? [{ tool: 'Simulation', status: 'available', text: 'Scripted transport fixture, not a model evaluation.' }] : [],
+    }) });
+  });
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Open the protein boxplot and explain it.');
+  await tab(page, 'Send').click();
+  await tab(page, 'Confirm and send').click();
+  await expect(page.getByText(/This scripted explanation refers to the updated protein boxplot\./)).toBeVisible({ timeout: 45000 });
+  expect(requests).toHaveLength(3);
+  expect(requests.map(request => request.answerOnly)).toEqual([false, false, true]);
+  const plot = page.locator('main img').first();
+  await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+});
+
+test('scientific assistant can set multiline volcano highlight terms', async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; assistant responses are scripted.');
+  await annotated(page);
+  await tab(page, 'Statistical Analysis').click();
+  const highlight = page.getByLabel('Highlight terms', { exact: true });
+  await expect(highlight).toBeVisible();
+  let calls = 0;
+  page.on('dialog', dialog => { throw new Error(`Unexpected scientific approval: ${dialog.message()}`); });
+  await page.route('**/api/chat/assistant', async route => {
+    const { view } = route.request().postDataJSON();
+    const control = view.controls.find(item => item.label === 'Highlight terms');
+    expect(control).toMatchObject({ type: 'text', permission: 'view' });
+    if (calls) expect(control.value).toBe('G1\nG2');
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      model: 'scripted', revision: 1, evidence: [],
+      actions: calls++ === 0 ? [{ type: 'set_control', target: control.id, value: 'G1\nG2' }] : [],
+      answer: calls === 1 ? '' : 'Highlight selection updated.',
+    }) });
+  });
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Highlight terms G1 and G2.');
+  await tab(page, 'Send').click();
+  await tab(page, 'Confirm and send').click();
+  await expect(page.getByText('Highlight selection updated.', { exact: false })).toBeVisible({ timeout: 45000 });
+  await expect(highlight).toHaveValue('G1\nG2');
+  expect(calls).toBe(2);
+});
+
+for (const destination of ['stats.simulation', 'data.distribution', 'phospho.ksea', 'analysis.canvas']) {
+  test(`scientific assistant receives current context for ${destination}`, async ({ page }) => {
+    test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; assistant responses are scripted.');
+    await annotated(page);
+    let calls = 0;
+    await page.route('**/api/chat/assistant', async route => {
+      const { view } = route.request().postDataJSON();
+      if (calls) {
+        expect(view.module).toBe(destination);
+        const mode = JSON.parse(view.mode);
+        expect(mode.kind).toBe('phospho');
+        if (destination === 'analysis.canvas') expect(Array.isArray(mode.tiles)).toBe(true);
+        if (destination === 'data.distribution') expect(mode.randomSeed).toBe(187);
+        if (destination === 'phospho.ksea') expect(mode.source).toBe('volcano');
+        if (destination === 'stats.simulation') expect(mode.status === 'incomplete_parameters' || mode.source === 'volcano').toBe(true);
+      }
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        model: 'scripted', revision: 1, evidence: [],
+        actions: calls++ === 0 ? [{ type: 'navigate', target: destination }] : [],
+        answer: calls === 1 ? '' : 'Current context captured.',
+      }) });
+    });
+    await tab(page, 'Open chatbot sidebar').click();
+    await tab(page, 'Toggle AI settings').click();
+    await page.getByLabel('Select chatbot provider').selectOption('openai');
+    await page.getByPlaceholder('Ask about this analysis...').fill(`Open ${destination}.`);
+    await tab(page, 'Send').click();
+    await tab(page, 'Confirm and send').click();
+    await expect(page.getByText('Current context captured.', { exact: false })).toBeVisible({ timeout: 45000 });
+    expect(calls).toBe(2);
+  });
+}
+
+async function askForRealEvidence(page) {
+  const firstRequest = await tab(page, 'Open chatbot sidebar').isVisible();
+  if (firstRequest) {
+    await tab(page, 'Open chatbot sidebar').click();
+    await tab(page, 'Toggle AI settings').click();
+    await page.getByLabel('Select chatbot provider').selectOption('openai');
+  }
+  await page.getByPlaceholder('Ask about this analysis...').fill('Explain the current plot.');
+  const pending = page.waitForResponse(r => r.url().endsWith('/api/chat/assistant'));
+  await tab(page, 'Send').click();
+  const confirmation = tab(page, 'Confirm and send');
+  if (firstRequest) await confirmation.click();
+  const response = await pending;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const payload = await response.json();
+  expect(payload.model).toBe('scripted-no-inference');
+  return { request: response.request().postDataJSON(), ...payload };
+}
+
+test('end-to-end evidence reads uploaded KSEA values and preserves rendered settings', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  const annotation = await annotated(page);
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  for (const label of ['Serine/Threonine Result File', 'Tyrosine/Non-canonical Result File']) {
+    await page.getByLabel(label).setInputFiles({ name: 'synthetic.csv', mimeType: 'text/csv',
+      buffer: Buffer.from('Kinase,Frequency Factor,Adjusted p-value\nAKT1,4,0.02\n') });
+  }
+  const rendered = page.waitForResponse(r => r.url().endsWith('/api/plots/phospho/ksea-volcano.html'));
+  await tab(page, 'Generate KSEA Volcano').click();
+  const token = (await rendered).headers()['x-copylot-evidence'];
+  expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
+  const first = await askForRealEvidence(page);
+  expect(JSON.parse(first.request.view.mode)).toMatchObject({ externalPlotPresent: true, externalEvidenceToken: token });
+  expect(first.evidence).toHaveLength(1);
+  expect(first.evidence[0].text).toContain('log2ff=2');
+  expect(first.evidence[0].text).toContain('adj_pval=0.02');
+  expect(first.evidence[0].text).toContain('result_group=S/T');
+  expect(first.evidence[0].text).toContain('result_group=Y');
+  await field(page, 'KSEA Volcano P-value Threshold', 'input').fill('0.01');
+  await field(page, 'KSEA Volcano P-value Threshold', 'input').blur();
+  const unchanged = await askForRealEvidence(page);
+  expect(unchanged.evidence).toEqual(first.evidence);
+  const rerendered = page.waitForResponse(r => r.url().endsWith('/api/plots/phospho/ksea-volcano.html'));
+  await tab(page, 'Generate KSEA Volcano').click();
+  await rerendered;
+  const updated = await askForRealEvidence(page);
+  expect(updated.evidence[0].text).toContain('threshold=0.01');
+  expect(updated.evidence[0].text).toContain('Not significant');
+  const regenerated = await tabRequest(page).post('/api/annotations/generate', { data: annotation.sent });
+  expect(regenerated.ok(), await regenerated.text()).toBeTruthy();
+  const stale = await askForRealEvidence(page);
+  expect(stale.evidence).toHaveLength(1);
+  expect(stale.evidence[0].status).toBe('unavailable');
+});
+
+test('end-to-end evidence follows canvas contrast and p-value changes', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  await annotated(page);
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  await canvas.locator('select').first().selectOption('volcano');
+  await tab(page, '+ Add Plot').click();
+  await canvas.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await canvas.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  const first = await askForRealEvidence(page);
+  const tile = first.evidence.find(e => e.tool.includes(': volcano'));
+  await expect(canvas.locator('svg').getByText('-log10(BH-adjusted p-value)', { exact: true })).toBeVisible();
+  expect(tile.status).not.toBe('unavailable');
+  expect(tile.text).toContain('p_metric=BH-adjusted');
+  expect(tile.text).toContain('log2FC=');
+  await canvas.getByRole('combobox', { name: 'P-value mode', exact: true }).selectOption('uncorrected');
+  await canvas.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('B');
+  await canvas.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('A');
+  const changed = await askForRealEvidence(page);
+  const settings = JSON.parse(changed.request.view.mode).tileEvidence.find(t => t.type === 'volcano').settings;
+  expect(settings).toMatchObject({ condition1: 'B', condition2: 'A', useUncorrected: true });
+  const rawTile = changed.evidence.find(e => e.tool.includes(': volcano'));
+  await expect(canvas.locator('svg').getByText('-log10(p-value)', { exact: true })).toBeVisible();
+  expect(rawTile.text).toContain('p_metric=raw');
+  expect(rawTile.text).not.toEqual(tile.text);
+  const actualResponse = await tabRequest(page).post('/api/analysis/volcano/data', { data: settings });
+  expect(actualResponse.ok(), await actualResponse.text()).toBeTruthy();
+  const actual = await actualResponse.json();
+  expect(rawTile.text).toContain(`totalRows=${actual.totalRows}`);
+  expect(rawTile.text).toContain(`log2FC=${actual.points[0].log2FC}`);
+  expect(rawTile.text).toContain(`negLog10P=${actual.points[0].negLog10P}`);
+  for (const type of ['proteinBoxplot', 'proteinLineplot', 'oraList']) {
+    await canvas.locator('select').first().selectOption(type);
+    await tab(page, '+ Add Plot').click();
+  }
+  for (const control of await canvas.getByRole('combobox', { name: 'Protein source', exact: true }).all()) {
+    await control.selectOption('manual');
+  }
+  await canvas.getByRole('textbox', { name: 'Protein or gene', exact: true }).fill('K1');
+  await canvas.getByRole('textbox', { name: 'Proteins or genes (comma, space, or newline)', exact: true }).fill('K1 K2');
+  const mixed = await askForRealEvidence(page);
+  const specs = JSON.parse(mixed.request.view.mode).tileEvidence;
+  expect(specs.find(t => t.type === 'proteinBoxplot').settings).toMatchObject({ protein: 'K1', conditions: ['B', 'A'] });
+  expect(specs.find(t => t.type === 'proteinLineplot').settings).toMatchObject({ proteins: ['K1', 'K2'], conditions: ['B', 'A'] });
+  for (const type of ['proteinBoxplot', 'proteinLineplot']) {
+    expect(mixed.evidence.find(e => e.tool.endsWith(type)).status).not.toBe('unavailable');
+  }
+  expect(mixed.evidence.find(e => e.tool.endsWith('oraList')).status).toBe('unavailable');
+  await canvas.locator('select').first().selectOption('volcano');
+  await tab(page, '+ Add Plot').click();
+  await canvas.getByRole('combobox', { name: 'Condition 1', exact: true }).last().selectOption('A');
+  await canvas.getByRole('combobox', { name: 'Condition 2', exact: true }).last().selectOption('B');
+  await canvas.getByRole('combobox', { name: 'P-value mode', exact: true }).last().selectOption('corrected');
+  const multiple = await askForRealEvidence(page);
+  const independent = JSON.parse(multiple.request.view.mode).tileEvidence.filter(tile => tile.type === 'volcano');
+  expect(independent[0].settings).toMatchObject({ condition1: 'B', condition2: 'A', useUncorrected: true });
+  expect(independent[1].settings).toMatchObject({ condition1: 'A', condition2: 'B', useUncorrected: false });
+  const unrelatedRequests = [];
+  const observe = request => {
+    if (request.url().endsWith('/api/analysis/volcano/data') && request.postDataJSON().condition1 === 'B') unrelatedRequests.push(request);
+  };
+  page.on('request', observe);
+  for (const metric of ['uncorrected', 'corrected']) {
+    const updated = page.waitForResponse(response => response.url().endsWith('/api/analysis/volcano/data') && response.request().postDataJSON().condition1 === 'A');
+    await canvas.getByRole('combobox', { name: 'P-value mode', exact: true }).last().selectOption(metric);
+    expect((await updated).ok()).toBeTruthy();
+  }
+  page.off('request', observe);
+  expect(unrelatedRequests).toHaveLength(0);
+  const volcanoTiles = multiple.evidence.filter(e => e.tool.endsWith(': volcano'));
+  expect(volcanoTiles).toHaveLength(2);
+  for (const item of volcanoTiles) {
+    const contrast = item.text.match(/volcano_contrast\|([^\n]+)/)[1];
+    expect(multiple.answer).toContain(`${item.tool}: The x-axis is log2 fold change for the contrast ${contrast}`);
+    const metric = item.text.includes('for_significance=pval') ? 'raw' : 'BH-adjusted';
+    expect(multiple.answer).toContain(`${item.tool}: The y-axis is the negative log10 of the ${metric} p-value`);
+  }
+  await canvas.locator(`[data-assistant-tile="${independent[1].id}"] svg circle`).first().click();
+  await expect(page.getByRole('combobox', { name: 'Linked plot source', exact: true })).toHaveValue(independent[1].id);
+  await page.getByRole('combobox', { name: 'Linked plot source', exact: true }).selectOption(independent[0].id);
+  await page.getByRole('combobox', { name: 'Linked plot source', exact: true }).selectOption(independent[1].id);
+  const linked = await askForRealEvidence(page);
+  expect(JSON.parse(linked.request.view.mode).tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['A', 'B']);
+  const styledTile = canvas.locator(`[data-assistant-tile="${independent[1].id}"]`);
+  const statisticalRequests = [];
+  const observeStyle = request => { if (request.url().endsWith('/api/analysis/volcano/data')) statisticalRequests.push(request); };
+  page.on('request', observeStyle);
+  await styledTile.getByText('Plot styling', { exact: true }).click();
+  await styledTile.getByRole('textbox', { name: 'Plot title', exact: true }).fill('A & B <test>');
+  await styledTile.getByRole('textbox', { name: 'Point radius', exact: true }).fill('4');
+  await expect(styledTile.locator('svg')).toContainText('A & B <test>');
+  await expect(styledTile.locator('svg circle title').first()).toContainText('-log10(BH-adjusted p-value)');
+  const pointAttributes = await styledTile.locator('svg circle').evaluateAll(points => points.map(point =>
+    ['cx', 'cy', 'r', 'fill', 'stroke'].map(key => point.getAttribute(key))));
+  const pendingDownload = page.waitForEvent('download');
+  await styledTile.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  const svgDownload = await pendingDownload;
+  expect(svgDownload.suggestedFilename()).toBe(`canvas_${independent[1].id}_volcano.svg`);
+  const svgText = await readFile(await svgDownload.path(), 'utf8');
+  const exportedSvg = await page.evaluate(text => {
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    return {
+      error: !!doc.querySelector('parsererror'), text: doc.documentElement.textContent,
+      points: [...doc.querySelectorAll('circle')].map(point => ['cx', 'cy', 'r', 'fill', 'stroke'].map(key => point.getAttribute(key))),
+      unsafe: !!doc.querySelector('script, test, [data-selection-overlay]'),
+    };
+  }, svgText);
+  expect(exportedSvg.error).toBe(false);
+  expect(exportedSvg.unsafe).toBe(false);
+  expect(exportedSvg.text).toContain('A & B <test>');
+  expect(exportedSvg.text).toContain('-log10(BH-adjusted p-value)');
+  expect(exportedSvg.points).toEqual(pointAttributes);
+  expect(statisticalRequests).toHaveLength(0);
+  page.off('request', observeStyle);
+  await styledTile.getByText('Plot styling', { exact: true }).click();
+  await page.getByRole('button', { name: 'Close chatbot sidebar', exact: true }).click();
+  await styledTile.screenshot({ path: test.info().outputPath('canvas-volcano-desktop.png') });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
+  await styledTile.screenshot({ path: test.info().outputPath('canvas-volcano-narrow.png') });
+  await expect(styledTile.getByRole('button', { name: 'Download SVG', exact: true })).toBeVisible();
+  expect(await styledTile.locator('svg').evaluate(svg => svg.getBoundingClientRect().width <= svg.parentElement.clientWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole('button', { name: 'Open sidebar', exact: true }).click();
+  await page.getByRole('button', { name: 'Open chatbot sidebar', exact: true }).click();
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  await expect(styledTile.locator('svg')).toContainText('A & B <test>');
+  await expect(canvas.locator(`[data-assistant-tile="${independent[0].id}"] svg`)).not.toContainText('A & B <test>');
+  await expect(page.getByRole('combobox', { name: 'Linked plot source', exact: true })).toHaveValue(independent[1].id);
+  const restored = await askForRealEvidence(page);
+  expect(JSON.parse(restored.request.view.mode).tileEvidence.filter(tile => tile.type === 'volcano')).toEqual(independent);
+  await canvas.locator(`[data-assistant-tile="${independent[1].id}"]`).getByRole('button', { name: 'Remove', exact: true }).click();
+  const remaining = await askForRealEvidence(page);
+  expect(JSON.parse(remaining.request.view.mode).tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['B', 'A']);
+});
+
+test('end-to-end evidence preserves canvas data sources and matches dedicated tables', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  await annotated(page);
+  await tab(page, 'Imputation').click();
+  await actionResponse(page, '/api/data-tools/imputation/run', () => tab(page, 'Impute Data Values').click());
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  for (const type of ['volcano', 'proteinBoxplot', 'proteinLineplot']) {
+    await canvas.locator('select').first().selectOption(type);
+    await tab(page, '+ Add Plot').click();
+  }
+  const volcano = canvas.locator('[data-assistant-group="Tile 1: volcano"]');
+  await volcano.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await volcano.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  const pending = page.waitForResponse(response => response.url().endsWith('/api/analysis/volcano/data') && response.request().postDataJSON().dataSource === 'imputed');
+  await volcano.getByRole('combobox', { name: 'Data source', exact: true }).selectOption('imputed');
+  expect((await pending).ok()).toBeTruthy();
+  for (const [index, type, tabName] of [[2, 'proteinBoxplot', 'boxplot'], [3, 'proteinLineplot', 'lineplot']]) {
+    const tile = canvas.locator(`[data-assistant-group="Tile ${index}: ${type}"]`);
+    await tile.getByRole('combobox', { name: 'Protein source', exact: true }).selectOption('manual');
+    await tile.getByRole('textbox').fill('K0');
+    for (const source of ['log2', 'filtered', 'imputed']) {
+      await tile.getByRole('combobox', { name: 'Data source', exact: true }).selectOption(source);
+      const img = tile.locator('img');
+      await expect(img).toHaveAttribute('src', new RegExp(`dataSource=${source}`));
+      await expect.poll(() => img.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+      expect(new URL(await img.getAttribute('src'), page.url()).pathname.endsWith(`/api/plots/single-protein/phospho/${tabName}.png`)).toBe(true);
+      const params = new URLSearchParams({ kind: 'phospho', identifier: 'workflow', conditions: 'A,B', dataSource: source,
+        [tabName === 'boxplot' ? 'protein' : 'proteins']: 'K0' });
+      const actual = await tabRequest(page).get(`/api/analysis/${tabName}-table?${params}`);
+      const expected = await tabRequest(page).get(`/api/plots/single-protein/phospho/${tabName}-table?${params}`);
+      expect(actual.ok(), await actual.text()).toBeTruthy();
+      expect(expected.ok(), await expected.text()).toBeTruthy();
+      expect((await actual.json()).rows).toEqual((await expected.json()).rows);
+    }
+  }
+  for (const [index, type] of [[2, 'proteinBoxplot'], [3, 'proteinLineplot']]) {
+    const tile = canvas.locator(`[data-assistant-group="Tile ${index}: ${type}"]`);
+    await tile.getByText('Plot styling', { exact: true }).click();
+    await tile.getByPlaceholder('Overwrite plot title', { exact: true }).fill(`Styled ${type}`);
+    await expect.poll(async () => JSON.parse(new URL(await tile.locator('img').getAttribute('src'), page.url()).searchParams.get('advanced')).titleElement.text).toBe(`Styled ${type}`);
+    await expect.poll(() => tile.locator('img').evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+    for (const [format, mime] of [['png', 'image/png'], ['jpg', 'image/jpeg'], ['webp', 'image/webp'], ['pdf', 'application/pdf']]) {
+      await tile.getByRole('combobox', { name: 'Export format', exact: true }).selectOption(format);
+      const href = await tile.getByRole('link', { name: 'Download Plot', exact: true }).getAttribute('href');
+      const displayed = new URL(await tile.locator('img').getAttribute('src'), page.url());
+      const exported = new URL(href, page.url());
+      exported.searchParams.delete('downloadFormat');
+      expect(exported.toString()).toBe(displayed.toString());
+      const download = await page.request.get(href);
+      expect(download.ok()).toBeTruthy();
+      expect(download.headers()['content-type']).toContain(mime);
+    }
+    await tile.getByText('Plot styling', { exact: true }).click();
+    await tile.screenshot({ path: test.info().outputPath(`canvas-${type}.png`) });
+  }
+  const evidence = await askForRealEvidence(page);
+  const specs = JSON.parse(evidence.request.view.mode).tileEvidence;
+  expect(specs.every(tile => tile.settings.dataSource === 'imputed')).toBeTruthy();
+  expect(evidence.evidence.filter(item => item.tool.startsWith('canvas tile')).every(item => item.status !== 'unavailable')).toBeTruthy();
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  for (const select of await canvas.getByRole('combobox', { name: 'Data source', exact: true }).all()) {
+    await expect(select).toHaveValue('imputed');
+  }
+  for (const type of ['proteinBoxplot', 'proteinLineplot']) {
+    const tile = canvas.locator(`[data-assistant-group$=": ${type}"]`);
+    const advanced = JSON.parse(new URL(await tile.locator('img').getAttribute('src'), page.url()).searchParams.get('advanced'));
+    expect(advanced.titleElement.text).toBe(`Styled ${type}`);
+  }
+});
+
+for (const kind of ['protein', 'phospho']) test(`end-to-end evidence feature focus resolves ${kind} and preserves scope and existing tiles`, async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  const feature = kind === 'protein' ? 'P0' : 'K0';
+  const level = kind === 'protein' ? 'protein' : 'phosphosite';
+  const table = kind === 'protein' ? ['ProteinNames,GeneNames,' + samples.join(','),
+    ...sites.split('\n').slice(1).map((row, index) => `P${index},G${index},${row.split(',').slice(5).join(',')}`)].join('\n') : sites;
+  await annotated(page, '3', { table, kind });
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  await canvas.getByRole('combobox', { name: 'New tile type', exact: true }).selectOption('oraList');
+  await tab(page, '+ Add Plot').click();
+  const originalId = await canvas.locator('[data-assistant-tile]').first().getAttribute('data-assistant-tile');
+  await page.getByPlaceholder('Paste genes separated by comma, space, or newline').fill('KEEP');
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  async function focus(message, confirm = false) {
+    await page.getByPlaceholder('Ask about this analysis...').fill(message);
+    const response = page.waitForResponse(r => r.url().endsWith('/api/chat/assistant'));
+    await tab(page, 'Send').click();
+    if (confirm) await tab(page, 'Confirm and send').click();
+    const result = await response;
+    expect(result.ok(), await result.text()).toBeTruthy();
+    return result.json();
+  }
+  const result = await focus(`Focus canvas on ${level} ${feature}`, true);
+  expect(result.actions[0].type).toBe('focus_canvas');
+  await expect(canvas.locator('[data-assistant-tile]')).toHaveCount(4);
+  const volcano = canvas.locator('[data-assistant-group="Tile 2: volcano"]');
+  await expect(volcano.locator('svg circle[stroke="#334155"]')).toHaveCount(1);
+  const box = canvas.locator('[data-assistant-group="Tile 3: proteinBoxplot"]');
+  await expect(box.getByRole('textbox', { name: 'Protein or gene', exact: true })).toHaveValue(feature);
+  await expect(box.locator('img')).toBeVisible();
+  await expect(box.locator('img')).toHaveAttribute('src', /identifier=workflow/);
+  const ids = await canvas.locator('[data-assistant-tile]').evaluateAll(nodes => nodes.map(node => node.dataset.assistantTile));
+  await focus(`Focus canvas on ${level} ${feature}`);
+  await expect(canvas.locator('[data-assistant-tile]')).toHaveCount(4);
+  expect(await canvas.locator('[data-assistant-tile]').evaluateAll(nodes => nodes.map(node => node.dataset.assistantTile))).toEqual(ids);
+  const unavailable = await focus(kind === 'phospho' ? 'Focus canvas on protein P0' : 'Focus canvas on phosphosite K0');
+  expect(unavailable.needsClarification).toBe(true);
+  expect(unavailable.actions).toEqual([]);
+  await expect(canvas.locator('[data-assistant-tile]').first()).toHaveAttribute('data-assistant-tile', originalId);
+  await expect(page.getByPlaceholder('Paste genes separated by comma, space, or newline')).toHaveValue('KEEP');
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  await expect(volcano.locator('svg circle[stroke="#334155"]')).toHaveCount(1);
+  await expect(box.locator('img')).toBeVisible();
+  if (kind === 'phospho') {
+    await focus('Focus canvas on all phosphosites on protein P0');
+    await expect(canvas.locator('[data-assistant-tile]')).toHaveCount(8);
+    await expect(canvas.locator('[data-assistant-group="Tile 5: volcano"] svg circle[stroke="#334155"]')).toHaveCount(2);
+    await expect(canvas.locator('[data-assistant-group="Tile 7: proteinBoxplot"] input').first()).toHaveValue('K1');
+    await expect(canvas.locator('[data-assistant-group="Tile 8: proteinLineplot"] textarea')).toHaveValue('K0\nK1');
+  }
+});
+
+test('large canvas preserves selected points and avoids requests during layout changes', async ({ page }) => {
+  test.setTimeout(120000);
+  const count = 5000;
+  const table = [sites.split('\n')[0], ...Array.from({ length: count }, (_, i) => [
+    `SEQ${i}S`, `S${i}`, `P${i}`, `G${i}`, `K${i}`,
+    ...samples.map((_, j) => (12 + (i % 100) * .03 + (j % 4) * .12 + ((i * j) % 3) * .07 + (j >= 4 ? 2 : 0)).toFixed(4)),
+  ].join(','))].join('\n');
+  await annotated(page, '3', { table });
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  for (let i = 0; i < 2; i++) {
+    await canvas.getByRole('combobox', { name: 'New tile type', exact: true }).selectOption('volcano');
+    await tab(page, '+ Add Plot').click();
+    const tile = canvas.locator('[data-assistant-tile]').last();
+    await tile.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+    await tile.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+    await expect(tile.locator('svg circle')).toHaveCount(count);
+  }
+  const id = await canvas.locator('[data-assistant-tile]').first().getAttribute('data-assistant-tile');
+  const tile = canvas.locator(`[data-assistant-tile="${id}"]`);
+  await tile.getByRole('button', { name: 'Add all upregulated to list', exact: true }).click();
+  await tile.getByRole('button', { name: 'Multi-select mode: Off', exact: true }).click();
+  await tile.getByRole('button', { name: 'Select list in plot', exact: true }).click();
+  await expect(tile.locator('svg circle[stroke="#334155"]')).toHaveCount(count);
+  const firstPoint = await tile.locator('svg circle').first().elementHandle();
+  const lastPoint = await tile.locator('svg circle').last().elementHandle();
+  const requests = [];
+  const observe = request => { if (/\/api\/(analysis|plots)\//.test(request.url())) requests.push(request.url()); };
+  page.on('request', observe);
+  const start = performance.now();
+  for (let i = 0; i < 3; i++) {
+    await tile.getByRole('button', { name: 'Collapse tile', exact: true }).click();
+    await tile.getByRole('button', { name: 'Move tile down', exact: true }).click();
+    await tile.getByRole('button', { name: 'Expand tile', exact: true }).click();
+    await tile.getByRole('button', { name: 'Move tile up', exact: true }).click();
+  }
+  const elapsed = performance.now() - start;
+  expect(requests).toEqual([]);
+  page.off('request', observe);
+  await expect(tile.locator('svg circle[stroke="#334155"]')).toHaveCount(count);
+  expect(await firstPoint.evaluate(node => node.isConnected)).toBe(true);
+  expect(await lastPoint.evaluate(node => node.isConnected)).toBe(true);
+  await expect(page.getByRole('combobox', { name: 'Linked plot source', exact: true })).toHaveValue(id);
+  await test.info().attach('large-canvas-layout', { body: JSON.stringify({ pointsPerTile: count, tiles: 2, selected: count, layoutActions: 12, elapsedMs: Math.round(elapsed), requests: requests.length }), contentType: 'application/json' });
+  console.info(`Large canvas: ${count} selected points, 12 layout actions in ${Math.round(elapsed)} ms, ${requests.length} plot requests.`);
+});
+
+test('canvas plot loading hides old results and failed renders can be retried', async ({ page }) => {
+  await annotated(page);
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  await canvas.getByRole('combobox', { name: 'New tile type', exact: true }).selectOption('volcano');
+  await tab(page, '+ Add Plot').click();
+  const volcano = canvas.locator('[data-assistant-tile]').first();
+  await volcano.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
+  await volcano.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
+  await expect(volcano.locator('svg circle').first()).toBeVisible();
+  let releaseVolcano;
+  const volcanoGate = new Promise(resolve => { releaseVolcano = resolve; });
+  const volcanoRoute = '**/api/analysis/volcano/data';
+  await page.route(volcanoRoute, async route => {
+    await volcanoGate;
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Temporary plot failure' }) });
+  });
+  await volcano.getByRole('combobox', { name: 'P-value mode', exact: true }).selectOption('uncorrected');
+  await expect(volcano.getByRole('status')).toHaveText('Loading plot…');
+  await expect(volcano.locator('svg')).toHaveCount(0);
+  releaseVolcano();
+  await expect(volcano.getByRole('alert')).toContainText('Temporary plot failure');
+  await page.unroute(volcanoRoute);
+  await volcano.getByRole('button', { name: 'Retry plot', exact: true }).click();
+  await expect(volcano.locator('svg circle').first()).toBeVisible();
+  await expect(volcano.locator('svg')).toContainText('-log10(p-value)');
+
+  for (const [type, name] of [['proteinBoxplot', 'boxplot'], ['proteinLineplot', 'lineplot']]) {
+    await canvas.getByRole('combobox', { name: 'New tile type', exact: true }).selectOption(type);
+    await tab(page, '+ Add Plot').click();
+    const tile = canvas.locator('[data-assistant-tile]').last();
+    await tile.getByRole('combobox', { name: 'Protein source', exact: true }).selectOption('manual');
+    await tile.getByRole('textbox').fill('K0');
+    await expect(tile.locator('img')).toBeVisible();
+    let releaseImage;
+    const imageGate = new Promise(resolve => { releaseImage = resolve; });
+    const imageRoute = `**/${name}.png?*`;
+    await page.route(imageRoute, async route => {
+      await imageGate;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+    await tile.getByRole('textbox').fill('K1');
+    await expect(tile.getByRole('status')).toHaveText('Loading plot…');
+    await expect(tile.locator('img')).toBeHidden();
+    await expect(tile.getByRole('link', { name: 'Download Plot', exact: true })).toHaveCount(0);
+    releaseImage();
+    await expect(tile.getByRole('alert')).toContainText('Could not render');
+    await page.unroute(imageRoute);
+    await tile.getByRole('button', { name: 'Retry plot', exact: true }).click();
+    await expect(tile.locator('img')).toBeVisible();
+    await expect(tile.locator('img')).toHaveAttribute('src', /_retry=1/);
+    await expect(tile.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', await tile.locator('img').getAttribute('src'));
+  }
+});
+
+test('canvas layout preserves automatic linking, order and collapsed state', async ({ page }) => {
+  await annotated(page);
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  for (let index = 0; index < 2; index++) {
+    await canvas.getByRole('combobox', { name: 'New tile type', exact: true }).selectOption('volcano');
+    await tab(page, '+ Add Plot').click();
+    const tile = canvas.locator('[data-assistant-tile]').nth(index);
+    await tile.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption(index ? 'B' : 'A');
+    await tile.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption(index ? 'A' : 'B');
+    await expect(tile.locator('svg circle').first()).toBeVisible();
+  }
+  const ids = await canvas.locator('[data-assistant-tile]').evaluateAll(nodes => nodes.map(node => node.dataset.assistantTile));
+  const first = canvas.locator(`[data-assistant-tile="${ids[0]}"]`);
+  const second = canvas.locator(`[data-assistant-tile="${ids[1]}"]`);
+  const linked = page.getByRole('combobox', { name: 'Linked plot source', exact: true });
+  await expect(linked).toHaveValue(ids[0]);
+  await expect(first.getByRole('button', { name: 'Move tile up', exact: true })).toBeDisabled();
+  await expect(second.getByRole('button', { name: 'Move tile down', exact: true })).toBeDisabled();
+  const requests = [];
+  const observe = request => { if (request.url().endsWith('/api/analysis/volcano/data')) requests.push(request); };
+  page.on('request', observe);
+  await first.getByRole('button', { name: 'Collapse tile', exact: true }).click();
+  await expect(first.locator('svg')).toBeHidden();
+  await second.getByRole('button', { name: 'Move tile up', exact: true }).click();
+  await expect(canvas.locator('[data-assistant-tile]').first()).toHaveAttribute('data-assistant-tile', ids[1]);
+  await expect(linked).toHaveValue(ids[0]);
+  await expect(first.getByRole('button', { name: 'Expand tile', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  expect(requests).toHaveLength(0);
+  page.off('request', observe);
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  await expect(canvas.locator('[data-assistant-tile]').first()).toHaveAttribute('data-assistant-tile', ids[1]);
+  await expect(linked).toHaveValue(ids[0]);
+  await expect(first.locator('svg')).toBeHidden();
+  await first.getByRole('button', { name: 'Expand tile', exact: true }).click();
+  await expect(first.locator('svg circle').first()).toBeVisible();
+  await expect(first.getByRole('combobox', { name: 'Condition 1', exact: true })).toHaveValue('A');
+  await canvas.screenshot({ path: test.info().outputPath('canvas-layout-controls.png') });
+});
+
+test('end-to-end evidence follows completed ORA results and clearing', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  await annotated(page);
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  await canvas.locator('select').first().selectOption('oraList');
+  await tab(page, '+ Add Plot').click();
+  await page.getByPlaceholder('Paste genes separated by comma, space, or newline').fill('AKT1 EGFR MAPK1 MAPK3');
+  await canvas.getByRole('combobox', { name: 'Background', exact: true }).selectOption('global');
+  await field(canvas, 'Adj p-value cutoff', 'input').fill('1');
+  let runs = 0;
+  page.on('request', request => { if (request.url().endsWith('/api/stats/ora/list/run')) runs++; });
+  const completed = page.waitForResponse(r => r.url().endsWith('/api/stats/ora/list/run'));
+  await tab(page, 'Run ORA').click();
+  const response = await completed;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const actual = await response.json();
+  expect(actual.terms.length).toBeGreaterThan(0);
+  expect(actual.evidenceToken).toMatch(/^[A-Za-z0-9_-]+$/);
+  const first = await askForRealEvidence(page);
+  const tile = first.evidence.find(e => e.tool.endsWith('oraList'));
+  expect(tile.status).not.toBe('unavailable');
+  expect(tile.text).toContain(`termId=${actual.terms[0].termId}`);
+  expect(Number(tile.text.match(/\|adjPValue=([^|\n]+)/)[1])).toBe(actual.terms[0].adjPValue);
+  expect(JSON.parse(first.request.view.mode).tileEvidence[0].token).toBe(actual.evidenceToken);
+  const exportLink = page.getByRole('link', { name: 'Download Terms CSV', exact: true });
+  const originalExport = await exportLink.getAttribute('href');
+  await page.getByPlaceholder('Paste genes separated by comma, space, or newline').fill('TP53');
+  await field(canvas, 'Adj p-value cutoff', 'input').fill('0.5');
+  await field(canvas, 'Min term size', 'input').fill('10');
+  await field(canvas, 'Max term size', 'input').fill('400');
+  await field(canvas, 'Top terms', 'input').fill('5');
+  await expect(exportLink).toHaveAttribute('href', originalExport);
+  await canvas.getByRole('button', { name: 'Collapse tile', exact: true }).click();
+  await expect(exportLink).toBeHidden();
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  await expect(canvas.getByRole('button', { name: 'Expand tile', exact: true })).toBeVisible();
+  await canvas.getByRole('button', { name: 'Expand tile', exact: true }).click();
+  await expect(page.getByPlaceholder('Paste genes separated by comma, space, or newline')).toHaveValue('TP53');
+  await expect(field(canvas, 'Adj p-value cutoff', 'input')).toHaveValue('0.5');
+  await expect(field(canvas, 'Min term size', 'input')).toHaveValue('10');
+  await expect(field(canvas, 'Max term size', 'input')).toHaveValue('400');
+  await expect(field(canvas, 'Top terms', 'input')).toHaveValue('5');
+  await expect(exportLink).toHaveAttribute('href', originalExport);
+  const edited = await askForRealEvidence(page);
+  expect(edited.evidence).toEqual(first.evidence);
+  expect(runs).toBe(1);
+  const rerun = page.waitForResponse(r => r.url().endsWith('/api/stats/ora/list/run'));
+  await tab(page, 'Run ORA').click();
+  const rerunResponse = await rerun;
+  expect(rerunResponse.ok(), await rerunResponse.text()).toBeTruthy();
+  const updatedResult = await rerunResponse.json();
+  const updated = await askForRealEvidence(page);
+  expect(JSON.parse(updated.request.view.mode).tileEvidence[0].token).toBe(updatedResult.evidenceToken);
+  expect(updatedResult.evidenceToken).not.toBe(actual.evidenceToken);
+  expect(updated.evidence.find(e => e.tool.endsWith('oraList')).text).toContain('querySize=1');
+  expect(runs).toBe(2);
+  await tab(page, 'Clear Result').click();
+  const cleared = await askForRealEvidence(page);
+  expect(cleared.evidence.find(e => e.tool.endsWith('oraList')).status).toBe('unavailable');
+  expect(JSON.parse(cleared.request.view.mode).tileEvidence[0].token).toBe('');
+  expect(runs).toBe(2);
+  await tab(page, 'QC Pipeline').click();
+  await tab(page, 'Analysis').click();
+  await expect(exportLink).toHaveCount(0);
+  const stillCleared = await askForRealEvidence(page);
+  expect(stillCleared.evidence.find(e => e.tool.endsWith('oraList')).status).toBe('unavailable');
+  expect(runs).toBe(2);
+  let release;
+  let entered;
+  const held = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  await page.route('**/api/stats/ora/list/run', async route => {
+    entered();
+    await held;
+    await route.fulfill({ json: actual });
+  });
+  await tab(page, 'Run ORA').click();
+  await started;
+  await tab(page, 'Clear Result').click();
+  release();
+  await expect(tab(page, 'Run ORA')).toBeEnabled();
+  const afterCancelled = await askForRealEvidence(page);
+  expect(afterCancelled.evidence.find(e => e.tool.endsWith('oraList')).status).toBe('unavailable');
+  await expect(exportLink).toHaveCount(0);
+});
+
+test('end-to-end evidence follows control volcano contrasts and removal', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
+  const names = ['A', 'B', 'C', 'D'].flatMap(group => [1, 2, 3, 4].map(n => `${group}${n}`));
+  const table = ['UPD_seq,PTM_localization,Protein_group,Gene_group,PTM_Collapse_key,' + names.join(','),
+    ...Array.from({ length: 24 }, (_, i) => [`SEQ${i}S`, `S${i}`, `P${i}`, `G${i}`, `K${i}`,
+      ...names.map((_, j) => (12 + i * .3 + Math.floor(j / 4) * .7 + (j % 4) * .11 + (i * j % 3) * .04).toFixed(4))].join(','))].join('\n');
+  const meta = 'sample,condition,pair_id\n' + names.map(s => `${s},${s[0]},${s[1]}`).join('\n');
+  await annotated(page, '3', { table, meta });
+  await tab(page, 'Analysis').click();
+  const canvas = page.getByRole('heading', { name: 'Analysis Canvas', exact: true }).locator('..').locator('..');
+  await canvas.locator('select').first().selectOption('volcanoControl');
+  await tab(page, '+ Add Plot').click();
+  for (const [label, value] of [['Condition 1', 'A'], ['Condition 2', 'B'], ['Condition 1 Control', 'C'], ['Condition 2 Control', 'D']]) {
+    await canvas.getByRole('combobox', { name: label, exact: true }).selectOption(value);
+  }
+  for (const raw of [false, true]) {
+    if (raw) {
+      await canvas.getByRole('combobox', { name: 'P-value mode', exact: true }).selectOption('uncorrected');
+      await canvas.getByRole('combobox', { name: 'Condition 1 Control', exact: true }).selectOption('D');
+      await canvas.getByRole('combobox', { name: 'Condition 2 Control', exact: true }).selectOption('C');
+    }
+    const result = await askForRealEvidence(page);
+    const settings = JSON.parse(result.request.view.mode).tileEvidence[0].settings;
+    expect(settings).toMatchObject({ source: 'volcano_control', useUncorrected: raw,
+      condition1: 'A', condition2: 'B', condition1Control: raw ? 'D' : 'C', condition2Control: raw ? 'C' : 'D' });
+    const response = await tabRequest(page).post('/api/analysis/volcano/data', { data: settings });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const actual = await response.json();
+    expect(actual.points.length).toBeGreaterThan(0);
+    const tile = result.evidence.find(e => e.tool.endsWith('volcanoControl'));
+    expect(tile.status).not.toBe('unavailable');
+    expect(tile.text).toContain(`p_metric=${raw ? 'raw' : 'BH-adjusted'}`);
+    expect(Number(tile.text.match(/\|log2FC=([^|\n]+)/)[1])).toBe(actual.points[0].log2FC);
+    expect(Number(tile.text.match(/\|negLog10P=([^|\n]+)/)[1])).toBe(actual.points[0].negLog10P);
+  }
+  await canvas.getByRole('button', { name: 'Remove', exact: true }).click();
+  const removed = await askForRealEvidence(page);
+  expect(JSON.parse(removed.request.view.mode).tileEvidence).toEqual([]);
+  expect(removed.evidence.some(e => e.tool.includes('volcanoControl'))).toBe(false);
+});
+
+test('scientific assistant verifies typed canvas additions and stops', async ({ page }) => {
+  test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the local scripted provider.');
+  await annotated(page);
+  await tab(page, 'Analysis').click();
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  let calls = 0;
+  page.on('request', request => { if (request.url().endsWith('/api/chat/assistant')) calls++; });
+  const cases = [['proteinBoxplot', 'protein boxplot'], ['proteinLineplot', 'protein lineplot'],
+    ['volcano', 'volcano'], ['volcanoControl', 'control volcano'], ['oraList', 'ORA']];
+  let previous = [];
+  for (const [index, [type, name]] of cases.entries()) {
+    await page.getByPlaceholder('Ask about this analysis...').fill(`Add two ${name} tiles to this canvas.`);
+    await tab(page, 'Send').click();
+    if (!index) await tab(page, 'Confirm and send').click();
+    await expect(page.getByText(/Added 2 .* tiles\. Existing plots were kept\./).last()).toBeVisible({ timeout: 45000 });
+    await expect(page.locator(`[data-assistant-tile-type="${type}"]`)).toHaveCount(2);
+    await expect(page.locator('[data-assistant-tile]')).toHaveCount((index + 1) * 2);
+    const current = await page.locator('[data-assistant-tile]').evaluateAll(elements => elements.map(el => el.getAttribute('data-assistant-tile')));
+    expect(previous.every(id => current.includes(id))).toBe(true);
+    previous = current;
+    expect(calls).toBe(index + 1);
+  }
+});
+
+for (const remove of [false, true]) {
+  test(`scientific assistant adds a canvas tile and ${remove ? 'removes it after approval' : 'preserves it after refusal'}`, async ({ page }) => {
+    test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
+    await annotated(page);
+    await tab(page, 'Analysis').click();
+    let calls = 0;
+    await page.route('**/api/chat/assistant', async route => {
+      const { view } = route.request().postDataJSON();
+      expect(view.controls.some(c => /Run ORA|Upload|Generate Annotation/.test(c.label))).toBe(false);
+      const find = label => {
+        const control = view.controls.find(c => c.label.endsWith(label));
+        expect(control, view.controls.map(c => c.label).join('; ')).toBeTruthy();
+        return control.id;
+      };
+      const actions = calls === 0 ? [{ type: 'set_control', target: find('New tile type'), value: 'proteinBoxplot' }]
+        : calls === 1 ? [{ type: 'activate_control', target: find('+ Add Plot') }]
+        : calls === 2 ? [{ type: 'set_control', target: find('Protein source'), value: 'manual' }]
+        : calls === 3 ? [{ type: 'set_control', target: find('Protein or gene'), value: 'K1' }]
+        : calls === 5 ? [{ type: 'activate_control', target: find('Remove') }] : [];
+      calls++;
+      await route.fulfill({ json: { model: 'scripted', revision: 1, actions, evidence: [], answer: actions.length ? '' : 'Canvas updated.' } });
+    });
+    await tab(page, 'Open chatbot sidebar').click();
+    await tab(page, 'Toggle AI settings').click();
+    await page.getByLabel('Select chatbot provider').selectOption('openai');
+    await page.getByPlaceholder('Ask about this analysis...').fill('Add a protein boxplot tile for K1.');
+    await tab(page, 'Send').click();
+    await tab(page, 'Confirm and send').click();
+    await expect(page.getByText(/Canvas updated\./)).toBeVisible({ timeout: 45000 });
+    await expect(page.locator('[data-assistant-tile]')).toHaveCount(1);
+    await expect(page.getByRole('textbox', { name: 'Protein or gene', exact: true })).toHaveValue('K1');
+    page.once('dialog', async dialog => { expect(dialog.message()).toContain('Remove this canvas tile'); if (remove) await dialog.accept(); else await dialog.dismiss(); });
+    await page.getByPlaceholder('Ask about this analysis...').fill('Remove the boxplot tile.');
+    await tab(page, 'Send').click();
+    if (remove) await expect(page.locator('[data-assistant-tile]')).toHaveCount(0);
+    else await expect(page.getByText(/Tile removal was declined/)).toBeVisible();
+    await expect(page.locator('[data-assistant-tile]')).toHaveCount(remove ? 0 : 1);
+  });
+}
+
+test('scientific assistant offers ambiguous feature candidates without selecting', async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
+  await annotated(page);
+  await tab(page, 'Single Protein').click();
+  const selection = page.getByRole('combobox', { name: 'Protein / Site', exact: true });
+  const initial = await selection.inputValue();
+  let calls = 0;
+  await page.route('**/api/chat/assistant', async route => {
+    calls++;
+    const { view } = route.request().postDataJSON();
+    const control = view.controls.find(item => item.label === 'Protein / Site');
+    await route.fulfill({ json: { model: 'scripted', revision: 1, evidence: [], answer: '',
+      actions: [{ type: 'search_options', target: control.id, value: 'K' }] } });
+  });
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Show the site matching K.');
+  await tab(page, 'Send').click();
+  await tab(page, 'Confirm and send').click();
+  await expect(page.getByText(/Which uploaded identifier do you mean/)).toBeVisible();
+  await expect(page.getByText(/No feature was selected by this search/)).toBeVisible();
+  await expect(selection).toHaveValue(initial);
+  expect(calls).toBe(1);
+});
+
+for (const repeatSearch of [false, true]) {
+test(`scientific assistant ${repeatSearch ? 'stops repeated searches without changing selection' : 'searches beyond the advertised entity options without selecting first'}`, async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
+  const table = [sites.split('\n')[0], ...Array.from({ length: 80 }, (_, i) =>
+    [`SEQ${i}S`, `S${i}`, `P${i}`, `G${i}`, `K${i}`, ...samples.map((_, j) => 12 + i * .1 + j * .12)].join(','))].join('\n');
+  await annotated(page, '3', { table });
+  await tab(page, 'Single Protein').click();
+  let calls = 0;
+  let initial;
+  await page.route('**/api/chat/assistant', async route => {
+    const { view } = route.request().postDataJSON();
+    const control = view.controls.find(c => c.label === 'Protein / Site');
+    expect(control.optionCount).toBeGreaterThan(40);
+    if (calls === 0) { initial = control.value; expect(control.options).not.toContain('K79'); }
+    if (calls === 1) { expect(control.value).toBe(initial); expect(control.optionQuery).toBe('K79'); expect(control.options).toEqual(['K79']); expect(control.optionMatchCount).toBe(1); }
+    if (calls === 2) expect(control.value).toBe('K79');
+    const actions = calls === 0 || repeatSearch ? [{ type: 'search_options', target: control.id, value: 'K79' }]
+      : calls === 1 ? [{ type: 'set_control', target: control.id, value: 'K79' }] : [];
+    calls++;
+    await route.fulfill({ json: { model: 'scripted', revision: 1, actions, evidence: [], answer: actions.length ? '' : 'Entity selected.' } });
+  });
+  await tab(page, 'Open chatbot sidebar').click();
+  await tab(page, 'Toggle AI settings').click();
+  await page.getByLabel('Select chatbot provider').selectOption('openai');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Find the last site and select it.');
+  await tab(page, 'Send').click();
+  await tab(page, 'Confirm and send').click();
+  await expect(page.getByText(repeatSearch ? /choose an exact identifier or narrow the search/ : /Entity selected\./)).toBeVisible({ timeout: 45000 });
+  await expect(page.getByRole('combobox', { name: 'Protein / Site', exact: true })).toHaveValue(repeatSearch ? initial : 'K79');
+  expect(calls).toBe(repeatSearch ? 2 : 3);
+});
+}
+
+for (const approved of [false, true]) {
+  test(`scientific assistant ${approved ? 'applies approved' : 'preserves declined'} methodological changes`, async ({ page }) => {
+    test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; provider answers are synthetic.');
+    await annotated(page);
+    await tab(page, 'Statistical Analysis').click();
+    await expect(field(page, 'Test type')).toHaveValue('unpaired');
+    const annotation = await (await tabRequest(page).get('/api/annotations/current/phospho')).json();
+    let calls = 0;
+    let confirmations = 0;
+    page.on('dialog', async dialog => {
+      confirmations++;
+      expect(dialog.type()).toBe('confirm');
+      expect(dialog.message()).toContain('Test type: "unpaired" → "unpaired_welch"');
+      if (approved) await dialog.accept();
+      else await dialog.dismiss();
+    });
+    await page.route('**/api/chat/assistant', async route => {
+      const { view } = route.request().postDataJSON();
+      const control = view.controls.find(c => c.label === 'Test type');
+      expect(control?.permission).toBe('confirm');
+      const actions = calls++ === 0 ? [{ type: 'set_control', target: control.id, value: 'unpaired_welch' }] : [];
+      await route.fulfill({ json: { model: 'synthetic', answer: actions.length ? '' : 'Method updated.', actions, evidence: [], revision: 1 } });
+    });
+    await tab(page, 'Open chatbot sidebar').click();
+    await tab(page, 'Toggle AI settings').click();
+    await page.getByLabel('Select chatbot provider').selectOption('openai');
+    await page.getByPlaceholder('Ask about this analysis...').fill('Use the Welch test.');
+    await tab(page, 'Send').click();
+    await tab(page, 'Confirm and send').click();
+    await expect(page.getByText(approved ? /Method updated\./ : /Requested changes were declined\./)).toBeVisible();
+    expect(confirmations).toBe(1);
+    expect(calls).toBe(approved ? 2 : 1);
+    await expect(field(page, 'Test type')).toHaveValue(approved ? 'unpaired_welch' : 'unpaired');
+    expect(await (await tabRequest(page).get('/api/annotations/current/phospho')).json()).toEqual(annotation);
+  });
+}
 
 test('peptide upload offers peptide and precursor coverage and missing-value plots', async ({ page }) => {
   await page.goto('/');
@@ -71,9 +984,20 @@ test('accessible workflow labels, modal focus and responsive navigation', async 
   await manual.click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
+  const expectFullWindowManual = async () => {
+    const viewport = page.viewportSize();
+    await expect.poll(() => dialog.boundingBox()).toEqual({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+    expect(await dialog.evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
+  };
+  await expectFullWindowManual();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectFullWindowManual();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expectFullWindowManual();
   expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await dialog.getByRole('button', { name: 'Close', exact: true }).focus();
   await page.keyboard.press('Shift+Tab');
-  expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await expect(dialog.getByRole('link', { name: 'Download', exact: true })).toBeFocused();
   await dialog.getByRole('button', { name: 'Close', exact: true }).focus();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
@@ -154,15 +1078,31 @@ for (const section of ['QC Pipeline', 'Completeness']) {
 
 test('shared plot controls preserve numeric editing, bounds, toggles and multiple selection', async ({ page }, info) => {
   await annotated(page);
+  await expect(page.locator('#active-dataset-package')).toHaveCount(0);
+  await expect(page.locator('#active-metadata-profile')).toHaveCount(0);
+  await expect(page.getByText(/No normalization was applied/)).toHaveCount(0);
+  await expect(page.getByText('Metadata Source', { exact: true })).toHaveCount(0);
   await tab(page, 'Single Protein').click();
   await expect(page.getByRole('table').getByRole('cell', { name: 'A', exact: true })).toBeVisible();
   let tableRequests = 0;
-  page.on('request', request => {
-    if (new URL(request.url()).pathname.endsWith('/boxplot-table')) tableRequests++;
-  });
   const plotReady = () => expect.poll(() => page.getByRole('img', { name: 'Protein Boxplot', exact: true })
     .evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
   await plotReady();
+  const sampleN = page.getByLabel('Toggle Sample n', { exact: true });
+  await expect(sampleN).toBeChecked();
+  await sampleN.uncheck();
+  await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /sampleN=false/);
+  await plotReady();
+  await tab(page, 'Analysis').click();
+  await expect(page.getByRole('heading', { name: 'Analysis Pipeline', exact: true })).toHaveCount(0);
+  await tab(page, 'Single Protein').click();
+  await expect(sampleN).not.toBeChecked();
+  await sampleN.check();
+  await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /sampleN=true/);
+  await plotReady();
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.endsWith('/boxplot-table')) tableRequests++;
+  });
   const width = page.getByLabel('Width (cm)', { exact: true });
   await expect(width).toBeVisible();
   await width.fill('12,5');
@@ -408,6 +1348,7 @@ test('uploaded hostile kinase labels stay inert and interactive plots cannot acc
   const response = await rendered;
   expect(response.ok(), await response.text()).toBeTruthy();
   expect(response.headers()['content-security-policy']).toContain('sandbox allow-scripts allow-downloads');
+  expect(response.headers()['x-copylot-evidence']).toMatch(/^[A-Za-z0-9_-]+$/);
   expect(response.headers()['content-security-policy']).toContain("connect-src 'none'");
   const iframe = page.locator('iframe[title="KSEA Volcano"]');
   await expect(iframe).toHaveAttribute('sandbox', 'allow-scripts allow-downloads');
@@ -555,15 +1496,15 @@ async function actionResponse(page, path, action) {
   return { body: await response.json(), sent };
 }
 
-async function annotated(page, minimum = '3', { fresh = true, table = sites, meta = metadata } = {}) {
+async function annotated(page, minimum = '3', { fresh = true, table = sites, meta = metadata, kind = 'phospho' } = {}) {
   if (fresh) await page.goto('/');
-  await field(page, 'Dataset type').selectOption('phospho');
+  await field(page, 'Dataset type').selectOption(kind);
   await page.locator('input[type=file]').setInputFiles({ name: 'synthetic-sites.csv', mimeType: 'text/csv', buffer: Buffer.from(table) });
   const uploaded = page.waitForResponse(r => r.url().endsWith('/api/datasets/upload') && r.request().method() === 'POST');
   await tab(page, 'Upload').last().click();
   expect((await uploaded).ok()).toBeTruthy();
   await tab(page, 'Annotation').click();
-  await field(page, 'Dataset level').selectOption('phospho');
+  await field(page, 'Dataset level').selectOption(kind);
   await field(page, 'Metadata file', 'input').setInputFiles({ name: 'synthetic-meta.csv', mimeType: 'text/csv', buffer: Buffer.from(meta) });
   const metadataResponse = page.waitForResponse(r => r.url().endsWith('/api/annotations/metadata/upload') && r.request().method() === 'POST');
   await tab(page, 'Upload Metadata').click();
@@ -572,10 +1513,10 @@ async function annotated(page, minimum = '3', { fresh = true, table = sites, met
   await field(page, 'Minimum valid values', 'input').fill(minimum);
   await field(page, 'Normalization').selectOption('none');
   const result = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Generate Annotation').click());
-  expect(result.sent.kind).toBe('phospho');
+  expect(result.sent.kind).toBe(kind);
   expect(result.sent.filter.minPresent).toBe(Number(minimum));
   expect(result.sent.isLog2Transformed).toBe(true);
-  expect(result.body.filteredRows).toBe(minimum === '3' ? 24 : minimum === '4' ? 22 : 0);
+  expect(result.body.filteredRows).toBe(minimum === '3' ? table.trim().split('\n').length - 1 : minimum === '4' ? 22 : 0);
   return result;
 }
 

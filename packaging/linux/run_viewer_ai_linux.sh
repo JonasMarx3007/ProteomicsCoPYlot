@@ -16,8 +16,6 @@ if [ ! -x "$PYTHON_BIN" ]; then
 fi
 
 CHAT_MODEL=""
-DEV_MODE=0
-DEV_OLLAMA_ENDPOINT=""
 VIEWER_PROJECT=""
 
 viewer_project_exists() {
@@ -32,11 +30,6 @@ viewer_project_exists() {
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
-  if [[ "$arg" == "--dev" ]]; then
-    DEV_MODE=1
-    shift
-    continue
-  fi
   if [[ "$arg" == "--project" ]]; then
     shift
     VIEWER_PROJECT="${1:-}"
@@ -77,10 +70,10 @@ while [[ $# -gt 0 ]]; do
   fi
   if [[ -z "$CHAT_MODEL" ]]; then
     if [[ "$arg" == --* ]]; then
-      CHAT_MODEL="${arg#--}"
-    else
-      CHAT_MODEL="$arg"
+      echo "Unknown option: $arg" >&2
+      exit 2
     fi
+    CHAT_MODEL="$arg"
   fi
   shift
 done
@@ -115,27 +108,6 @@ if [[ -n "$VIEWER_PROJECT" ]]; then
   fi
 fi
 
-if [[ "$DEV_MODE" -eq 1 ]]; then
-  DEV_CONFIG="$ROOT_DIR/local/dev_ai.local.env"
-  if [[ ! -f "$DEV_CONFIG" ]]; then
-    DEV_CONFIG="$ROOT_DIR/dev_ai.local.env"
-  fi
-  if [[ -f "$DEV_CONFIG" ]]; then
-    while IFS='=' read -r key value || [[ -n "${key:-}" ]]; do
-      key="$(echo "${key:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      value="$(echo "${value:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      if [[ -z "$key" || "$key" == \#* ]]; then
-        continue
-      fi
-      if [[ "$key" == "COPYLOT_DEV_OLLAMA_ENDPOINT" ]]; then
-        DEV_OLLAMA_ENDPOINT="$value"
-      fi
-    done < "$DEV_CONFIG"
-  else
-    echo "Warning: --dev requested but dev config file not found: $DEV_CONFIG"
-  fi
-fi
-
 if [ -n "$CHAT_MODEL" ]; then
   if ! command -v ollama >/dev/null 2>&1; then
     echo "Warning: ollama executable not found in PATH. Skipping model pull for '$CHAT_MODEL'."
@@ -164,10 +136,10 @@ trap cleanup EXIT INT TERM
 (
   cd "$BACKEND_DIR"
   if [ -n "$CHAT_MODEL" ]; then
-    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PORTAL_ENABLED=0 COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 COPYLOT_SESSION_ISOLATION=0 COPYLOT_RESET_ON_BROWSER_LOAD=0 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
+    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PORTAL_ENABLED=0 COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 COPYLOT_SESSION_ISOLATION=1 COPYLOT_RESET_ON_BROWSER_LOAD=0 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
       "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
   else
-    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PORTAL_ENABLED=0 COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 COPYLOT_SESSION_ISOLATION=0 COPYLOT_RESET_ON_BROWSER_LOAD=0 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 \
+    COPYLOT_VIEWER_MODE=1 COPYLOT_VIEWER_PORTAL_ENABLED=0 COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 COPYLOT_SESSION_ISOLATION=1 COPYLOT_RESET_ON_BROWSER_LOAD=0 COPYLOT_VIEWER_PROJECT="$VIEWER_PROJECT" COPYLOT_VIEWER_CONFIG="$VIEWER_CONFIG" COPYLOT_AI_MODE=1 \
       "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8001
   fi
 ) &
@@ -175,13 +147,8 @@ BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR"
-  if [[ "$DEV_MODE" -eq 1 ]]; then
-    VITE_APP_MODE=viewer VITE_AI_ENABLED=1 VITE_VIEWER_PORTAL_AUTH=0 VITE_RESET_ON_BROWSER_LOAD=0 VITE_AI_DEV_MODE=1 VITE_AI_DEFAULT_OLLAMA_ENDPOINT="$DEV_OLLAMA_ENDPOINT" VITE_PROXY_TARGET="http://127.0.0.1:8001" \
-      npm run dev -- --port 5174
-  else
-    VITE_APP_MODE=viewer VITE_AI_ENABLED=1 VITE_VIEWER_PORTAL_AUTH=0 VITE_RESET_ON_BROWSER_LOAD=0 VITE_PROXY_TARGET="http://127.0.0.1:8001" \
-      npm run dev -- --port 5174
-  fi
+  VITE_APP_MODE=viewer VITE_AI_ENABLED=1 VITE_VIEWER_PORTAL_AUTH=0 VITE_RESET_ON_BROWSER_LOAD=0 VITE_PROXY_TARGET="http://127.0.0.1:8001" \
+    npm run dev -- --port 5174
 ) &
 FRONTEND_PID=$!
 

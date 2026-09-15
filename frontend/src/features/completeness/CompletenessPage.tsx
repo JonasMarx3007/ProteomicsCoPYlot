@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import SelectField from "../../components/SelectField";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
 import { compactMap, compactTextElement } from "../../lib/plotSerialization";
@@ -452,7 +453,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
-            <select
+            <AssistantSelect
               value={kind}
               onChange={(e) => setKind(e.target.value as CompletenessKind)}
               disabled={activeKindOptions.length === 0}
@@ -467,7 +468,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                   </option>
                 ))
               )}
-            </select>
+            </AssistantSelect>
           </div>
         </div>
       </section>
@@ -512,7 +513,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">{plotView.title}</h3>
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <AssistantSelect
                 value={downloadFormat}
                 onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                 className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -522,7 +523,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
               <a
                 href={plotDownloadUrl}
                 download={plotDownloadFilename}
@@ -755,7 +756,7 @@ function ColorField({
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input id={fieldId}
+      <AssistantInput id={fieldId}
         type="color"
         value={value}
         onChange={(e) => onChange(e.target.value)}

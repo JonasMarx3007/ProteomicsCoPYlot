@@ -14,7 +14,7 @@ from starlette.requests import Request
 
 from app import main
 from app.api import routes_restore
-from app.schemas.chat import ChatMessage, OllamaChatRequest
+from app.schemas.chat import ChatMessage, ChatRequest
 from app.services import restore_state, viewer_bootstrap
 from app.services.restore_state import RestoreStateError
 
@@ -96,7 +96,7 @@ def test_restore_replacement_count_and_manifest_are_bounded(monkeypatch) -> None
 
 
 def test_chat_limits_allow_normal_context_but_reject_abuse() -> None:
-    normal = OllamaChatRequest(
+    normal = ChatRequest(
         message="Summarize the PCA.",
         messages=[ChatMessage(role="system", content="evidence" * 1000)]
         + [ChatMessage(role="user", content="earlier question") for _ in range(8)],
@@ -104,14 +104,14 @@ def test_chat_limits_allow_normal_context_but_reject_abuse() -> None:
     assert len(normal.messages) == 9
 
     with pytest.raises(ValidationError):
-        OllamaChatRequest(message="x" * 32_001)
+        ChatRequest(message="x" * 32_001)
     with pytest.raises(ValidationError):
-        OllamaChatRequest(
+        ChatRequest(
             message="hello",
             messages=[ChatMessage(role="user", content="history") for _ in range(65)],
         )
     with pytest.raises(ValidationError, match="total text limit"):
-        OllamaChatRequest(
+        ChatRequest(
             message="hello",
             messages=[ChatMessage(role="system", content="x" * 250_000) for _ in range(4)],
         )

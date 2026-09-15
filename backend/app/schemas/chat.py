@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -19,24 +18,20 @@ class ChatMessage(BaseModel):
     content: str = Field(default="", min_length=0, max_length=_CHAT_HISTORY_MESSAGE_MAX_CHARS)
 
 
-class OllamaChatRequest(BaseModel):
+class ChatRequest(BaseModel):
     message: str = Field(default="", min_length=1, max_length=_CHAT_MESSAGE_MAX_CHARS)
     messages: list[ChatMessage] = Field(default_factory=list, max_length=_CHAT_HISTORY_MAX_MESSAGES)
     provider: ChatProvider = "ollama"
     model: str | None = Field(default=None, min_length=1, max_length=512)
     gpuEnabled: bool | None = None
     apiKey: str | None = Field(default=None, min_length=1, max_length=8192)
-    temperature: float | None = Field(default=None, ge=0, le=2)
-    maxTokens: int | None = Field(default=None, ge=1, le=131_072)
     ollamaUrl: str | None = Field(default=None, min_length=1, max_length=2048)
-    analysisContext: str | None = Field(default=None, max_length=128_000)
 
     @model_validator(mode="after")
-    def validate_total_text_size(self) -> "OllamaChatRequest":
+    def validate_total_text_size(self) -> "ChatRequest":
         total_chars = (
             len(self.message)
             + sum(len(item.content) for item in self.messages)
-            + len(self.analysisContext or "")
         )
         if total_chars > _CHAT_REQUEST_MAX_CHARS:
             raise ValueError("Chat request exceeds the total text limit.")
@@ -58,11 +53,6 @@ class CloudAiConsentStatusResponse(BaseModel):
     notice: str
 
 
-class OllamaChatResponse(BaseModel):
-    model: str
-    message: ChatMessage
-
-
 class OllamaGpuStatusResponse(BaseModel):
     gpuEligible: bool
     gpuEnabledDefault: bool
@@ -80,6 +70,7 @@ class OllamaModelsResponse(BaseModel):
 
 
 class ModelCapabilityResponse(BaseModel):
+    assessment: Literal["tested", "inferred", "unknown"] = "unknown"
     provider: ChatProvider
     model: str
     level: Literal[1, 2, 3]
@@ -105,23 +96,4 @@ class OllamaModelManageResponse(BaseModel):
     detail: str
     models: list[str] = Field(default_factory=list)
     selectedModel: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class ModuleContextRequest(BaseModel):
-    moduleKey: str = Field(default="", min_length=1, max_length=512)
-    workflow: str | None = Field(default=None, min_length=1, max_length=4096)
-    mode: str | None = Field(default=None, min_length=1, max_length=16_384)
-    contextTier: ModelContextTier | None = None
-
-
-class ModuleContextResponse(BaseModel):
-    moduleKey: str
-    moduleTitle: str
-    manualTitle: str | None = None
-    manualPath: str | None = None
-    contextPrompt: str
-    contextSummary: str
-    contextTier: ModelContextTier = "compact"
-    contextData: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

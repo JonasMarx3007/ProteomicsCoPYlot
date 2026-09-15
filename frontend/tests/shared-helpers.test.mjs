@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 
+test('duplicate control targets are rejected before any browser change or confirmation', async () => {
+  const source = await readFile(new URL('../src/lib/assistantControls.ts', import.meta.url), 'utf8');
+  const excerpt = source.slice(source.indexOf('export function applyAssistantControls'));
+  const compiled = ts.transpileModule(excerpt, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replaceAll('export ', '');
+  const apply = new Function('assistantConfirmation', compiled + '\nreturn applyAssistantControls;')(
+    () => assert.fail('Duplicate batch reached confirmation'));
+  assert.throws(() => apply([
+    { type: 'set_control', target: 'width', value: '10' },
+    { type: 'set_control', target: 'width', value: '20' },
+  ]), /only once per batch/);
+});
+
 async function loadModule(path) {
   const source = await readFile(new URL(`../src/lib/${path}.ts`, import.meta.url), 'utf8');
   const compiled = ts.transpileModule(source, { compilerOptions: {
@@ -15,33 +27,76 @@ const { collectColumns, rowsToCsv, rowsToQuotedCsv, formatCellValue } = await lo
 const { compactMap, compactTextElement } = await loadModule('plotSerialization');
 const { resolveSelectedLocalPath } = await loadModule('localFilePath');
 
-test('chat stream passes cancellation through to fetch and stops receiving chunks', async () => {
+test('ORA restoration separates editable inputs from completed results and rejects broken snapshots', async () => {
+  const source = await readFile(new URL('../src/features/analysis/AnalysisPage.tsx', import.meta.url), 'utf8');
+  const helpers = source.slice(source.indexOf('function asString('), source.indexOf('function asStringArray(')) +
+    source.slice(source.indexOf('function restoredOraState('), source.indexOf('function uid('));
+  const compiled = ts.transpileModule(helpers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const restore = new Function(compiled + '\nreturn restoredOraState;')();
+  const completed = {
+    inputSource: 'list', namedList: 'original',
+    request: { genes: ['G1'], backgroundGenes: [], backgroundMode: 'global', topN: 10, minTermSize: 20, maxTermSize: 300, adjPValueCutoff: .05 },
+    result: { genes: ['G1'], backgroundGenes: [], backgroundMode: 'global', warnings: [], organism: 'human', correctionMethod: 'BH', databaseSha256: 'synthetic',
+      backgroundSize: 100, annotatedBackgroundSize: 100, testedTermCount: 1, evidenceToken: 'saved-token',
+      termCounts: { query: { searchSpace: 1, overlapTested: 1, passingCutoff: 1, displayed: 1 } },
+      terms: [{ source: 'GO', termId: 'T', name: 'term', termSize: 20, intersectionSize: 1, hitPercent: 5, pValue: .01, adjPValue: .01, intersectingGenes: ['G1'] }] },
+  };
+  const restored = restore({ sourceMode: 'manual', genesText: 'G2', adjPValueCutoff: .5, completed });
+  assert.equal(restored.genesText, 'G2');
+  assert.equal(restored.adjPValueCutoff, .5);
+  assert.deepEqual(restored.completed, completed);
+  assert.equal(restore(null).completed, null);
+  assert.equal(restore({ genesText: 'G2', completed: {} }).genesText, 'G2');
+  for (const damage of [
+    value => { value.result.terms[0].adjPValue = 'invalid'; },
+    value => { value.result.termCounts = null; },
+    value => { value.result.warnings = {}; },
+    value => { value.request = null; },
+  ]) {
+    const malformed = structuredClone(completed);
+    damage(malformed);
+    assert.equal(restore({ completed: malformed }).completed, null);
+  }
+  const empty = structuredClone(completed);
+  empty.result.terms = [];
+  assert.deepEqual(restore({ completed: empty }).completed, empty);
+});
+
+test('targeted option search handles exact matches, empty results and read-only discovery', async () => {
+  const source = await readFile(new URL('../src/lib/assistantControls.ts', import.meta.url), 'utf8');
+  const excerpt = source.slice(source.indexOf('export function readAssistantControls'), source.indexOf('export function useAssistantCanvasButton'));
+  const compiled = ts.transpileModule(excerpt, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replaceAll('export ', '');
+  const control = { id: 'protein', label: 'Protein', type: 'select', value: 'P1', options: Array.from({ length: 100 }, (_, i) => `P${i}`), optionCount: 100, permission: 'view' };
+  const { readAssistantControls, searchAssistantOptions } = new Function('controls', 'buttons', compiled + '\nreturn { readAssistantControls, searchAssistantOptions };')(
+    new Map([['protein', { read: () => structuredClone(control) }]]), new Map());
+  assert.equal(readAssistantControls()[0].options.length, 40);
+  assert.equal(searchAssistantOptions('protein', ' P99 '), 'P99');
+  assert.deepEqual(readAssistantControls('', { protein: 'P99' })[0].options, ['P99']);
+  const missing = readAssistantControls('', { protein: 'absent' })[0];
+  assert.equal(missing.optionMatchCount, 0);
+  assert.deepEqual(missing.options, []);
+  assert.equal(missing.value, 'P1');
+  assert.throws(() => searchAssistantOptions('missing', 'P1'));
+  assert.throws(() => searchAssistantOptions('protein', ''));
+});
+
+test('assistant passes cancellation through to fetch', async () => {
   const source = await readFile(new URL('../src/lib/api.ts', import.meta.url), 'utf8');
-  const start = source.indexOf('export async function streamChatMessage(');
-  const end = source.indexOf('\nfunction normalizeCloudAiConsentStatus', start);
+  const start = source.indexOf('export async function assistantStep(');
+  const end = source.indexOf('\n}', start) + 2;
   const compiled = ts.transpileModule('const API_BASE = "";\n' + source.slice(start, end), {
     compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  const { streamChatMessage } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+  const { assistantStep } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
   const previous = globalThis.fetch;
   const controller = new AbortController();
   globalThis.fetch = async (_url, options) => {
     assert.equal(options.signal, controller.signal);
-    return {
-      ok: true, headers: new Headers(),
-      body: { getReader: () => ({ read: () => new Promise((resolve, reject) => {
-        options.signal.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError')), { once: true });
-        queueMicrotask(() => controller.abort());
-      }) }) },
-    };
+    throw new DOMException('Stopped', 'AbortError');
   };
   try {
-    const chunks = [];
-    await assert.rejects(streamChatMessage({ message: 'hello', messages: [] }, chunk => chunks.push(chunk), controller.signal), { name: 'AbortError' });
-    assert.deepEqual(chunks, []);
-  } finally {
-    globalThis.fetch = previous;
-  }
+    await assert.rejects(assistantStep({ message: 'hello', view: {}, receipts: [] }, controller.signal), { name: 'AbortError' });
+  } finally { globalThis.fetch = previous; }
 });
 
 test('selection context preserves delimiters, arrays and Unicode', async () => {
@@ -132,6 +187,22 @@ test('analysis snapshots stay tab-local and exclude the tab routing ID', async (
     if (previous === undefined) delete globalThis.sessionStorage;
     else globalThis.sessionStorage = previous;
   }
+});
+
+test('canvas volcano styling validates saved colors and bounds point size', async () => {
+  const source = await readFile(new URL('../src/features/analysis/AnalysisPage.tsx', import.meta.url), 'utf8');
+  const helper = source.slice(source.indexOf('function restoredVolcanoStyle('), source.indexOf('type AnalysisTile ='));
+  const compiled = ts.transpileModule(helper, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const restore = new Function(`${compiled}; return restoredVolcanoStyle;`)();
+  const defaults = restore(null);
+  assert.equal(defaults.radius, 2.8);
+  assert.equal(restore({ radius: Infinity }).radius, 2.8);
+  assert.equal(restore({ radius: -5 }).radius, 1);
+  assert.equal(restore({ radius: 100 }).radius, 10);
+  assert.equal(restore({ up: 'url(https://example.invalid/image)' }).up, defaults.up);
+  assert.equal(restore({ up: '#abcdef' }).up, '#abcdef');
+  assert.equal(restore({ title: { bad: true } }).title, '');
+  assert.equal(restore({ title: 'A & B <test>' }).title, 'A & B <test>');
 });
 
 test('columns retain first-seen order across heterogeneous rows without mutation', () => {

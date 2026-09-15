@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "./AssistantFields";
 import { useState } from "react";
 import { clampPlotDimensionCm, clampPlotDpi } from "../lib/plotLimits";
 
@@ -12,7 +13,7 @@ export function Checkbox({
 }) {
   return (
     <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-      <input
+      <AssistantInput
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
@@ -35,7 +36,7 @@ export function ColorField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="color"
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -60,7 +61,7 @@ export function MultiSelectField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         multiple
         size={visibleRows}
         value={value}
@@ -75,7 +76,7 @@ export function MultiSelectField({
             {option}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
       <span className="mt-1 block text-xs text-slate-500">Use Ctrl/Cmd-click for multi-select.</span>
     </label>
   );
@@ -111,7 +112,7 @@ export function NumericField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         type="text"
         lang="en-US"
         inputMode="decimal"

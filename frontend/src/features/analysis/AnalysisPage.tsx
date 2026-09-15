@@ -1,20 +1,26 @@
 ﻿
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
+import { AssistantInput, AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
-import { buildPlotUrl, getStatisticalOptions, isAbortError, pairingIsReady, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
+import AdvancedPlotOptions from "../../components/plots/AdvancedPlotOptions";
+import { PLOT_DOWNLOAD_FORMAT_OPTIONS, withPlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plotDownload";
+import { buildPlotUrl, getStatisticalOptions, getSingleProteinOptions, isAbortError, pairingIsReady, runAnalysisVolcanoData, runListEnrichmentAnalysis } from "../../lib/api";
 import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import type {
   AnalysisVolcanoPoint,
+  AdvancedPlotSettings,
   AnalysisVolcanoResponse,
   AnnotationKind,
   ListEnrichmentResultResponse,
+  ListEnrichmentRequest,
   StatsIdentifier,
   StatsTestType,
   StatisticalOptionsResponse,
 } from "../../lib/types";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
+import { useCanvasFocus } from "../../lib/canvasFocus";
 
 type TileType = "volcano" | "volcanoControl" | "proteinBoxplot" | "proteinLineplot" | "oraList";
 type BoxplotSourceMode = "active" | "manual";
@@ -22,6 +28,7 @@ type LineplotSourceMode = "active" | "selected" | "list" | "manual";
 type PValueMode = "corrected" | "uncorrected";
 
 type VolcanoSettings = {
+  dataSource: "data" | "imputed";
   condition1: string;
   condition2: string;
   testType: StatsTestType;
@@ -35,19 +42,59 @@ type VolcanoControlSettings = VolcanoSettings & {
   condition2Control: string;
 };
 
-type AnalysisTile =
-  | { id: string; type: "volcano" | "volcanoControl" }
-  | { id: string; type: "proteinBoxplot"; sourceMode: BoxplotSourceMode; protein: string }
+type VolcanoStyle = { title: string; up: string; down: string; other: string; radius: number };
+
+function restoredVolcanoStyle(value: unknown): VolcanoStyle {
+  const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const color = (key: string, fallback: string) => typeof saved[key] === "string" && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback;
+  return {
+    title: typeof saved.title === "string" ? saved.title : "",
+    up: color("up", "#dc2626"), down: color("down", "#2563eb"), other: color("other", "#94a3b8"),
+    radius: typeof saved.radius === "number" && Number.isFinite(saved.radius) ? Math.min(10, Math.max(1, saved.radius)) : 2.8,
+  };
+}
+
+type AnalysisTile = { collapsed?: boolean; focusGroup?: string; highlightFeatures?: string[]; conditions?: string[]; plotIdentifier?: StatsIdentifier } & (
+  | { id: string; type: "volcano" | "volcanoControl"; settings: VolcanoControlSettings; style?: VolcanoStyle }
+  | { id: string; type: "proteinBoxplot"; sourceMode: BoxplotSourceMode; protein: string; dataSource: PlotDataSource; advanced?: AdvancedPlotSettings }
   | {
       id: string;
       type: "proteinLineplot";
+      advanced?: AdvancedPlotSettings;
+      dataSource: PlotDataSource;
       sourceMode: LineplotSourceMode;
       listName: string;
       proteinsText: string;
     }
-  | { id: string; type: "oraList" };
+  | { id: string; type: "oraList"; state: OraState });
+
+type CompletedOra = {
+  result: ListEnrichmentResultResponse;
+  request: ListEnrichmentRequest;
+  inputSource: "manual" | "list";
+  namedList: string;
+};
+
+type OraState = {
+  sourceMode: "manual" | "list";
+  selectedListName: string;
+  genesText: string;
+  backgroundMode: "experiment" | "global";
+  backgroundText: string;
+  topN: number;
+  minTermSize: number;
+  maxTermSize: number;
+  adjPValueCutoff: number;
+  completed: CompletedOra | null;
+};
 
 const ANALYSIS_UI_STATE_KEY = "analysis.v1";
+const EMPTY_SELECTION: string[] = [];
+type PlotDataSource = "log2" | "filtered" | "imputed";
+
+function restoredPlotSource(value: unknown): PlotDataSource {
+  return value === "filtered" || value === "imputed" ? value : "log2";
+}
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -73,7 +120,21 @@ function asStringRecordArray(value: unknown): Record<string, string[]> {
   return result;
 }
 
-function asAnalysisTiles(value: unknown): AnalysisTile[] {
+function restoredVolcanoSettings(value: unknown, control: boolean): VolcanoControlSettings {
+  const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const test = restoreTestType(saved.testType);
+  return {
+    dataSource: saved.dataSource === "imputed" ? "imputed" : "data",
+    condition1: asString(saved.condition1), condition2: asString(saved.condition2),
+    condition1Control: asString(saved.condition1Control), condition2Control: asString(saved.condition2Control),
+    testType: control ? controlTestType(test) : test,
+    pValueThreshold: asNumber(saved.pValueThreshold, 0.05),
+    log2fcThreshold: asNumber(saved.log2fcThreshold, 1),
+    pValueMode: saved.pValueMode === "uncorrected" ? "uncorrected" : "corrected",
+  };
+}
+
+function asAnalysisTiles(value: unknown, legacy: Record<string, unknown>): AnalysisTile[] {
   if (!Array.isArray(value)) return [];
   const result: AnalysisTile[] = [];
   for (const raw of value) {
@@ -82,8 +143,16 @@ function asAnalysisTiles(value: unknown): AnalysisTile[] {
     const id = asString(item.id);
     const type = asString(item.type);
     if (!id) continue;
-    if (type === "volcano" || type === "volcanoControl" || type === "oraList") {
-      result.push({ id, type });
+    const focus = { focusGroup: asString(item.focusGroup), highlightFeatures: asStringArray(item.highlightFeatures),
+      conditions: Array.isArray(item.conditions) ? asStringArray(item.conditions) : undefined,
+      plotIdentifier: item.plotIdentifier === "workflow" || item.plotIdentifier === "genes" ? item.plotIdentifier : undefined } as const;
+    if (type === "volcano" || type === "volcanoControl") {
+      result.push({ ...focus, id, type, collapsed: item.collapsed === true, style: restoredVolcanoStyle(item.style), settings: restoredVolcanoSettings(item.settings ??
+        legacy[type === "volcano" ? "volcanoSettings" : "volcanoControlSettings"], type === "volcanoControl") });
+      continue;
+    }
+    if (type === "oraList") {
+      result.push({ ...focus, id, type, collapsed: item.collapsed === true, state: restoredOraState(item.state) });
       continue;
     }
     if (type === "proteinBoxplot") {
@@ -96,6 +165,10 @@ function asAnalysisTiles(value: unknown): AnalysisTile[] {
             ? sourceMode
             : "active",
         protein: asString(item.protein),
+        ...focus,
+        collapsed: item.collapsed === true,
+        advanced: item.advanced && typeof item.advanced === "object" && !Array.isArray(item.advanced) ? item.advanced as AdvancedPlotSettings : undefined,
+        dataSource: restoredPlotSource(item.dataSource),
       });
       continue;
     }
@@ -113,11 +186,50 @@ function asAnalysisTiles(value: unknown): AnalysisTile[] {
             : "active",
         listName: asString(item.listName),
         proteinsText: asString(item.proteinsText),
+        ...focus,
+        collapsed: item.collapsed === true,
+        advanced: item.advanced && typeof item.advanced === "object" && !Array.isArray(item.advanced) ? item.advanced as AdvancedPlotSettings : undefined,
+        dataSource: restoredPlotSource(item.dataSource),
       });
       continue;
     }
   }
   return result;
+}
+
+function restoredOraState(value: unknown): OraState {
+  const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    sourceMode: saved.sourceMode === "list" ? "list" : "manual",
+    selectedListName: asString(saved.selectedListName), genesText: asString(saved.genesText),
+    backgroundMode: saved.backgroundMode === "global" ? "global" : "experiment",
+    backgroundText: asString(saved.backgroundText), topN: asNumber(saved.topN, 10),
+    minTermSize: asNumber(saved.minTermSize, 20), maxTermSize: asNumber(saved.maxTermSize, 300),
+    adjPValueCutoff: asNumber(saved.adjPValueCutoff, 0.05),
+    completed: isCompletedOra(saved.completed) ? saved.completed : null,
+  };
+}
+
+function isCompletedOra(value: unknown): value is CompletedOra {
+  const record = (item: unknown): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item));
+  const strings = (item: unknown): item is string[] => Array.isArray(item) && item.every(value => typeof value === "string");
+  const numbers = (item: Record<string, unknown>, keys: string[]) => keys.every(key => typeof item[key] === "number" && Number.isFinite(item[key]) && Number(item[key]) >= 0);
+  if (!record(value) || !record(value.result) || !record(value.request)) return false;
+  const result = value.result, request = value.request;
+  return (value.inputSource === "manual" || value.inputSource === "list") && typeof value.namedList === "string" &&
+    strings(request.genes) && strings(request.backgroundGenes) &&
+    (request.backgroundMode === "experiment" || request.backgroundMode === "global") &&
+    numbers(request, ["topN", "minTermSize", "maxTermSize", "adjPValueCutoff"]) &&
+    strings(result.genes) && strings(result.backgroundGenes) && strings(result.warnings) &&
+    (result.backgroundMode === "experiment" || result.backgroundMode === "global") &&
+    ["organism", "correctionMethod", "databaseSha256"].every(key => typeof result[key] === "string") &&
+    (result.evidenceToken === undefined || typeof result.evidenceToken === "string") &&
+    numbers(result, ["backgroundSize", "annotatedBackgroundSize", "testedTermCount"]) &&
+    record(result.termCounts) && record(result.termCounts.query) && Object.values(result.termCounts).every(counts =>
+      record(counts) && numbers(counts, ["searchSpace", "overlapTested", "passingCutoff", "displayed"])) &&
+    Array.isArray(result.terms) && result.terms.every(term => record(term) &&
+      ["source", "termId", "name"].every(key => typeof term[key] === "string") &&
+      numbers(term, ["termSize", "intersectionSize", "hitPercent", "pValue", "adjPValue"]) && strings(term.intersectingGenes));
 }
 
 function uid() {
@@ -208,6 +320,7 @@ function resolveLineplotProteins(
   if (tile.sourceMode === "active") return activeProtein ? [activeProtein] : [];
   if (tile.sourceMode === "selected") return toUnique(selectedProteins);
   if (tile.sourceMode === "list") return toUnique(lists[tile.listName] ?? []);
+  if (tile.focusGroup && tile.highlightFeatures && tile.proteinsText === tile.highlightFeatures.join("\n")) return tile.highlightFeatures;
   return parseProteins(tile.proteinsText);
 }
 
@@ -234,17 +347,17 @@ export default function AnalysisPage({
   rightPanel = "none",
   onRightPanelChange,
   aiEnabled = false,
+  onContextModeChange,
 }: {
   rightPanel?: "none" | "list" | "chat";
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
   aiEnabled?: boolean;
+  onContextModeChange?: (mode: string) => void;
 }) {
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>(ANALYSIS_UI_STATE_KEY, {}),
     []
   );
-  const persistedVolcano = (persisted.volcanoSettings as Record<string, unknown>) ?? {};
-  const persistedVolcanoControl = (persisted.volcanoControlSettings as Record<string, unknown>) ?? {};
   const { kindOptions } = useCurrentDatasetsSnapshot();
   const revision = useDatasetRevision();
   const [preferredKind, setKind] = useState<AnnotationKind>(() => {
@@ -257,39 +370,34 @@ export default function AnalysisPage({
     ? preferredKind
     : kindOptions[0]?.value ?? preferredKind) as AnnotationKind;
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
+  const [plotSources, setPlotSources] = useState<{ kind: AnnotationKind; revision: number; filteredAvailable: boolean; imputedAvailable: boolean } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    getSingleProteinOptions(kind, "boxplot", "workflow", "log2", { signal: controller.signal })
+      .then(data => {
+        if (!controller.signal.aborted) setPlotSources({ kind, revision, filteredAvailable: data.filteredAvailable, imputedAvailable: data.imputedAvailable });
+      }).catch(() => {
+        if (!controller.signal.aborted) setPlotSources(null);
+      });
+    return () => controller.abort();
+  }, [kind, revision]);
+  const plotSourceAvailable = (source: PlotDataSource) => source === "log2" ||
+    (plotSources?.kind === kind && plotSources.revision === revision &&
+      (source === "filtered" ? plotSources.filteredAvailable : plotSources.imputedAvailable));
+  function plotSourceOptions(selected: PlotDataSource) {
+    return (["log2", "filtered", "imputed"] as const).filter(source => source === selected || plotSourceAvailable(source))
+      .map(value => ({ value, label: `${value === "log2" ? "Log2" : value === "filtered" ? "Filtered" : "Imputed"} data${plotSourceAvailable(value) ? "" : " (unavailable)"}` }));
+  }
 
   const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
     const value = asString(persisted.identifier, "workflow");
     return value === "genes" ? "genes" : "workflow";
   });
-  const [volcanoSettings, setVolcanoSettings] = useState<VolcanoSettings>(() => {
-    const testType = restoreTestType(persistedVolcano.testType);
-    const pValueMode = asString(persistedVolcano.pValueMode, "corrected");
-    return {
-      condition1: asString(persistedVolcano.condition1),
-      condition2: asString(persistedVolcano.condition2),
-      testType,
-      pValueThreshold: asNumber(persistedVolcano.pValueThreshold, 0.05),
-      log2fcThreshold: asNumber(persistedVolcano.log2fcThreshold, 1),
-      pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
-    };
-  });
-  const [volcanoControlSettings, setVolcanoControlSettings] = useState<VolcanoControlSettings>(() => {
-    const testType = controlTestType(restoreTestType(persistedVolcanoControl.testType));
-    const pValueMode = asString(persistedVolcanoControl.pValueMode, "corrected");
-    return {
-      condition1: asString(persistedVolcanoControl.condition1),
-      condition2: asString(persistedVolcanoControl.condition2),
-      condition1Control: asString(persistedVolcanoControl.condition1Control),
-      condition2Control: asString(persistedVolcanoControl.condition2Control),
-      testType,
-      pValueThreshold: asNumber(persistedVolcanoControl.pValueThreshold, 0.05),
-      log2fcThreshold: asNumber(persistedVolcanoControl.log2fcThreshold, 1),
-      pValueMode: pValueMode === "uncorrected" ? "uncorrected" : "corrected",
-    };
-  });
-
-  const [tiles, setTiles] = useState<AnalysisTile[]>(() => asAnalysisTiles(persisted.tiles));
+  const [tiles, setTiles] = useState<AnalysisTile[]>(() => asAnalysisTiles(persisted.tiles, persisted));
+  const [linkedVolcanoId, setLinkedVolcanoId] = useState(() => asString(persisted.linkedVolcanoId));
+  const linkedTile = tiles.find(tile => tile.id === linkedVolcanoId && "settings" in tile);
+  const sourceTile = linkedTile ?? tiles.find(tile => "settings" in tile);
+  const linkedSettings = sourceTile && "settings" in sourceTile ? sourceTile.settings : null;
   const [addType, setAddType] = useState<TileType>(() => {
     const value = asString(persisted.addType, "volcano");
     return value === "volcano" ||
@@ -301,29 +409,22 @@ export default function AnalysisPage({
       : "volcano";
   });
 
-  const volcanoRequestKey = JSON.stringify({ revision, kind, identifier, ...volcanoSettings });
-  const volcanoControlRequestKey = JSON.stringify({ revision, kind, identifier, ...volcanoControlSettings });
-  const [volcanoDataState, setVolcanoDataState] = useState<{
-    key: string;
-    data: AnalysisVolcanoResponse;
-  } | null>(null);
-  const [volcanoControlDataState, setVolcanoControlDataState] = useState<{
-    key: string;
-    data: AnalysisVolcanoResponse;
-  } | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-
-  const selectionContext = JSON.stringify({ kind, identifier, volcanoSettings, volcanoControlSettings });
+  const [tileResults, setTileResults] = useState<Record<string, {
+    key: string; data: AnalysisVolcanoResponse | null; error?: string;
+  }>>({});
+  const requestKey = (tile: Extract<AnalysisTile, { settings: VolcanoControlSettings }>) =>
+    JSON.stringify({ revision, kind, identifier, ...tile.settings, source: tile.type });
+  const visibleResult = (tile: Extract<AnalysisTile, { settings: VolcanoControlSettings }>) =>
+    tileResults[tile.id]?.key === requestKey(tile) ? tileResults[tile.id] : undefined;
+  const [retryGeneration, setRetryGeneration] = useState(0);
+  const selectionContext = JSON.stringify({ revision, kind, identifier, source: sourceTile?.id, settings: linkedSettings });
   const [selection, setSelection] = useState(() => ({
     context: selectionContext,
     activeProtein: asString(persisted.activeProtein),
     selectedProteins: asStringArray(persisted.selectedProteins),
   }));
   const activeProtein = selection.context === selectionContext ? selection.activeProtein : "";
-  const selectedProteins = useMemo(
-    () => selection.context === selectionContext ? selection.selectedProteins : [],
-    [selection, selectionContext]
-  );
+  const selectedProteins = selection.context === selectionContext ? selection.selectedProteins : EMPTY_SELECTION;
   const setActiveProtein = (next: string | ((current: string) => string)) => {
     setSelection((current) => {
       const active = current.context === selectionContext ? current.activeProtein : "";
@@ -369,40 +470,16 @@ export default function AnalysisPage({
   const listSidebarOpen = rightPanel === "list";
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
-  const hasVolcanoTile = tiles.some((tile) => tile.type === "volcano");
-  const hasVolcanoControlTile = tiles.some((tile) => tile.type === "volcanoControl");
-  const volcanoConditionsValid =
-    volcanoSettings.condition1.trim().length > 0 &&
-    volcanoSettings.condition2.trim().length > 0 &&
-    volcanoSettings.condition1 !== volcanoSettings.condition2 &&
-    (volcanoSettings.testType !== "paired" ||
-      pairingIsReady(
-        volcanoSettings.condition1,
-        volcanoSettings.condition2,
-        options?.samplesByCondition ?? {},
-        options?.pairIdsBySample ?? {}
-      ));
-  const volcanoControlConditionsValid = (() => {
-    const values = [
-      volcanoControlSettings.condition1,
-      volcanoControlSettings.condition2,
-      volcanoControlSettings.condition1Control,
-      volcanoControlSettings.condition2Control,
-    ]
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (values.length < 4) return false;
-    return (
-      new Set(values).size === 4 &&
-      (volcanoControlSettings.testType !== "paired" ||
-        pairingIsReady(
-          volcanoControlSettings.condition1,
-          volcanoControlSettings.condition2,
-          options?.samplesByCondition ?? {},
-          options?.pairIdsBySample ?? {}
-        ))
-    );
-  })();
+  function conditionsValid(settings: VolcanoControlSettings, control: boolean) {
+    const conditions = control
+      ? [settings.condition1, settings.condition2, settings.condition1Control, settings.condition2Control]
+      : [settings.condition1, settings.condition2];
+    return (settings.dataSource !== "imputed" || options?.imputedAvailable === true) &&
+      conditions.every(value => options?.availableConditions.includes(value)) &&
+      new Set(conditions).size === conditions.length &&
+      (settings.testType !== "paired" || pairingIsReady(settings.condition1, settings.condition2,
+        options?.samplesByCondition ?? {}, options?.pairIdsBySample ?? {}));
+  }
 
   useEffect(() => {
     if (!kindAvailable) return;
@@ -410,29 +487,13 @@ export default function AnalysisPage({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        setVolcanoSettings((current) => ({
-          ...current,
-          condition1: data.availableConditions.includes(current.condition1)
-            ? current.condition1
-            : data.availableConditions[0] ?? "",
-          condition2: data.availableConditions.includes(current.condition2)
-            ? current.condition2
-            : data.availableConditions[0] ?? "",
-        }));
-        setVolcanoControlSettings((current) => ({
-          ...current,
-          condition1: data.availableConditions.includes(current.condition1)
-            ? current.condition1
-            : data.availableConditions[0] ?? "",
-          condition2: data.availableConditions.includes(current.condition2)
-            ? current.condition2
-            : data.availableConditions[0] ?? "",
-          condition1Control: data.availableConditions.includes(current.condition1Control)
-            ? current.condition1Control
-            : data.availableConditions[0] ?? "",
-          condition2Control: data.availableConditions.includes(current.condition2Control)
-            ? current.condition2Control
-            : data.availableConditions[0] ?? "",
+        setTiles(current => current.map(tile => {
+          if (!("settings" in tile)) return tile;
+          const settings = { ...tile.settings };
+          for (const key of ["condition1", "condition2", "condition1Control", "condition2Control"] as const) {
+            if (!data.availableConditions.includes(settings[key])) settings[key] = data.availableConditions[0] ?? "";
+          }
+          return { ...tile, settings };
         }));
         setIdentifier((current) =>
           data.availableIdentifiers.some((item) => item.key === current)
@@ -444,88 +505,59 @@ export default function AnalysisPage({
         if (!isAbortError(error)) setOptions(null);
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, revision]);
 
+  const volcanoRequests = JSON.stringify(tiles.filter(tile => "settings" in tile)
+    .map(tile => ({ id: tile.id, type: tile.type, settings: tile.settings,
+      valid: conditionsValid(tile.settings, tile.type === "volcanoControl"), key: requestKey(tile) })));
+  const tileRequests = useRef(new Map<string, { key: string; controller: AbortController }>());
   useEffect(() => {
+    const requests = tileRequests.current;
+    return () => {
+      for (const request of requests.values()) request.controller.abort();
+      requests.clear();
+    };
+  }, []);
+  useEffect(() => {
+    const requests = JSON.parse(volcanoRequests) as Array<{
+      id: string; type: "volcano" | "volcanoControl"; settings: VolcanoControlSettings; valid: boolean; key: string;
+    }>;
+    for (const [id, pending] of tileRequests.current) {
+      if (!kindAvailable || !requests.some(tile => tile.id === id && tile.valid && tile.key === pending.key)) {
+        pending.controller.abort();
+        tileRequests.current.delete(id);
+      }
+    }
     if (!kindAvailable) return;
-    if (!hasVolcanoTile && !hasVolcanoControlTile) return;
-
-    const controller = new AbortController();
-    const tasks: Promise<unknown>[] = [];
-
-    if (hasVolcanoTile && volcanoConditionsValid) {
-      tasks.push(
-        runAnalysisVolcanoData({
-          kind,
-          source: "volcano",
-          condition1: volcanoSettings.condition1,
-          condition2: volcanoSettings.condition2,
-          identifier,
-          pValueThreshold: volcanoSettings.pValueThreshold,
-          log2fcThreshold: volcanoSettings.log2fcThreshold,
-          testType: volcanoSettings.testType,
-          useUncorrected: volcanoSettings.pValueMode === "uncorrected",
-        }, { signal: controller.signal }).then((data) => {
-          if (controller.signal.aborted) return;
-          setVolcanoDataState({ key: volcanoRequestKey, data });
-        })
-      );
-    }
-
-    if (hasVolcanoControlTile && volcanoControlConditionsValid) {
-      tasks.push(
-        runAnalysisVolcanoData({
-          kind,
-          source: "volcano_control",
-          condition1: volcanoControlSettings.condition1,
-          condition2: volcanoControlSettings.condition2,
-          condition1Control: volcanoControlSettings.condition1Control,
-          condition2Control: volcanoControlSettings.condition2Control,
-          identifier,
-          pValueThreshold: volcanoControlSettings.pValueThreshold,
-          log2fcThreshold: volcanoControlSettings.log2fcThreshold,
-          testType: volcanoControlSettings.testType,
-          useUncorrected: volcanoControlSettings.pValueMode === "uncorrected",
-        }, { signal: controller.signal }).then((data) => {
-          if (controller.signal.aborted) return;
-          setVolcanoControlDataState({ key: volcanoControlRequestKey, data });
-        })
-      );
-    }
-
-    Promise.all(tasks)
-      .then(() => setAnalysisError(null))
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setAnalysisError(err instanceof Error ? err.message : "Failed to load analysis data");
-        }
+    for (const tile of requests) {
+      if (!tile.valid || tileRequests.current.get(tile.id)?.key === tile.key) continue;
+      const controller = new AbortController();
+      tileRequests.current.set(tile.id, { key: tile.key, controller });
+      const { pValueMode, ...settings } = tile.settings;
+      runAnalysisVolcanoData({
+        kind, identifier, ...settings,
+        source: tile.type === "volcano" ? "volcano" : "volcano_control",
+        useUncorrected: pValueMode === "uncorrected",
+      }, { signal: controller.signal }).then(data => {
+        if (!controller.signal.aborted) setTileResults(current => ({ ...current,
+          [tile.id]: { key: tile.key, data } }));
+      }).catch(error => {
+        if (!controller.signal.aborted && !isAbortError(error)) setTileResults(current => ({ ...current,
+          [tile.id]: { key: tile.key, data: null, error: error instanceof Error ? error.message : "Failed to load analysis data" } }));
       });
-    return () => controller.abort();
-  }, [
-    kindAvailable,
-    kind,
-    hasVolcanoTile,
-    hasVolcanoControlTile,
-    volcanoConditionsValid,
-    volcanoControlConditionsValid,
-    volcanoSettings.condition1,
-    volcanoSettings.condition2,
-    volcanoSettings.pValueThreshold,
-    volcanoSettings.log2fcThreshold,
-    volcanoSettings.testType,
-    volcanoSettings.pValueMode,
-    volcanoControlSettings.condition1,
-    volcanoControlSettings.condition2,
-    volcanoControlSettings.condition1Control,
-    volcanoControlSettings.condition2Control,
-    volcanoControlSettings.pValueThreshold,
-    volcanoControlSettings.log2fcThreshold,
-    volcanoControlSettings.testType,
-    volcanoControlSettings.pValueMode,
-    identifier,
-    volcanoRequestKey,
-    volcanoControlRequestKey,
-  ]);
+    }
+  }, [kindAvailable, kind, identifier, volcanoRequests, retryGeneration]);
+
+  function retryVolcano(id: string) {
+    tileRequests.current.get(id)?.controller.abort();
+    tileRequests.current.delete(id);
+    setTileResults(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setRetryGeneration(current => current + 1);
+  }
 
   const listNames = useMemo(() => Object.keys(lists).sort(), [lists]);
 
@@ -533,8 +565,7 @@ export default function AnalysisPage({
     writePersistedUiState(ANALYSIS_UI_STATE_KEY, {
       kind,
       identifier,
-      volcanoSettings,
-      volcanoControlSettings,
+      linkedVolcanoId,
       tiles,
       addType,
       activeProtein,
@@ -551,8 +582,7 @@ export default function AnalysisPage({
   }, [
     kind,
     identifier,
-    volcanoSettings,
-    volcanoControlSettings,
+    linkedVolcanoId,
     tiles,
     addType,
     activeProtein,
@@ -569,7 +599,7 @@ export default function AnalysisPage({
 
   function addTile() {
     if (addType === "proteinBoxplot") {
-      setTiles((current) => [...current, { id: uid(), type: addType, sourceMode: "active", protein: "" }]);
+      setTiles((current) => [...current, { id: uid(), type: addType, sourceMode: "active", protein: "", dataSource: "log2" }]);
       return;
     }
     if (addType === "proteinLineplot") {
@@ -579,48 +609,98 @@ export default function AnalysisPage({
           id: uid(),
           type: addType,
           sourceMode: "active",
+          dataSource: "log2",
           listName: "",
           proteinsText: "",
         },
       ]);
       return;
     }
-    setTiles((current) => [...current, { id: uid(), type: addType }]);
+    if (addType === "oraList") {
+      setTiles(current => [...current, { id: uid(), type: "oraList", state: restoredOraState(null) }]);
+    } else {
+      const template = tiles.find(tile => tile.type === addType && "settings" in tile);
+      const settings = restoredVolcanoSettings(template && "settings" in template ? template.settings : {
+        condition1: options?.availableConditions[0], condition2: options?.availableConditions[0],
+        condition1Control: options?.availableConditions[0], condition2Control: options?.availableConditions[0],
+      }, addType === "volcanoControl");
+      setTiles(current => [...current, { id: uid(), type: addType, settings }]);
+    }
   }
 
   function updateTile(id: string, nextTile: AnalysisTile) {
     setTiles((current) => current.map((tile) => (tile.id === id ? nextTile : tile)));
   }
 
+  useCanvasFocus(focus => {
+    if (!kindOptions.some(option => option.value === focus.kind)) throw new Error("The requested data level is unavailable.");
+    if (tiles.length && kind !== focus.kind) throw new Error("Existing canvas tiles use another data level. Use an empty canvas to switch levels.");
+    const group = JSON.stringify({ kind: focus.kind, features: focus.features });
+    const existing = tiles.filter(tile => tile.focusGroup === group);
+    const oldVolcano = existing.find(tile => tile.type === "volcano");
+    const settings = { ...restoredVolcanoSettings(undefined, false), condition1: focus.conditions[0], condition2: focus.conditions[1] };
+    const focused: AnalysisTile[] = [{ ...oldVolcano, id: oldVolcano?.id ?? uid(), type: "volcano", focusGroup: group,
+      settings, collapsed: false, highlightFeatures: focus.features }];
+    for (const protein of focus.features) {
+      const old = existing.find(tile => tile.type === "proteinBoxplot" && tile.protein === protein);
+      focused.push({ ...old, id: old?.id ?? uid(), type: "proteinBoxplot", focusGroup: group, collapsed: false,
+        sourceMode: "manual", protein, dataSource: "log2", plotIdentifier: "workflow", conditions: focus.conditions });
+    }
+    const oldLine = existing.find(tile => tile.type === "proteinLineplot");
+    focused.push({ ...oldLine, id: oldLine?.id ?? uid(), type: "proteinLineplot", focusGroup: group, collapsed: false,
+      sourceMode: "manual", proteinsText: focus.features.join("\n"), highlightFeatures: focus.features, listName: "", dataSource: "log2", plotIdentifier: "workflow", conditions: focus.conditions });
+    setKind(focus.kind);
+    setTiles([...tiles.filter(tile => tile.focusGroup !== group), ...focused]);
+    return `Focused the ${focus.kind === "phospho" ? "phosphosite" : focus.kind === "phosprot" ? "phosphoprotein" : "protein"} canvas on ${focus.features.join(", ")} (${focus.conditions[1]} vs ${focus.conditions[0]}): volcano highlight, individual boxplots and lineplot. Existing unrelated tiles were kept. Plots may still be loading; a feature excluded from the comparison will have no volcano point.`;
+  });
+
+  const updateOraState = useCallback((id: string, patch: Partial<OraState>) => {
+    setTiles(current => current.map(tile => tile.id === id && tile.type === "oraList"
+      ? { ...tile, state: { ...tile.state, ...patch } } : tile));
+  }, []);
+
   function removeTile(id: string) {
     setTiles((current) => current.filter((tile) => tile.id !== id));
+    setTileResults(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }
 
-  function pointClick(protein: string, multi: boolean) {
-    if (!multi && activeProtein === protein) {
-      setActiveProtein("");
-      setSelectedProteins([]);
-      return;
-    }
-    setActiveProtein(protein);
-    if (multi) {
-      setSelectedProteins((current) =>
-        current.includes(protein) ? current.filter((item) => item !== protein) : [...current, protein]
-      );
-      return;
-    }
-    setSelectedProteins([protein]);
+  function moveTile(id: string, direction: -1 | 1) {
+    if (sourceTile) setLinkedVolcanoId(sourceTile.id);
+    setTiles(current => {
+      const index = current.findIndex(tile => tile.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function selectFromTile(tile: Extract<AnalysisTile, { settings: VolcanoControlSettings }>, proteins: string[], mode: "single" | "toggle" | "list") {
+    const context = JSON.stringify({ revision, kind, identifier, source: tile.id, settings: tile.settings });
+    setLinkedVolcanoId(tile.id);
+    setSelection(current => {
+      const previous = current.context === context ? current : { activeProtein: "", selectedProteins: [] };
+      const first = proteins[0] ?? "";
+      if (mode === "single") return { context, activeProtein: previous.activeProtein === first ? "" : first,
+        selectedProteins: previous.activeProtein === first ? [] : proteins };
+      if (mode === "list") return { context, activeProtein: first, selectedProteins: proteins };
+      const next = new Set(previous.selectedProteins);
+      for (const protein of toUnique(proteins)) {
+        if (next.has(protein)) next.delete(protein);
+        else next.add(protein);
+      }
+      return { context, activeProtein: "", selectedProteins: [...next] };
+    });
   }
 
   function clearSelection() {
     setActiveProtein("");
     setSelectedProteins([]);
-  }
-
-  function selectListInPlot(listName: string) {
-    const proteins = toUnique(lists[listName] ?? []);
-    setSelectedProteins(proteins);
-    setActiveProtein(proteins[0] ?? "");
   }
 
   function addProteinsToList(listName: string, proteins: string[]) {
@@ -632,21 +712,6 @@ export default function AnalysisPage({
     }));
     setActiveList(listName);
     setActiveListDraft(nextValues.join("\n"));
-  }
-
-  function toggleProteins(proteins: string[]) {
-    const unique = toUnique(proteins);
-    if (unique.length === 0) return;
-    // Multi-select is binary only (selected/unselected), so clear any single-active state.
-    setActiveProtein("");
-    setSelectedProteins((current) => {
-      const next = new Set(current);
-      for (const protein of unique) {
-        if (next.has(protein)) next.delete(protein);
-        else next.add(protein);
-      }
-      return [...next];
-    });
   }
 
   function createList() {
@@ -695,31 +760,33 @@ export default function AnalysisPage({
     setOpTarget("");
   }
 
-  const conditionsCsv = `${volcanoSettings.condition1},${volcanoSettings.condition2}`;
-  const visibleVolcanoData = hasVolcanoTile &&
-    volcanoConditionsValid &&
-    volcanoDataState?.key === volcanoRequestKey
-    ? volcanoDataState.data
-    : null;
-  const visibleVolcanoControlData = hasVolcanoControlTile && volcanoControlConditionsValid
-    && volcanoControlDataState?.key === volcanoControlRequestKey
-    ? volcanoControlDataState.data
-    : null;
-  const allVolcanoPoints = useMemo(
-    () => [...(visibleVolcanoData?.points ?? []), ...(visibleVolcanoControlData?.points ?? [])],
-    [visibleVolcanoData, visibleVolcanoControlData]
-  );
-  const activeVolcanoPoint = useMemo(
-    () =>
-      activeProtein
-        ? allVolcanoPoints.find((point) => volcanoPointSelectionKey(point) === activeProtein) ?? null
-        : null,
-    [activeProtein, allVolcanoPoints]
-  );
+  const conditionsCsv = linkedSettings ? `${linkedSettings.condition1},${linkedSettings.condition2}` : "";
+  const linkedData = sourceTile && "settings" in sourceTile ? visibleResult(sourceTile)?.data : null;
+  const activeVolcanoPoint = activeProtein
+    ? linkedData?.points.find(point => volcanoPointSelectionKey(point) === activeProtein) ?? null : null;
   const activeBoxplotTarget = useMemo(
     () => volcanoPointBoxplotTarget(activeVolcanoPoint, identifier),
     [activeVolcanoPoint, identifier]
   );
+  useEffect(() => {
+    const tileEvidence = tiles.slice(0, 8).map(tile => {
+      if (tile.collapsed) return { id: tile.id, type: tile.type, collapsed: true };
+      if (tile.type === "volcano" || tile.type === "volcanoControl") return { id: tile.id, type: tile.type,
+        highlightFeatures: tile.highlightFeatures ?? [],
+        settings: { kind, identifier, ...tile.settings,
+          useUncorrected: tile.settings.pValueMode === "uncorrected",
+          source: tile.type === "volcano" ? "volcano" : "volcano_control" } };
+      if (tile.type === "oraList") return { id: tile.id, type: tile.type, token: tile.state.completed?.result.evidenceToken ?? "" };
+      if (tile.type !== "proteinBoxplot" && tile.type !== "proteinLineplot") return { id: tile.id, type: tile.type };
+      const plotIdentifier = tile.sourceMode === "active" ? activeBoxplotTarget.identifier : tile.plotIdentifier ?? identifier;
+      const settings = { kind, identifier: plotIdentifier, conditions: tile.conditions ?? conditionsCsv.split(',').filter(Boolean), dataSource: tile.dataSource };
+      return tile.type === "proteinBoxplot"
+        ? { id: tile.id, type: tile.type, settings: { ...settings, protein: tile.sourceMode === "active" ? activeBoxplotTarget.protein || activeProtein : tile.protein.trim() } }
+        : { id: tile.id, type: tile.type, settings: { ...settings, proteins: resolveLineplotProteins(tile, activeBoxplotTarget.protein || activeProtein, selectedProteins, lists) } };
+    });
+    onContextModeChange?.(JSON.stringify({ kind, identifier, linkedVolcanoId: sourceTile?.id ?? "", tiles: tiles.map(tile => tile.type), tileEvidence }));
+  }, [onContextModeChange, kind, identifier, tiles, sourceTile?.id,
+    activeBoxplotTarget, activeProtein, conditionsCsv, selectedProteins, lists]);
 
   return (
     <div
@@ -729,20 +796,8 @@ export default function AnalysisPage({
       ].join(" ")}
     >
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Analysis Pipeline</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          Single-window analysis canvas with reusable protein lists.
-        </p>
-        {analysisError ? (
-          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {analysisError}
-          </div>
-        ) : null}
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Global Controls</h3>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <SelectField
             label="Dataset level"
             value={kind}
@@ -758,14 +813,23 @@ export default function AnalysisPage({
             }))}
             onChange={(value) => setIdentifier(value as StatsIdentifier)}
           />
+          <SelectField
+            label="Linked plot source"
+            value={sourceTile?.id ?? ""}
+            options={tiles.flatMap((tile, index) => "settings" in tile ? [{
+              value: tile.id,
+              label: `Tile ${index + 1}: ${tile.type === "volcano" ? "Volcano" : "Volcano Control"} (${tile.settings.condition2 || "?"} vs ${tile.settings.condition1 || "?"})`,
+            }] : [])}
+            onChange={setLinkedVolcanoId}
+          />
         </div>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-lg font-semibold text-slate-900">Analysis Canvas</h3>
-          <div className="flex gap-2">
-            <select
+          <div className="flex flex-wrap gap-2">
+            <AssistantSelect aria-label="New tile type" data-assistant-permission="view"
               value={addType}
               onChange={(event) => setAddType(event.target.value as TileType)}
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -775,50 +839,55 @@ export default function AnalysisPage({
               <option value="proteinBoxplot">Protein Boxplot</option>
               <option value="proteinLineplot">Protein Lineplot</option>
               <option value="oraList">GO Enrichment (ORA, List)</option>
-            </select>
-            <button
+            </AssistantSelect>
+            <AssistantCanvasButton effect="add"
               type="button"
               onClick={addTile}
               className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
             >
               + Add Plot
-            </button>
+            </AssistantCanvasButton>
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4">
-          {tiles.map((tile) => {
+          {tiles.map((tile, tileIndex) => (
+            <CanvasTile key={tile.id} tile={tile} index={tileIndex} count={tiles.length}
+              onMove={direction => moveTile(tile.id, direction)}
+              onToggle={() => updateTile(tile.id, { ...tile, collapsed: !tile.collapsed })}
+              onRemove={() => removeTile(tile.id)}>
+              {(() => {
                 if (tile.type === "volcano") {
+                  const volcanoSettings = tile.settings;
+                  const volcanoConditionsValid = conditionsValid(tile.settings, false);
+                  const visibleVolcanoData = visibleResult(tile)?.data ?? null;
                   return (
-                    <div key={tile.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="text-sm font-semibold text-slate-800">Volcano</div>
-                        <button
-                          type="button"
-                          onClick={() => removeTile(tile.id)}
-                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                    <div>
                       <VolcanoBundleControls
                         kind={kind}
                         settings={volcanoSettings}
                         options={options}
                         onPairingSaved={async () => setOptions(await getStatisticalOptions(kind))}
-                        onChange={(patch) => setVolcanoSettings((current) => ({ ...current, ...patch }))}
+                        onChange={(patch) => updateTile(tile.id, { ...tile, settings: { ...tile.settings, ...patch } })}
                       />
                       {volcanoConditionsValid ? (
                         <VolcanoPointsPanel
                           data={visibleVolcanoData}
-                          onPointClick={pointClick}
-                          onToggleProteins={toggleProteins}
+                          highlightFeatures={tile.highlightFeatures}
+                          error={visibleResult(tile)?.error}
+                          onRetry={() => retryVolcano(tile.id)}
+                          style={restoredVolcanoStyle(tile.style)}
+                          onStyleChange={style => updateTile(tile.id, { ...tile, style })}
+                          filename={`canvas_${tile.id}_volcano.svg`}
+                          onPointClick={(protein, multi) => selectFromTile(tile, [protein], multi ? "toggle" : "single")}
+                          onToggleProteins={proteins => selectFromTile(tile, proteins, "toggle")}
                           onClearSelection={clearSelection}
                           listNames={listNames}
-                          onSelectListInPlot={selectListInPlot}
-                          selectedProteins={selectedProteins}
-                          activeProtein={activeProtein}
+                          onSelectListInPlot={name => selectFromTile(tile, toUnique(lists[name] ?? []), "list")}
+                          selectedProteins={sourceTile?.id === tile.id ? selectedProteins : []}
+                          activeProtein={sourceTile?.id === tile.id ? activeProtein : ""}
                           pValueThreshold={volcanoSettings.pValueThreshold}
+                          useUncorrected={volcanoSettings.pValueMode === "uncorrected"}
                           log2fcThreshold={volcanoSettings.log2fcThreshold}
                           xAxisLabel={`log2 Fold Change (${volcanoSettings.condition2 || "Condition 2"} vs ${volcanoSettings.condition1 || "Condition 1"})`}
                           onAddUpregulatedToList={() =>
@@ -842,7 +911,9 @@ export default function AnalysisPage({
                         />
                       ) : (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                          Select two different conditions to display the volcano plot.
+                          {volcanoSettings.dataSource === "imputed" && !options?.imputedAvailable
+                            ? "The selected imputed data is unavailable."
+                            : "Select two different conditions to display the volcano plot."}
                         </div>
                       )}
                     </div>
@@ -850,37 +921,37 @@ export default function AnalysisPage({
                 }
 
                 if (tile.type === "volcanoControl") {
+                  const volcanoControlSettings = tile.settings;
+                  const volcanoControlConditionsValid = conditionsValid(tile.settings, true);
+                  const visibleVolcanoControlData = visibleResult(tile)?.data ?? null;
                   return (
-                    <div key={tile.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="text-sm font-semibold text-slate-800">Volcano Control</div>
-                        <button
-                          type="button"
-                          onClick={() => removeTile(tile.id)}
-                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                    <div>
                       <VolcanoBundleControls
                         kind={kind}
                         settings={volcanoControlSettings}
                         options={options}
                         showControlConditions
                         onPairingSaved={async () => setOptions(await getStatisticalOptions(kind))}
-                        onChange={(patch) => setVolcanoControlSettings((current) => ({ ...current, ...patch }))}
+                        onChange={(patch) => updateTile(tile.id, { ...tile, settings: { ...tile.settings, ...patch } })}
                       />
                       {volcanoControlConditionsValid ? (
                         <VolcanoPointsPanel
                           data={visibleVolcanoControlData}
-                          onPointClick={pointClick}
-                          onToggleProteins={toggleProteins}
+                          highlightFeatures={tile.highlightFeatures}
+                          error={visibleResult(tile)?.error}
+                          onRetry={() => retryVolcano(tile.id)}
+                          style={restoredVolcanoStyle(tile.style)}
+                          onStyleChange={style => updateTile(tile.id, { ...tile, style })}
+                          filename={`canvas_${tile.id}_volcano_control.svg`}
+                          onPointClick={(protein, multi) => selectFromTile(tile, [protein], multi ? "toggle" : "single")}
+                          onToggleProteins={proteins => selectFromTile(tile, proteins, "toggle")}
                           onClearSelection={clearSelection}
                           listNames={listNames}
-                          onSelectListInPlot={selectListInPlot}
-                          selectedProteins={selectedProteins}
-                          activeProtein={activeProtein}
+                          onSelectListInPlot={name => selectFromTile(tile, toUnique(lists[name] ?? []), "list")}
+                          selectedProteins={sourceTile?.id === tile.id ? selectedProteins : []}
+                          activeProtein={sourceTile?.id === tile.id ? activeProtein : ""}
                           pValueThreshold={volcanoControlSettings.pValueThreshold}
+                          useUncorrected={volcanoControlSettings.pValueMode === "uncorrected"}
                           log2fcThreshold={volcanoControlSettings.log2fcThreshold}
                           xAxisLabel={`log2 Fold Change [(${volcanoControlSettings.condition2 || "Condition 2"} vs ${volcanoControlSettings.condition1 || "Condition 1"}) - (${volcanoControlSettings.condition2Control || "Control 2"} vs ${volcanoControlSettings.condition1Control || "Control 1"})]`}
                           onAddUpregulatedToList={() =>
@@ -904,7 +975,9 @@ export default function AnalysisPage({
                         />
                       ) : (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                          Select four different conditions to display the control volcano plot.
+                          {volcanoControlSettings.dataSource === "imputed" && !options?.imputedAvailable
+                            ? "The selected imputed data is unavailable."
+                            : "Select four different conditions to display the control volcano plot."}
                         </div>
                       )}
                     </div>
@@ -919,30 +992,24 @@ export default function AnalysisPage({
                   const plotIdentifier =
                     tile.sourceMode === "active"
                       ? activeBoxplotTarget.identifier
-                      : identifier;
-                  const url = protein
-                    ? buildPlotUrl("/api/analysis/boxplot.png", {
+                      : tile.plotIdentifier ?? identifier;
+                  const url = protein && plotSourceAvailable(tile.dataSource)
+                    ? buildPlotUrl(`/api/plots/single-protein/${kind}/boxplot.png`, {
+                        advanced: JSON.stringify(tile.advanced ?? {}),
+                        dataSource: tile.dataSource,
                         kind,
                         protein,
-                        conditions: conditionsCsv,
+                        conditions: tile.conditions ? JSON.stringify(tile.conditions) : conditionsCsv,
                         identifier: plotIdentifier,
                       })
                     : "";
 
                   return (
-                    <div key={tile.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="text-sm font-semibold text-slate-800">Protein Boxplot</div>
-                        <button
-                          type="button"
-                          onClick={() => removeTile(tile.id)}
-                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                    <div>
 
                       <div className="grid gap-3 lg:grid-cols-2">
+                        <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
+                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as PlotDataSource })} />
                         <SelectField
                           label="Protein source"
                           value={tile.sourceMode}
@@ -971,14 +1038,10 @@ export default function AnalysisPage({
                       </div>
 
                       {url ? (
-                        <img
-                          src={url}
-                          alt="analysis boxplot"
-                          className="mt-3 w-full rounded-xl border border-slate-200 bg-white"
-                        />
+                        <CanvasImagePlot advanced={tile.advanced} onChange={advanced => updateTile(tile.id, { ...tile, advanced })} conditions={options?.availableConditions ?? []} url={url} filename={`canvas_${tile.id}_boxplot`} boxplot alt="analysis boxplot" />
                       ) : (
                         <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
-                          Select or enter a protein to render the boxplot.
+                          {plotSourceAvailable(tile.dataSource) ? "Select or enter a protein to render the boxplot." : "The selected data source is unavailable."}
                         </div>
                       )}
                     </div>
@@ -995,31 +1058,25 @@ export default function AnalysisPage({
                   const plotIdentifier =
                     tile.sourceMode === "active"
                       ? activeBoxplotTarget.identifier
-                      : identifier;
+                      : tile.plotIdentifier ?? identifier;
                   const url =
-                    proteins.length > 0
-                      ? buildPlotUrl("/api/analysis/lineplot.png", {
+                    proteins.length > 0 && plotSourceAvailable(tile.dataSource)
+                      ? buildPlotUrl(`/api/plots/single-protein/${kind}/lineplot.png`, {
+                          advanced: JSON.stringify(tile.advanced ?? {}),
+                          dataSource: tile.dataSource,
                           kind,
                           proteins: JSON.stringify(proteins),
-                          conditions: conditionsCsv,
+                          conditions: tile.conditions ? JSON.stringify(tile.conditions) : conditionsCsv,
                           identifier: plotIdentifier,
                         })
                       : "";
 
                   return (
-                    <div key={tile.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="text-sm font-semibold text-slate-800">Protein Lineplot</div>
-                        <button
-                          type="button"
-                          onClick={() => removeTile(tile.id)}
-                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
-                        >
-                          Remove
-                        </button>
-                      </div>
+                    <div>
 
                       <div className="grid gap-3 lg:grid-cols-2">
+                        <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
+                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as PlotDataSource })} />
                         <SelectField
                           label="Protein source"
                           value={tile.sourceMode}
@@ -1047,11 +1104,15 @@ export default function AnalysisPage({
                         ) : null}
 
                         {tile.sourceMode === "manual" ? (
-                          <TextField
-                            label="Proteins or genes (comma, space, or newline)"
-                            value={tile.proteinsText}
-                            onChange={(value) => updateTile(tile.id, { ...tile, proteinsText: value })}
-                          />
+                          <label className="block text-sm">
+                            <span className="mb-1 block font-medium text-slate-700">Proteins or genes (comma, space, or newline)</span>
+                            <AssistantTextarea
+                              value={tile.proteinsText}
+                              onChange={(event) => updateTile(tile.id, { ...tile, proteinsText: event.target.value })}
+                              rows={2}
+                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
+                            />
+                          </label>
                         ) : null}
 
                         {tile.sourceMode === "active" ? (
@@ -1068,14 +1129,10 @@ export default function AnalysisPage({
                       </div>
 
                       {url ? (
-                        <img
-                          src={url}
-                          alt="analysis lineplot"
-                          className="mt-3 w-full rounded-xl border border-slate-200 bg-white"
-                        />
+                        <CanvasImagePlot advanced={tile.advanced} onChange={advanced => updateTile(tile.id, { ...tile, advanced })} conditions={options?.availableConditions ?? []} url={url} filename={`canvas_${tile.id}_lineplot`} alt="analysis lineplot" />
                       ) : (
                         <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
-                          Provide proteins to render the lineplot.
+                          {plotSourceAvailable(tile.dataSource) ? "Provide proteins to render the lineplot." : "The selected data source is unavailable."}
                         </div>
                       )}
                     </div>
@@ -1085,9 +1142,10 @@ export default function AnalysisPage({
                 if (tile.type === "oraList") {
                   return (
                     <OraListTile
+                      state={tile.state}
+                      onChange={updateOraState}
                       key={tile.id}
                       tileId={tile.id}
-                      onRemove={removeTile}
                       listNames={listNames}
                       lists={lists}
                     />
@@ -1095,7 +1153,9 @@ export default function AnalysisPage({
                 }
 
                 return null;
-              })}
+              })()}
+            </CanvasTile>
+          ))}
 
           {tiles.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm text-slate-500">
@@ -1247,84 +1307,134 @@ export default function AnalysisPage({
   );
 }
 
+function CanvasTile({ tile, index, count, onMove, onToggle, onRemove, children }: {
+  tile: AnalysisTile; index: number; count: number;
+  onMove: (direction: -1 | 1) => void; onToggle: () => void; onRemove: () => void;
+  children: React.ReactNode;
+}) {
+  const titles: Record<TileType, string> = {
+    volcano: "Volcano", volcanoControl: "Volcano Control", proteinBoxplot: "Protein Boxplot",
+    proteinLineplot: "Protein Lineplot", oraList: "GO Enrichment (ORA, List)",
+  };
+  const buttonClass = "rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100 disabled:opacity-40";
+  return <section data-assistant-tile={tile.id} data-assistant-tile-type={tile.type} data-assistant-group={`Tile ${index + 1}: ${tile.type}`}
+    className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <button type="button" onClick={onToggle} aria-expanded={!tile.collapsed} aria-controls={`tile-body-${tile.id}`}
+        aria-label={`${tile.collapsed ? "Expand" : "Collapse"} tile`}
+        className="flex items-center gap-2 text-left text-sm font-semibold text-slate-800">
+        <span aria-hidden="true">{tile.collapsed ? "▸" : "▾"}</span>{index + 1}. {titles[tile.type]}
+      </button>
+      <div className="flex gap-1">
+        <button type="button" aria-label="Move tile up" title="Move up" disabled={index === 0} onClick={() => onMove(-1)} className={buttonClass}>↑</button>
+        <button type="button" aria-label="Move tile down" title="Move down" disabled={index === count - 1} onClick={() => onMove(1)} className={buttonClass}>↓</button>
+        <AssistantCanvasButton effect="remove" type="button" onClick={onRemove} className={buttonClass}>Remove</AssistantCanvasButton>
+      </div>
+    </div>
+    <div id={`tile-body-${tile.id}`} hidden={tile.collapsed} className="mt-3">
+      {tile.conditions ? <div className="mb-2 text-xs text-slate-600">Conditions: {tile.conditions.join(" → ")}</div> : null}
+      {children}
+    </div>
+  </section>;
+}
+
 function OraListTile({
+  state,
+  onChange,
   tileId,
-  onRemove,
   listNames,
   lists,
 }: {
+  state: OraState;
+  onChange: (id: string, patch: Partial<OraState>) => void;
   tileId: string;
-  onRemove: (id: string) => void;
   listNames: string[];
   lists: Record<string, string[]>;
 }) {
-  const [sourceMode, setSourceMode] = useState<"manual" | "list">("manual");
-  const [selectedListName, setSelectedListName] = useState("");
-  const [genesText, setGenesText] = useState("");
-  const [backgroundMode, setBackgroundMode] = useState<"experiment" | "global">("experiment");
-  const [backgroundText, setBackgroundText] = useState("");
-  const [topN, setTopN] = useState(10);
-  const [minTermSize, setMinTermSize] = useState(20);
-  const [maxTermSize, setMaxTermSize] = useState(300);
-  const [adjPValueCutoff, setAdjPValueCutoff] = useState(0.05);
-  const [result, setResult] = useState<ListEnrichmentResultResponse | null>(null);
+  const { sourceMode, selectedListName, genesText, backgroundMode, backgroundText,
+    topN, minTermSize, maxTermSize, adjPValueCutoff, completed } = state;
+  const setField = useCallback(<K extends keyof OraState,>(key: K, value: OraState[K]) =>
+    onChange(tileId, { [key]: value }), [onChange, tileId]);
+  const result = completed?.result ?? null;
+  const pendingRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => pendingRequest.current?.abort(), []);
+
+  function clearResult() {
+    pendingRequest.current?.abort();
+    pendingRequest.current = null;
+    setField("completed", null);
+    setRunning(false);
+    setError(null);
+  }
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
     if (listNames.length === 0) {
-      setSelectedListName("");
+      setField("selectedListName", "");
       return;
     }
     if (!selectedListName || !listNames.includes(selectedListName)) {
-      setSelectedListName(listNames[0]);
+      setField("selectedListName", listNames[0]);
     }
-  }, [listNames, selectedListName]);
+  }, [listNames, selectedListName, setField]);
 
   const parsedGenes = useMemo(() => parseProteins(genesText), [genesText]);
   const parsedBackground = useMemo(() => parseProteins(backgroundText), [backgroundText]);
 
   async function runOra() {
+    if (pendingRequest.current) return;
     const genes = sourceMode === "list" ? toUnique(lists[selectedListName] ?? []) : parsedGenes;
     if (genes.length === 0) {
       setError("Provide at least one gene in the input list.");
-      setResult(null);
+      setField("completed", null);
       return;
     }
 
     setRunning(true);
     setError(null);
+    const controller = new AbortController();
+    pendingRequest.current = controller;
+    const request: ListEnrichmentRequest = {
+      genes,
+      backgroundMode,
+      backgroundGenes: backgroundMode === "experiment" ? parsedBackground : [],
+      topN: Math.max(1, Math.round(topN)),
+      minTermSize: Math.max(1, Math.round(minTermSize)),
+      maxTermSize: Math.max(1, Math.round(maxTermSize)),
+      adjPValueCutoff: Math.max(1e-12, Math.min(1, adjPValueCutoff)),
+    };
     try {
-      const response = await runListEnrichmentAnalysis({
-        genes,
-        backgroundMode,
-        backgroundGenes: backgroundMode === "experiment" ? parsedBackground : [],
-        topN: Math.max(1, Math.round(topN)),
-        minTermSize: Math.max(1, Math.round(minTermSize)),
-        maxTermSize: Math.max(1, Math.round(maxTermSize)),
-        adjPValueCutoff: Math.max(1e-12, Math.min(1, adjPValueCutoff)),
-      });
-      setResult(response);
+      const response = await runListEnrichmentAnalysis(request, { signal: controller.signal });
+      if (!controller.signal.aborted) {
+        setField("completed", { result: response, request, inputSource: sourceMode,
+          namedList: sourceMode === "list" ? selectedListName : "" });
+      }
     } catch (err) {
-      setResult(null);
-      setError(err instanceof Error ? err.message : "Failed to run list enrichment analysis");
+      if (!controller.signal.aborted) {
+        setField("completed", null);
+        setError(err instanceof Error ? err.message : "Failed to run list enrichment analysis");
+      }
     } finally {
-      setRunning(false);
+      if (pendingRequest.current === controller) {
+        pendingRequest.current = null;
+        setRunning(false);
+      }
     }
   }
 
   function loadFromActiveList() {
     const genes = toUnique(lists[selectedListName] ?? []);
-    setGenesText(genes.join("\n"));
-    setSourceMode("manual");
+    setField("genesText", genes.join("\n"));
+    setField("sourceMode", "manual");
   }
 
-  const oraTermRows = result
+  const oraTermRows = completed && result
     ? result.terms.map((term) => ({
         method: "ORA",
         organism: result.organism,
-        inputSource: sourceMode,
-        namedList: sourceMode === "list" ? selectedListName : "",
+        inputSource: completed.inputSource,
+        namedList: completed.namedList,
         querySize: result.genes.length,
         backgroundMode: result.backgroundMode,
         backgroundSize: result.backgroundSize,
@@ -1334,27 +1444,17 @@ function OraListTile({
         testedTermCount: result.testedTermCount,
         ...result.termCounts.query,
         correctionScope: ORA_CORRECTION_SCOPE,
-        adjPValueCutoff,
-        minTermSize,
-        maxTermSize,
+        adjPValueCutoff: completed.request.adjPValueCutoff,
+        minTermSize: completed.request.minTermSize,
+        maxTermSize: completed.request.maxTermSize,
+        topN: completed.request.topN,
         ...term,
       }))
     : [];
   const oraCsvUrl = csvDataUrl(oraTermRows);
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm font-semibold text-slate-800">GO Enrichment (ORA, List)</div>
-        <button
-          type="button"
-          onClick={() => onRemove(tileId)}
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
-        >
-          Remove
-        </button>
-      </div>
-
+    <div>
       <div className="grid gap-3 lg:grid-cols-2">
         <SelectField
           label="Input source"
@@ -1363,14 +1463,14 @@ function OraListTile({
             { value: "manual", label: "Manual list input" },
             { value: "list", label: "Named list from sidebar" },
           ]}
-          onChange={(value) => setSourceMode(value as "manual" | "list")}
+          onChange={(value) => setField("sourceMode", value as "manual" | "list")}
         />
         {sourceMode === "list" ? (
           <SelectField
             label="Named list"
             value={selectedListName}
             options={listNames.map((name) => ({ value: name, label: name }))}
-            onChange={setSelectedListName}
+            onChange={value => setField("selectedListName", value)}
           />
         ) : (
           <div className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
@@ -1384,7 +1484,7 @@ function OraListTile({
           <label className="mb-1 block text-sm font-medium text-slate-700">Gene list input</label>
           <textarea
             value={genesText}
-            onChange={(event) => setGenesText(event.target.value)}
+            onChange={(event) => setField("genesText", event.target.value)}
             rows={6}
             placeholder="Paste genes separated by comma, space, or newline"
             className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -1413,7 +1513,7 @@ function OraListTile({
             { value: "experiment", label: "Custom tested-gene background (recommended)" },
             { value: "global", label: "All annotated human genes (global)" },
           ]}
-          onChange={(value) => setBackgroundMode(value as "experiment" | "global")}
+          onChange={(value) => setField("backgroundMode", value as "experiment" | "global")}
         />
       </div>
 
@@ -1422,7 +1522,7 @@ function OraListTile({
           <label className="mb-1 block text-sm font-medium text-slate-700">Tested-gene background</label>
           <textarea
             value={backgroundText}
-            onChange={(event) => setBackgroundText(event.target.value)}
+            onChange={(event) => setField("backgroundText", event.target.value)}
             rows={6}
             placeholder="Paste every gene that could have entered the input list"
             className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -1436,10 +1536,10 @@ function OraListTile({
       )}
 
       <div className="mt-3 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
-        <NumberField label="Adj p-value cutoff" value={adjPValueCutoff} onChange={setAdjPValueCutoff} />
-        <NumberField label="Top terms" value={topN} onChange={setTopN} />
-        <NumberField label="Min term size" value={minTermSize} onChange={setMinTermSize} />
-        <NumberField label="Max term size" value={maxTermSize} onChange={setMaxTermSize} />
+        <NumberField label="Adj p-value cutoff" value={adjPValueCutoff} onChange={value => setField("adjPValueCutoff", value)} />
+        <NumberField label="Top terms" value={topN} onChange={value => setField("topN", value)} />
+        <NumberField label="Min term size" value={minTermSize} onChange={value => setField("minTermSize", value)} />
+        <NumberField label="Max term size" value={maxTermSize} onChange={value => setField("maxTermSize", value)} />
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1453,10 +1553,7 @@ function OraListTile({
         </button>
         <button
           type="button"
-          onClick={() => {
-            setResult(null);
-            setError(null);
-          }}
+          onClick={clearResult}
           className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
         >
           Clear Result
@@ -1573,6 +1670,11 @@ function VolcanoBundleControls({
 
   return (
     <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3">
+      <SelectField label="Data source" value={settings.dataSource}
+        options={[{ value: "data", label: "Data" },
+          ...(options?.imputedAvailable || settings.dataSource === "imputed"
+            ? [{ value: "imputed", label: options?.imputedAvailable ? "Imputed data" : "Imputed data (unavailable)" }] : [])]}
+        onChange={value => onChange({ dataSource: value as "data" | "imputed" })} />
       {isControl ? (
         <div className="grid gap-3 lg:grid-cols-4">
           <SelectField
@@ -1663,6 +1765,12 @@ function VolcanoBundleControls({
 
 function VolcanoPointsPanel({
   data,
+  highlightFeatures = [],
+  error,
+  onRetry,
+  style,
+  onStyleChange,
+  filename,
   onPointClick,
   onToggleProteins,
   onClearSelection,
@@ -1675,10 +1783,17 @@ function VolcanoPointsPanel({
   selectedProteins,
   activeProtein,
   pValueThreshold,
+  useUncorrected,
   log2fcThreshold,
   xAxisLabel,
 }: {
   data: AnalysisVolcanoResponse | null;
+  highlightFeatures?: string[];
+  error?: string;
+  onRetry: () => void;
+  style: VolcanoStyle;
+  onStyleChange: (style: VolcanoStyle) => void;
+  filename: string;
   onPointClick: (protein: string, multi: boolean) => void;
   onToggleProteins: (proteins: string[]) => void;
   onClearSelection: () => void;
@@ -1691,6 +1806,7 @@ function VolcanoPointsPanel({
   selectedProteins: string[];
   activeProtein: string;
   pValueThreshold: number;
+  useUncorrected: boolean;
   log2fcThreshold: number;
   xAxisLabel: string;
 }) {
@@ -1703,7 +1819,8 @@ function VolcanoPointsPanel({
 
   const effectivePlotListName = listNames.includes(plotListName) ? plotListName : listNames[0] ?? "";
 
-  if (!data || data.points.length === 0) {
+  if (!data) return <CanvasPlotStatus error={error} onRetry={onRetry} />;
+  if (data.points.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-sm text-slate-500">
         No volcano points available.
@@ -1712,23 +1829,24 @@ function VolcanoPointsPanel({
   }
 
   const points = data.points;
-  const xs = points.map((point) => point.log2FC);
-  const ys = points.map((point) => point.negLog10P);
+  const selected = new Set(selectedProteins);
+  const highlighted = new Set(highlightFeatures);
 
   const thresholdAbs = Math.abs(log2fcThreshold);
-  const dataAbs = Math.max(Math.abs(Math.min(...xs)), Math.abs(Math.max(...xs)));
+  const dataAbs = points.reduce((max, point) => Math.max(max, Math.abs(point.log2FC)), 0);
   const xAbs = Math.max(1, Math.max(dataAbs, thresholdAbs) * 1.1);
   const xMin = -xAbs;
   const xMax = xAbs;
   const hasDualThreshold = thresholdAbs > 0;
 
   const thresholdY = -Math.log10(Math.max(pValueThreshold, 1e-12));
-  const yDataMax = Math.max(...ys, 0);
+  const yDataMax = points.reduce((max, point) => Math.max(max, point.negLog10P), 0);
   const yMax = Math.max(1, Math.max(yDataMax, thresholdY) * 1.1);
 
   const width = 900;
   const height = 460;
-  const margin = { top: 20, right: 20, bottom: 40, left: 56 };
+  const margin = { top: style.title ? 42 : 20, right: 20, bottom: 40, left: 56 };
+  const pAxisLabel = useUncorrected ? "-log10(p-value)" : "-log10(BH-adjusted p-value)";
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
 
@@ -1830,13 +1948,46 @@ function VolcanoPointsPanel({
 
   function pointColor(significance: string) {
     const lower = significance.toLowerCase();
-    if (lower.includes("up")) return "#dc2626";
-    if (lower.includes("down")) return "#2563eb";
-    return "#94a3b8";
+    if (lower.includes("up")) return style.up;
+    if (lower.includes("down")) return style.down;
+    return style.other;
+  }
+
+  function downloadSvg() {
+    if (!svgRef.current) return;
+    const copy = svgRef.current.cloneNode(true) as SVGSVGElement;
+    copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    copy.setAttribute("width", String(width));
+    copy.setAttribute("height", String(height));
+    copy.removeAttribute("class");
+    copy.removeAttribute("style");
+    copy.querySelectorAll('[data-selection-overlay]').forEach(node => node.remove());
+    const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(copy)], { type: "image/svg+xml" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   return (
     <div className="space-y-2">
+      <div className="flow-root">
+      <button type="button" onClick={downloadSvg} disabled={isDragging}
+        className="float-right mb-2 ml-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-50">Download SVG</button>
+      <details>
+        <summary className="w-fit cursor-pointer py-2 text-sm text-slate-700">Plot styling</summary>
+        <div className="clear-both grid gap-3 py-3 lg:grid-cols-2">
+          <TextField label="Plot title" value={style.title} onChange={title => onStyleChange({ ...style, title })} />
+          <NumberField label="Point radius" value={style.radius} onChange={radius => onStyleChange(restoredVolcanoStyle({ ...style, radius }))} />
+          {([['up', 'Upregulated color'], ['down', 'Downregulated color'], ['other', 'Not significant color']] as const).map(([key, label]) => (
+            <label key={key} className="flex items-center gap-2 text-sm">
+              {label}<AssistantInput type="color" value={style[key]} onChange={event => onStyleChange({ ...style, [key]: event.target.value })} />
+            </label>
+          ))}
+        </div>
+      </details>
+      </div>
       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
         <span>Total rows: {data.totalRows}</span>
         <span>Up: {data.upregulatedCount}</span>
@@ -1916,7 +2067,7 @@ function VolcanoPointsPanel({
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           <div className="font-semibold text-slate-900">{activePoint.label}</div>
           <div>log2FC: {activePoint.log2FC.toFixed(4)}</div>
-          <div>-log10(p-value): {activePoint.negLog10P.toFixed(4)}</div>
+          <div>{pAxisLabel}: {activePoint.negLog10P.toFixed(4)}</div>
           <div>Significance: {activePoint.significance}</div>
           {activePoint.workflowLabel ? (
             <div>{data.kind === "phospho" ? "Site" : "Feature"}: {activePoint.workflowLabel}</div>
@@ -1941,14 +2092,17 @@ function VolcanoPointsPanel({
       <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
         <svg
           ref={svgRef}
+          fontFamily="Arial, sans-serif"
           viewBox={`0 0 ${width} ${height}`}
-          className={`min-w-[42rem] ${multiSelectMode ? "select-none" : ""}`}
+          className={`block w-full ${multiSelectMode ? "select-none" : ""}`}
           style={multiSelectMode ? { userSelect: "none", WebkitUserSelect: "none" } : undefined}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerUp}
         >
+          <rect width={width} height={height} fill="white" />
+          {style.title ? <text x={width / 2} y={24} textAnchor="middle" fontSize="16" fill="#334155">{style.title}</text> : null}
           {yTicks.map((tick, idx) => (
             <line
               key={`ygrid_${idx}`}
@@ -2011,9 +2165,9 @@ function VolcanoPointsPanel({
 
           {points.map((point, index) => {
             const selectionId = volcanoPointSelectionKey(point);
-            const isSelected = selectedProteins.includes(selectionId);
+            const isSelected = selected.has(selectionId) || highlighted.has(point.workflowLabel ?? point.label);
             const isActive = !multiSelectMode && activeProtein === selectionId;
-            const radius = multiSelectMode ? (isSelected ? 3.8 : 2.8) : isActive ? 4.5 : isSelected ? 3.6 : 2.8;
+            const radius = style.radius + (multiSelectMode ? (isSelected ? 1 : 0) : isActive ? 1.7 : isSelected ? 0.8 : 0);
             const stroke = multiSelectMode
               ? isSelected
                 ? "#334155"
@@ -2028,14 +2182,14 @@ function VolcanoPointsPanel({
               ? [
                   `${point.label}`,
                   `log2FC=${point.log2FC.toFixed(4)}`,
-                  `-log10(p)=${point.negLog10P.toFixed(4)}`,
+                  `${pAxisLabel}=${point.negLog10P.toFixed(4)}`,
                   `Significance=${point.significance}`,
                   point.workflowLabel ? `Workflow=${point.workflowLabel}` : "",
                   point.geneLabel ? `Gene=${point.geneLabel}` : "",
                 ]
                   .filter(Boolean)
                   .join("\n")
-              : `${point.label} | log2FC=${point.log2FC.toFixed(3)} | -log10(p)=${point.negLog10P.toFixed(3)} | ${point.significance}`;
+              : `${point.label} | log2FC=${point.log2FC.toFixed(3)} | ${pAxisLabel}=${point.negLog10P.toFixed(3)} | ${point.significance}`;
 
             return (
               <circle
@@ -2076,6 +2230,7 @@ function VolcanoPointsPanel({
 
           {isDragging ? (
             <rect
+              data-selection-overlay="true"
               x={Math.min(dragStart.x, dragCurrent.x)}
               y={Math.min(dragStart.y, dragCurrent.y)}
               width={Math.abs(dragCurrent.x - dragStart.x)}
@@ -2114,12 +2269,66 @@ function VolcanoPointsPanel({
 
           <text x={width / 2} y={height - 10} textAnchor="middle" fontSize="12" fill="#334155">{xAxisLabel}</text>
           <text x={16} y={height / 2} textAnchor="middle" fontSize="12" fill="#334155" transform={`rotate(-90 16 ${height / 2})`}>
-            -log10(p-value)
+            {pAxisLabel}
           </text>
         </svg>
       </div>
     </div>
   );
+}
+
+function CanvasPlotStatus({ error, onRetry }: { error?: string; onRetry: () => void }) {
+  return <div role={error ? "alert" : "status"} className="my-3 rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600">
+    {error ? <><span>{error}</span><button type="button" onClick={onRetry}
+      className="ml-3 rounded-lg border border-slate-300 px-3 py-1 text-slate-800">Retry plot</button></> : "Loading plot…"}
+  </div>;
+}
+
+function CanvasImagePlot({ url, alt, ...options }: React.ComponentProps<typeof CanvasPlotOptions> & { alt: string }) {
+  const [render, setRender] = useState<{ url: string; attempt: number; status: "loading" | "ready" | "error" }>(
+    { url, attempt: 0, status: "loading" });
+  if (render.url !== url) setRender({ url, attempt: 0, status: "loading" });
+  const current = render.url === url;
+  const ready = current && render.status === "ready";
+  const imageUrl = current && render.attempt ? `${url}&_retry=${render.attempt}` : url;
+  const status = (next: "ready" | "error") => setRender(previous =>
+    previous.url === url && previous.attempt === render.attempt ? { ...previous, status: next } : previous);
+  return <>
+    <CanvasPlotOptions {...options} url={ready ? imageUrl : ""} />
+    {!ready ? <CanvasPlotStatus error={current && render.status === "error" ? "Could not render this plot. Check the selection or try again." : undefined}
+      onRetry={() => setRender(previous => ({ ...previous, attempt: previous.attempt + 1, status: "loading" }))} /> : null}
+    <img key={imageUrl} src={imageUrl} alt={alt} onLoad={() => status("ready")} onError={() => status("error")}
+      className={ready ? "mt-3 w-full rounded-xl border border-slate-200 bg-white" : "hidden"} />
+  </>;
+}
+
+function CanvasPlotOptions({ advanced, onChange, conditions, url, filename, boxplot = false }: {
+  advanced?: AdvancedPlotSettings;
+  onChange: (value: AdvancedPlotSettings) => void;
+  conditions: string[];
+  url: string;
+  filename: string;
+  boxplot?: boolean;
+}) {
+  const [format, setFormat] = useState<PlotDownloadFormat>("png");
+  return <div className="mt-3 flow-root">
+    {url ? <div className="float-right mb-2 ml-3 flex items-center gap-2">
+      <AssistantSelect aria-label="Export format" value={format}
+        onChange={event => setFormat(event.target.value as PlotDownloadFormat)}
+        className="rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm">
+        {PLOT_DOWNLOAD_FORMAT_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </AssistantSelect>
+      <a href={withPlotDownloadFormat(url, format)} download={`${filename}.${format}`}
+        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">Download Plot</a>
+    </div> : null}
+    <details>
+      <summary className="w-fit cursor-pointer py-2 text-sm text-slate-700">Plot styling</summary>
+      <div className="clear-both pt-2">
+        <AdvancedPlotOptions value={advanced ?? {}} onChange={onChange} conditionOptions={conditions}
+          visibleControls={{ boxplotStyle: boxplot, boxplotOutliers: false, sampleLabels: false, referenceLineColor: false, correlationGradient: false }} />
+      </div>
+    </details>
+  </div>;
 }
 
 function SelectField({
@@ -2136,7 +2345,7 @@ function SelectField({
   return (
     <label className="block text-sm">
       <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -2147,7 +2356,7 @@ function SelectField({
             {option.label}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </label>
   );
 }
@@ -2166,7 +2375,7 @@ function TextField({
   return (
     <label className="block text-sm">
       <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <input
+      <AssistantInput
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
@@ -2188,8 +2397,8 @@ function NumberField({
   return (
     <label className="block text-sm">
       <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <input
-        type="text"
+      <AssistantInput
+        type="text" inputMode="decimal"
         value={String(value)}
         onChange={(event) => {
           const parsed = Number(event.target.value.replace(",", "."));
