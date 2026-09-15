@@ -1,3 +1,4 @@
+import { AssistantSelect } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, ColorField, Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
@@ -603,7 +604,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
           {hasPhosphoDataset && plotView && plotView.type === "image" ? (
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <AssistantSelect
                 value={downloadFormat}
                 onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                 className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -613,7 +614,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
               <a
                 href={plotDownloadUrl}
                 download={plotDownloadFilename}
@@ -1075,7 +1076,7 @@ function SelectField({
   return (
     <label className="block text-sm">
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <select
+      <AssistantSelect
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
@@ -1085,7 +1086,7 @@ function SelectField({
             {optionLabels[option] ?? option}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </label>
   );
 }

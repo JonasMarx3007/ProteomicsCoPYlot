@@ -69,4 +69,26 @@ if __name__ == "__main__":
                 "tokens": [{"token_sha256": hashlib.sha256(b"synthetic-browser-link-only").hexdigest()}],
             }), encoding="utf-8")
             os.environ.update(COPYLOT_TOOL_ACCESS_ENABLED="1", COPYLOT_TOOL_ACCESS_FILE=str(access), COPYLOT_SESSION_ISOLATION="1")
+        if os.environ.get("COPYLOT_BROWSER_ASSISTANT_STUB") == "1":
+            from app.services import scientific_assistant
+            scientific_assistant._execution_profile = lambda *args: ("extended", 4, 2000)
+            def scripted_completion(request, instruction, data, **kwargs):
+                if "task" in kwargs["schema"]["properties"]:
+                    reply = {"task": "current_plot"}
+                    if request.message.startswith("Focus canvas on phosphosite "):
+                        reply = {"task": "canvas_focus", "focus": {"kind": "phospho", "query": request.message.removeprefix("Focus canvas on phosphosite "), "conditions": ["A", "B"]}}
+                    elif request.message == "Focus canvas on protein P0":
+                        reply = {"task": "canvas_focus", "focus": {"kind": "protein", "query": "P0", "conditions": ["A", "B"]}}
+                    elif request.message == "Focus canvas on all phosphosites on protein P0":
+                        reply = {"task": "canvas_focus", "focus": {"kind": "phospho", "query": "P0", "allSites": True, "conditions": ["A", "B"]}}
+                    if request.view.module == "analysis.canvas" and '"oraList"' in request.view.mode:
+                        reply["module"] = "stats.ora"
+                elif "source" in kwargs["schema"]["properties"]:
+                    reply = {"source": "current_result", "query": ""}
+                else:
+                    catalogue = json.loads(data)["catalogue"]
+                    role = "observations" if catalogue["observations"] else "methods"
+                    reply = {role: [catalogue[role][0]["id"]] if catalogue[role] else []}
+                return "scripted-no-inference", json.dumps(reply)
+            scientific_assistant.assistant_completion = scripted_completion
         uvicorn.run("app.main:app", host="127.0.0.1", port=8188 if viewer else 8187, log_level="warning")

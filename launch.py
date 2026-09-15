@@ -167,7 +167,7 @@ def _set_ai_mode_from_executable_name() -> None:
         return
 
     stem = Path(sys.executable).stem.lower()
-    if stem.endswith("ai") or "aidev" in stem:
+    if stem.endswith("ai"):
         os.environ["COPYLOT_AI_MODE"] = "1"
 
 

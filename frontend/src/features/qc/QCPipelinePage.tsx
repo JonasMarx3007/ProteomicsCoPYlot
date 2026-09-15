@@ -1,3 +1,4 @@
+import { AssistantSelect } from "../../components/AssistantFields";
 import SelectField from "../../components/SelectField";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
 import { compactMap, compactTextElement } from "../../lib/plotSerialization";
@@ -893,7 +894,7 @@ export default function QCPipelinePage({
         <h2 className="text-lg font-semibold text-slate-900">QC Pipeline</h2>
         <div className="mt-4 max-w-xs">
             <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
-            <select
+            <AssistantSelect
             value={activeKindOptions.length === 0 ? "" : kind}
             onChange={(e) => setKind(e.target.value as QcKind)}
             disabled={activeKindOptions.length === 0}
@@ -908,7 +909,7 @@ export default function QCPipelinePage({
                 </option>
               ))
             )}
-          </select>
+          </AssistantSelect>
         </div>
       </section>
 
@@ -950,7 +951,7 @@ export default function QCPipelinePage({
           <h3 className="text-lg font-semibold text-slate-900">{activePlotTitle}</h3>
           {plotView?.mode === "image" ? (
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <AssistantSelect
                 value={downloadFormat}
                 onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                 className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -960,7 +961,7 @@ export default function QCPipelinePage({
                     {option.label}
                   </option>
                 ))}
-              </select>
+              </AssistantSelect>
               <a
                 href={plotDownloadUrl}
                 download={plotDownloadFilename}

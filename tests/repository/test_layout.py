@@ -117,6 +117,65 @@ def test_executable_builds_exclude_private_viewer_data() -> None:
     assert "viewer_access.json" in windows_build
 
 
+def test_launchers_and_builders_have_no_development_presets() -> None:
+    for path in (ROOT / "packaging").rglob("*"):
+        if not path.is_file() or path.suffix not in {".sh", ".bat", ".cmd", ".ps1", ".py", ""}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"AIDev|DEV_MODE|DEV20_ENDPOINT|dev_ai\.local|--dev(?:0|2|20)?\b", text), path
+    for platform, name in [("windows", "build_all_windows_variants.cmd"), ("macos", "build_all_macos_variants.sh")]:
+        text = (ROOT / "packaging" / platform / name).read_text(encoding="utf-8")
+        for variant in ("ProteomicsCoPYlot", "ProteomicsCoPYlotAI", "DataViewer", "DataViewerAI"):
+            assert variant in text
+        assert "[4/4]" in text and "/6]" not in text
+    for platform, suffix in [("windows", ".bat"), ("macos", "_macos.sh"), ("linux", "_linux.sh")]:
+        for mode in ("app", "viewer"):
+            text = (ROOT / "packaging" / platform / f"run_{mode}_ai{suffix}").read_text(encoding="utf-8")
+            assert "uvicorn app.main:app" in text and "npm run dev" in text
+            assert "COPYLOT_AI_MODE=1" in text and "VITE_AI_ENABLED=1" in text
+
+
+def test_viewer_launchers_enable_isolation_and_windows_launchers_check_ports() -> None:
+    for platform in ("windows", "macos", "linux"):
+        for path in (ROOT / "packaging" / platform).glob("run_viewer*"):
+            text = path.read_text(encoding="utf-8")
+            assert "COPYLOT_SESSION_ISOLATION=1" in text
+            assert "COPYLOT_SESSION_ISOLATION=0" not in text
+    for path in (ROOT / "packaging" / "windows").glob("run*.bat"):
+        text = path.read_text(encoding="utf-8")
+        assert "Stop-Process" not in text and "taskkill" not in text.lower()
+        assert text.index("check_launch_ports.ps1") < text.index('start "')
+        assert "if errorlevel 1 exit /b 1" in text
+
+
+def test_windows_port_check_preserves_existing_listeners() -> None:
+    import os
+    import socket
+    import subprocess
+    import pytest
+
+    if os.name != "nt":
+        pytest.skip("Windows launcher check")
+    with socket.socket() as backend, socket.socket() as frontend:
+        backend.bind(("127.0.0.1", 0))
+        frontend.bind(("127.0.0.1", 0))
+        ports = [backend.getsockname()[1], frontend.getsockname()[1]]
+        def check():
+            return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                str(ROOT / "packaging/windows/check_launch_ports.ps1"),
+                "-BackendPort", str(ports[0]), "-FrontendPort", str(ports[1])],
+                capture_output=True, text=True, timeout=20)
+        assert check().returncode == 0
+        for listener, port in zip((backend, frontend), ports):
+            listener.listen()
+            result = check()
+            assert result.returncode == 1 and str(port) in result.stdout
+            assert "No existing processes were stopped" in result.stdout
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                connection, _ = listener.accept()
+                connection.close()
+
+
 def test_example_notebook_is_bom_free_valid_json() -> None:
     notebook_path = ROOT / "examples" / "example.ipynb"
     raw = notebook_path.read_bytes()

@@ -8,6 +8,8 @@ from app.services.html_security import GENERATED_HTML_CSP
 from app.services.plot_export import plot_output_format
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from anyio import to_thread
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -108,6 +110,16 @@ app = FastAPI(
     openapi_url=None if _AUTH_PROTECTED_RUNTIME else "/openapi.json",
     lifespan=_lifespan,
 )
+
+@app.exception_handler(RequestValidationError)
+async def safe_chat_validation(request: Request, exc: RequestValidationError):
+    if "/api/chat/" in request.url.path:
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": error["loc"], "type": error["type"], "msg": "Invalid assistant request value."}
+            for error in exc.errors()
+        ]})
+    return await request_validation_exception_handler(request, exc)
+
 
 _SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf"}
 _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {

@@ -7,7 +7,9 @@ from fastapi.responses import Response
 
 from app.schemas.analysis import AnalysisVolcanoRequest, AnalysisVolcanoResponse
 from app.schemas.annotation import AnnotationKind
+from app.schemas.data_tools import VisualizationDataSource
 from app.schemas.qc import FeatureIdentifier
+from app.services.functions import parse_selection_list
 from app.services.analysis_functions import (
     analysis_boxplot_png,
     analysis_boxplot_table,
@@ -23,7 +25,7 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 
 def _csv_values(raw: str) -> list[str]:
-    return [value.strip() for value in str(raw).split(",") if value.strip()]
+    return parse_selection_list(raw)
 
 
 def _png_response(content: bytes) -> Response:
@@ -52,6 +54,7 @@ def analysis_boxplot_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
+    dataSource: VisualizationDataSource = "log2",
     widthCm: float = 20,
     heightCm: float = 10,
     dpi: int = 300,
@@ -63,6 +66,7 @@ def analysis_boxplot_route(
                 protein=protein,
                 conditions=_csv_values(conditions),
                 identifier=identifier,
+                data_source=dataSource,
                 width_cm=widthCm,
                 height_cm=heightCm,
                 dpi=dpi,
@@ -81,6 +85,7 @@ def analysis_boxplot_table_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
+    dataSource: VisualizationDataSource = "log2",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -89,6 +94,7 @@ def analysis_boxplot_table_route(
                 protein=protein,
                 conditions=_csv_values(conditions),
                 identifier=identifier,
+                data_source=dataSource,
             )
         )
     except ValueError as e:
@@ -104,6 +110,7 @@ def analysis_lineplot_route(
     proteins: str = "",
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
+    dataSource: VisualizationDataSource = "log2",
     includeId: bool = False,
     widthCm: float = 20,
     heightCm: float = 10,
@@ -116,6 +123,7 @@ def analysis_lineplot_route(
                 proteins=_csv_values(proteins),
                 conditions=_csv_values(conditions),
                 identifier=identifier,
+                data_source=dataSource,
                 include_id=includeId,
                 width_cm=widthCm,
                 height_cm=heightCm,
@@ -135,6 +143,7 @@ def analysis_lineplot_table_route(
     proteins: str = "",
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
+    dataSource: VisualizationDataSource = "log2",
     includeId: bool = False,
 ) -> dict[str, list[dict[str, object]]]:
     try:
@@ -144,6 +153,7 @@ def analysis_lineplot_table_route(
                 proteins=_csv_values(proteins),
                 conditions=_csv_values(conditions),
                 identifier=identifier,
+                data_source=dataSource,
                 include_id=includeId,
             )
         )

@@ -248,7 +248,6 @@ _HEAVY_EXACT = {
     "/api/peptide/metadata/generate",
     "/api/peptide/metadata/upload",
     "/api/peptide/sequence-coverage",
-    "/api/chat/module-context",
     "/api/restore/export",
     "/api/restore/import",
     "/api/summary/report",
@@ -277,7 +276,7 @@ class ProviderWorkloadMiddleware:
 
     async def __call__(self, scope, receive, send):
         paths = {
-            "/api/chat/stream", "/api/chat/ollama", "/api/chat/ollama-stream",
+            "/api/chat/assistant",
             "/api/chat/models", "/api/chat/models/install", "/api/chat/models/remove",
             "/api/chat/model-capability", "/api/chat/gpu-status",
         }

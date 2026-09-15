@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect, AssistantTextarea } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import { collectColumns, rowsToQuotedCsv } from "../../lib/tableData";
@@ -109,7 +110,7 @@ export default function StatisticalAnalysisPage({ activeTab, onContextModeChange
   if (activeTab === "anova") return <AnovaPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
   if (activeTab === "ora") return <OraPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
   if (activeTab === "pathwayHeatmap") return <PathwayHeatmapPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
-  return <SimulationPanel kindOptions={kindOptions} advancedPlotOptions={advancedPlotOptions} />;
+  return <SimulationPanel kindOptions={kindOptions} onContextModeChange={onContextModeChange} advancedPlotOptions={advancedPlotOptions} />;
 }
 
 function conditionOptions(options: StatisticalOptionsResponse | null) {
@@ -143,13 +144,13 @@ function SelectField({ label, value, onChange, options, disabled = false }: { la
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select id={fieldId} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500">
+      <AssistantSelect id={fieldId} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500">
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </div>
   );
 }
@@ -207,7 +208,7 @@ function NumberField({
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input id={fieldId}
+      <AssistantInput id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -254,7 +255,7 @@ function TextareaField({
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <textarea id={fieldId}
+      <AssistantTextarea id={fieldId} data-assistant-permission="view"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
@@ -275,7 +276,7 @@ function TextareaField({
 function CheckboxField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <AssistantInput type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
   );
@@ -283,7 +284,7 @@ function CheckboxField({ label, checked, onChange }: { label: string; checked: b
 
 function MultiSelect({ values, onChange, options }: { values: string[]; onChange: (value: string[]) => void; options: { value: string; label: string }[] }) {
   return (
-    <select
+    <AssistantSelect
       multiple
       id="pathway-conditions"
       value={values}
@@ -295,7 +296,7 @@ function MultiSelect({ values, onChange, options }: { values: string[]; onChange
           {option.label}
         </option>
       ))}
-    </select>
+    </AssistantSelect>
   );
 }
 
@@ -2216,9 +2217,11 @@ function PathwayHeatmapPanel({
 function SimulationPanel({
   kindOptions,
   advancedPlotOptions,
+  onContextModeChange,
 }: {
   kindOptions: { value: string; label: string }[];
   advancedPlotOptions?: ReactNode;
+  onContextModeChange?: (mode: string) => void;
 }) {
   const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
@@ -2346,6 +2349,9 @@ function SimulationPanel({
     varianceMultiplier,
     sampleSizeOverride,
   ]);
+  useEffect(() => {
+    onContextModeChange?.(JSON.stringify(requestPayload ?? { kind, status: "incomplete_parameters" }));
+  }, [onContextModeChange, requestPayload, kind]);
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
 
   useEffect(() => {

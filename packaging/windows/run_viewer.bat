@@ -5,6 +5,9 @@ for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT=%%~fI\"
 
 set "BACKEND_PORT=8001"
 set "FRONTEND_PORT=5174"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check_launch_ports.ps1" -BackendPort %BACKEND_PORT% -FrontendPort %FRONTEND_PORT%
+if errorlevel 1 exit /b 1
 set "BACKEND_WAIT_SECONDS=%COPYLOT_WAIT_FOR_BACKEND_SECONDS%"
 if "%BACKEND_WAIT_SECONDS%"=="" set "BACKEND_WAIT_SECONDS=20"
 set "VIEWER_PROJECT="
@@ -17,10 +20,6 @@ if exist "%ROOT%local\viewer_config.local.json" (
 )
 
 for %%A in (%*) do (
-  if /I "%%~A"=="--dev" goto :delegate_ai
-  if /I "%%~A"=="--dev0" goto :delegate_ai
-  if /I "%%~A"=="--dev2" goto :delegate_ai
-  if /I "%%~A"=="--dev20" goto :delegate_ai
   if /I "%%~A"=="--model" goto :delegate_ai
   set "ARG_SCAN=%%~A"
   if /I "!ARG_SCAN:~0,8!"=="--model=" goto :delegate_ai
@@ -94,20 +93,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %BACKEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "BACKEND_PID=%%P"
-if defined BACKEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %BACKEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
-)
-
-for /f %%P in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort %FRONTEND_PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "FRONTEND_PID=%%P"
-if defined FRONTEND_PID (
-  powershell -NoProfile -Command "Stop-Process -Id %FRONTEND_PID% -Force -ErrorAction SilentlyContinue" >nul 2>&1
-  timeout /t 1 /nobreak >nul
-)
-
 echo Starting viewer backend on port %BACKEND_PORT%...
-start "Backend (Viewer)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=0 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+start "Backend (Viewer)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_VIEWER_INCLUDE_EMPTY_PACKAGES=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
 set "BACKEND_READY=1"
 if %BACKEND_WAIT_SECONDS% GTR 0 (

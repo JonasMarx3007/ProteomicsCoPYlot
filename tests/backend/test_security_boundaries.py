@@ -515,7 +515,7 @@ def test_login_registers_rotated_session_without_followup(monkeypatch, mode, met
 
 
 def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
-    from app.services import ai_context_tools, dataset_store
+    from app.services import dataset_store
 
     access_file = tmp_path / 'context-access.json'
     access_file.write_text(json.dumps({
@@ -529,13 +529,14 @@ def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
     monkeypatch.setattr('app.api.routes_chat.ai_mode_enabled', lambda: True)
     calls = []
 
-    def evidence(name, *args):
+    def evidence(request, cancelled=None):
+        from app.schemas.assistant import AssistantResponse
         dataset = dataset_store.get_current_dataset('protein')
         marker = dataset.frame.iloc[0, 0] if dataset else 'EMPTY'
         calls.append(marker)
-        return {'function': name, 'summary': marker}, None
+        return AssistantResponse(model="synthetic", answer=marker, revision=0)
 
-    monkeypatch.setattr(ai_context_tools, '_function_payload', evidence)
+    monkeypatch.setattr('app.api.routes_chat.assistant_step', evidence)
 
     def upload(client, marker):
         response = client.post('/api/datasets/upload', data={'kind': 'protein'}, files={
@@ -544,9 +545,9 @@ def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
         assert response.status_code == 200
 
     def context(client, marker):
-        response = client.post('/api/chat/module-context', json={'moduleKey': 'qc.coverage', 'workflow': 'protein'})
+        response = client.post('/api/chat/assistant', json={'message': 'Inspect', 'view': {'module': 'qc.coverage', 'workflow': 'protein'}})
         assert response.status_code == 200
-        assert [item['summary'] for item in response.json()['contextData']['functions']] == [marker, marker]
+        assert response.json()['answer'] == marker
 
     with TestClient(app) as first, TestClient(app) as second:
         for client in (first, second):
@@ -555,9 +556,9 @@ def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
         upload(second, 'SECOND_PRIVATE')
         context(first, 'FIRST_PRIVATE')
         context(second, 'SECOND_PRIVATE')
-        assert len(calls) == 4
+        assert len(calls) == 2
         context(first, 'FIRST_PRIVATE')
-        assert len(calls) == 4
+        assert len(calls) == 3
         upload(first, 'REPLACED')
         context(first, 'REPLACED')
         assert first.post('/api/datasets/active', json={'packageName': 'Other'}).status_code == 200
@@ -567,7 +568,7 @@ def test_ai_context_isolated_and_invalidated(monkeypatch, tmp_path):
         assert first.post('/api/datasets/active', json={'packageName': 'Data'}).status_code == 200
         context(first, 'REPLACED')
         assert first.post('/api/tool/auth/logout').status_code == 200
-        assert first.post('/api/chat/module-context', json={'moduleKey': 'qc.coverage'}).status_code == 401
+        assert first.post('/api/chat/assistant', json={'message': 'Inspect', 'view': {'module': 'qc.coverage'}}).status_code == 401
         assert first.post('/api/tool/auth/login', json={'password': 'synthetic-password'}).status_code == 200
         context(first, 'EMPTY')
 

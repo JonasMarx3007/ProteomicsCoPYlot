@@ -10,6 +10,15 @@
   overflow: auto;
 }
 .copylot-modal::backdrop { background: rgb(15 23 42 / 50%); }
+.copylot-modal.copylot-manual {
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  border-radius: 0;
+  overflow: hidden;
+}
 :where(button, a, input, select, textarea, summary):focus-visible {
   outline: 2px solid #0284c7 !important;
   outline-offset: 3px;

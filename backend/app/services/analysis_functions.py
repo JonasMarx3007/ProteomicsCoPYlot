@@ -123,7 +123,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
         result = run_volcano_control(
             VolcanoControlRequest(
                 kind=payload.kind,
-                dataSource="data",
+                dataSource=payload.dataSource,
                 condition1=payload.condition1,
                 condition2=payload.condition2,
                 condition1Control=payload.condition1Control,
@@ -140,7 +140,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
         result = run_volcano(
             VolcanoRequest(
                 kind=payload.kind,
-                dataSource="data",
+                dataSource=payload.dataSource,
                 condition1=payload.condition1,
                 condition2=payload.condition2,
                 identifier=payload.identifier,
@@ -215,12 +215,14 @@ def analysis_boxplot_png(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    data_source: str = "log2",
 ) -> bytes:
     return single_protein_boxplot_plot(
         kind=kind,
         protein=protein,
         conditions=conditions,
         identifier=identifier,
+        data_source=data_source,
         outliers=False,
         dots=False,
         header=True,
@@ -236,12 +238,14 @@ def analysis_boxplot_table(
     protein: str,
     conditions: list[str],
     identifier: str = "workflow",
+    data_source: str = "log2",
 ) -> pd.DataFrame:
     return single_protein_boxplot_table(
         kind=kind,
         protein=protein,
         conditions=conditions,
         identifier=identifier,
+        data_source=data_source,
     )
 
 
@@ -254,6 +258,7 @@ def analysis_lineplot_png(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
+    data_source: str = "log2",
 ) -> bytes:
     return single_protein_lineplot_plot(
         kind=kind,
@@ -261,6 +266,7 @@ def analysis_lineplot_png(
         conditions=conditions,
         include_id=include_id,
         identifier=identifier,
+        data_source=data_source,
         header=True,
         legend=True,
         width_cm=width_cm,
@@ -275,6 +281,7 @@ def analysis_lineplot_table(
     conditions: list[str],
     identifier: str = "workflow",
     include_id: bool = False,
+    data_source: str = "log2",
 ) -> pd.DataFrame:
     return single_protein_lineplot_table(
         kind=kind,
@@ -282,6 +289,7 @@ def analysis_lineplot_table(
         conditions=conditions,
         include_id=include_id,
         identifier=identifier,
+        data_source=data_source,
     )
 
 

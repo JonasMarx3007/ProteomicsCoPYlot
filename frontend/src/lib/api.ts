@@ -59,17 +59,14 @@ import type {
   StatisticalOptionsResponse,
   SummaryReportRequest,
   SummaryReportResponse,
-  ModuleContextResponse,
   ViewerAuthLoginResponse,
   ViewerAuthStatusResponse,
   ToolAuthLoginResponse,
   ToolAuthStatusResponse,
   OllamaGpuStatusResponse,
   ModelCapabilityResponse,
-  ModelContextTier,
   OllamaModelManageResponse,
   OllamaModelsResponse,
-  OllamaChatResponse,
   SummaryTablesResponse,
   VisualizationDataSource,
   VolcanoControlRequest,
@@ -85,16 +82,53 @@ import { TAB_API_PREFIX } from "./tabSession";
 
 // Local wrapper only (not a global fetch replacement). A failed/aborted write
 // remains conservatively dirty because the server may already have committed it.
+let pendingUiRequests = 0;
+export function hasPendingUiRequests() { return pendingUiRequests > 0; }
+
 async function fetch(input: string, init?: RequestInit): Promise<Response> {
+  const tracked = !input.includes("/api/chat/");
+  if (tracked) pendingUiRequests++;
   const finish = isAnalysisMutation(input, init?.method) ? unsavedAnalysis.beginMutation() : null;
   try {
     return await globalThis.fetch(input, init);
   } finally {
     finish?.();
+    if (tracked) pendingUiRequests--;
   }
 }
 
 const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? ""}${TAB_API_PREFIX}`;
+
+export type AssistantView = {
+  module: string; workflow: string; mode: string;
+  advancedOptions?: boolean;
+  controls: import("./assistantControls").AssistantControl[];
+  destinations: Record<string, string>;
+};
+
+export type AssistantResult = {
+  usedEvidenceFallback?: boolean;
+  explainAfterChanges?: boolean;
+  needsClarification?: boolean;
+  model: string; answer: string; revision: number;
+  actions: import("./assistantControls").AssistantAction[];
+  evidence: { tool: string; status: string; text: string }[];
+};
+
+export async function assistantStep(
+  payload: { message: string; messages?: ChatMessage[]; provider?: ChatProvider; model?: string; gpuEnabled?: boolean; apiKey?: string; ollamaUrl?: string; view: AssistantView; receipts: string[]; answerOnly?: boolean; conversationState?: import("./assistantConversation").ConversationState | null },
+  signal: AbortSignal,
+): Promise<AssistantResult> {
+  const response = await fetch(`${API_BASE}/api/chat/assistant`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (response.status === 428 && data.detail?.code === "cloud_ai_consent_required") {
+    throw new CloudAiConsentRequiredError(normalizeCloudAiConsentStatus(data.detail));
+  }
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The assistant could not complete this step.");
+  return data;
+}
 let DATASET_SCOPE_NONCE = 0;
 
 export type ApiRequestOptions = {
@@ -1540,191 +1574,6 @@ export async function runAnalysisVolcanoData(
   return data as AnalysisVolcanoResponse;
 }
 
-export async function sendOllamaChatMessage(payload: {
-  message: string;
-  messages: ChatMessage[];
-  model?: string;
-  gpuEnabled?: boolean;
-}): Promise<OllamaChatResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/ollama`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: payload.message,
-      messages: payload.messages,
-      model: payload.model,
-      gpuEnabled: payload.gpuEnabled ?? false,
-    }),
-  });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run Ollama chat request"
-    );
-  }
-  return data as OllamaChatResponse;
-}
-
-export async function streamOllamaChatMessage(
-  payload: {
-    message: string;
-    messages: ChatMessage[];
-    model?: string;
-    gpuEnabled?: boolean;
-  },
-  onChunk: (chunk: string) => void
-): Promise<{ model: string; content: string }> {
-  const response = await fetch(`${API_BASE}/api/chat/ollama-stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: payload.message,
-      messages: payload.messages,
-      model: payload.model,
-      gpuEnabled: payload.gpuEnabled ?? false,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    try {
-      const parsed = JSON.parse(text) as { detail?: string };
-      throw new Error(parsed?.detail || "Failed to run Ollama chat stream");
-    } catch {
-      throw new Error(text || "Failed to run Ollama chat stream");
-    }
-  }
-
-  const model = response.headers.get("X-Ollama-Model")?.trim() || payload.model || "phi3:mini";
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const fallbackText = await response.text();
-    if (fallbackText) onChunk(fallbackText);
-    return { model, content: fallbackText };
-  }
-
-  const decoder = new TextDecoder();
-  let content = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    if (!chunk) continue;
-    content += chunk;
-    onChunk(chunk);
-  }
-  const tail = decoder.decode();
-  if (tail) {
-    content += tail;
-    onChunk(tail);
-  }
-
-  return { model, content };
-}
-
-export async function streamChatMessage(
-  payload: {
-    message: string;
-    messages: ChatMessage[];
-    provider?: ChatProvider;
-    model?: string;
-    gpuEnabled?: boolean;
-    apiKey?: string;
-    temperature?: number;
-    maxTokens?: number;
-    ollamaUrl?: string;
-    analysisContext?: string;
-  },
-  onChunk: (chunk: string) => void,
-  signal?: AbortSignal
-): Promise<{ provider: ChatProvider; model: string; content: string }> {
-  const provider: ChatProvider = payload.provider ?? "ollama";
-  const response = await fetch(`${API_BASE}/api/chat/stream`, {
-    signal,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      message: payload.message,
-      messages: payload.messages,
-      provider,
-      model: payload.model,
-      gpuEnabled: payload.gpuEnabled ?? false,
-      apiKey: payload.apiKey,
-      temperature: payload.temperature,
-      maxTokens: payload.maxTokens,
-      ollamaUrl: payload.ollamaUrl,
-      analysisContext: payload.analysisContext,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-    const detail =
-      parsed && typeof parsed === "object" && "detail" in parsed
-        ? (parsed as { detail?: unknown }).detail
-        : null;
-    if (
-      response.status === 428 &&
-      detail &&
-      typeof detail === "object" &&
-      (detail as { code?: unknown }).code === "cloud_ai_consent_required"
-    ) {
-      throw new CloudAiConsentRequiredError(normalizeCloudAiConsentStatus(detail));
-    }
-    throw new Error(typeof detail === "string" ? detail : text || "Failed to run chat stream");
-  }
-
-  const resolvedProvider = (response.headers.get("X-Chat-Provider")?.trim() ||
-    provider) as ChatProvider;
-  const model =
-    response.headers.get("X-Chat-Model")?.trim() ||
-    payload.model ||
-    (resolvedProvider === "ollama"
-      ? "phi3:mini"
-      : resolvedProvider === "openai"
-        ? "gpt-4o-mini"
-        : resolvedProvider === "anthropic"
-          ? "claude-3-5-sonnet-latest"
-          : "gemini-2.0-flash");
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const fallbackText = await response.text();
-    if (fallbackText) onChunk(fallbackText);
-    return { provider: resolvedProvider, model, content: fallbackText };
-  }
-
-  const decoder = new TextDecoder();
-  let content = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    if (!chunk) continue;
-    content += chunk;
-    onChunk(chunk);
-  }
-  const tail = decoder.decode();
-  if (tail) {
-    content += tail;
-    onChunk(tail);
-  }
-
-  return { provider: resolvedProvider, model, content };
-}
-
 function normalizeCloudAiConsentStatus(value: unknown): CloudAiConsentStatus {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const provider: ChatProvider =
@@ -1790,54 +1639,6 @@ export async function revokeCloudAiConsent(provider: ChatProvider): Promise<Clou
     );
   }
   return normalizeCloudAiConsentStatus(data);
-}
-
-export async function getAiModuleContext(
-  moduleKey: string,
-  workflow?: string,
-  mode?: string,
-  contextTier?: ModelContextTier
-): Promise<ModuleContextResponse> {
-  const workflowValue = String(workflow ?? "").trim();
-  const modeValue = String(mode ?? "").trim();
-  const response = await fetch(`${API_BASE}/api/chat/module-context`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      moduleKey,
-      workflow: workflowValue || undefined,
-      mode: modeValue || undefined,
-      contextTier,
-    }),
-  });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load AI module context"
-    );
-  }
-  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
-  return {
-    moduleKey: String(raw.moduleKey ?? moduleKey),
-    moduleTitle: String(raw.moduleTitle ?? moduleKey),
-    manualTitle: raw.manualTitle == null ? null : String(raw.manualTitle),
-    manualPath: raw.manualPath == null ? null : String(raw.manualPath),
-    contextPrompt: String(raw.contextPrompt ?? ""),
-    contextSummary: String(raw.contextSummary ?? ""),
-    contextTier:
-      raw.contextTier === "extended"
-        ? "extended"
-        : raw.contextTier === "standard"
-          ? "standard"
-          : "compact",
-    contextData: (raw.contextData && typeof raw.contextData === "object"
-      ? (raw.contextData as Record<string, unknown>)
-      : {}) as Record<string, unknown>,
-    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
-  };
 }
 
 export async function getOllamaGpuStatus(endpoint?: string): Promise<OllamaGpuStatusResponse> {
@@ -2089,7 +1890,7 @@ export async function renderKseaVolcanoFromFiles(payload: {
   condition1Control?: string;
   condition2Control?: string;
   annotateHits: boolean;
-}): Promise<string> {
+}): Promise<{ html: string; evidenceToken: string }> {
   const form = new FormData();
   form.append("fileSt", payload.fileSt);
   form.append("fileTnc", payload.fileTnc);
@@ -2114,7 +1915,7 @@ export async function renderKseaVolcanoFromFiles(payload: {
       throw new Error(text || "Failed to generate KSEA volcano");
     }
   }
-  return text;
+  return { html: text, evidenceToken: response.headers.get("X-Copylot-Evidence") ?? "" };
 }
 
 export async function getComparisonOptions(
@@ -2202,6 +2003,7 @@ export async function getModelCapability(
     provider,
     model: String(raw.model ?? model),
     level: level === 3 ? 3 : level === 2 ? 2 : 1,
+    assessment: raw.assessment === "tested" ? "tested" : raw.assessment === "inferred" ? "inferred" : "unknown",
     label: raw.label === "High" ? "High" : raw.label === "Medium" ? "Medium" : "Low",
     contextTier:
       raw.contextTier === "extended"

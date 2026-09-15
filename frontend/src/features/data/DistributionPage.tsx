@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import SelectField from "../../components/SelectField";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getDistributionSummary, isAbortError } from "../../lib/api";
@@ -14,10 +15,11 @@ import { readPersistedUiState, writePersistedUiState } from "../../lib/persisted
 import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 
 type Props = {
+  onContextModeChange?: (mode: string) => void;
   advancedPlotOptions?: ReactNode;
 };
 
-export default function DistributionPage({ advancedPlotOptions }: Props) {
+export default function DistributionPage({ advancedPlotOptions, onContextModeChange }: Props) {
   const advancedPlotSignal = useAdvancedPlotSignal();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("data.distribution.v1", {}),
@@ -36,6 +38,9 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
     return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
   });
   const [randomSeed, setRandomSeed] = useState(() => Number(persisted.randomSeed ?? 187));
+  useEffect(() => {
+    onContextModeChange?.(JSON.stringify({ kind, randomSeed }));
+  }, [onContextModeChange, kind, randomSeed]);
 
   useEffect(() => {
     writePersistedUiState("data.distribution.v1", { kind, downloadFormat, randomSeed });
@@ -100,7 +105,7 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
           />
           <label className="grid gap-1 text-sm text-slate-700">
             <span>Random seed</span>
-            <input
+            <AssistantInput
               type="number"
               min={0}
               step={1}
@@ -144,7 +149,7 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
               <div className="flex flex-wrap items-center gap-2">
-                <select
+                <AssistantSelect
                   value={downloadFormat}
                   onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
                   className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -154,7 +159,7 @@ export default function DistributionPage({ advancedPlotOptions }: Props) {
                       {option.label}
                     </option>
                   ))}
-                </select>
+                </AssistantSelect>
                 <a
                   href={qqPlotDownloadUrl}
                   download={qqPlotDownloadFilename}

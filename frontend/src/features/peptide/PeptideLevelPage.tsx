@@ -1,3 +1,4 @@
+import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   buildPlotUrl,
@@ -603,7 +604,7 @@ function CheckboxField({
 }) {
   return (
     <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <AssistantInput type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
   );
@@ -626,7 +627,7 @@ function SelectField({
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select id={fieldId}
+      <AssistantSelect id={fieldId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -636,7 +637,7 @@ function SelectField({
             {labels?.[option] ?? option}
           </option>
         ))}
-      </select>
+      </AssistantSelect>
     </div>
   );
 }
@@ -679,7 +680,7 @@ function CommittedNumberField({
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input id={fieldId}
+      <AssistantInput id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
@@ -755,7 +756,7 @@ function ImagePlotCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         {renderMode === "image" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <select
+            <AssistantSelect
               value={downloadFormat}
               onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
               className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
@@ -765,7 +766,7 @@ function ImagePlotCard({
                   {option.label}
                 </option>
               ))}
-            </select>
+            </AssistantSelect>
             <a
               href={downloadUrl}
               download={downloadFilename}
@@ -816,4 +817,3 @@ function cmToIframeHeight(heightCm: number): number {
   const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (15 * 96) / 2.54;
   return Math.max(860, Math.round(basePx + 280));
 }
-

@@ -2,31 +2,25 @@ from __future__ import annotations
 
 import logging
 import anyio
+from threading import Event
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.schemas.chat import (
     ChatProvider,
     CloudAiConsentStatusResponse,
     CloudAiConsentVersionRequest,
     ModelCapabilityResponse,
-    ModuleContextRequest,
-    ModuleContextResponse,
-    OllamaChatRequest,
-    OllamaChatResponse,
     OllamaGpuStatusResponse,
     OllamaModelManageRequest,
     OllamaModelManageResponse,
     OllamaModelsResponse,
 )
-from app.services.ai_context_tools import build_module_context
+from app.schemas.assistant import AssistantRequest, AssistantResponse
+from app.services.scientific_assistant import assistant_step
 from app.services.chat_tools import (
     ai_mode_enabled,
-    chat_stream,
     model_capability,
-    ollama_chat,
-    ollama_chat_stream,
     ollama_gpu_status,
     ollama_install_model,
     ollama_models,
@@ -45,17 +39,37 @@ LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
-class _ClosingStreamingResponse(StreamingResponse):
-    def __init__(self, content, **kwargs):
-        super().__init__(content, **kwargs)
-        self.source = content
-
-    async def __call__(self, scope, receive, send):
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            with anyio.CancelScope(shield=True):
-                await anyio.to_thread.run_sync(self.source.close)
+@router.post("/assistant", response_model=AssistantResponse)
+async def scientific_assistant_route(payload: AssistantRequest, request: Request):
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    try:
+        cancelled = Event()
+        async def watch_disconnect():
+            while not cancelled.is_set():
+                if await request.is_disconnected():
+                    cancelled.set()
+                    return
+                await anyio.sleep(0.2)
+        error = None
+        async with anyio.create_task_group() as group:
+            group.start_soon(watch_disconnect)
+            try:
+                result = await anyio.to_thread.run_sync(lambda: assistant_step(payload, cancelled))
+            except Exception as exc:
+                error = exc
+            finally:
+                group.cancel_scope.cancel()
+        if error is not None:
+            raise error
+        return result
+    except CloudAiConsentRequired as exc:
+        raise HTTPException(status_code=428, detail=exc.detail()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.exception("Scientific assistant failed")
+        raise HTTPException(status_code=500, detail="The assistant could not complete this step.") from exc
 
 
 @router.get("/cloud-consent/{provider}", response_model=CloudAiConsentStatusResponse)
@@ -77,82 +91,6 @@ def cloud_ai_consent_grant_route(
 @router.post("/cloud-consent/{provider}/revoke", response_model=CloudAiConsentStatusResponse)
 def cloud_ai_consent_revoke_route(provider: ChatProvider) -> CloudAiConsentStatusResponse:
     return revoke_cloud_ai_consent(provider)
-
-
-@router.post("/ollama", response_model=OllamaChatResponse)
-def ollama_chat_route(payload: OllamaChatRequest) -> OllamaChatResponse:
-    if not ai_mode_enabled():
-        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
-    try:
-        return ollama_chat(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to generate chat response")
-        raise HTTPException(status_code=500, detail="Failed to generate chat response.") from exc
-
-
-@router.post("/ollama-stream")
-def ollama_chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
-    if not ai_mode_enabled():
-        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
-    try:
-        model, chunk_stream = ollama_chat_stream(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to start chat stream")
-        raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
-    return _ClosingStreamingResponse(
-        chunk_stream,
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Ollama-Model": model,
-        },
-    )
-
-
-@router.post("/stream")
-def chat_stream_route(payload: OllamaChatRequest) -> StreamingResponse:
-    if not ai_mode_enabled():
-        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
-    try:
-        provider, model, chunk_stream = chat_stream(payload)
-    except CloudAiConsentRequired as exc:
-        raise HTTPException(status_code=428, detail=exc.detail()) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to start chat stream")
-        raise HTTPException(status_code=500, detail="Failed to start chat stream.") from exc
-    return _ClosingStreamingResponse(
-        chunk_stream,
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Chat-Provider": provider,
-            "X-Chat-Model": model,
-        },
-    )
-
-
-@router.post("/module-context", response_model=ModuleContextResponse)
-def module_context_route(payload: ModuleContextRequest) -> ModuleContextResponse:
-    if not ai_mode_enabled():
-        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
-    try:
-        return build_module_context(
-            payload.moduleKey,
-            workflow_hint=payload.workflow,
-            mode_hint=payload.mode,
-            context_tier=payload.contextTier,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to build module context")
-        raise HTTPException(status_code=500, detail="Failed to build module context.") from exc
 
 
 @router.get("/model-capability", response_model=ModelCapabilityResponse)

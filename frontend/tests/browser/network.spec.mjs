@@ -4,11 +4,11 @@ import { tabRequest } from './authStartup.mjs';
 test('cloud chat submits without a browser key and displays missing-key errors', async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Run with VITE_AI_ENABLED=1 and COPYLOT_AI_MODE=1');
   let sent = 0;
-  await page.route('**/api/chat/stream', async route => {
+  await page.route('**/api/chat/assistant', async route => {
     expect(route.request().postDataJSON()).not.toHaveProperty('apiKey');
     sent += 1;
     await route.fulfill(sent === 1 ? {
-      status: 200, contentType: 'text/plain', body: 'Synthetic server-key reply',
+      status: 200, contentType: 'application/json', body: JSON.stringify({ model: 'synthetic', answer: 'Synthetic server-key reply', actions: [], evidence: [], revision: 1 }),
     } : {
       status: 400, contentType: 'application/json',
       body: JSON.stringify({ detail: 'OpenAI API key is required. Set OPENAI_API_KEY on the server, or enter a key in the chat settings.' }),

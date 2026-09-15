@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { AssistantSelect } from "./AssistantFields";
 
 type Props = {
   label: string;
@@ -13,7 +14,7 @@ export default function SelectField({ label, value, onChange, options, placehold
   return (
     <div>
       <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select id={fieldId}
+      <AssistantSelect id={fieldId} aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -23,7 +24,7 @@ export default function SelectField({ label, value, onChange, options, placehold
           const item = typeof option === "string" ? { value: option, label: option } : option;
           return <option key={item.value} value={item.value}>{item.label}</option>;
         })}
-      </select>
+      </AssistantSelect>
     </div>
   );
 }

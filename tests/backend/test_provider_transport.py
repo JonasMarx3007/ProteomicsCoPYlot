@@ -69,9 +69,34 @@ def test_actual_http_deadline_interrupts_slow_provider(stage):
         thread.join()
 
 
+def test_ollama_assistant_uses_fixed_limits_and_structured_nonstreaming_transport(monkeypatch):
+    from app.schemas.chat import ChatRequest
+
+    requests = []
+    monkeypatch.setattr(chat_tools, "_resolve_model", lambda *args: "synthetic")
+    monkeypatch.setattr(chat_tools, "_resolve_endpoint", lambda *args: "http://127.0.0.1:11434/api/chat")
+    monkeypatch.setattr(chat_tools, "_resolve_gpu_enabled", lambda *args: False)
+    monkeypatch.setattr(chat_tools, "_open_provider_request", lambda request, **kwargs: requests.append(request) or io.BytesIO())
+    schema = {"type": "object"}
+    messages = [{"role": "system", "content": "Bounded instructions"}, {"role": "user", "content": "Synthetic question"}]
+    model, response = chat_tools._open_ollama_request(ChatRequest(message="Synthetic question"), messages=messages, output_schema=schema)
+    response.close()
+    body = json.loads(requests[0].data)
+    assert model == "synthetic"
+    assert body["stream"] is False
+    assert body["messages"] == messages
+    assert body["format"] == schema
+    assert {key: body["options"][key] for key in ("temperature", "num_predict", "num_ctx")} == {
+        "temperature": 0, "num_predict": 1024, "num_ctx": 8192,
+    }
+    with pytest.raises(ValueError, match="no valid messages"):
+        chat_tools._open_ollama_request(ChatRequest(message="test"), messages=[])
+    assert len(requests) == 1
+
+
 def test_expired_operation_never_opens_next_request(monkeypatch):
     token = chat_tools.provider_deadline.set(1)
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", lambda *a, **k: pytest.fail("Expired continuation opened"))
+    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", lambda *a, **k: pytest.fail("Expired provider request opened"))
     try:
         with pytest.raises(ValueError, match="time limit"):
             chat_tools._open_provider_request(urllib.request.Request("http://localhost/"), timeout=5)
@@ -120,93 +145,14 @@ def test_provider_json_reads_are_bounded_and_closed(monkeypatch, oversized):
     assert body.closed
 
 
-def _stream_fixture(monkeypatch, bodies):
-    from app.schemas.chat import OllamaChatRequest
-
-    pending = iter(bodies)
-    monkeypatch.setattr(chat_tools, "_open_ollama_request", lambda *a, **k: ("synthetic", next(pending), []))
-    return chat_tools.ollama_chat_stream(OllamaChatRequest(message="test"))[1]
-
-
-@pytest.mark.parametrize("violation", ["line", "total", "continuation"])
-def test_stream_limits_include_malformed_lines_and_continuations(monkeypatch, violation):
-    line = json.dumps({"message": {"content": "reply"}, "done": True, "done_reason": "length"}).encode() + b"\n"
-    if violation == "line":
-        monkeypatch.setenv("COPYLOT_PROVIDER_LINE_MAX_BYTES", "16")
-        bodies = [io.BytesIO(b"x" * 100)]
-    elif violation == "total":
-        monkeypatch.setenv("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", "64")
-        bodies = [io.BytesIO(b"invalid\n" * 20)]
-    else:
-        monkeypatch.setenv("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", str(len(line) + 5))
-        bodies = [io.BytesIO(line), io.BytesIO(line)]
-    stream = _stream_fixture(monkeypatch, bodies)
-    with pytest.raises(ValueError, match="size limit"):
-        list(stream)
-    assert all(body.closed for body in bodies)
-
-
-@pytest.mark.parametrize("failure_at", ["start", "body", "none"])
-@pytest.mark.parametrize("route_name", ["chat_stream_route", "ollama_chat_stream_route"])
-def test_stream_response_closes_upstream_on_send_failure(monkeypatch, failure_at, route_name):
-    import asyncio
-    from starlette.requests import ClientDisconnect
-    from app.api import routes_chat
-    from app.schemas.chat import OllamaChatRequest
-
-    body = io.BytesIO(b'{"message":{"content":"hello"},"done":true}\n')
-    stream = _stream_fixture(monkeypatch, [body])
-    monkeypatch.setattr(routes_chat, "ai_mode_enabled", lambda: True)
-    monkeypatch.setattr(routes_chat, "chat_stream", lambda _: ("ollama", "synthetic", stream))
-    monkeypatch.setattr(routes_chat, "ollama_chat_stream", lambda _: ("synthetic", stream))
-    response = getattr(routes_chat, route_name)(OllamaChatRequest(message="test"))
-
-    async def run():
-        async def receive():
-            return {"type": "http.disconnect"}
-
-        async def send(message):
-            if message["type"] == "http.response." + failure_at:
-                raise OSError("synthetic disconnect")
-
-        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
-
-    if failure_at == "none":
-        asyncio.run(run())
-    else:
-        with pytest.raises(ClientDisconnect):
-            asyncio.run(run())
-    assert body.closed
-
-
-def test_unstarted_stream_can_be_closed(monkeypatch):
-    body = io.BytesIO(b"")
-    stream = _stream_fixture(monkeypatch, [body])
-    stream.close()
-    stream.close()
-    assert body.closed
-
-
-def test_legacy_asgi_disconnect_closes_unstarted_upstream(monkeypatch):
-    import asyncio
-    from app.api.routes_chat import _ClosingStreamingResponse
-
-    body = io.BytesIO(b'{"message":{"content":"hello"}}\n')
-    stream = _stream_fixture(monkeypatch, [body])
-
-    async def run():
-        async def receive():
-            return {"type": "http.disconnect"}
-
-        async def send(_message):
-            await asyncio.sleep(0)
-
-        await _ClosingStreamingResponse(stream)(
-            {"type": "http", "asgi": {"spec_version": "2.0"}}, receive, send
-        )
-
-    asyncio.run(run())
-    assert body.closed
+@pytest.mark.parametrize("body", [b'{"message":{"content":"reply"},"done_reason":"length"}', b'invalid-json', b'{"message":{"content":""}}'])
+def test_assistant_rejects_incomplete_or_invalid_responses_and_closes_body(monkeypatch, body):
+    from app.schemas.chat import ChatRequest
+    response = io.BytesIO(body)
+    monkeypatch.setattr(chat_tools, "_open_ollama_request", lambda *a, **k: ("synthetic", response))
+    with pytest.raises(ValueError):
+        chat_tools.assistant_completion(ChatRequest(message="test"), "instruction", "{}")
+    assert response.closed
 
 
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
