@@ -151,8 +151,35 @@ def test_auto_fit_never_shrinks_a_figure_that_already_fits():
         plt.close(fig)
 
 
+@pytest.fixture
+def exported_layout(monkeypatch):
+    import matplotlib.pyplot as plt
+    from matplotlib.backend_bases import FigureCanvasBase
+    from app.services.plot_export import _tick_label_space
+
+    measurements = {}
+    close = plt.close
+
+    def capture_and_close(fig=None):
+        try:
+            if hasattr(fig, 'canvas'):
+                renderer = fig.canvas.get_renderer()
+                measurements[fig] = (
+                    fig.get_tightbbox(renderer).frozen(),
+                    _tick_label_space(fig, renderer),
+                )
+        finally:
+            close(fig)
+            if hasattr(fig, 'canvas'):
+                # Closing may discard the renderer, depending on the backend.
+                FigureCanvasBase(fig)
+
+    monkeypatch.setattr(plt, 'close', capture_and_close)
+    return measurements
+
+
 @pytest.mark.parametrize('fmt', ['png', 'pdf', 'svg'])
-def test_crowded_condition_legend_fits_automatically_and_keeps_data(fmt):
+def test_crowded_condition_legend_fits_automatically_and_keeps_data(fmt, exported_layout):
     import matplotlib.pyplot as plt
     import numpy as np
     from app.services.plot_export import plot_output_format
@@ -171,16 +198,15 @@ def test_crowded_condition_legend_fits_automatically_and_keeps_data(fmt):
     assert len(ax.get_legend().get_texts()) == 16
     for line, expected in zip(ax.lines, before):
         np.testing.assert_array_equal(line.get_xydata(), expected)
-    bounds = fig.get_tightbbox(fig.canvas.get_renderer())
+    bounds, _ = exported_layout[fig]
     width, height = fig.get_size_inches()
     assert bounds.x0 >= -1 / 150 and bounds.y0 >= -1 / 150
     assert bounds.x1 <= width + 1 / 150 and bounds.y1 <= height + 1 / 150
     assert not plt.fignum_exists(fig.number)
 
 
-def test_many_sample_labels_get_space_without_being_hidden_or_shrunk():
+def test_many_sample_labels_get_space_without_being_hidden_or_shrunk(exported_layout):
     import matplotlib.pyplot as plt
-    from app.services.plot_export import _tick_label_space
 
     fig, ax = plt.subplots(figsize=(20 / 2.54, 10 / 2.54))
     labels = [f'Condition{index // 6}_{index % 6 + 1}' for index in range(96)]
@@ -189,8 +215,10 @@ def test_many_sample_labels_get_space_without_being_hidden_or_shrunk():
     assert to_png_bytes(fig, plt, dpi=150).startswith(b'\x89PNG')
     assert [label.get_text() for label in ax.get_xticklabels()] == labels
     assert all(label.get_fontsize() == 9 for label in ax.get_xticklabels())
-    assert max(_tick_label_space(fig, fig.canvas.get_renderer())) <= 1 / 150
+    _, tick_space = exported_layout[fig]
+    assert max(tick_space) <= 1 / 150
     assert fig.get_figwidth() > 20 / 2.54
+    assert not plt.fignum_exists(fig.number)
 
 
 def test_auto_fit_pixel_budget_holds_when_only_one_dimension_can_grow():
