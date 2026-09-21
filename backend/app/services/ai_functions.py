@@ -20,7 +20,7 @@ from app.services import phospho_tools as _phospho_tools
 from app.services import table_functions as _table_functions
 from app.services.functions import (
     parse_selection_list,
-    DATA_SOURCE_CHOICES,
+    DATA_SOURCES,
     comparison_contrast,
     _phosprot_values_are_centred,
     resolve_test_type,
@@ -36,8 +36,8 @@ from app.services.peptide_tools import normalize_protease as _normalize_protease
 
 # The chat layer accepts exactly what the analysis engine accepts, so a request
 # naming an explicit matrix is not silently downgraded to the default one.
-# "data" is the historical alias and resolves per path; see resolve_data_source_choice.
-_AI_DATA_SOURCES: frozenset[str] = frozenset({"data", *DATA_SOURCE_CHOICES})
+# One vocabulary, the same one the UI and the schemas use.
+_AI_DATA_SOURCES: frozenset[str] = frozenset(DATA_SOURCES)
 
 _WORKFLOW_ENTITY_LABELS: dict[str, tuple[str, str]] = {
     "protein": ("protein", "proteins"),
@@ -2509,11 +2509,11 @@ def stats_volcano_plot(
     lines.append(
         "volcano_formula|log2FC="
         + (
-            "mean_of_complete_pair_differences_condition2_minus_condition1"
+            "mean_of_complete_pair_differences_condition1_minus_condition2"
             if is_paired_test
-            else "mean_condition2_minus_mean_condition1"
+            else "mean_condition1_minus_mean_condition2"
         )
-        + ("_minus_(mean_condition2_control_minus_mean_condition1_control)" if source == "volcano_control" else "")
+        + ("_minus_(mean_condition1_control_minus_mean_condition2_control)" if source == "volcano_control" else "")
     )
     lines.append(
         "volcano_contrast|" + comparison_contrast(
@@ -2602,7 +2602,7 @@ def stats_volcano_plot(
     )
     lines.append(
         "volcano_answer_summary|"
-        f"comparison={_safe_context_text(condition2)}_minus_{_safe_context_text(condition1)}|"
+        f"comparison={_safe_context_text(condition1)}_minus_{_safe_context_text(condition2)}|"
         f"significance_metric={'raw_p_value' if use_uncorrected else 'adjusted_p_value'}|"
         f"p_value_threshold={_fmt_value(p_value_threshold)}|absolute_log2fc_threshold={_fmt_value(log2fc_threshold)}|"
         f"upregulated={up_count}|downregulated={down_count}|not_significant={not_significant_count}"

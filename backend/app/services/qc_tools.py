@@ -4,31 +4,20 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.data_tools import DataSource, HistogramBin
+from app.schemas.data_tools import HistogramBin
 from app.schemas.qc import BoxplotPoint, ConditionCvPoint, QcSummaryResponse, SampleMetricPoint
-from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns
-from app.services.functions import choose_best_source, histogram, raw_zero_to_nan
+from app.services.data_tools import _get_sample_columns
+from app.services.functions import histogram, qc_matrix
 from app.services.table_functions import qc_cv_table
 from app.services.runtime_cache import apply_cached_wrappers
 
 
-def _best_qc_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    filtered = annotation.filtered_data if annotation is not None else None
-    log2 = annotation.log2_data if annotation is not None else None
-    source, frame = choose_best_source(filtered, log2, raw)
-    warnings: list[str] = []
-    if source == "raw":
-        if not bool(getattr(annotation, "is_log2_transformed", False)):
-            frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
-        warnings.append("Using raw data because filtered/log2 data is unavailable.")
-    return source, frame, warnings
-
-
 def qc_summary(kind: AnnotationKind) -> QcSummaryResponse:
-    source_used, frame, warnings = _best_qc_source(kind)
+    # QC describes the data as loaded. This endpoint used to summarise the
+    # FILTERED matrix while the coverage and boxplot tables summarised the
+    # unfiltered one, so the same sample reported 7,404 here and 7,410 there.
+    frame, _ = qc_matrix(kind)
+    source_used, warnings = "data", []
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")

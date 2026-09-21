@@ -2,11 +2,13 @@ import SummaryCard from "../../components/SummaryCard";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getCurrentAnnotation, getCurrentDatasets } from "../../lib/api";
 import type {
+  AnnotationFilterConfig,
   AnnotationImputationInfo,
   AnnotationKind,
   AnnotationResultResponse,
   CurrentDatasetsResponse,
 } from "../../lib/types";
+import { NORMALIZATION_LABELS } from "../../lib/types";
 import CurrentDatasetsPanel from "../upload/CurrentDatasetsPanel";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
 
@@ -143,14 +145,16 @@ export default function AnnotationViewerPage() {
               <SummaryCard label="Conditions" value={String(annotation.conditionCount)} />
               <SummaryCard label="Samples" value={String(annotation.sampleCount)} />
               <SummaryCard label="Filtered rows" value={String(annotation.filteredRows)} />
-              <SummaryCard
-                label="Filter"
-                value={
-                  annotation.filter
-                    ? `${annotation.filter.mode} / min ${annotation.filter.minPresent}`
-                    : "n/a"
-                }
-              />
+              <SummaryCard label="Filter" value={formatFilterSummary(annotation.filter)} />
+              {annotation.filter && annotation.filter.normalization !== "none" ? (
+                // Only when there is something to report. "Normalization: None"
+                // is a card that says nothing, and the absence of the card is
+                // the same statement with less to read.
+                <SummaryCard
+                  label="Normalization"
+                  value={NORMALIZATION_LABELS[annotation.filter.normalization]}
+                />
+              ) : null}
               <SummaryCard
                 label="Imputation"
                 value={formatImputationSummary(annotation.imputation)}
@@ -164,15 +168,31 @@ export default function AnnotationViewerPage() {
 }
 
 
+// The rule the filter actually applied, rather than two of its parameters.
+// "per_group / min 3" does not say whether 3 was needed in every group or in
+// one, and said nothing at all about a percentage filter.
+function formatFilterSummary(filter: AnnotationFilterConfig | null): string {
+  if (!filter) return "n/a";
+  const scope = filter.mode === "in_at_least_one_group" ? "in at least one group" : "in every group";
+  const threshold =
+    filter.method === "percentage"
+      ? `${formatValue(filter.minPercentage)}% valid values`
+      : `min ${filter.minPresent} valid values`;
+  return `${threshold} ${scope}`;
+}
+
 function formatImputationSummary(imputation: AnnotationImputationInfo | null): string {
   if (!imputation) return "none";
-  if (imputation.mode && imputation.mode !== "none") {
-    if (imputation.mode === "numerical") {
-      return `numerical, downshift=${formatValue(imputation.downShift)}, width=${formatValue(imputation.width)}`;
-    }
-    return `q=${formatValue(imputation.qValue)}, adj_std=${formatValue(imputation.adjustStd)}`;
-  }
-  return "none";
+  const mode = imputation.mode ?? "none";
+  if (!mode || mode === "none") return "none";
+  const parameters =
+    mode === "numerical"
+      ? `downshift=${formatValue(imputation.downShift)}, width=${formatValue(imputation.width)}`
+      : `q=${formatValue(imputation.qValue)}, adj_std=${formatValue(imputation.adjustStd)}`;
+  // A configured imputation that was refused keeps its mode so the refusal can
+  // be reported; saying only the parameters would claim values were imputed.
+  const applied = imputation.applied ? "" : " - NOT applied, see warnings";
+  return `${mode}, ${parameters}${applied}`;
 }
 
 function formatValue(value: number | null): string {

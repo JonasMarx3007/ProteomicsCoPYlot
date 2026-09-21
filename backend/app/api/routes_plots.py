@@ -5,9 +5,8 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
-from app.schemas.annotation import AnnotationKind
-from app.schemas.dataset import CompletenessDatasetKind, DatasetKind
-from app.schemas.data_tools import VisualizationDataSource
+from app.schemas.annotation import AnnotationKind, DataSource
+from app.schemas.dataset import CompletenessDatasetKind
 from app.schemas.qc import (
     BoxplotMode,
     FeatureIdentifier,
@@ -18,6 +17,7 @@ from app.schemas.qc import (
     SingleProteinTab,
 )
 from app.schemas.stats import (
+    AnovaClusterMethod,
     AnovaRequest,
     EnrichmentRequest,
     HeatmapValueType,
@@ -30,6 +30,8 @@ from app.schemas.stats import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
+    _phosprot_values_are_centred,
+    data_source_options,
     parse_selection_list,
     comparison_pearson_html,
     comparison_pearson_png,
@@ -97,7 +99,9 @@ from app.services.stats_tools import (
     pathway_heatmap_png,
     simulation_html,
     volcano_control_html,
+    volcano_control_png,
     volcano_html,
+    volcano_png,
 )
 from app.services.peptide_tools import (
     peptide_missed_cleavage_plot,
@@ -117,11 +121,31 @@ LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/plots", tags=["plots"])
 
 
+def _plot_media_type(content: bytes) -> str:
+    """Name the format the renderer actually wrote, rather than assuming PNG.
+
+    PDF and SVG are produced by matplotlib itself when the request asks for
+    them, so the body arriving here is not always a raster. Serving an SVG as
+    ``image/png`` makes the browser save a file it then refuses to open.
+    """
+    if content.startswith(b"%PDF-"):
+        return "application/pdf"
+    if content.startswith(b"\x89PNG"):
+        return "image/png"
+    if content[:64].lstrip().startswith((b"<?xml", b"<svg")):
+        return "image/svg+xml"
+    return "image/png"
+
+
 def _png_response(content: bytes) -> Response:
+    from urllib.parse import quote
+
+    notice = getattr(content, "notice", "")
     return Response(
         content=content,
-        media_type="application/pdf" if content.startswith(b"%PDF-") else "image/png",
+        media_type=_plot_media_type(content),
         headers={
+            **({"X-CoPYlot-Notice": quote(notice)} if notice else {}),
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "Expires": "0",
@@ -211,6 +235,111 @@ def stats_volcano_control_route(
         raise HTTPException(status_code=500, detail="Failed to render control volcano plot.") from e
 
 
+@router.get("/stats/{kind}/volcano.png")
+def stats_volcano_png_route(
+    kind: AnnotationKind,
+    condition1: str,
+    condition2: str,
+    dataSource: DataSource = "data",
+    identifier: FeatureIdentifier = "workflow",
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: StatsTestType = "unpaired",
+    useUncorrected: bool = False,
+    highlightTerms: str = "",
+    labelTopUp: int = 0,
+    labelTopDown: int = 0,
+    widthCm: float = 18,
+    heightCm: float = 14,
+    dpi: int = 300,
+    advanced: str = "",
+) -> Response:
+    """The volcano as a figure for print. Same numbers, journal styling."""
+    try:
+        payload = VolcanoRequest(
+            kind=kind,
+            dataSource=dataSource,
+            condition1=condition1,
+            condition2=condition2,
+            identifier=identifier,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            testType=testType,
+            useUncorrected=useUncorrected,
+            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
+        )
+        return _png_response(
+            volcano_png(
+                payload,
+                advanced=parse_advanced_plot_settings(advanced),
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+                label_top_up=labelTopUp,
+                label_top_down=labelTopDown,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        LOGGER.exception("Failed to render volcano plot")
+        raise HTTPException(status_code=500, detail="Failed to render volcano plot.") from e
+
+
+@router.get("/stats/{kind}/volcano-control.png")
+def stats_volcano_control_png_route(
+    kind: AnnotationKind,
+    condition1: str,
+    condition2: str,
+    condition1Control: str,
+    condition2Control: str,
+    dataSource: DataSource = "data",
+    identifier: FeatureIdentifier = "workflow",
+    pValueThreshold: float = 0.05,
+    log2fcThreshold: float = 1.0,
+    testType: StatsTestType = "unpaired",
+    useUncorrected: bool = False,
+    highlightTerms: str = "",
+    labelTopUp: int = 0,
+    labelTopDown: int = 0,
+    widthCm: float = 18,
+    heightCm: float = 14,
+    dpi: int = 300,
+    advanced: str = "",
+) -> Response:
+    try:
+        payload = VolcanoControlRequest(
+            kind=kind,
+            dataSource=dataSource,
+            condition1=condition1,
+            condition2=condition2,
+            condition1Control=condition1Control,
+            condition2Control=condition2Control,
+            identifier=identifier,
+            pValueThreshold=pValueThreshold,
+            log2fcThreshold=log2fcThreshold,
+            testType=testType,
+            useUncorrected=useUncorrected,
+            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
+        )
+        return _png_response(
+            volcano_control_png(
+                payload,
+                advanced=parse_advanced_plot_settings(advanced),
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+                label_top_up=labelTopUp,
+                label_top_down=labelTopDown,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        LOGGER.exception("Failed to render control volcano plot")
+        raise HTTPException(status_code=500, detail="Failed to render control volcano plot.") from e
+
+
 @router.get("/stats/{kind}/anova.png")
 def stats_anova_route(
     kind: AnnotationKind,
@@ -221,7 +350,9 @@ def stats_anova_route(
     useUncorrected: bool = False,
     showDendrograms: bool = True,
     showLegend: bool = True,
+    showRowLabels: bool = False,
     nClusters: int = 4,
+    clusterMethod: AnovaClusterMethod = "average",
     selectedCluster: int | None = None,
     advanced: str = "",
 ) -> Response:
@@ -235,7 +366,11 @@ def stats_anova_route(
             useUncorrected=useUncorrected,
             showDendrograms=showDendrograms,
             showLegend=showLegend,
+            showRowLabels=showRowLabels,
             nClusters=nClusters,
+            # The heatmap must cluster the same way the table did, or the plot
+            # and the cluster column disagree about which rows are cluster 1.
+            clusterMethod=clusterMethod,
         )
         return _png_response(anova_png(payload, selected_cluster=selectedCluster, advanced=parse_advanced_plot_settings(advanced)))
     except ValueError as e:
@@ -266,6 +401,9 @@ def stats_ora_route(
     minTermSize: int = 20,
     maxTermSize: int = 300,
     backgroundMode: str = "experiment",
+    widthCm: float = 26,
+    heightCm: float = 12,
+    dpi: int = 300,
     advanced: str = "",
 ) -> Response:
     try:
@@ -289,7 +427,16 @@ def stats_ora_route(
             maxTermSize=maxTermSize,
             backgroundMode=backgroundMode,
         )
-        return _png_response(ora_plot_png(payload, direction=direction, advanced=parse_advanced_plot_settings(advanced)))
+        return _png_response(
+            ora_plot_png(
+                payload,
+                direction=direction,
+                advanced=parse_advanced_plot_settings(advanced),
+                width_cm=widthCm,
+                height_cm=heightCm,
+                dpi=dpi,
+            )
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -309,6 +456,7 @@ def stats_pathway_heatmap_route(
     removeEmpty: bool = True,
     clusterRows: bool = False,
     clusterCols: bool = False,
+    showSourceCount: bool = False,
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 300,
@@ -331,6 +479,7 @@ def stats_pathway_heatmap_route(
                 height_cm=heightCm,
                 dpi=dpi,
                 data_source=dataSource,
+                show_source_count=showSourceCount,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
@@ -748,6 +897,7 @@ def qc_coverage_route(
     dpi: int = 300,
     advanced: str = "",
     quantityColumn: str = "",
+    referenceLine: bool = True,
 ) -> Response:
     try:
         kind_normalized = kind.strip().lower()
@@ -764,6 +914,7 @@ def qc_coverage_route(
                     advanced=advanced_settings,
                     quantity_column=quantityColumn or None,
                     level=kind_normalized,
+                    reference_line=referenceLine,
                 )
             )
         if kind_normalized in {"protein", "phospho", "phosprot"}:
@@ -781,6 +932,7 @@ def qc_coverage_route(
                     height_cm=heightCm,
                     dpi=dpi,
                     advanced=advanced_settings,
+                    reference_line=referenceLine,
                 )
             )
         raise ValueError("Unsupported QC dataset level.")
@@ -810,9 +962,41 @@ def qc_pca_features_route(
     kind: AnnotationKind,
     dataSource: str = "data",
     plotDim: PlotDimension = "2D",
+    addEllipses: bool = False,
+    method: str = "PCA",
+    scaling: FeatureScaling = "auto",
+    colorBy: PcaColorBy = "Condition",
+    clusterMethod: str = "None",
+    clusterCount: int = 3,
+    dbscanEps: float = 0.5,
+    dbscanMinSamples: int = 2,
+    umapNNeighbors: int = 15,
+    umapMinDist: float = 0.1,
+    tsnePerplexity: float = 30.0,
+    tsneLearningRate: float = 200.0,
+    randomState: int = 42,
 ) -> dict[str, object]:
+    # The ellipse notice needs the same projection the figure was drawn from, so
+    # this route takes every control that moves a point.
     try:
-        return qc_pca_feature_summary(kind, data_source=dataSource, plot_dim=plotDim)
+        return qc_pca_feature_summary(
+            kind,
+            data_source=dataSource,
+            plot_dim=plotDim,
+            add_ellipses=addEllipses,
+            method=method,
+            scaling=scaling,
+            color_by=colorBy,
+            cluster_method=clusterMethod,
+            cluster_count=clusterCount,
+            dbscan_eps=dbscanEps,
+            dbscan_min_samples=dbscanMinSamples,
+            umap_n_neighbors=umapNNeighbors,
+            umap_min_dist=umapMinDist,
+            tsne_perplexity=tsnePerplexity,
+            tsne_learning_rate=tsneLearningRate,
+            random_state=randomState,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -830,6 +1014,9 @@ def qc_options_route(kind: AnnotationKind) -> dict[str, object]:
             "sampleLabels": {},
             "sampleLabelsWithId": {},
             "imputedAvailable": False,
+            "availableDataSources": [],
+            "defaultDataSource": "data",
+            "centredPhosprotValues": False,
         }
     conditions = [
         str(value)
@@ -859,6 +1046,14 @@ def qc_options_route(kind: AnnotationKind) -> dict[str, object]:
         "sampleLabels": sample_labels,
         "sampleLabelsWithId": sample_labels_with_id,
         "imputedAvailable": imputed_data_available(kind),
+        # A `robust_site_median` collapse stores ratios to each site's own
+        # median, not abundances. Only the backend knows how the phosphoprotein
+        # frame was produced, so it says so here and the page warns under the
+        # CV plot, whose numbers are not comparable with the other levels'.
+        "centredPhosprotValues": _phosprot_values_are_centred(kind),
+        # The PCA is the one plot on this page that chooses its matrix, so the
+        # ladder is served here rather than worked out in the browser.
+        **data_source_options(kind),
     }
 
 
@@ -1238,7 +1433,7 @@ def single_protein_options_route(
     kind: AnnotationKind,
     tab: SingleProteinTab = "boxplot",
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
 ) -> dict[str, object]:
     try:
         return single_protein_options(
@@ -1260,7 +1455,7 @@ def single_protein_boxplot_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
     outliers: bool = False,
     dots: bool = False,
     randomSeed: int = 69,
@@ -1311,7 +1506,7 @@ def single_protein_lineplot_route(
     conditions: str = "",
     includeId: bool = False,
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
     header: bool = True,
     legend: bool = True,
     widthCm: float = 20,
@@ -1354,7 +1549,7 @@ def single_protein_heatmap_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
     includeId: bool = False,
     header: bool = True,
     filterM1: bool = True,
@@ -1406,7 +1601,7 @@ def single_protein_boxplot_table_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -1432,7 +1627,7 @@ def single_protein_lineplot_table_route(
     conditions: str = "",
     includeId: bool = False,
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
 ) -> dict[str, list[dict[str, object]]]:
     try:
         return _table_rows(
@@ -1458,7 +1653,7 @@ def single_protein_heatmap_table_route(
     protein: str,
     conditions: str = "",
     identifier: FeatureIdentifier = "workflow",
-    dataSource: VisualizationDataSource = "data",
+    dataSource: DataSource = "data",
     includeId: bool = False,
     filterM1: bool = True,
     clusterRows: bool = False,
@@ -1958,10 +2153,9 @@ def phospho_sty_table_route() -> dict[str, list[dict[str, object]]]:
 @router.get("/comparison/{kind}/options")
 def comparison_options_route(
     kind: AnnotationKind,
-    dataSource: VisualizationDataSource = "data",
 ) -> dict[str, list[str] | int | bool | str]:
     try:
-        return comparison_options(kind=kind, data_source=dataSource)
+        return comparison_options(kind=kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -1973,7 +2167,6 @@ def comparison_options_route(
 def comparison_pearson_route(
     kind: AnnotationKind,
     mode: str = "Single",
-    dataSource: VisualizationDataSource = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
@@ -1993,7 +2186,6 @@ def comparison_pearson_route(
             comparison_pearson_png(
                 kind=kind,
                 mode=mode,
-                data_source=dataSource,
                 sample1=sample1,
                 sample2=sample2,
                 condition1=condition1,
@@ -2025,7 +2217,6 @@ def comparison_pearson_route(
 def comparison_pearson_interactive_route(
     kind: AnnotationKind,
     mode: str = "Single",
-    dataSource: VisualizationDataSource = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
@@ -2044,7 +2235,6 @@ def comparison_pearson_interactive_route(
             content=comparison_pearson_html(
                 kind=kind,
                 mode=mode,
-                data_source=dataSource,
                 sample1=sample1,
                 sample2=sample2,
                 condition1=condition1,
@@ -2075,7 +2265,6 @@ def comparison_pearson_interactive_route(
 def comparison_pearson_table_route(
     kind: AnnotationKind,
     mode: str = "Single",
-    dataSource: VisualizationDataSource = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
@@ -2088,7 +2277,6 @@ def comparison_pearson_table_route(
             pearson_correlation_table(
                 kind=kind,
                 mode=mode,
-                data_source=dataSource,
                 sample1=sample1,
                 sample2=sample2,
                 condition1=condition1,
@@ -2108,7 +2296,6 @@ def comparison_pearson_table_route(
 def comparison_venn_route(
     kind: AnnotationKind,
     mode: str = "Single",
-    dataSource: VisualizationDataSource = "data",
     first: str = "",
     second: str = "",
     third: str = "",
@@ -2129,7 +2316,6 @@ def comparison_venn_route(
             comparison_venn_png(
                 kind=kind,
                 mode=mode,
-                data_source=dataSource,
                 first=first,
                 second=second,
                 third=third,
@@ -2162,7 +2348,6 @@ def comparison_venn_route(
 def comparison_venn_table_route(
     kind: AnnotationKind,
     mode: str = "Single",
-    dataSource: VisualizationDataSource = "data",
     first: str = "",
     second: str = "",
     third: str = "",
@@ -2175,7 +2360,6 @@ def comparison_venn_table_route(
             venn_table(
                 kind=kind,
                 mode=mode,
-                data_source=dataSource,
                 first=first,
                 second=second,
                 third=third,

@@ -1,13 +1,18 @@
 import { AssistantSelect } from "../../components/AssistantFields";
+import { MATPLOTLIB_CONTROLS, PLOTLY_DEFAULT_TEMPLATE_CONTROLS } from "../../lib/plotControlDefaults";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import SelectField from "../../components/SelectField";
+import PlotImage from "../../components/PlotImage";
+import { withoutStaticSize } from "../../lib/plotRenderType";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
-import { compactMap, compactTextElement } from "../../lib/plotSerialization";
+import { compactAdvancedPlotSettings as compactAdvancedSettings } from "../../lib/plotSerialization";
 import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildPlotUrl, getPeptideQuantityOptions, getQcPcaFeatures, getQcPlotOptions, getQcTable, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -30,6 +35,14 @@ import type {
   AnnotationKind,
   QcPcaFeatureSummary,
   QcTab,
+  DataSource,
+  DataSourceChoices,
+} from "../../lib/types";
+import {
+  DATA_SOURCE_LABELS,
+  dataSourceOptions,
+  resolveDataSource,
+  savedDataSource,
 } from "../../lib/types";
 
 type Props = {
@@ -60,90 +73,9 @@ function workflowScopeFromKind(kind: QcKind): string {
   return "protein";
 }
 
-function compactAdvancedSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
-  const next: AdvancedPlotSettings = {};
-  const title = settings.title?.trim();
-  const xLabel = settings.xLabel?.trim();
-  const yLabel = settings.yLabel?.trim();
-  const referenceLineColor = settings.referenceLineColor?.trim();
-  const boxBorderColor = settings.boxBorderColor?.trim();
-  const boxMedianColor = settings.boxMedianColor?.trim();
-  const boxOutlierColor = settings.boxOutlierColor?.trim();
-  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
-  const correlationColorMap = settings.correlationColorMap?.trim();
-  const backgroundColor = settings.backgroundColor?.trim();
-  const plotTheme = settings.plotTheme?.trim();
-  const axisLineColor = settings.axisLineColor?.trim();
-  const axisLineStyle = settings.axisLineStyle?.trim();
-  const gridLineAxis = settings.gridLineAxis?.trim();
-  const gridLineColor = settings.gridLineColor?.trim();
-  const gridLineStyle = settings.gridLineStyle?.trim();
-  const titleElement = compactTextElement(settings.titleElement);
-  const xLabelElement = compactTextElement(settings.xLabelElement);
-  const yLabelElement = compactTextElement(settings.yLabelElement);
-
-  if (title) next.title = title;
-  if (xLabel) next.xLabel = xLabel;
-  if (yLabel) next.yLabel = yLabel;
-  if (titleElement) {
-    next.titleElement = titleElement;
-    if (titleElement.text) next.title = titleElement.text;
-    if (titleElement.size) next.titleSize = titleElement.size;
-  }
-  if (xLabelElement) {
-    next.xLabelElement = xLabelElement;
-    if (xLabelElement.text) next.xLabel = xLabelElement.text;
-  }
-  if (yLabelElement) {
-    next.yLabelElement = yLabelElement;
-    if (yLabelElement.text) next.yLabel = yLabelElement.text;
-  }
-  if (settings.titleSize && settings.titleSize > 0) next.titleSize = settings.titleSize;
-  if (settings.axisLabelSize && settings.axisLabelSize > 0) next.axisLabelSize = settings.axisLabelSize;
-  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
-  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
-  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
-  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
-  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
-  if (settings.legendFontSize && settings.legendFontSize > 0) next.legendFontSize = settings.legendFontSize;
-  if (settings.legendXOffset) next.legendXOffset = settings.legendXOffset;
-  if (settings.legendYOffset) next.legendYOffset = settings.legendYOffset;
-  if (referenceLineColor) next.referenceLineColor = referenceLineColor;
-  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
-  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
-  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
-  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
-  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) next.boxOutlierSize = settings.boxOutlierSize;
-  if (correlationColorMap) next.correlationColorMap = correlationColorMap;
-  if (backgroundColor) next.backgroundColor = backgroundColor;
-  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
-  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
-  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
-  if (axisLineColor) next.axisLineColor = axisLineColor;
-  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
-  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
-  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
-  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
-  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
-  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
-  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
-  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
-  if (gridLineColor) next.gridLineColor = gridLineColor;
-  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
-  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
-
-  const conditionLabels = compactMap(settings.conditionLabels);
-  const sampleLabels = compactMap(settings.sampleLabels);
-  const conditionColors = compactMap(settings.conditionColors);
-  if (conditionLabels) next.conditionLabels = conditionLabels;
-  if (sampleLabels) next.sampleLabels = sampleLabels;
-  if (conditionColors) next.conditionColors = conditionColors;
-
-  return next;
-}
-
-function advancedParam(settings: AdvancedPlotSettings, enabled: boolean): string | undefined {
-  if (!enabled) return undefined;
+// The page's appearance settings apply whether the panel is open or not:
+// advanced mode only shows the panel, it never switches the settings.
+function advancedParam(settings: AdvancedPlotSettings): string | undefined {
   const compacted = compactAdvancedSettings(settings);
   return Object.keys(compacted).length ? JSON.stringify(compacted) : undefined;
 }
@@ -205,31 +137,41 @@ export default function QCPipelinePage({
   const persistedPca = (persisted.pca as Record<string, unknown>) ?? {};
   const persistedAbundance = (persisted.abundance as Record<string, unknown>) ?? {};
   const persistedCorrelation = (persisted.correlation as Record<string, unknown>) ?? {};
+  // Versioned: settings saved before v2 carry the frame and grid defaults the
+  // panel used to add to every first edit, and would now apply for good.
   const persistedAdvanced = IS_VIEWER_MODE
-    ? readPersistedSessionUiState<AdvancedPlotState>("qc.advanced.v1", {})
-    : (persisted.advanced as AdvancedPlotState) ?? {};
+    ? readPersistedSessionUiState<AdvancedPlotState>("qc.advanced.v2", {})
+    : (persisted.advancedV2 as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
     return "protein";
   });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
-  const [imageError, setImageError] = useState<string | null>(null);
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
   const [sampleOptions, setSampleOptions] = useState<string[]>([]);
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
   const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
-  const [imputedAvailable, setImputedAvailable] = useState(false);
+  // PCA is the only plot on this page that chooses its matrix: it cannot use
+  // incomplete features, so the choice is a scientific one. Every other QC plot
+  // describes the data as loaded and has no selector at all.
+  const [dataSourceChoices, setDataSourceChoices] = useState<DataSourceChoices>({
+    availableDataSources: ["data"],
+    defaultDataSource: "data",
+  });
+  // Set only for a phosphoprotein dataset collapsed with `robust_site_median`.
+  // The CV of a ratio to a site's own median is not the CV of an abundance, so
+  // that one combination gets a warning under the plot.
+  const [centredPhosprotValues, setCentredPhosprotValues] = useState(false);
   const [peptideQuantityColumns, setPeptideQuantityColumns] = useState<string[]>([]);
   const [peptideQuantityRequiresSelection, setPeptideQuantityRequiresSelection] = useState(false);
   const [peptideQuantityError, setPeptideQuantityError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png").trim();
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
   const [advancedModeEnabled, setAdvancedModeEnabled] = useState(() => getAdvancedPlotMode());
   const [advancedByTab, setAdvancedByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
   const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
@@ -237,55 +179,63 @@ export default function QCPipelinePage({
   const [coverage, setCoverage] = useState({
     quantityColumn: String(persistedCoverage.quantityColumn ?? ""),
     includeId: Boolean(persistedCoverage.includeId ?? false),
-    header: Boolean(persistedCoverage.header ?? true),
-    legend: Boolean(persistedCoverage.legend ?? true),
+    header: true,
+    legend: true,
     summary: Boolean(persistedCoverage.summary ?? false),
     text: Boolean(persistedCoverage.text ?? false),
     textSize: Number(persistedCoverage.textSize ?? 9),
     randomSeed: Number(persistedCoverage.randomSeed ?? 187),
-    widthCm: Number(persistedCoverage.widthCm ?? 20),
-    heightCm: Number(persistedCoverage.heightCm ?? 10),
-    dpi: Number(persistedCoverage.dpi ?? 300),
+    // The line at the number of features quantified in any sample. Its own
+    // switch, because turning it off also gives the bars the full height.
+    referenceLine: persistedCoverage.referenceLine !== false,
+    widthCm: restorePlotDimensionCm(persistedCoverage.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedCoverage.heightCm, 10),
+    dpi: restorePlotDpi(persistedCoverage.dpi, 300),
   });
   const [hist, setHist] = useState({
-    header: Boolean(persistedHist.header ?? true),
-    legend: Boolean(persistedHist.legend ?? true),
-    widthCm: Number(persistedHist.widthCm ?? 20),
-    heightCm: Number(persistedHist.heightCm ?? 10),
-    dpi: Number(persistedHist.dpi ?? 300),
+    header: true,
+    legend: true,
+    widthCm: restorePlotDimensionCm(persistedHist.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedHist.heightCm, 10),
+    dpi: restorePlotDpi(persistedHist.dpi, 300),
   });
   const [box, setBox] = useState({
     mode: String(persistedBox.mode ?? "Mean"),
     outliers: Boolean(persistedBox.outliers ?? false),
     includeId: Boolean(persistedBox.includeId ?? false),
-    header: Boolean(persistedBox.header ?? true),
-    legend: Boolean(persistedBox.legend ?? true),
+    header: true,
+    legend: true,
     text: Boolean(persistedBox.text ?? false),
     textSize: Number(persistedBox.textSize ?? 9),
-    widthCm: Number(persistedBox.widthCm ?? 20),
-    heightCm: Number(persistedBox.heightCm ?? 10),
-    dpi: Number(persistedBox.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedBox.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedBox.heightCm, 10),
+    dpi: restorePlotDpi(persistedBox.dpi, 300),
   });
   const [cv, setCv] = useState({
     outliers: Boolean(persistedCv.outliers ?? false),
-    header: Boolean(persistedCv.header ?? true),
-    legend: Boolean(persistedCv.legend ?? true),
+    header: true,
+    legend: true,
     text: Boolean(persistedCv.text ?? false),
     textSize: Number(persistedCv.textSize ?? 9),
-    widthCm: Number(persistedCv.widthCm ?? 20),
-    heightCm: Number(persistedCv.heightCm ?? 10),
-    dpi: Number(persistedCv.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedCv.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedCv.heightCm, 10),
+    dpi: restorePlotDpi(persistedCv.dpi, 300),
   });
+  // Whether the user has actually chosen, as opposed to a restored placeholder.
+  // A made-up choice is indistinguishable from a real one, and "data" is always
+  // available -- so inventing one makes the served default unreachable for ever.
+  const pcaSourceChosen = useRef(savedDataSource(persistedPca.dataSource) !== null);
   const [pca, setPca] = useState({
-    dataSource: String(persistedPca.dataSource ?? "data") === "imputed" ? "imputed" : "data",
+    // "data" is a placeholder only while `pcaSourceChosen` is false; the ladder
+    // default replaces it the first time the backend says which matrices exist.
+    dataSource: savedDataSource(persistedPca.dataSource) ?? "data",
     type: String(persistedPca.type ?? "Normal"),
-    header: Boolean(persistedPca.header ?? true),
-    legend: Boolean(persistedPca.legend ?? true),
+    header: true,
+    legend: true,
     method: String(persistedPca.method ?? "PCA"),
     scaling: String(persistedPca.scaling ?? "auto"),
     plotDim: String(persistedPca.plotDim ?? "2D"),
     addEllipses: Boolean(persistedPca.addEllipses ?? false),
-    dotSize: Number(persistedPca.dotSize ?? 5),
     clusterMethod: String(persistedPca.clusterMethod ?? "None"),
     clusterCount: Number(persistedPca.clusterCount ?? 3),
     colorBy: String(persistedPca.colorBy ?? "Condition"),
@@ -296,26 +246,26 @@ export default function QCPipelinePage({
     dbscanEps: Number(persistedPca.dbscanEps ?? 0.5),
     dbscanMinSamples: Number(persistedPca.dbscanMinSamples ?? 2),
     randomState: Number(persistedPca.randomState ?? 42),
-    widthCm: Number(persistedPca.widthCm ?? 20),
-    heightCm: Number(persistedPca.heightCm ?? 10),
-    dpi: Number(persistedPca.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedPca.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedPca.heightCm, 10),
+    dpi: restorePlotDpi(persistedPca.dpi, 300),
   });
   const [abundance, setAbundance] = useState({
     type: String(persistedAbundance.type ?? "Normal"),
-    header: Boolean(persistedAbundance.header ?? true),
-    legend: Boolean(persistedAbundance.legend ?? true),
+    header: true,
+    legend: true,
     condition: String(persistedAbundance.condition ?? "All Conditions"),
-    widthCm: Number(persistedAbundance.widthCm ?? 20),
-    heightCm: Number(persistedAbundance.heightCm ?? 10),
-    dpi: Number(persistedAbundance.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedAbundance.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedAbundance.heightCm, 10),
+    dpi: restorePlotDpi(persistedAbundance.dpi, 300),
   });
   const [correlation, setCorrelation] = useState({
     method: String(persistedCorrelation.method ?? "Matrix"),
     includeId: Boolean(persistedCorrelation.includeId ?? false),
     fullRange: Boolean(persistedCorrelation.fullRange ?? false),
-    widthCm: Number(persistedCorrelation.widthCm ?? 20),
-    heightCm: Number(persistedCorrelation.heightCm ?? 16),
-    dpi: Number(persistedCorrelation.dpi ?? 400),
+    widthCm: restorePlotDimensionCm(persistedCorrelation.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedCorrelation.heightCm, 16),
+    dpi: restorePlotDpi(persistedCorrelation.dpi, 400),
   });
 
   useEffect(() => {
@@ -331,9 +281,9 @@ export default function QCPipelinePage({
       correlation,
     };
     if (!IS_VIEWER_MODE) {
-      nextState.advanced = advancedByTab;
+      nextState.advancedV2 = advancedByTab;
     } else {
-      writePersistedSessionUiState("qc.advanced.v1", advancedByTab);
+      writePersistedSessionUiState("qc.advanced.v2", advancedByTab);
     }
     writePersistedUiState("qc.pipeline.v1", nextState);
   }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation, advancedByTab]);
@@ -485,7 +435,27 @@ export default function QCPipelinePage({
       return;
     }
     const controller = new AbortController();
-    getQcPcaFeatures(kind, pca.dataSource, pca.plotDim, { signal: controller.signal })
+    getQcPcaFeatures(
+      kind,
+      {
+        dataSource: pca.dataSource,
+        plotDim: pca.plotDim,
+        addEllipses: pca.addEllipses,
+        method: pca.method,
+        scaling: pca.scaling,
+        colorBy: pca.colorBy,
+        clusterMethod: pca.clusterMethod,
+        clusterCount: pca.clusterCount,
+        dbscanEps: pca.dbscanEps,
+        dbscanMinSamples: pca.dbscanMinSamples,
+        umapNNeighbors: pca.umapNNeighbors,
+        umapMinDist: pca.umapMinDist,
+        tsnePerplexity: pca.tsnePerplexity,
+        tsneLearningRate: pca.tsneLearningRate,
+        randomState: pca.randomState,
+      },
+      { signal: controller.signal }
+    )
       .then((payload) => {
         setPcaFeatures(payload);
       })
@@ -495,7 +465,28 @@ export default function QCPipelinePage({
     return () => {
       controller.abort();
     };
-  }, [activeTab, kind, availableKinds, pca.dataSource, pca.plotDim]);
+    // Every projection control is a dependency: the notice below the plot names
+    // the groups that got no ellipse, and that answer changes when the points do.
+  }, [
+    activeTab,
+    kind,
+    availableKinds,
+    pca.dataSource,
+    pca.plotDim,
+    pca.addEllipses,
+    pca.method,
+    pca.scaling,
+    pca.colorBy,
+    pca.clusterMethod,
+    pca.clusterCount,
+    pca.dbscanEps,
+    pca.dbscanMinSamples,
+    pca.umapNNeighbors,
+    pca.umapMinDist,
+    pca.tsnePerplexity,
+    pca.tsneLearningRate,
+    pca.randomState,
+  ]);
 
   useEffect(() => {
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
@@ -503,7 +494,7 @@ export default function QCPipelinePage({
       setSampleOptions([]);
       setSampleDisplayLabels({});
       setSampleDisplayLabelsWithId({});
-      setImputedAvailable(false);
+      setCentredPhosprotValues(false);
       return;
     }
     const controller = new AbortController();
@@ -515,12 +506,22 @@ export default function QCPipelinePage({
         setSampleOptions(samples);
         setSampleDisplayLabels(payload.sampleLabels ?? {});
         setSampleDisplayLabelsWithId(payload.sampleLabelsWithId ?? {});
-        setImputedAvailable(payload.imputedAvailable);
-        if (!payload.imputedAvailable) {
-          setPca((current) =>
-            current.dataSource === "data" ? current : { ...current, dataSource: "data" }
-          );
-        }
+        setDataSourceChoices({
+          availableDataSources: payload.availableDataSources ?? ["data"],
+          defaultDataSource: payload.defaultDataSource ?? "data",
+        });
+        setCentredPhosprotValues(Boolean(payload.centredPhosprotValues));
+        // Read and flip the ref here, not inside the updater: StrictMode
+        // invokes an updater twice from the same base state, and a flag flipped
+        // inside it sends the second pass down the other branch.
+        const takeDefault = !pcaSourceChosen.current;
+        pcaSourceChosen.current = true;
+        setPca((current) => {
+          const resolved = takeDefault
+            ? payload.defaultDataSource ?? resolveDataSource(current.dataSource, payload)
+            : resolveDataSource(current.dataSource, payload);
+          return resolved === current.dataSource ? current : { ...current, dataSource: resolved };
+        });
       })
       .catch((error) => {
         if (isAbortError(error)) return;
@@ -528,7 +529,7 @@ export default function QCPipelinePage({
         setSampleOptions([]);
         setSampleDisplayLabels({});
         setSampleDisplayLabelsWithId({});
-        setImputedAvailable(false);
+        setCentredPhosprotValues(false);
       });
     return () => {
       controller.abort();
@@ -658,10 +659,18 @@ export default function QCPipelinePage({
       return {
         ...base,
         legendControls: Boolean(coverage.legend && !coverage.summary),
-        referenceLineColor: true,
+        // The line is switched in the coverage options; its look is here, and
+        // only while there is a line to style.
+        referenceLineColor: coverage.referenceLine,
+        referenceLineToggle: false,
         conditionLabels: true,
         sampleLabels: !coverage.summary,
         conditionColors: true,
+        // The jittered dots over the summary bars are the only points here, and
+        // they are drawn without a plot-chosen colour (`color_default="black"`),
+        // so the Points card's dot colour does reach them.
+        markerStyle: Boolean(coverage.summary),
+        valueLabels: true,
       };
     }
     if (activeTab === "histogram") {
@@ -681,6 +690,7 @@ export default function QCPipelinePage({
         conditionColors: true,
         boxplotStyle: true,
         boxplotOutliers: Boolean(box.outliers),
+        valueLabels: true,
       };
     }
     if (activeTab === "cv") {
@@ -691,6 +701,7 @@ export default function QCPipelinePage({
         conditionColors: true,
         boxplotStyle: true,
         boxplotOutliers: Boolean(cv.outliers),
+        valueLabels: true,
       };
     }
     if (activeTab === "pca") {
@@ -702,6 +713,14 @@ export default function QCPipelinePage({
         legendControls: Boolean(pca.legend),
         conditionLabels: usesConditionGroups,
         conditionColors: usesConditionGroups,
+        markerStyle: true,
+        // Every point is drawn in its group's colour from the condition
+        // palette (`_advanced_condition_colors`), which `resolve_marker` takes
+        // over any general `markerColor` -- so there is no dot colour to set
+        // here, in either renderer.
+        markerColor: false,
+        // One trace per condition, so each can be sized and shaped on its own.
+        conditionMarkers: usesConditionGroups,
       };
     }
     if (activeTab === "abundance") {
@@ -710,6 +729,11 @@ export default function QCPipelinePage({
         legendControls: Boolean(abundance.legend),
         conditionLabels: true,
         conditionColors: true,
+        markerStyle: true,
+        // One curve per condition, each in that condition's palette colour,
+        // which wins over `markerColor` in both renderers.
+        markerColor: false,
+        conditionMarkers: true,
       };
     }
       return {
@@ -724,6 +748,7 @@ export default function QCPipelinePage({
     box.mode,
     box.outliers,
     coverage.legend,
+    coverage.referenceLine,
     coverage.summary,
     cv.legend,
     cv.outliers,
@@ -732,39 +757,16 @@ export default function QCPipelinePage({
     pca.colorBy,
     pca.legend,
   ]);
+  // The plot as drawn: matplotlib for every static QC figure, Plotly's default
+  // template for the interactive PCA and abundance plots.
   const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
-    const matplotlibDefaults: AdvancedPlotControlDefaults = {
-      axisLineLeft: true,
-      axisLineRight: true,
-      axisLineBottom: true,
-      axisLineTop: true,
-      gridLineVisible: false,
-      gridLineAxis: "y",
-      gridLineStyle: "dashed",
-      gridLineWidth: 0.8,
-    };
-    const plotlyDefaults: AdvancedPlotControlDefaults = {
-      axisLineLeft: false,
-      axisLineRight: false,
-      axisLineBottom: false,
-      axisLineTop: false,
-      gridLineVisible: true,
-      gridLineAxis: "both",
-      gridLineColor: "#EBF0F8",
-      gridLineStyle: "solid",
-      gridLineWidth: 1,
-    };
-    if (activeTab === "pca" && pca.type === "Interactive") {
-      return plotlyDefaults;
-    }
-    if (activeTab === "abundance" && abundance.type === "Interactive") {
-      return plotlyDefaults;
-    }
-    return matplotlibDefaults;
+    if (activeTab === "pca" && pca.type === "Interactive") return PLOTLY_DEFAULT_TEMPLATE_CONTROLS;
+    if (activeTab === "abundance" && abundance.type === "Interactive") return PLOTLY_DEFAULT_TEMPLATE_CONTROLS;
+    return MATPLOTLIB_CONTROLS;
   }, [activeTab, abundance.type, pca.type]);
   const activeAdvancedParam = useMemo(
-    () => advancedParam(activeAdvancedRenderSettings, advancedModeEnabled),
-    [activeAdvancedRenderSettings, advancedModeEnabled]
+    () => advancedParam(activeAdvancedRenderSettings),
+    [activeAdvancedRenderSettings]
   );
 
   const plotView = useMemo(() => {
@@ -801,7 +803,7 @@ export default function QCPipelinePage({
       if (type === "Interactive") {
         return {
           mode: "html" as const,
-          url: buildPlotUrl(`/api/plots/qc/${kind}/pca-interactive.html`, plotParams),
+          url: buildPlotUrl(`/api/plots/qc/${kind}/pca-interactive.html`, withoutStaticSize(plotParams)),
         };
       }
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/pca.png`, plotParams) };
@@ -812,7 +814,7 @@ export default function QCPipelinePage({
       if (type === "Interactive") {
         return {
           mode: "html" as const,
-          url: buildPlotUrl(`/api/plots/qc/${kind}/abundance-interactive.html`, plotParams),
+          url: buildPlotUrl(`/api/plots/qc/${kind}/abundance-interactive.html`, withoutStaticSize(plotParams)),
         };
       }
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, plotParams) };
@@ -847,15 +849,9 @@ export default function QCPipelinePage({
     return withPlotDownloadFilename(`qc_${activeTab}_${kind}.png`, downloadFormat);
   }, [plotView, activeTab, kind, downloadFormat]);
 
-  const interactiveHeightPx = useMemo(() => {
-    if (activeTab === "pca" && pca.type === "Interactive") {
-      return cmToIframeHeight(pca.heightCm);
-    }
-    if (activeTab === "abundance" && abundance.type === "Interactive") {
-      return cmToIframeHeight(abundance.heightCm);
-    }
-    return 760;
-  }, [activeTab, pca.type, pca.heightCm, abundance.type, abundance.heightCm]);
+  // The interactive plots are drawn at the renderer's own size (10 cm high)
+  // and then fill the frame; the static figure's height is not theirs.
+  const interactiveHeightPx = cmToIframeHeight(10);
 
   const activePlotTitle = useMemo(() => {
     if (activeTab === "pca") {
@@ -871,22 +867,6 @@ export default function QCPipelinePage({
     return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
   }, [tableRequest, tableRows]);
 
-  async function handleImageError(url: string) {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const parsed = JSON.parse(text) as { detail?: string };
-          if (parsed?.detail) {
-            setImageError(parsed.detail);
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setImageError("Failed to load plot image. Check backend logs for details.");
-  }
 
   return (
     <div className="space-y-6">
@@ -982,17 +962,8 @@ export default function QCPipelinePage({
           ) : null}
         </div>
         <div className="mt-4">
-          {plotView?.mode === "image" ? (
-            <img
-              key={plotView?.url}
-              src={plotView?.url}
-              alt={activePlotTitle}
-              className="w-full rounded-xl border border-slate-200"
-              onLoad={() => setImageError(null)}
-              onError={() => {
-                if (plotView?.url) handleImageError(plotView.url);
-              }}
-            />
+          {plotView?.mode === "image" && plotView.url ? (
+            <PlotImage url={plotView.url} alt={activePlotTitle} />
           ) : plotView ? (
             <iframe
               sandbox="allow-scripts allow-downloads"
@@ -1001,7 +972,6 @@ export default function QCPipelinePage({
               title={`${activePlotTitle} interactive plot`}
               className="w-full rounded-xl border border-slate-200"
               style={{ height: `${interactiveHeightPx}px` }}
-              onLoad={() => setImageError(null)}
             />
           ) : (
             <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -1009,10 +979,8 @@ export default function QCPipelinePage({
             </div>
           )}
         </div>
-        {imageError ? (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {imageError}
-          </div>
+        {activeTab === "cv" && kind === "phosprot" && centredPhosprotValues ? (
+          <CentredCvNotice />
         ) : null}
       </section>
       ) : null}
@@ -1055,10 +1023,9 @@ export default function QCPipelinePage({
         <OptionsLayout
           toggles={[
             <Checkbox key="id" label="Toggle IDs" checked={coverage.includeId} onChange={(v) => setCoverage({ ...coverage, includeId: v })} />,
-            <Checkbox key="header" label="Toggle Header" checked={coverage.header} onChange={(v) => setCoverage({ ...coverage, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={coverage.legend} onChange={(v) => setCoverage({ ...coverage, legend: v })} />,
             <Checkbox key="summary" label="Summary Type" checked={coverage.summary} onChange={(v) => setCoverage({ ...coverage, summary: v })} />,
             <Checkbox key="text" label="Toggle Text" checked={coverage.text} onChange={(v) => setCoverage({ ...coverage, text: v })} />,
+            <Checkbox key="reference-line" label="Total Line" checked={coverage.referenceLine} onChange={(v) => setCoverage({ ...coverage, referenceLine: v })} />,
           ]}
           inputs={[
             ...((kind === "peptide" || kind === "precursor")
@@ -1073,12 +1040,6 @@ export default function QCPipelinePage({
                   />,
                 ]
               : []),
-            <NumericField
-              key="text-size"
-              label="Text Size"
-              value={coverage.textSize}
-              onChange={(v) => setCoverage({ ...coverage, textSize: Math.max(6, Math.min(20, Math.round(v))) })}
-            />,
             ...(coverage.summary
               ? [
                   <NumericField
@@ -1095,7 +1056,7 @@ export default function QCPipelinePage({
               dpi={coverage.dpi}
               heightCm={coverage.heightCm}
               widthCm={coverage.widthCm}
-              onDpiChange={(v) => setCoverage({ ...coverage, dpi: Math.round(v) })}
+              onDpiChange={(v) => setCoverage({ ...coverage, dpi: v })}
               onHeightChange={(v) => setCoverage({ ...coverage, heightCm: v })}
               onWidthChange={(v) => setCoverage({ ...coverage, widthCm: v })}
             />
@@ -1108,15 +1069,13 @@ export default function QCPipelinePage({
       return (
         <OptionsLayout
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={hist.header} onChange={(v) => setHist({ ...hist, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={hist.legend} onChange={(v) => setHist({ ...hist, legend: v })} />,
           ]}
           sizeRow={
             <SizeRow
               dpi={hist.dpi}
               heightCm={hist.heightCm}
               widthCm={hist.widthCm}
-              onDpiChange={(v) => setHist({ ...hist, dpi: Math.round(v) })}
+              onDpiChange={(v) => setHist({ ...hist, dpi: v })}
               onHeightChange={(v) => setHist({ ...hist, heightCm: v })}
               onWidthChange={(v) => setHist({ ...hist, widthCm: v })}
             />
@@ -1131,8 +1090,6 @@ export default function QCPipelinePage({
           toggles={[
             <Checkbox key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(v) => setBox({ ...box, outliers: v })} />,
             <Checkbox key="id" label="Toggle IDs" checked={box.includeId} onChange={(v) => setBox({ ...box, includeId: v })} />,
-            <Checkbox key="header" label="Toggle Header" checked={box.header} onChange={(v) => setBox({ ...box, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={box.legend} onChange={(v) => setBox({ ...box, legend: v })} />,
             <Checkbox key="text" label="Toggle Text" checked={box.text} onChange={(v) => setBox({ ...box, text: v })} />,
           ]}
           inputs={[
@@ -1143,19 +1100,13 @@ export default function QCPipelinePage({
               onChange={(value) => setBox({ ...box, mode: value })}
               options={["Mean", "Single"]}
             />,
-            <NumericField
-              key="text-size"
-              label="Text Size"
-              value={box.textSize}
-              onChange={(v) => setBox({ ...box, textSize: Math.max(6, Math.min(20, Math.round(v))) })}
-            />,
           ]}
           sizeRow={
             <SizeRow
               dpi={box.dpi}
               heightCm={box.heightCm}
               widthCm={box.widthCm}
-              onDpiChange={(v) => setBox({ ...box, dpi: Math.round(v) })}
+              onDpiChange={(v) => setBox({ ...box, dpi: v })}
               onHeightChange={(v) => setBox({ ...box, heightCm: v })}
               onWidthChange={(v) => setBox({ ...box, widthCm: v })}
             />
@@ -1169,24 +1120,16 @@ export default function QCPipelinePage({
         <OptionsLayout
           toggles={[
             <Checkbox key="outliers" label="Toggle Outliers" checked={cv.outliers} onChange={(v) => setCv({ ...cv, outliers: v })} />,
-            <Checkbox key="header" label="Toggle Header" checked={cv.header} onChange={(v) => setCv({ ...cv, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={cv.legend} onChange={(v) => setCv({ ...cv, legend: v })} />,
             <Checkbox key="text" label="Toggle Text" checked={cv.text} onChange={(v) => setCv({ ...cv, text: v })} />,
           ]}
           inputs={[
-            <NumericField
-              key="text-size"
-              label="Text Size"
-              value={cv.textSize}
-              onChange={(v) => setCv({ ...cv, textSize: Math.max(6, Math.min(20, Math.round(v))) })}
-            />,
           ]}
           sizeRow={
             <SizeRow
               dpi={cv.dpi}
               heightCm={cv.heightCm}
               widthCm={cv.widthCm}
-              onDpiChange={(v) => setCv({ ...cv, dpi: Math.round(v) })}
+              onDpiChange={(v) => setCv({ ...cv, dpi: v })}
               onHeightChange={(v) => setCv({ ...cv, heightCm: v })}
               onWidthChange={(v) => setCv({ ...cv, widthCm: v })}
             />
@@ -1214,8 +1157,6 @@ export default function QCPipelinePage({
           <PcaFeatureNotice summary={pcaFeatures} dataSource={pca.dataSource} />
         <OptionsLayout
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={pca.header} onChange={(v) => setPca({ ...pca, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={pca.legend} onChange={(v) => setPca({ ...pca, legend: v })} />,
             ...(showEllipsesToggle
               ? [
                   <Checkbox
@@ -1231,11 +1172,18 @@ export default function QCPipelinePage({
             <SelectField
               key="data-source"
               label="Data Source"
-              value={pca.dataSource === "imputed" ? "Imputed Data" : "Data"}
-              onChange={(value) =>
-                setPca({ ...pca, dataSource: value === "Imputed Data" ? "imputed" : "data" })
-              }
-              options={imputedAvailable ? ["Data", "Imputed Data"] : ["Data"]}
+              value={DATA_SOURCE_LABELS[pca.dataSource as DataSource]}
+              onChange={(value) => {
+                pcaSourceChosen.current = true;
+                setPca({
+                  ...pca,
+                  dataSource:
+                    (Object.keys(DATA_SOURCE_LABELS) as DataSource[]).find(
+                      (key) => DATA_SOURCE_LABELS[key] === value
+                    ) ?? "data",
+                });
+              }}
+              options={dataSourceOptions(dataSourceChoices).map((option) => option.label)}
             />,
             <SelectField
               key="method"
@@ -1250,6 +1198,12 @@ export default function QCPipelinePage({
                   addEllipses: pca.addEllipses,
                   clusterMethod: nextMethod === "PCA" ? "None" : pca.clusterMethod,
                   colorBy: nextMethod === "PCA" ? "Condition" : pca.colorBy,
+                  // Each method has an established default scaling, and the
+                  // selector now names the scaling rather than "method
+                  // default" -- so switching method has to move the selection,
+                  // or the new method would silently run on the old method's
+                  // convention.
+                  scaling: methodDefaultScaling(nextMethod),
                 });
               }}
               options={["PCA", "UMAP", "t-SNE"]}
@@ -1259,7 +1213,7 @@ export default function QCPipelinePage({
               label="Feature scaling"
               value={scalingLabel(pca.scaling, pca.method)}
               onChange={(value) => setPca({ ...pca, scaling: scalingValue(value) })}
-              options={[scalingDefaultLabel(pca.method), "Centred only", "Unit variance"]}
+              options={[...SCALING_LABELS]}
             />,
             <SelectField
               key="type"
@@ -1279,12 +1233,6 @@ export default function QCPipelinePage({
                   />,
                 ]
               : []),
-            <NumericField
-              key="dot-size"
-              label="Dot Size"
-              value={pca.dotSize}
-              onChange={(v) => setPca({ ...pca, dotSize: Math.max(1, Math.min(50, Math.round(v))) })}
-            />,
             ...(showClusteringControls
               ? [
                   <SelectField
@@ -1386,11 +1334,11 @@ export default function QCPipelinePage({
               : []),
           ]}
           sizeRow={
-            <SizeRow
+            pca.type === "Interactive" ? null : <SizeRow
               dpi={pca.dpi}
               heightCm={pca.heightCm}
               widthCm={pca.widthCm}
-              onDpiChange={(v) => setPca({ ...pca, dpi: Math.round(v) })}
+              onDpiChange={(v) => setPca({ ...pca, dpi: v })}
               onHeightChange={(v) => setPca({ ...pca, heightCm: v })}
               onWidthChange={(v) => setPca({ ...pca, widthCm: v })}
             />
@@ -1405,8 +1353,6 @@ export default function QCPipelinePage({
       return (
         <OptionsLayout
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={abundance.header} onChange={(v) => setAbundance({ ...abundance, header: v })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={abundance.legend} onChange={(v) => setAbundance({ ...abundance, legend: v })} />,
           ]}
           inputs={[
             <SelectField
@@ -1425,11 +1371,11 @@ export default function QCPipelinePage({
             />,
           ]}
           sizeRow={
-            <SizeRow
+            abundance.type === "Interactive" ? null : <SizeRow
               dpi={abundance.dpi}
               heightCm={abundance.heightCm}
               widthCm={abundance.widthCm}
-              onDpiChange={(v) => setAbundance({ ...abundance, dpi: Math.round(v) })}
+              onDpiChange={(v) => setAbundance({ ...abundance, dpi: v })}
               onHeightChange={(v) => setAbundance({ ...abundance, heightCm: v })}
               onWidthChange={(v) => setAbundance({ ...abundance, widthCm: v })}
             />
@@ -1458,7 +1404,7 @@ export default function QCPipelinePage({
             dpi={correlation.dpi}
             heightCm={correlation.heightCm}
             widthCm={correlation.widthCm}
-            onDpiChange={(v) => setCorrelation({ ...correlation, dpi: Math.round(v) })}
+            onDpiChange={(v) => setCorrelation({ ...correlation, dpi: v })}
             onHeightChange={(v) => setCorrelation({ ...correlation, heightCm: v })}
             onWidthChange={(v) => setCorrelation({ ...correlation, widthCm: v })}
           />
@@ -1466,6 +1412,24 @@ export default function QCPipelinePage({
       />
     );
   }
+}
+
+/**
+ * A `robust_site_median` phosphoprotein matrix holds ratios to each site's own
+ * across-sample median, so its CV is the spread of a ratio, not of an
+ * abundance. The plot is still drawn -- the numbers are real, they just do not
+ * sit on the same scale as the protein and phosphosite CVs beside them. The
+ * warning belongs here, under the figure, never inside the image.
+ */
+function CentredCvNotice() {
+  return (
+    <div className="mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+      <span className="font-medium">Ratios, not abundances</span> &mdash; this phosphoprotein matrix
+      was collapsed with <span className="font-mono">robust_site_median</span>, so its values are
+      ratios to each site&rsquo;s own median. This CV is therefore not comparable with the protein-
+      or phosphosite-level CVs.
+    </div>
+  );
 }
 
 function PcaFeatureNotice({
@@ -1477,6 +1441,7 @@ function PcaFeatureNotice({
 }) {
   if (!summary || summary.featuresTotal <= 0) return null;
   const { featuresComplete, featuresUsed, featuresTotal, featuresRequired } = summary;
+  const skipped = summary.ellipseSkippedGroups ?? [];
   const fraction = featuresUsed / featuresTotal;
   const missingnessBlocksPca = featuresComplete < featuresRequired;
   const constantFeaturesBlockPca = !missingnessBlocksPca && featuresUsed < featuresRequired;
@@ -1491,34 +1456,47 @@ function PcaFeatureNotice({
       ? "border-amber-300 bg-amber-50 text-amber-800"
       : "border-slate-200 bg-slate-50 text-slate-600";
   return (
-    <div className={`rounded-xl border px-3 py-2 text-sm ${tone}`}>
-      <span className="font-medium">
-        PCA-usable features: {featuresUsed.toLocaleString()} of {featuresTotal.toLocaleString()}
-        ({(fraction * 100).toFixed(1)}%)
-      </span>
-      {missingnessBlocksPca ? (
-        <span>
-          {" "}
-          &mdash; PCA cannot run because only {featuresComplete.toLocaleString()} complete feature
-          {featuresComplete === 1 ? " remains" : "s remain"}; the missingness is too high. {dataSource === "imputed"
-            ? "Rerun Imputation successfully and then retry with Imputed Data."
-            : "Run Imputation, then select Imputed Data here."}
+    <div className="space-y-2">
+      <div className={`rounded-xl border px-3 py-2 text-sm ${tone}`}>
+        <span className="font-medium">
+          PCA-usable features: {featuresUsed.toLocaleString()} of {featuresTotal.toLocaleString()}
+          ({(fraction * 100).toFixed(1)}%)
         </span>
-      ) : null}
-      {constantFeaturesBlockPca ? (
-        <span>
-          {" "}
-          &mdash; PCA cannot run because fewer than {featuresRequired} complete, variable features
-          remain after constant features are excluded.
-        </span>
-      ) : null}
-      {warn && !cannotRun ? (
-        <span>
-          {" "}
-          &mdash; features missing in any sample are excluded, so this projection reflects only
-          the consistently detected (and therefore more abundant) subset.
-          {severe ? " Too few features remain for the plot to be meaningful." : ""}
-        </span>
+        {missingnessBlocksPca ? (
+          <span>
+            {" "}
+            &mdash; PCA cannot run because only {featuresComplete.toLocaleString()} complete feature
+            {featuresComplete === 1 ? " remains" : "s remain"}; the missingness is too high. {dataSource === "imputed"
+              ? "Rerun Imputation successfully and then retry with Imputed Data."
+              : "Run Imputation, then select Imputed Data here."}
+          </span>
+        ) : null}
+        {constantFeaturesBlockPca ? (
+          <span>
+            {" "}
+            &mdash; PCA cannot run because fewer than {featuresRequired} complete, variable features
+            remain after constant features are excluded.
+          </span>
+        ) : null}
+        {warn && !cannotRun ? (
+          <span>
+            {" "}
+            &mdash; features missing in any sample are excluded, so this projection reflects only
+            the consistently detected (and therefore more abundant) subset.
+            {severe ? " Too few features remain for the plot to be meaningful." : ""}
+          </span>
+        ) : null}
+      </div>
+      {skipped.length > 0 ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span className="font-medium">
+            No ellipse for {skipped.length === 1 ? "group" : "groups"} {skipped.join(", ")}
+          </span>{" "}
+          &mdash; {skipped.length === 1 ? "its" : "their"} points have no spread in one direction
+          (they fall on a line, or two samples sit at the same position), so there is no enclosing
+          ellipse to fit. The points themselves are unaffected, and the other groups are drawn
+          normally.
+        </div>
       ) : null}
     </div>
   );
@@ -1531,7 +1509,7 @@ function OptionsLayout({
 }: {
   toggles: ReactNode[];
   inputs?: ReactNode[];
-  sizeRow: ReactNode;
+  sizeRow: ReactNode | null;
 }) {
   return (
     <div className="space-y-4">
@@ -1539,7 +1517,7 @@ function OptionsLayout({
       {inputs && inputs.length > 0 ? (
         <div className="grid gap-4 lg:grid-cols-3">{inputs}</div>
       ) : null}
-      <div>{sizeRow}</div>
+      {sizeRow ? <div>{sizeRow}</div> : null}
     </div>
   );
 }
@@ -1570,24 +1548,27 @@ function pcaMethodLabel(method: string): string {
   return "PCA";
 }
 
-// "Method default" is `auto`: centred for PCA, unit variance for UMAP and
-// t-SNE. Both are legitimate and they answer different questions, so the choice
-// is exposed rather than left implicit in whichever method was picked.
-function scalingDefaultLabel(method: string): string {
-  return `Method default (${pcaMethodLabel(method) === "PCA" ? "centred" : "unit variance"})`;
+// Two scalings exist and they answer different questions, so both are named:
+// centred weights a feature by its variance, unit variance gives every feature
+// equal weight. `auto` is still what the API takes and what older saved states
+// hold, but it is never shown -- for PCA it *is* centred and for UMAP/t-SNE it
+// *is* unit variance, so offering it put the same scaling in the list twice
+// under two names.
+const SCALING_LABELS = ["Centred", "Unit variance"] as const;
+
+function methodDefaultScaling(method: string): string {
+  return pcaMethodLabel(method) === "PCA" ? "centered" : "unit_variance";
 }
 
 function scalingLabel(scaling: string, method: string): string {
   const key = String(scaling || "auto").trim().toLowerCase();
-  if (key === "centered" || key === "centred") return "Centred only";
+  if (key === "centered" || key === "centred") return "Centred";
   if (key === "unit_variance" || key === "scaled") return "Unit variance";
-  return scalingDefaultLabel(method);
+  return scalingLabel(methodDefaultScaling(method), method);
 }
 
 function scalingValue(label: string): string {
-  if (label === "Centred only") return "centered";
-  if (label === "Unit variance") return "unit_variance";
-  return "auto";
+  return label === "Unit variance" ? "unit_variance" : "centered";
 }
 
 function PreviewTable({

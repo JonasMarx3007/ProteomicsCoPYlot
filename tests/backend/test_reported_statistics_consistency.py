@@ -43,8 +43,12 @@ def test_abundance_ranks_each_condition_independently(monkeypatch,kind,workflow,
     monkeypatch.setattr(plots,"_metadata_for_kind",lambda *args:meta.copy())
     monkeypatch.setattr(plots,"_phosprot_values_are_centred",lambda kind:False)
     monkeypatch.setattr(plots,"_plotly_html",lambda fig:fig)
-    expected = {"A":np.log10(np.array([110.,11.,1.])+1),
-                "B":np.log10(np.array([210.,31.])+1), "C":np.array([])}
+    # log10 of the mean, with no pseudocount. The third A value is the reason:
+    # a feature whose mean is exactly 1.0 belongs at 0.0 on a log10 axis, and
+    # `log10(x + 1)` put it at 0.301 -- a tenfold-looking offset on the part of
+    # the curve the plot exists to show.
+    expected = {"A":np.log10(np.array([110.,11.,1.])),
+                "B":np.log10(np.array([210.,31.])), "C":np.array([])}
     ranked, _, _ = plots._abundance_rank_frame(kind)
     assert set(zip(ranked.Feature,ranked.Condition)) == {
         ("A_only","A"),("partial","A"),("shared","A"),("B_only","B"),("shared","B")}
@@ -105,7 +109,7 @@ def test_r_abundance_membership_matches_each_condition():
         a1=c(100,NA,10,NA,1),a2=c(120,NA,12,NA,NA),
         b1=c(NA,200,30,NA,NA),b2=c(NA,220,32,NA,NA),c1=NA_real_,c2=NA_real_)
       m <- data.frame(sample=names(d)[-1],condition=rep(c("A","B","C"),each=2))
-      expected <- list(log10(c(110,11,1)+1),log10(c(210,31)+1),numeric())
+      expected <- list(log10(c(110,11,1)),log10(c(210,31)),numeric())
       grDevices::pdf(NULL)
       trace("points.default",where=asNamespace("graphics"),print=FALSE,
         tracer=quote({

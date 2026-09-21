@@ -187,8 +187,8 @@ phosprot_genes <- different_genes(
   uncorrected = TRUE
 )
 stopifnot(
-  identical(phosprot_genes$Upregulated, c("A", "B")),
-  identical(phosprot_genes$Downregulated, c("B", "C")),
+  identical(phosprot_genes$Upregulated, c("B", "C")),
+  identical(phosprot_genes$Downregulated, c("A", "B")),
   identical(phosprot_genes$Background, c("A", "B", "C", "D", "E"))
 )
 fallback_data <- phosprot_data
@@ -205,8 +205,8 @@ fallback_genes <- different_genes(
   uncorrected = TRUE
 )
 stopifnot(
-  identical(fallback_genes$Upregulated, c("A", "B")),
-  identical(fallback_genes$Downregulated, c("B", "C")),
+  identical(fallback_genes$Upregulated, c("B", "C")),
+  identical(fallback_genes$Downregulated, c("A", "B")),
   identical(fallback_genes$Background, c("A", "B", "C", "D", "E"))
 )
 phosprot_data$Phosphoprotein <- c("P1", "P2", "P3", "P4")
@@ -257,10 +257,10 @@ regulation_summary <- .phosprot_regulation_data(
 )
 stopifnot(
   identical(regulation_summary$Protein_group, "P1"),
-  identical(regulation_summary$Upregulated_count, 2L),
-  identical(regulation_summary$Downregulated_count, 1L),
-  isTRUE(all.equal(regulation_summary$x, 3.5)),
-  isTRUE(all.equal(regulation_summary$y, 3))
+  identical(regulation_summary$Upregulated_count, 1L),
+  identical(regulation_summary$Downregulated_count, 2L),
+  isTRUE(all.equal(regulation_summary$x, 3)),
+  isTRUE(all.equal(regulation_summary$y, 3.5))
 )
 stricter_regulation <- .phosprot_regulation_data(
   regulation_sites,
@@ -271,8 +271,8 @@ stricter_regulation <- .phosprot_regulation_data(
 )
 stopifnot(
   identical(stricter_regulation$Upregulated_count, 1L),
-  isTRUE(all.equal(stricter_regulation$x, 2)),
-  isTRUE(all.equal(stricter_regulation$y, 3))
+  isTRUE(all.equal(stricter_regulation$x, 3)),
+  isTRUE(all.equal(stricter_regulation$y, 2))
 )
 no_testable_data <- data.frame(
   ProteinNames = "P1",
@@ -342,7 +342,7 @@ pair_result <- volcano_data_f(
   uncorrected = TRUE
 )
 stopifnot(identical(pair_result$n_pairs, c(3L, 4L, 4L, 4L)))
-stopifnot(isTRUE(all.equal(pair_result$log2FC, c(5, 0, 2, 1))))
+stopifnot(isTRUE(all.equal(pair_result$log2FC, c(-5, 0, -2, -1))))
 stopifnot(is.na(pair_result$pval[2]), pair_result$pval[3] == 0)
 reordered_result <- volcano_data_f(
   pair_data,

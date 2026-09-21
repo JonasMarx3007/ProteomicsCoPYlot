@@ -7,7 +7,6 @@ from app.services.plot_export import (
 
 import re
 
-import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
@@ -17,7 +16,12 @@ from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import raw_zero_to_nan
-from app.services.plot_images import _advanced_label, _apply_advanced_axes
+from app.services.plot_images import (
+    _advanced_label,
+    _apply_advanced_axes,
+    advanced_label_size,
+    advanced_color,
+)
 
 
 def _get_plt():
@@ -164,7 +168,11 @@ def _missing_value_plot_from_matrix(
         figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)),
         dpi=max(72, int(dpi)),
     )
-    ax.bar(miss_vals["na_count"].astype(str), miss_vals["Freq"], color=color)
+    ax.bar(
+        miss_vals["na_count"].astype(str),
+        miss_vals["Freq"],
+        color=advanced_color(advanced, "barColor", color),
+    )
     ax.set_xlabel("Number of Missing Values")
     ax.set_ylabel("Frequency")
 
@@ -176,7 +184,7 @@ def _missing_value_plot_from_matrix(
                 float(row["Freq"]) + offset,
                 str(int(row["Freq"])),
                 ha="center",
-                fontsize=max(6, int(text_size)),
+                fontsize=advanced_label_size(advanced, text_size),
             )
 
     if header:

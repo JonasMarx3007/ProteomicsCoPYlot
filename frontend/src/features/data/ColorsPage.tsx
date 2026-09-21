@@ -98,6 +98,9 @@ export default function ColorsPage() {
     [conditions, colors]
   );
 
+  // What is being typed, per condition, while it is not yet a valid colour.
+  const [hexDrafts, setHexDrafts] = useState<Record<string, string>>({});
+
   async function persistPalette(next: ColorMap) {
     await setConditionPalette(kind, next);
   }
@@ -114,6 +117,13 @@ export default function ColorsPage() {
   }
 
   function handleHexChange(condition: string, value: string) {
+    // The field keeps the draft so it can be typed in at all. It used to be
+    // fully controlled on the saved colour and to reject anything that was not
+    // already a complete #RRGGBB, so every intermediate keystroke was thrown
+    // away and the field snapped back -- the swatch was the only way to change
+    // a colour. A complete value is applied as it is reached; anything else is
+    // held until the field is left, and then reverts.
+    setHexDrafts((current) => ({ ...current, [condition]: value }));
     const normalized = value.trim().toUpperCase();
     if (normalized === "") {
       return;
@@ -123,6 +133,14 @@ export default function ColorsPage() {
       return;
     }
     handleColorChange(condition, withHash);
+  }
+
+  function commitHex(condition: string) {
+    setHexDrafts((current) => {
+      const next = { ...current };
+      delete next[condition];
+      return next;
+    });
   }
 
   function resetPalette() {
@@ -262,14 +280,23 @@ export default function ColorsPage() {
                   <div className="text-sm font-medium text-slate-800">{row.condition}</div>
                   <input
                     type="color"
+                    aria-label={`${row.condition} colour`}
                     value={row.color}
                     onChange={(event) => handleColorChange(row.condition, event.target.value)}
                     className="h-9 w-14 rounded-lg border border-slate-300 bg-white px-1 py-1"
                   />
                   <input
                     type="text"
-                    value={row.color}
+                    aria-label={`${row.condition} colour as hex`}
+                    value={hexDrafts[row.condition] ?? row.color}
                     onChange={(event) => handleHexChange(row.condition, event.target.value)}
+                    onBlur={() => commitHex(row.condition)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        commitHex(row.condition);
+                      }
+                    }}
                     className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-slate-900"
                   />
                 </div>

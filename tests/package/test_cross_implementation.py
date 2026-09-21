@@ -57,7 +57,9 @@ def test_notebook_degenerate_families_match_backend_and_r(tmp_path, family, monk
     anova = notebook.anova_data_f(data, meta)
     assert set(anova.ProteinNames) == set(backend_anova.ProteinNames)
     if family == "mixed":
-        assert actual.loc["P1;P2", "significance"] == "Upregulated"
+        # log2FC is condition1 - condition2, so B being the higher condition
+        # makes this feature downregulated.
+        assert actual.loc["P1;P2", "significance"] == "Downregulated"
         assert actual.loc["unequal", "neg_log10_pval"] == 300
     else:
         assert anova.empty

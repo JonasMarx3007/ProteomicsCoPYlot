@@ -51,6 +51,16 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove r-base-dev \
     && rm -rf /var/lib/apt/lists/* /tmp/downloaded_packages
 
+# The faces a figure can be drawn in. Journals ask for Arial, Helvetica, Times
+# New Roman or Courier; the Liberation family is metric-compatible with all of
+# them, which is what makes a figure drawn here the same size as one drawn on a
+# machine that has the originals. Without this the font list in the UI would
+# still work and every choice would silently produce DejaVu, because matplotlib
+# substitutes a missing family with a warning nobody sees.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-liberation fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements-runtime.lock /app/backend/requirements-runtime.lock
 RUN pip install --upgrade pip && pip install -r /app/backend/requirements-runtime.lock
 
@@ -66,6 +76,14 @@ COPY data/db /app/data/db
 COPY data/report /app/data/report
 
 COPY --from=frontend-build /build/frontend/dist /app/frontend_dist
+
+# Every face the advanced panel offers has to resolve to a real file, and the
+# font cache is built now rather than during the first plot somebody asks for.
+# This reads the list from the code, so adding a font without installing it
+# fails the build instead of shipping a menu entry that does nothing.
+RUN python -c "import sys; sys.path.insert(0, '/app/backend'); \
+from app.services.plot_images import verify_fonts_installed; \
+print(verify_fonts_installed())"
 
 RUN groupadd --system --gid 10001 copylot \
     && useradd --system --uid 10001 --gid copylot --home-dir /app --shell /usr/sbin/nologin copylot \

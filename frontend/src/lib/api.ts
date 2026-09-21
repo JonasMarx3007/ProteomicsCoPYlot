@@ -68,11 +68,12 @@ import type {
   OllamaModelManageResponse,
   OllamaModelsResponse,
   SummaryTablesResponse,
-  VisualizationDataSource,
+  DataSource,
   VolcanoControlRequest,
   VolcanoResultResponse,
   VolcanoRequest,
 } from "./types";
+import { DATA_SOURCE_LABELS } from "./types";
 import { getActiveAdvancedPlotSettingsJson } from "./appSettings";
 import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
@@ -808,6 +809,9 @@ export async function uploadPeptideMetadata(file: File): Promise<PeptideMetadata
     );
   }
 
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as PeptideMetadataResponse;
 }
 
@@ -884,6 +888,9 @@ export async function generateAnnotation(
     );
   }
 
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as AnnotationResultResponse;
 }
 
@@ -904,6 +911,9 @@ export async function generatePeptideMetadata(
     );
   }
 
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as PeptideMetadataResponse;
 }
 
@@ -1114,6 +1124,9 @@ export async function runImputation(
         "Failed to run imputation"
     );
   }
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as ImputationResultResponse;
 }
 
@@ -1216,6 +1229,9 @@ export async function aggregatePhosprot(
         "Failed to aggregate phosphoprotein dataset"
     );
   }
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as AnnotationResultResponse;
 }
 
@@ -1241,6 +1257,9 @@ export async function uploadPhosprot(
         "Failed to upload phosphoprotein dataset"
     );
   }
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as AnnotationResultResponse;
 }
 
@@ -1279,6 +1298,9 @@ export async function setConditionPalette(
         "Failed to save condition colors"
     );
   }
+  // Every matrix downstream of this call is different now, so the plot and
+  // table URLs must be different too: `_dsn` is what makes them so.
+  bumpDatasetScopeNonce();
   return data as ConditionPaletteResponse;
 }
 
@@ -1333,6 +1355,11 @@ export async function getQcPlotOptions(
     samples: Array.isArray(payload.samples) ? payload.samples : [],
     sampleLabels: payload.sampleLabels ?? {},
     sampleLabelsWithId: payload.sampleLabelsWithId ?? {},
+    availableDataSources: Array.isArray(payload.availableDataSources)
+      ? payload.availableDataSources
+      : (["data"] as DataSource[]),
+    defaultDataSource: payload.defaultDataSource ?? "data",
+    centredPhosprotValues: Boolean(payload.centredPhosprotValues),
   };
 }
 
@@ -1357,13 +1384,52 @@ export async function getPeptideQuantityOptions(
   };
 }
 
+/** Every control that moves a point in the PCA projection.
+ *
+ * The summary names the groups that got no ellipse, and whether a group has
+ * one depends on where its points land -- so the notice has to be computed
+ * from the same settings the figure was drawn with, not from the defaults.
+ */
+export type QcPcaFeatureQuery = {
+  dataSource: string;
+  plotDim: string;
+  addEllipses: boolean;
+  method: string;
+  scaling: string;
+  colorBy: string;
+  clusterMethod: string;
+  clusterCount: number;
+  dbscanEps: number;
+  dbscanMinSamples: number;
+  umapNNeighbors: number;
+  umapMinDist: number;
+  tsnePerplexity: number;
+  tsneLearningRate: number;
+  randomState: number;
+};
+
 export async function getQcPcaFeatures(
   kind: AnnotationKind,
-  dataSource: string,
-  plotDim: string,
+  params: QcPcaFeatureQuery,
   requestOptions: ApiRequestOptions = {}
 ): Promise<QcPcaFeatureSummary> {
-  const query = new URLSearchParams({ dataSource, plotDim });
+  const query = new URLSearchParams({
+    dataSource: params.dataSource,
+    plotDim: params.plotDim,
+    addEllipses: String(params.addEllipses),
+    method: params.method,
+    scaling: params.scaling,
+    colorBy: params.colorBy,
+    clusterMethod: params.clusterMethod,
+    clusterCount: String(params.clusterCount),
+    dbscanEps: String(params.dbscanEps),
+    dbscanMinSamples: String(params.dbscanMinSamples),
+    umapNNeighbors: String(params.umapNNeighbors),
+    umapMinDist: String(params.umapMinDist),
+    tsnePerplexity: String(params.tsnePerplexity),
+    tsneLearningRate: String(params.tsneLearningRate),
+    randomState: String(params.randomState),
+  });
   const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/pca-features?${query.toString()}`, {
     signal: requestOptions.signal,
   });
@@ -1380,6 +1446,9 @@ export async function getQcPcaFeatures(
     featuresComplete: Number(payload.featuresComplete ?? 0),
     featuresUsed: Number(payload.featuresUsed ?? 0),
     featuresRequired: Number(payload.featuresRequired ?? 2),
+    ellipseSkippedGroups: Array.isArray(payload.ellipseSkippedGroups)
+      ? payload.ellipseSkippedGroups.map((group) => String(group))
+      : [],
   };
 }
 
@@ -1424,6 +1493,10 @@ export async function getStatisticalOptions(
     kind: (payloadRaw.kind as AnnotationKind) ?? kind,
     sourceUsed: payloadRaw.sourceUsed ?? "raw",
     imputedAvailable: Boolean(payloadRaw.imputedAvailable),
+    availableDataSources: Array.isArray(payloadRaw.availableDataSources)
+      ? payloadRaw.availableDataSources
+      : (["data"] as DataSource[]),
+    defaultDataSource: payloadRaw.defaultDataSource ?? "data",
     availableConditions: Array.isArray(payloadRaw.availableConditions)
       ? payloadRaw.availableConditions
       : [],
@@ -1786,7 +1859,7 @@ export async function getSingleProteinOptions(
   kind: AnnotationKind,
   tab: "boxplot" | "lineplot" | "heatmap",
   identifier: "workflow" | "genes" = "workflow",
-  dataSource: VisualizationDataSource = "log2",
+  dataSource: DataSource = "data",
   requestOptions: ApiRequestOptions = {}
 ): Promise<SingleProteinOptionsResponse> {
   const response = await fetch(
@@ -1837,6 +1910,16 @@ export async function getPhosphoOptions(
     );
   }
   const payloadRaw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const available = payloadRaw.availableDataSources;
+  const defaultSource = payloadRaw.defaultDataSource;
+  if (
+    !Array.isArray(available) ||
+    !available.every(source => typeof source === "string" && Object.hasOwn(DATA_SOURCE_LABELS, source)) ||
+    typeof defaultSource !== "string" || !Object.hasOwn(DATA_SOURCE_LABELS, defaultSource) ||
+    (available.length > 0 && !available.includes(defaultSource))
+  ) {
+    throw new Error("Invalid phospho data-source options. Reload the app and try again.");
+  }
   return {
     ...payloadRaw,
     conditions: Array.isArray(payloadRaw.conditions)
@@ -1920,10 +2003,10 @@ export async function renderKseaVolcanoFromFiles(payload: {
 
 export async function getComparisonOptions(
   kind: AnnotationKind,
-  dataSource: VisualizationDataSource = "log2",
   requestOptions: ApiRequestOptions = {}
 ): Promise<ComparisonOptionsResponse> {
-  const response = await fetch(buildPlotUrl(`/api/plots/comparison/${kind}/options`, { dataSource }), {
+  // Comparison is QC: it reads the data as loaded and takes no source.
+  const response = await fetch(buildPlotUrl(`/api/plots/comparison/${kind}/options`, {}), {
     signal: requestOptions.signal,
   });
   const data = await parseJson(response);

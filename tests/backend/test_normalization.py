@@ -66,7 +66,7 @@ def test_cv_and_abundance_use_uploaded_intensities(monkeypatch, method, log2_upl
     expected_cv = table_functions.prepare_cov_df(linear[columns], meta)
     pd.testing.assert_frame_equal(cv, expected_cv)
     abundance, _, _, _ = plot_images._abundance_mean_intensities("protein")
-    np.testing.assert_allclose(abundance.A, np.log10(linear[columns].mean(axis=1).dropna() + 1))
+    np.testing.assert_allclose(abundance.A, np.log10(linear[columns].mean(axis=1).dropna()))
     notebook_source = inverse_log2_transform_data(uploaded, meta) if log2_upload else uploaded.copy()
     pd.testing.assert_frame_equal(notebook_source, linear, check_like=True)
     pd.testing.assert_frame_equal(annotation.source_data, uploaded)
@@ -95,7 +95,7 @@ def test_r_uploaded_intensity_qc_matches_python_reference():
       cov_plot(org_data,meta,data_scale="linear")
       untrace("boxplot.default",where=asNamespace("graphics"))
       trace("points.default",where=asNamespace("graphics"),print=FALSE,
-        tracer=quote(stopifnot(isTRUE(all.equal(as.numeric(y),sort(log10(c(7,14,28)/3+1),decreasing=TRUE))))))
+        tracer=quote(stopifnot(isTRUE(all.equal(as.numeric(y),sort(log10(c(7,14,28)/3),decreasing=TRUE))))))
       abundance_plot(org_data,meta,data_scale="linear",legend=FALSE)
       untrace("points.default",where=asNamespace("graphics"))
       grDevices::dev.off()

@@ -12,31 +12,55 @@ from app.schemas.summary import SummaryReportContext, SummaryReportRequest, Summ
 from app.services.html_security import GENERATED_HTML_META
 
 report = importlib.import_module('app.services.report_function')
+# 2026-09-16: every case that renders a projection moved, because the report now
+# asks `qc_pca_feature_summary` how much of the matrix reached the PCA. The
+# rendered HTML is byte-identical in all 24 cases -- under this harness the
+# summary is one of the stubbed `qc_*` probes, so the completeness sentence
+# resolves to nothing; only the recorded call list gained the extra name. The
+# sentence itself is covered by test_report_processing_provenance.py.
+# 2026-09-17: the six `peptide,...` cases moved, because the summary report now
+# passes the page's `Cleavage Rule` through to `peptide_missed_cleavage_plot`
+# instead of always rendering under trypsin. Only that one call gained an
+# argument (`protease`); under this harness the probe's arguments are what the
+# figure's bytes are, so those cases' HTML moves with it. The pass-through
+# itself is covered by test_missed_cleavage_reporting.py.
+# 2026-09-17: the report's version line is now derived from APP_VERSION rather
+# than from a hand-maintained constant beside it. The string it prints is
+# unchanged today, so these hashes did not move; they will move on the release
+# that changes the application version, and that is the point of the change.
+# 2026-09-21: the coverage plot's total line became a switch of its own
+# (`referenceLine` in the coverage settings), so the report now forwards
+# `reference_line=True` to the two coverage renderers. Reverting just that
+# argument reproduces the previous hashes; it is the whole difference.
 SNAPSHOTS = {
-    'qc_custom:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'qc_custom:protein': 'b17cd3ba228ad914d03757712b1514807887a918c8d998ce157fdfa8d5ec13a5',
-    'qc_custom:phospho': '37202c75241d6f75ee6cc0d050107ddc192b3856cea1276fef8909882d62d94f',
-    'qc_custom:peptide,protein,phospho': '8eee10ab12753b6994bbde5586e0a2f23dfd79e198292acedb1ea7600a3b8adf',
-    'qc_invalid:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'qc_invalid:protein': '330ae6f8e7fa09ff0e1a40fce2028c9c3f6f19abcf394ca8e03b8c5e9ab56e4c',
-    'qc_invalid:phospho': 'f8bb8cd872a10097fc2d3aa33b170412d87d55c925bdeef0f956aec81beb6726',
-    'qc_invalid:peptide,protein,phospho': '54c65acf3e6e5d67caea53acf569cb21937558d45c7dbae29458cd3a77e739da',
-    'default:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'default:protein': '9a1fb694a783396e87967dbedd13fa2e1c661735a9963e1d4ed1932dd8e4a299',
-    'default:phospho': '1575ac1c55ce52756f2ca32b35757c02739c53e4dba479b070414555006aaa5b',
-    'default:peptide,protein,phospho': 'c8364553dfdaf0fefd525eff8f98b6cb3632618fab8e2365316c5cd32bba8fd6',
-    'custom:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'custom:protein': '38df85bf0dc13c3479dd0e01430da4e40cc2e425c659888595acbdc35699b919',
-    'custom:phospho': '5c9af4b13282e1463b30358d640b5f8f73e798bf30eb863733ba3e26f6aa2291',
-    'custom:peptide,protein,phospho': '4cb8f259b30833c33003152cd621946c945a74c6170fab18930cbc826e0d50d3',
-    'interactive:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'interactive:protein': '248913b21f1a39f5a559bee887c32257e4298c054f8dce50c871ec10ef1d1727',
-    'interactive:phospho': '23851e010528327dce905c1056c4b53abdeb964d03ee39233bbd82e0203caeb9',
-    'interactive:peptide,protein,phospho': 'b252e8e17f38bd37e12060f64d7c7fc7d83cbc57e40dbdf91f3a907887fb4ada',
-    'failure:': 'bbfbb081d4e5687df47c4a524be5b3da7d3fa5ba63961b35f1fdc98c99f5ef3e',
-    'failure:protein': '8203b10b9593d813d5011d9961a60a903b1953ab6aef67e45fbc721121134e16',
-    'failure:phospho': 'a7115146da8101cc122c57be07b21cc8916634158869eab041cfa7614744d668',
-    'failure:peptide,protein,phospho': '3b2042645c73b45736c7b0cb87c96e73c22808366088ae181b48b2db1b7d2edf',
+    'qc_custom:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'qc_custom:protein': 'c6c5cb984e0d4be84bad8fd5d5ecff646fef601190553fc05d0f69b6684e07d6',
+    'qc_custom:phospho': '08038dd69d5cc0a0ccbdc9fb8dc6b3ad43808a7a65719af60ef436bb8b5bc04f',
+    'qc_custom:peptide,protein,phospho': 'c9b3bcd836b222e52d9dd31446eebe157868724002b25c55afd430ac531cbb3b',
+    'qc_invalid:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'qc_invalid:protein': 'b19fbf64dd73e59b4a7ec9a59c4652e585e627f303d9e2a2de4eb91d710e9258',
+    'qc_invalid:phospho': 'c03c8d8b6c75f09779a56653a9d9bd521eb6e14f62a4e28b4725c5b5367a620f',
+    'qc_invalid:peptide,protein,phospho': '1f4cee4f8057c2d5cfd5af0c54016ee9bd076d217290dae202afc56531551060',
+    'default:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    # The three `default` snapshots below changed when advanced mode stopped
+    # gating the appearance settings: the case's custom PCA title now reaches
+    # the PCA renderer with the panel closed, as it reaches the plot on screen.
+    # That forwarded title is the whole difference.
+    'default:protein': '0d7b12a96ad23e44f29a9e953c54c37c4ae8109737dc8db4df7838df641b0ced',
+    'default:phospho': '56ef025baa8a779e62337655f313b9382b095e56245dc76d3c1c1590e092de1b',
+    'default:peptide,protein,phospho': 'da1b29b4277de191111fea37c0fd416448f198e2e22a30b0eb434db4e78ae8dd',
+    'custom:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'custom:protein': '68dfc320b90b50ce69285e4e61ef94506b46c194e7d3c48d56f32e0e4dd2f216',
+    'custom:phospho': '5189d27a20d730826a7a54e131347a41badc3092322b8415b108691367b00e90',
+    'custom:peptide,protein,phospho': '0a3cd239f7a54c723d78849ba251aede7fe5274aacfe5f2e84193b3d57a302cf',
+    'interactive:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'interactive:protein': 'c35203e727c1327d570c5e373d2566176be41216c574ab37af30c90d53ff63f1',
+    'interactive:phospho': '09a31f515434c0e04b9e3c5fa602e76a5ed215718251a38be31fd3dae9007b62',
+    'interactive:peptide,protein,phospho': 'e4e49b6cd51b70cee6fa12deab630195e2888d8b34ecc18000da4ea9aa9b90e9',
+    'failure:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'failure:protein': '3374964ac23d8915ad04fb61ceb62d976dd38c5c48a8603d812371ae20d75991',
+    'failure:phospho': '8d568138e7dcaac30b734f86f86b38ff2ed2bf22e88fe6c423ae12dbf0409ce8',
+    'failure:peptide,protein,phospho': '4d6268584101f534255dd285fe0df8647fb587f4a605f4c268cdc3566de891a3',
 }
 
 
@@ -73,6 +97,12 @@ def render_case(monkeypatch, kinds, mode, *, pca_scaling=None, selected_settings
     for name in names:
         if callable(getattr(report, name)):
             monkeypatch.setattr(report, name, renderer(name))
+    # The per-volcano counts come from run_volcano, which reads the real dataset
+    # stores. Stub it deterministically so these fingerprints stay about report
+    # structure; the counting itself is covered by test_volcano_report_block.py.
+    monkeypatch.setattr(report, 'run_volcano', lambda payload: SimpleNamespace(
+        upregulatedCount=312, downregulatedCount=288,
+        totalRows=7450, notSignificantCount=6850))
     settings = {} if mode == 'default' else {
         'type': 'Interactive' if mode == 'interactive' else 'Normal', 'dataSource': 'imputed',
         'header': False, 'legend': False, 'plotDim': '3D', 'method': 'UMAP', 'addEllipses': True,
@@ -121,6 +151,14 @@ def test_report_output_and_renderer_arguments_are_unchanged(monkeypatch, kinds, 
     assert result.html.count(GENERATED_HTML_META) == 1
     # Only the newly added policy differs from the pre-hardening report baseline.
     result.html = result.html.replace('\n' + GENERATED_HTML_META, '', 1)
+    # R7 intentionally changes only these sentences in this probe harness.
+    # Their exact presence/meaning is checked by test_report_processing_provenance.
+    # Removing them here proves all remaining HTML and renderer calls are unchanged.
+    result.html = result.html.replace(
+        '<p>QC plots use unfiltered, non-imputed data unless another data source is stated. '
+        'Filtering and imputation apply to clustering and statistical plots according to '
+        'the selected data source; PCA also uses its stated data source.</p>', ''
+    ).replace('Not applied to this plot. Configured filtering: ', '')
     key = mode + ':' + ','.join(kinds)
     actual = json.dumps([result.model_dump(), calls], sort_keys=True).encode()
     assert hashlib.sha256(actual).hexdigest() == SNAPSHOTS[key]

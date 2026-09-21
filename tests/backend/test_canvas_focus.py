@@ -13,12 +13,12 @@ def focus_data(monkeypatch):
                           "Protein_group": ["P1", "P1", "P2"], "Gene_group": ["G1", "G1", "G2"]})
     meta = pd.DataFrame({"condition": ["A", "B", "C"]})
     calls = []
-    def source(kind, **kwargs):
+    def source(kind, data_source="data", **kwargs):
         calls.append(kind)
         if kind != "phospho":
             raise ValueError("Unavailable")
-        return "log2", frame, meta
-    monkeypatch.setattr(canvas_focus, "_visualization_data_source", source)
+        return "data", frame, meta
+    monkeypatch.setattr(canvas_focus, "select_matrix", source)
     return calls
 
 
@@ -87,7 +87,7 @@ def test_invalid_conditions_do_not_change_canvas(focus_data, conditions):
 def test_ambiguous_gene_requires_exact_protein(monkeypatch):
     frame = pd.DataFrame({"ProteinNames": ["P1", "P2"], "GeneNames": ["G", "G"]})
     meta = pd.DataFrame({"condition": ["A", "B"]})
-    monkeypatch.setattr(canvas_focus, "_visualization_data_source", lambda *args, **kwargs: ("log2", frame, meta))
+    monkeypatch.setattr(canvas_focus, "select_matrix", lambda *args, **kwargs: ("data", frame, meta))
     with pytest.raises(ValueError, match="multiple features"):
         canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="G"), "")
     with pytest.raises(ValueError, match="multiple features"):
@@ -98,7 +98,7 @@ def test_ambiguous_gene_requires_exact_protein(monkeypatch):
 def test_ambiguous_feature_choices_are_bounded_and_counted(monkeypatch):
     frame = pd.DataFrame({'ProteinNames': [f'P{i}' for i in range(7)], 'GeneNames': ['G'] * 7})
     meta = pd.DataFrame({'condition': ['A', 'B']})
-    monkeypatch.setattr(canvas_focus, '_visualization_data_source', lambda *args, **kwargs: ('log2', frame, meta))
+    monkeypatch.setattr(canvas_focus, 'select_matrix', lambda *args, **kwargs: ('data', frame, meta))
     with pytest.raises(ValueError) as error:
         canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind='protein', query='G'), '')
     message = str(error.value)
@@ -124,7 +124,7 @@ def test_candidate_must_be_in_question_and_not_explicitly_quoted(focus_data, mes
 def test_real_punctuation_identifier_is_preserved(monkeypatch):
     frame = pd.DataFrame({"PTM_Collapse_key": ["K0", "K0."]})
     meta = pd.DataFrame({"condition": ["A", "B"]})
-    monkeypatch.setattr(canvas_focus, "_visualization_data_source", lambda *args, **kwargs: ("log2", frame, meta))
+    monkeypatch.setattr(canvas_focus, "select_matrix", lambda *args, **kwargs: ("data", frame, meta))
     assert canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="K0."), "", message="Show K0.")["features"] == ["K0."]
 
 

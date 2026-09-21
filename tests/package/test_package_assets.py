@@ -207,8 +207,10 @@ def test_python_phosphoproteome_different_genes_uses_all_group_tokens() -> None:
         workflow="Phosphoprotein",
         uncorrected=True,
     )
-    assert result["Upregulated"] == ["A", "B"]
-    assert result["Downregulated"] == ["B", "C"]
+    # log2FC is condition1 - condition2, so the directions are the mirror of
+    # what "two" being higher used to produce.
+    assert result["Upregulated"] == ["B", "C"]
+    assert result["Downregulated"] == ["A", "B"]
     assert result["Background"] == ["A", "B", "C", "D", "E"]
 
     fallback = notebook_functions.different_genes(
@@ -221,8 +223,8 @@ def test_python_phosphoproteome_different_genes_uses_all_group_tokens() -> None:
         workflow="Phosphoprotein",
         uncorrected=True,
     )
-    assert fallback["Upregulated"] == ["A", "B"]
-    assert fallback["Downregulated"] == ["B", "C"]
+    assert fallback["Upregulated"] == ["B", "C"]
+    assert fallback["Downregulated"] == ["A", "B"]
     assert fallback["Background"] == ["A", "B", "C", "D", "E"]
 
     anova_input = data.assign(Phosphoprotein=["P1", "P2", "P3", "P4"])
@@ -286,3 +288,47 @@ def test_viewer_configs_resolve_to_canonical_example_data() -> None:
             resolved = (config_path.parent / relative).resolve()
             assert resolved.is_file(), f"Missing configured example asset: {resolved}"
             assert ROOT / "proteomicscopylot" / "example_data" in resolved.parents
+
+
+def test_every_plotting_function_returns_its_figure() -> None:
+    """A notebook line reads `fig = plot(...)`, and that has to bind something.
+
+    `sty_plot` called `plt.show()` and returned None, so the example notebook's
+    own `fig = sty_plot(data3)` bound nothing: the figure could not be saved,
+    resized, or put into a report from a script, and only appeared at all
+    because Jupyter draws whatever matplotlib has open. Every other plotting
+    function in the module returns its figure; this pins that they all do.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    source = Path(__file__).resolve().parents[2] / "proteomicscopylot" / "notebook_functions.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+
+    offenders = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
+            continue
+        body = ast.dump(node)
+        draws = "plt.subplots" in body or "'subplots'" in body or "attr='figure'" in body
+        if not draws:
+            continue
+        returns_figure = any(
+            isinstance(inner, ast.Return)
+            and isinstance(inner.value, ast.Name)
+            and inner.value.id in {"fig", "figure"}
+            for inner in ast.walk(node)
+        )
+        if not returns_figure:
+            offenders.append(node.name)
+
+    assert offenders == [], (
+        "these plotting functions draw a figure and do not return it, so "
+        f"`fig = f(...)` binds None: {offenders}"
+    )
+    assert inspect.signature is not None

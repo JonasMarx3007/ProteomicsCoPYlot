@@ -247,6 +247,63 @@ def test_pdf_download_is_native_and_cache_cannot_replace_png_preview(monkeypatch
         invalidate_runtime_cache()
 
 
+def test_svg_download_is_native_vector_and_served_as_svg(monkeypatch) -> None:
+    """SVG comes from the renderer, like PDF, and never from re-encoding a PNG.
+
+    Converting the rendered raster would produce a file with the right
+    extension and a bitmap inside it, which is the one thing nobody asks for
+    SVG in order to get. So the format has to reach matplotlib before it draws,
+    the body has to be marked `image/svg+xml` on the way out, and a rasterized
+    artist has to be un-rasterized so the vector file stays a vector.
+    """
+    import matplotlib.pyplot as plt
+    from app.api import routes_plots
+    from app.services.plot_export import to_png_bytes, plot_output_format
+    from app.services.runtime_cache import cached_function, invalidate_runtime_cache
+
+    rendered = []
+
+    def render(kind, **kwargs):
+        rendered.append(plot_output_format.get())
+        fig, ax = plt.subplots(figsize=(3.35, 2.36))
+        ax.plot([0, 1, 2], [1, 3, 2])
+        ax.scatter([0, 1, 2], [1, 3, 2], rasterized=True)
+        ax.set_xlabel("Sample")
+        fig.tight_layout()
+        return to_png_bytes(fig, plt, dpi=150, tight=False)
+
+    invalidate_runtime_cache()
+    monkeypatch.setattr(routes_plots, "qc_coverage_plot", cached_function(render))
+    try:
+        with TestClient(main.app) as client:
+            for fmt in ("png", "svg"):
+                response = client.get(f"/api/plots/qc/protein/coverage.png?downloadFormat={fmt}")
+                assert response.status_code == 200, response.text[:200]
+                if fmt == "png":
+                    assert response.headers["content-type"] == "image/png"
+                    assert response.content.startswith(b"\x89PNG")
+                else:
+                    assert response.headers["content-type"] == "image/svg+xml"
+                    assert b"<svg" in response.content[:600]
+                    # A raster smuggled inside the vector file.
+                    assert b"<image" not in response.content
+                    assert b"data:image/png" not in response.content
+        assert rendered == ["png", "svg"]
+        assert plot_output_format.get() == "png"
+    finally:
+        invalidate_runtime_cache()
+
+
+def test_svg_is_never_traced_out_of_a_rendered_raster() -> None:
+    """The raster converter must refuse rather than wrap pixels in an <image>."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 20), "white").save(buf, format="PNG")
+    with pytest.raises(ValueError, match="never converted"):
+        main._convert_png_bytes(buf.getvalue(), "svg")
+
+
 def test_plot_figure_is_closed_when_serialization_fails(monkeypatch) -> None:
     import matplotlib.pyplot as plt
     from app.services.plot_export import to_png_bytes

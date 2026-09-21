@@ -1,15 +1,17 @@
+import { SizeRow } from "../../components/PlotFields";
+import { withoutStaticSize } from "../../lib/plotRenderType";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
-import { ColorField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getComparisonOptions, getComparisonTable, isAbortError } from "../../lib/api";
-import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -20,7 +22,6 @@ import type {
   AnnotationKind,
   ComparisonOptionsResponse,
   ComparisonTab,
-  VisualizationDataSource,
 } from "../../lib/types";
 
 type Props = {
@@ -57,21 +58,15 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       : "protein";
   });
   const [options, setOptions] = useState<ComparisonOptionsResponse | null>(null);
-  const [dataSource, setDataSource] = useState<VisualizationDataSource>(() => {
-    const value = String(persisted.dataSource ?? "log2").trim();
-    // "data" is the historical spelling for this control's default.
-    return value === "filtered" || value === "imputed" || value === "auto" ? value : "log2";
-  });
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png").trim();
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
 
   const [pearson, setPearson] = useState({
     type: String(persistedPearson.type ?? "Normal"),
@@ -83,11 +78,10 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     alias1: String(persistedPearson.alias1 ?? ""),
     alias2: String(persistedPearson.alias2 ?? ""),
     color: String(persistedPearson.color ?? "#1f77b4"),
-    dotSize: Number(persistedPearson.dotSize ?? 60),
-    header: Boolean(persistedPearson.header ?? true),
-    widthCm: Number(persistedPearson.widthCm ?? 20),
-    heightCm: Number(persistedPearson.heightCm ?? 12),
-    dpi: Number(persistedPearson.dpi ?? 300),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedPearson.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedPearson.heightCm, 12),
+    dpi: restorePlotDpi(persistedPearson.dpi, 300),
   });
 
   const [venn, setVenn] = useState({
@@ -101,22 +95,21 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     color1: String(persistedVenn.color1 ?? "#1f77b4"),
     color2: String(persistedVenn.color2 ?? "#ff7f0e"),
     color3: String(persistedVenn.color3 ?? "#2ca02c"),
-    header: Boolean(persistedVenn.header ?? true),
-    widthCm: Number(persistedVenn.widthCm ?? 15),
-    heightCm: Number(persistedVenn.heightCm ?? 12),
-    dpi: Number(persistedVenn.dpi ?? 300),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedVenn.widthCm, 15),
+    heightCm: restorePlotDimensionCm(persistedVenn.heightCm, 12),
+    dpi: restorePlotDpi(persistedVenn.dpi, 300),
   });
   const pearsonInteractiveSessionNonce = useMemo(() => Date.now(), []);
 
   useEffect(() => {
     writePersistedUiState("comparison.pipeline.v1", {
       kind,
-      dataSource,
       downloadFormat,
       pearson,
       venn,
     });
-  }, [kind, dataSource, downloadFormat, pearson, venn]);
+  }, [kind, downloadFormat, pearson, venn]);
 
   const hasKind = availableKinds.includes(kind);
 
@@ -142,12 +135,9 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     setOptions(null);
     setOptionsLoading(true);
     setOptionsError(null);
-    getComparisonOptions(kind, dataSource, { signal: controller.signal })
+    getComparisonOptions(kind, { signal: controller.signal })
       .then((payload) => {
         setOptions(payload);
-        if (payload.dataSource !== dataSource) {
-          setDataSource(payload.dataSource);
-        }
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -162,7 +152,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     return () => {
       controller.abort();
     };
-  }, [hasKind, kind, dataSource]);
+  }, [hasKind, kind]);
 
   useEffect(() => {
     if (!options) return;
@@ -219,14 +209,13 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
 
   const plotView = useMemo<PlotView>(() => {
     void advancedPlotSignal;
-    if (!hasKind || options?.dataSource !== dataSource) return null;
+    if (!hasKind || !options) return null;
 
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
       const params: Record<string, string | number | boolean> = {
         type: pearson.type,
         mode: pearson.mode,
-        dataSource,
         sample1: pearson.sample1,
         sample2: pearson.sample2,
         condition1: pearson.condition1,
@@ -234,7 +223,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         alias1: pearson.alias1,
         alias2: pearson.alias2,
         color: pearson.color,
-        dotSize: pearson.dotSize,
         header: pearson.header,
         widthCm: pearson.widthCm,
         heightCm: pearson.heightCm,
@@ -242,7 +230,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       };
       const pearsonInteractive = String(pearson.type || "").trim().toLowerCase() === "interactive";
       const pearsonPlotParams = pearsonInteractive
-        ? { ...params, _interactiveV: pearsonInteractiveSessionNonce }
+        ? { ...withoutStaticSize(params), _interactiveV: pearsonInteractiveSessionNonce }
         : params;
       return {
         title: "Pearson Correlation",
@@ -260,7 +248,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (!vennReady) return null;
     const params: Record<string, string | number | boolean> = {
       mode: venn.mode,
-      dataSource,
       first: venn.first,
       second: venn.second,
       third: venn.third,
@@ -281,7 +268,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       renderMode: "image",
       url: buildPlotUrl(`/api/plots/comparison/${kind}/venn.png`, params),
     };
-  }, [activeTab, hasKind, kind, dataSource, options?.dataSource, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce, advancedPlotSignal]);
+  }, [activeTab, hasKind, kind, options, pearson, pearsonReady, venn, vennReady, pearsonInteractiveSessionNonce, advancedPlotSignal]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView || plotView.renderMode !== "image") return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -292,12 +279,11 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }, [plotView, downloadFormat]);
 
   const tableRequest = useMemo<TableRequest>(() => {
-    if (!hasKind || options?.dataSource !== dataSource) return null;
+    if (!hasKind || !options) return null;
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
       const params: Record<string, string | number | boolean> = {
         mode: pearson.mode,
-        dataSource,
         sample1: pearson.sample1,
         sample2: pearson.sample2,
         condition1: pearson.condition1,
@@ -313,7 +299,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (!vennReady) return null;
     const params: Record<string, string | number | boolean> = {
       mode: venn.mode,
-      dataSource,
       first: venn.first,
       second: venn.second,
       third: venn.third,
@@ -328,8 +313,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }, [
     activeTab,
     hasKind,
-    dataSource,
-    options?.dataSource,
+    options,
     pearsonReady,
     pearson.mode,
     pearson.sample1,
@@ -359,7 +343,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       activeTab === "pearson"
         ? [
             `kind=${kind}`,
-            `dataSource=${dataSource}`,
+            "dataSource=data",
             "tab=pearson",
             `type=${pearson.type}`,
             `mode=${pearson.mode}`,
@@ -372,7 +356,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
           ]
         : [
             `kind=${kind}`,
-            `dataSource=${dataSource}`,
+            "dataSource=data",
             "tab=venn",
             `mode=${venn.mode}`,
             `first=${sanitize(venn.first)}`,
@@ -391,7 +375,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     activeTab,
     hasKind,
     kind,
-    dataSource,
     pearson.type,
     pearson.mode,
     pearson.sample1,
@@ -494,19 +477,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               )}
             </AssistantSelect>
           </label>
-          <label className="block text-sm">
-            <span className="mb-2 block font-medium text-slate-700">Data source</span>
-            <AssistantSelect
-              value={dataSource}
-              onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
-              disabled={!hasKind || optionsLoading}
-              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-            >
-              <option value="log2">Log2 data</option>
-              {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
-              {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
-            </AssistantSelect>
-          </label>
         </div>
       </section>
 
@@ -592,7 +562,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                   src={plotView.url}
                   title={plotView.title}
                   className="block w-full rounded-xl border border-slate-200"
-                  style={{ height: `max(${cmToIframeHeight(pearson.heightCm)}px, 78vh)` }}
+                  style={{ height: `max(${cmToIframeHeight(12)}px, 78vh)` }}
                   onLoad={() => setImageError(null)}
                 />
               )}
@@ -702,33 +672,17 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             />
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <NumericField
-              label="Dot Size"
-              value={pearson.dotSize}
-              onChange={(value) => setPearson({ ...pearson, dotSize: Math.max(1, value) })}
-              step={1}
-            />
-            <ColorField
-              label="Dot Color"
-              value={pearson.color}
-              onChange={(value) => setPearson({ ...pearson, color: value })}
-            />
           </div>
           <div className="flex flex-wrap gap-3">
-            <Checkbox
-              label="Toggle Header"
-              checked={pearson.header}
-              onChange={(value) => setPearson({ ...pearson, header: value })}
-            />
           </div>
-          <SizeRow
+          {String(pearson.type || "").trim().toLowerCase() === "interactive" ? null : <SizeRow
             widthCm={pearson.widthCm}
             heightCm={pearson.heightCm}
             dpi={pearson.dpi}
-            onWidthChange={(value) => setPearson({ ...pearson, widthCm: Math.max(1, value) })}
-            onHeightChange={(value) => setPearson({ ...pearson, heightCm: Math.max(1, value) })}
-            onDpiChange={(value) => setPearson({ ...pearson, dpi: Math.max(72, Math.round(value)) })}
-          />
+            onWidthChange={(value) => setPearson({ ...pearson, widthCm: value })}
+            onHeightChange={(value) => setPearson({ ...pearson, heightCm: value })}
+            onDpiChange={(value) => setPearson({ ...pearson, dpi: value })}
+          />}
         </div>
       );
     }
@@ -782,64 +736,20 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
           />
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
-          <ColorField
-            label="Color 1"
-            value={venn.color1}
-            onChange={(value) => setVenn({ ...venn, color1: value })}
-          />
-          <ColorField
-            label="Color 2"
-            value={venn.color2}
-            onChange={(value) => setVenn({ ...venn, color2: value })}
-          />
-          <ColorField
-            label="Color 3"
-            value={venn.color3}
-            onChange={(value) => setVenn({ ...venn, color3: value })}
-          />
         </div>
         <div className="flex flex-wrap gap-3">
-          <Checkbox
-            label="Toggle Header"
-            checked={venn.header}
-            onChange={(value) => setVenn({ ...venn, header: value })}
-          />
         </div>
         <SizeRow
           widthCm={venn.widthCm}
           heightCm={venn.heightCm}
           dpi={venn.dpi}
-          onWidthChange={(value) => setVenn({ ...venn, widthCm: Math.max(1, value) })}
-          onHeightChange={(value) => setVenn({ ...venn, heightCm: Math.max(1, value) })}
-          onDpiChange={(value) => setVenn({ ...venn, dpi: Math.max(72, Math.round(value)) })}
+          onWidthChange={(value) => setVenn({ ...venn, widthCm: value })}
+          onHeightChange={(value) => setVenn({ ...venn, heightCm: value })}
+          onDpiChange={(value) => setVenn({ ...venn, dpi: value })}
         />
       </div>
     );
   }
-}
-
-function SizeRow({
-  widthCm,
-  heightCm,
-  dpi,
-  onWidthChange,
-  onHeightChange,
-  onDpiChange,
-}: {
-  widthCm: number;
-  heightCm: number;
-  dpi: number;
-  onWidthChange: (value: number) => void;
-  onHeightChange: (value: number) => void;
-  onDpiChange: (value: number) => void;
-}) {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
-      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} step={1} />
-    </div>
-  );
 }
 
 function SelectField({
@@ -888,65 +798,6 @@ function TextField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
-}
-
-function NumericField({
-  label,
-  value,
-  onChange,
-  step = 0.1,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-  step?: number;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
-
-  const commit = () => {
-    const normalized = displayedValue.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(null);
-      return;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed)) {
-      setDraft(null);
-      return;
-    }
-    onChange(parsed);
-    setDraft(null);
-  };
-
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        step={step}
-        value={displayedValue}
-        onChange={(event) => {
-          const normalized = event.target.value.replace(",", ".");
-          setDraft(normalized);
-          const parsed = Number(normalized);
-          if (Number.isFinite(parsed)) {
-            onChange(parsed);
-          }
-        }}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-900"
       />
     </label>
   );

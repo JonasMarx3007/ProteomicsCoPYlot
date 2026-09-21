@@ -1,29 +1,10 @@
 import { useId, useState } from "react";
-import { clampPlotDimensionCm, clampPlotDpi } from "../lib/plotLimits";
 
-export function SizeRow({
-  dpi,
-  heightCm,
-  widthCm,
-  onDpiChange,
-  onHeightChange,
-  onWidthChange,
-}: {
-  dpi: number;
-  heightCm: number;
-  widthCm: number;
-  onDpiChange: (value: number) => void;
-  onHeightChange: (value: number) => void;
-  onWidthChange: (value: number) => void;
-}) {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
-      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
-    </div>
-  );
-}
+// One size control for the whole tool. This file used to carry a second copy
+// that rendered DPI, Height, Width -- the same three fields in the opposite
+// order from every other page, which is how the same figure ended up described
+// two ways depending on where you set it.
+export { SizeRow } from "./PlotFields";
 
 export function Checkbox({
   label,

@@ -50,8 +50,11 @@ dev = [
   "build",
   "httpx",
   "ipython",
+  "mypy",
   "nbformat>=4.2",
   "pytest",
+  "pytest-cov",
+  "ruff",
   "twine",
   "wheel",
 ]
@@ -77,4 +80,70 @@ markers = [
     # Runs the published example notebook end to end. Slower than a unit test
     # because it renders real figures; deselect with -m "not slow".
     "slow: exercises a full published workflow rather than one function",
+]
+
+
+# --- Linting ----------------------------------------------------------------
+# Ruff replaces flake8 + isort + black. The frontend has been gated by tsc and
+# ESLint in CI from the start; this closes the same gap on the Python side.
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# Notebooks star-import the package on purpose -- that is the documented way to
+# use it -- so F403/F405 there describe the design, not a defect.
+extend-exclude = ["build", "dist", "release", "local", "viewer_data", "*.ipynb"]
+
+[tool.ruff.lint]
+# Pyflakes only, to begin with. These are the rules that catch mistakes rather
+# than opinions: unused imports and variables, redefinitions, undefined names.
+# An unused import is what a stale refactor leaves behind, and it is invisible
+# to the test suite until it breaks something unrelated.
+# Style rules (E, W) and modernisation (UP, B) are worth adding later, once
+# someone has time to work through the ~200 findings they produce today.
+select = ["F"]
+
+[tool.ruff.format]
+# Configured so that `ruff format` is deterministic when someone runs it on a
+# file they are already changing. It is not enforced: formatting the tree today
+# rewrites 147 files, which would bury every future diff under it.
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ruff.lint.per-file-ignores]
+# `except ... as exc` is deliberate here: the handler logs through
+# LOGGER.exception(), which reads the active exception rather than the name.
+"backend/app/main.py" = ["F841"]
+"backend/app/services/viewer_bootstrap.py" = ["F841"]
+"backend/app/services/restore_state.py" = ["F841"]
+
+# --- Type checking ----------------------------------------------------------
+# Deliberately lenient. A strict mypy on 500 KB of untyped scientific code
+# produces thousands of findings and gets switched off within a week; this
+# configuration catches the errors that do not need annotations to find, and
+# can be tightened one module at a time with a [[tool.mypy.overrides]] block.
+[tool.mypy]
+python_version = "3.10"
+files = ["backend/app", "proteomicscopylot"]
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_configs = true
+warn_redundant_casts = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+
+# --- Coverage ---------------------------------------------------------------
+# Measured, not gated. A threshold nobody can meet gets bypassed, and one set at
+# today's number blocks the next honest refactor. Run it when you want to know;
+# add `fail_under` when the team agrees on a floor.
+[tool.coverage.run]
+source = ["backend/app", "proteomicscopylot"]
+omit = ["*/__init__.py", "*/example_data/*"]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
 ]

@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -6,9 +6,34 @@ const proxyTarget = process.env.VITE_PROXY_TARGET ?? "http://127.0.0.1:8000";
 const basePathRaw = process.env.VITE_BASE_PATH ?? "/";
 const basePath = basePathRaw.endsWith("/") ? basePathRaw : `${basePathRaw}/`;
 
+// The analysis and viewer bundles differ only by VITE_APP_MODE, which is baked
+// in at build time and is invisible once built. A viewer backend serving an
+// analysis bundle looks like a viewer with no gating at all -- every
+// data-processing module on screen over read-only data -- and nothing says so.
+// Writing the mode into the bundle lets the launcher refuse that combination
+// instead of serving it. Keep the values in step with lib/appMode.ts.
+const appMode = process.env.VITE_APP_MODE?.trim().toLowerCase() === "viewer" ? "viewer" : "analysis";
+const aiEnabled = ["1", "true", "yes", "on"].includes(
+  (process.env.VITE_AI_ENABLED ?? "").trim().toLowerCase()
+);
+
+function buildModeManifest(): Plugin {
+  return {
+    name: "copylot-build-mode",
+    apply: "build",
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: "build-mode.json",
+        source: `${JSON.stringify({ appMode, aiEnabled }, null, 2)}\n`,
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: basePath,
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), buildModeManifest()],
   server: {
     port: 5173,
     strictPort: true,

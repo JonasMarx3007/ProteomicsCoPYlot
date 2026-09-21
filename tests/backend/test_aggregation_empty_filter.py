@@ -61,7 +61,7 @@ def test_empty_filter_blocks_before_aggregation_or_imputed_lookup(rejected_sites
     def forbidden(*args, **kwargs):
         pytest.fail("Rejected sites must not reach aggregation or imputed-source lookup")
     monkeypatch.setattr(phosprot_tools, "transform_phosprot", forbidden)
-    monkeypatch.setattr(phosprot_tools, "analysis_data_source", forbidden)
+    monkeypatch.setattr(phosprot_tools, "select_matrix", forbidden)
     with pytest.raises(ValueError, match="No features passed the selected filter"):
         phosprot_tools.aggregate_from_phospho("mean", source=source)
 

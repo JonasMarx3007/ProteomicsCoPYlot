@@ -18,7 +18,7 @@ def test_uploaded_control_ksea_labels_contrast_without_changing_scores(monkeypat
         condition1_control="C", condition2_control="D",
     )
     assert "controls: C vs D" in fig.layout.title.text
-    assert fig.layout.xaxis.title.text == "Log2(Frequency Factor) (contrast: (B - D) - (A - C))"
+    assert fig.layout.xaxis.title.text == "Log2(Frequency Factor) (contrast: (A - C) - (B - D))"
     assert [x for trace in fig.data if trace.mode == "markers" for x in trace.x] == [2., 2.]
 
 

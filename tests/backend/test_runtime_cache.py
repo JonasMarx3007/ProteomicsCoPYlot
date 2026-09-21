@@ -146,3 +146,38 @@ def test_equivalent_keys_hit_and_different_keys_miss() -> None:
     assert calls["n"] == 1
     cached_call("keys", {"a": 2, "b": "x"}, factory)
     assert calls["n"] == 2
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (True, 1),
+        (False, 0),
+        (1, 1.0),
+        ({"x": True}, {"x": 1}),
+        ([True, 2], [1, 2]),
+    ],
+    ids=["true-vs-1", "false-vs-0", "int-vs-float", "in-a-dict", "in-a-list"],
+)
+def test_values_python_calls_equal_are_still_different_keys(left, right) -> None:
+    """`True == 1` and `1 == 1.0`, and equal values hash equally.
+
+    The `advanced` plot settings arrive as untyped JSON straight off the query
+    string, so `{"headerText": true}` and `{"headerText": 1}` are two different
+    instructions -- `_advanced_text` renders one as "True" and the other as
+    "1" -- that Python considers the same key. Without tagging the type the
+    second request would be served the first one's rendered figure.
+    """
+    assert _freeze(left) != _freeze(right), (left, right)
+
+
+def test_a_boolean_and_an_integer_do_not_share_a_cache_entry() -> None:
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        return calls["n"]
+
+    cached_call("bools", {"advanced": {"headerText": True}}, factory)
+    cached_call("bools", {"advanced": {"headerText": 1}}, factory)
+    assert calls["n"] == 2, "the integer request was served the boolean's result"

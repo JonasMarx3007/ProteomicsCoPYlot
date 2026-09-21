@@ -18,7 +18,7 @@
         "seed": "none",
         "sample_wise": "none"
       },
-      "collapse_mode": "robust_site_median",
+      "collapse_mode": "sum_ignore_na",
       "filter_min_protein": 3,
       "filter_min_phospho": 3,
       "filter_min_phosphoprotein": 3,

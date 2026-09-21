@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.schemas.stats import AnovaRequest, SimulationRequest
 from app.services import stats_tools as st
 from app.services.functions import (
-    analysis_data_source,
+    select_matrix,
     impute_values_with_diagnostics,
     log2_transform_data,
     raw_zero_to_nan,
@@ -139,7 +139,15 @@ def test_imputation_does_not_impute_a_transformed_zero() -> None:
     assert np.isfinite(result.imputed_data.loc[1, "s1"])
 
 
-def test_analysis_source_converts_zero_only_when_raw_is_selected() -> None:
+def test_there_is_no_raw_fallback_to_convert_zeros_in() -> None:
+    """A level with no annotated matrix is an error, not a silent downgrade.
+
+    `select_matrix` used to fall back to the raw uploaded frame when neither the
+    log2 nor the filtered matrix existed, converting zeros to missing on the way
+    so the numbers looked plausible. The analysis then ran on a matrix nobody
+    chose, under the label of one they did. There is no fallback now: every
+    source names one matrix and raises when it is absent.
+    """
     raw = pd.DataFrame({"s1": [0.0, 1.0], "label": [0, 1]})
     metadata = pd.DataFrame({"sample": ["s1"], "condition": ["A"]})
     annotation = SimpleNamespace(
@@ -147,34 +155,35 @@ def test_analysis_source_converts_zero_only_when_raw_is_selected() -> None:
         filtered_data=pd.DataFrame(),
         log2_data=pd.DataFrame(),
         imputation=None,
+        imputed_data=pd.DataFrame(),
         is_log2_transformed=False,
     )
     with (
         patch("app.services.data_tools._get_current_frame", return_value=raw),
         patch("app.services.annotation_store.get_annotation", return_value=annotation),
     ):
-        source, selected, _, _ = analysis_data_source("protein", "data")
-    assert source == "raw"
-    assert pd.isna(selected.loc[0, "s1"])
-    assert selected["label"].tolist() == [0, 1]
+        for source in ("data", "filtered", "imputed"):
+            with pytest.raises(ValueError) as error:
+                select_matrix("protein", source)
+            assert "not available" in str(error.value), source
 
-    annotation.is_log2_transformed = True
+    # With the annotated matrix present, "data" is that matrix and nothing else.
+    annotation.log2_data = raw.copy()
     with (
         patch("app.services.data_tools._get_current_frame", return_value=raw),
         patch("app.services.annotation_store.get_annotation", return_value=annotation),
     ):
-        source, selected, _, _ = analysis_data_source("protein", "data")
-    assert source == "raw"
-    assert selected.loc[0, "s1"] == 0.0
+        source, selected, _ = select_matrix("protein", "data")
+    assert source == "data"
+    assert selected.loc[0, "s1"] == 0.0, "the annotated matrix is returned as stored"
 
-    annotation.filtered_data = raw.copy()
-    with (
-        patch("app.services.data_tools._get_current_frame", return_value=raw),
-        patch("app.services.annotation_store.get_annotation", return_value=annotation),
-    ):
-        source, selected, _, _ = analysis_data_source("protein", "data")
-    assert source == "filtered"
-    assert selected.loc[0, "s1"] == 0.0
+
+def test_an_unknown_source_names_the_ones_that_exist() -> None:
+    with pytest.raises(ValueError) as error:
+        select_matrix("protein", "log2")
+    message = str(error.value)
+    assert "log2" in message
+    assert "data, filtered, imputed" in message, "the message should list the vocabulary"
 
 
 NON_FINITE_SAMPLES = ["WT_1", "WT_2", "WT_3", "KO_1", "KO_2", "KO_3"]

@@ -215,7 +215,7 @@ def analysis_boxplot_png(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
-    data_source: str = "log2",
+    data_source: str = "data",
 ) -> bytes:
     return single_protein_boxplot_plot(
         kind=kind,
@@ -238,7 +238,7 @@ def analysis_boxplot_table(
     protein: str,
     conditions: list[str],
     identifier: str = "workflow",
-    data_source: str = "log2",
+    data_source: str = "data",
 ) -> pd.DataFrame:
     return single_protein_boxplot_table(
         kind=kind,
@@ -258,7 +258,7 @@ def analysis_lineplot_png(
     width_cm: float = 20,
     height_cm: float = 10,
     dpi: int = 300,
-    data_source: str = "log2",
+    data_source: str = "data",
 ) -> bytes:
     return single_protein_lineplot_plot(
         kind=kind,
@@ -281,7 +281,7 @@ def analysis_lineplot_table(
     conditions: list[str],
     identifier: str = "workflow",
     include_id: bool = False,
-    data_source: str = "log2",
+    data_source: str = "data",
 ) -> pd.DataFrame:
     return single_protein_lineplot_table(
         kind=kind,
