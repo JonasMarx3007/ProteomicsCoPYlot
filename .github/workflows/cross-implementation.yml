@@ -51,13 +51,13 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.lock
 
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+      - uses: r-lib/actions/setup-r@465b7d8e732ca3921382b1674c59bada9cbf3399 # v2.13.0
         with:
           r-version: "4.4.2"
           use-public-rspm: true
 
       - name: Cache R packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.R_LIBS_USER }}
           key: r-${{ runner.os }}-${{ hashFiles('.github/workflows/cross-implementation.yml') }}

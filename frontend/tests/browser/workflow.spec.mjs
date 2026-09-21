@@ -1150,6 +1150,39 @@ for (const section of ['QC Pipeline', 'Completeness']) {
   });
 }
 
+test('volcano groups related controls and places dimensions below highlights', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await annotated(page);
+  await tab(page, 'Statistical Analysis').click();
+  await field(page, 'Condition 2').selectOption('B');
+  const type = page.getByLabel('Type', { exact: true });
+  await type.selectOption('Normal');
+  const bounds = async label => {
+    const control = page.getByLabel(label, { exact: true });
+    await expect(control).toBeVisible();
+    return control.boundingBox();
+  };
+  const typeBox = await bounds('Type');
+  const labelBox = await bounds('Label column');
+  const testBox = await bounds('Test type');
+  const pBox = await bounds('P-value threshold');
+  const fcBox = await bounds('log2 FC threshold');
+  expect(Math.abs(typeBox.y - labelBox.y)).toBeLessThan(2);
+  expect(Math.abs(testBox.y - pBox.y)).toBeLessThan(2);
+  expect(Math.abs(testBox.y - fcBox.y)).toBeLessThan(2);
+  expect(testBox.y).toBeGreaterThan(typeBox.y + typeBox.height);
+  const highlightBox = await bounds('Highlight terms');
+  const widthBox = await bounds('Width (cm)');
+  expect(widthBox.y).toBeGreaterThan(highlightBox.y + highlightBox.height);
+  const image = page.locator('img[src*="/volcano.png"]');
+  await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  await page.screenshot({ path: info.outputPath('volcano-layout.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
+  await type.selectOption('Interactive');
+  await expect(page.getByLabel('Width (cm)', { exact: true })).toHaveCount(0);
+});
+
 test('shared plot controls preserve numeric editing, bounds, toggles and multiple selection', async ({ page }, info) => {
   await annotated(page);
   await expect(page.locator('#active-dataset-package')).toHaveCount(0);
