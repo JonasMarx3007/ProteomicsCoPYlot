@@ -89,14 +89,14 @@ def test_export_preserves_canvas_dimensions_and_labels(fmt, decoration):
 
 
 @pytest.mark.parametrize('tight', [False, True])
-def test_impossible_label_layout_fails_without_resizing_or_clipping(tight):
+def test_impossible_label_layout_fails_after_bounded_fitting_without_clipping(tight):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(2, 1.5))
-    ax.set_title('A deliberately very long unwrapped title ' * 5)
+    ax.set_title('A deliberately very long unwrapped title ' * 40)
     with pytest.raises(ValueError, match='Increase width/height'):
         to_png_bytes(fig, plt, tight=tight)
-    assert tuple(fig.get_size_inches()) == (2, 1.5)
+    assert all(size <= 60 / 2.54 for size in fig.get_size_inches())
     assert not plt.fignum_exists(fig.number)
 
 
@@ -124,10 +124,8 @@ def test_requested_size_is_a_floor_so_label_heavy_figures_still_render():
     from PIL import Image
     from app.services.plot_export import fit_figure_to_labels
 
-    # Without growing, this is exactly the failure the pathway heatmap hits at
-    # its own defaults.
-    with pytest.raises(ValueError, match='Increase width/height'):
-        to_png_bytes(_label_heavy_heatmap(plt), plt, dpi=150)
+    automatic = to_png_bytes(_label_heavy_heatmap(plt), plt, dpi=150)
+    assert automatic.startswith(b'\x89PNG')
 
     fig = _label_heavy_heatmap(plt)
     requested = tuple(fig.get_size_inches())
@@ -149,6 +147,62 @@ def test_auto_fit_never_shrinks_a_figure_that_already_fits():
     ax.plot([0, 1], [1, 2])
     try:
         assert fit_figure_to_labels(fig, plt, dpi=150) == pytest.approx((8, 6))
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize('fmt', ['png', 'pdf', 'svg'])
+def test_crowded_condition_legend_fits_automatically_and_keeps_data(fmt):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from app.services.plot_export import plot_output_format
+
+    fig, ax = plt.subplots(figsize=(20 / 2.54, 10 / 2.54))
+    for index in range(16):
+        ax.plot([0, 1], [index, index + 1], label=f'Condition {index + 1}')
+    ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1))
+    before = [line.get_xydata().copy() for line in ax.lines]
+    token = plot_output_format.set(fmt)
+    try:
+        content = to_png_bytes(fig, plt, dpi=150)
+    finally:
+        plot_output_format.reset(token)
+    assert content
+    assert len(ax.get_legend().get_texts()) == 16
+    for line, expected in zip(ax.lines, before):
+        np.testing.assert_array_equal(line.get_xydata(), expected)
+    bounds = fig.get_tightbbox(fig.canvas.get_renderer())
+    width, height = fig.get_size_inches()
+    assert bounds.x0 >= -1 / 150 and bounds.y0 >= -1 / 150
+    assert bounds.x1 <= width + 1 / 150 and bounds.y1 <= height + 1 / 150
+    assert not plt.fignum_exists(fig.number)
+
+
+def test_many_sample_labels_get_space_without_being_hidden_or_shrunk():
+    import matplotlib.pyplot as plt
+    from app.services.plot_export import _tick_label_space
+
+    fig, ax = plt.subplots(figsize=(20 / 2.54, 10 / 2.54))
+    labels = [f'Condition{index // 6}_{index % 6 + 1}' for index in range(96)]
+    ax.bar(range(96), [1] * 96)
+    ax.set_xticks(range(96), labels, rotation=90, fontsize=9)
+    assert to_png_bytes(fig, plt, dpi=150).startswith(b'\x89PNG')
+    assert [label.get_text() for label in ax.get_xticklabels()] == labels
+    assert all(label.get_fontsize() == 9 for label in ax.get_xticklabels())
+    assert max(_tick_label_space(fig, fig.canvas.get_renderer())) <= 1 / 150
+    assert fig.get_figwidth() > 20 / 2.54
+
+
+def test_auto_fit_pixel_budget_holds_when_only_one_dimension_can_grow():
+    import matplotlib.pyplot as plt
+    from app.services.plot_export import fit_figure_to_labels
+
+    fig, ax = plt.subplots(figsize=(8, 2))
+    ax.set_title('A very long title ' * 30)
+    try:
+        width, height = fit_figure_to_labels(fig, plt, dpi=300, max_pixels=1_600_000)
+        assert width >= 8 and height >= 2
+        assert width * height * 300**2 <= 1_600_000 + 1
     finally:
         plt.close(fig)
 

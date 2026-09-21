@@ -2,24 +2,38 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /frontend
+    groups:
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+      typescript-tooling:
+        patterns: ["typescript", "typescript-eslint", "@typescript-eslint/*"]
+    ignore:
+      # Compiler major upgrades need a coordinated lint/compiler API migration.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: pip
     directory: /
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: pip
     directory: /backend
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
     directory: /
+    groups:
+      codeql:
+        patterns: ["github/codeql-action/*"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
