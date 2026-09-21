@@ -21,6 +21,7 @@ export type AdvancedTextElementSettings = {
   yOffset?: number;
   bold?: boolean;
   italic?: boolean;
+  color?: string;
 };
 
 export type AdvancedPlotSettings = {
@@ -44,12 +45,86 @@ export type AdvancedPlotSettings = {
   textYOffset?: number;
   legendXOffset?: number;
   legendYOffset?: number;
+  // The legend as an element rather than just a font size. `legendVisible` and
+  // `legendFrame` are tri-state on the backend: absent leaves whatever the plot
+  // itself chose.
+  // Moved out of every page's options row, where "Toggle Header" appeared at 20
+  // call sites under three different labels for one setting.
+  titleVisible?: boolean;
+  legendVisible?: boolean;
+  legendTitle?: string;
+  legendTextColor?: string;
+  legendFrame?: boolean;
+  xTickLabelColor?: string;
+  yTickLabelColor?: string;
   referenceLineColor?: string;
+  referenceLineVisible?: boolean;
+  referenceLineStyle?: string;
+  referenceLineWidth?: number;
+  rowLabelSize?: number;
+  rowLabelColor?: string;
+  // The face every text in the figure is drawn in, and the five elements that
+  // may disagree with it. An element left empty follows `fontFamily`; every
+  // name here has to be a key of PLOT_FONTS in backend/app/services/plot_images.py.
+  fontFamily?: string;
+  titleFontFamily?: string;
+  axisLabelFontFamily?: string;
+  tickFontFamily?: string;
+  legendFontFamily?: string;
+  valueLabelFontFamily?: string;
   boxBorderColor?: string;
   boxMedianColor?: string;
   boxOutlierColor?: string;
   boxOutlierEdgeColor?: string;
   boxOutlierSize?: number;
+  // Data points drawn over a box, which are a different class of dot from the
+  // outlier fliers beside them and so get their own controls.
+  boxPointSize?: number;
+  boxPointAlpha?: number;
+  boxPointEdgeColor?: string;
+  boxPointEdgeWidth?: number;
+  // The single-class plots: PCA, correlation, Q-Q, abundance, coverage
+  // overlays, RT. Sizes are diameters in points, so one number means the same
+  // dot whichever renderer draws it.
+  markerSize?: number;
+  markerAlpha?: number;
+  markerEdgeColor?: string;
+  markerEdgeWidth?: number;
+  markerShape?: string;
+  // Per-condition overrides. What is drawn is `this condition's value ?? the
+  // general one ?? the plot's own default`, and choosing a general value clears
+  // the map beside it, so every group snaps to it and can be pulled off again
+  // one at a time.
+  conditionMarkerSizes?: Record<string, number>;
+  conditionMarkerShapes?: Record<string, string>;
+  conditionMarkerAlphas?: Record<string, number>;
+  conditionMarkerEdgeWidths?: Record<string, number>;
+  conditionMarkerEdgeColors?: Record<string, string>;
+  // The volcano has three classes of point in one figure and they are read
+  // differently, so each is sized and faded on its own.
+  volcanoUpSize?: number;
+  volcanoUpAlpha?: number;
+  volcanoUpColor?: string;
+  volcanoDownSize?: number;
+  volcanoDownAlpha?: number;
+  volcanoDownColor?: string;
+  volcanoNsSize?: number;
+  volcanoNsAlpha?: number;
+  volcanoNsColor?: string;
+  volcanoHighlightSize?: number;
+  volcanoHighlightColor?: string;
+  volcanoLabelSize?: number;
+  // Colours that used to be pickers in a plot's own options row.
+  barColor?: string;
+  classIColor?: string;
+  classNotIColor?: string;
+  vennColor1?: string;
+  vennColor2?: string;
+  vennColor3?: string;
+  markerColor?: string;
+  // The value labels drawn on bars and boxes. Was a per-page "Text Size",
+  // clamped 6-20, 6-24 and 6-unbounded on the three pages that had it.
+  valueLabelSize?: number;
   correlationColorMap?: string;
   backgroundColor?: string;
   transparentBackground?: boolean;
@@ -180,6 +255,7 @@ export type AnnotationImputationInfo = {
   seed: number | null;
   sampleWise: boolean | null;
   sampleCount: number | null;
+  rowCount: number | null;
   missingBefore: number | null;
   missingAfter: number | null;
 };
@@ -264,7 +340,68 @@ export type PeptideCoverageResponse = {
   warnings: string[];
 };
 
-export type DataSource = "filtered" | "log2" | "raw" | "imputed";
+export type ResolvedSource = "data" | "filtered" | "log2" | "raw" | "imputed";
+// What a panel may ask for. One name, one meaning, matching the backend.
+export type DataSource = "data" | "filtered" | "imputed";
+
+// What a selector offers and opens on. The backend decides both, so two pages
+// cannot disagree about which matrices exist or which one is the default.
+export interface DataSourceChoices {
+  availableDataSources: DataSource[];
+  defaultDataSource: DataSource;
+}
+
+export const NORMALIZATION_LABELS: Record<NormalizationMethod, string> = {
+  none: "None",
+  median: "Median centering",
+  quantile: "Quantile normalization",
+  vsn: "VSN",
+};
+
+export const DATA_SOURCE_LABELS: Record<DataSource, string> = {
+  data: "Data",
+  filtered: "Filtered Data",
+  imputed: "Imputed Data",
+};
+
+// Options for a <SelectField>, in ladder order, limited to what exists.
+export function dataSourceOptions(
+  choices: Partial<DataSourceChoices> | null | undefined,
+  selected?: DataSource
+): { value: DataSource; label: string }[] {
+  const available = choices?.availableDataSources?.length
+    ? choices.availableDataSources
+    : (["data"] as DataSource[]);
+  const options = available.map((value) => ({ value, label: DATA_SOURCE_LABELS[value] }));
+  if (selected && !available.includes(selected)) {
+    options.push({ value: selected, label: `${DATA_SOURCE_LABELS[selected]} (unavailable)` });
+  }
+  return options;
+}
+
+// A restored choice, or null when there is none.
+//
+// The distinction is the whole point. Resolving a persisted value against no
+// choices at all answers "data" when nothing was saved, and "data" is always available -- so
+// the resolver that runs once the options arrive keeps it, and the served
+// default becomes unreachable. Every selector opened on Data on projects whose
+// backend was reporting `defaultDataSource: "imputed"` for exactly that reason.
+export function savedDataSource(persisted: unknown): DataSource | null {
+  const saved = String(persisted ?? "").trim();
+  return saved in DATA_SOURCE_LABELS ? (saved as DataSource) : null;
+}
+
+// The most processed matrix that exists, unless a saved choice is still valid:
+// restoring a panel must not quietly upgrade a deliberate selection.
+export function resolveDataSource(
+  persisted: unknown,
+  choices: Partial<DataSourceChoices> | null | undefined
+): DataSource {
+  const available = choices?.availableDataSources ?? [];
+  const saved = String(persisted ?? "").trim() as DataSource;
+  if (available.includes(saved)) return saved;
+  return choices?.defaultDataSource ?? "data";
+}
 
 export type ImputationRunRequest = {
   kind: AnnotationKind;
@@ -280,7 +417,7 @@ export type ImputationRunRequest = {
 export type ImputationResultResponse = {
   kind: AnnotationKind;
   method: "quantile" | "numerical";
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   rows: number;
   columns: number;
   sampleColumns: string[];
@@ -338,7 +475,7 @@ export type DistributionStats = {
 
 export type DistributionSummaryResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   sampleColumns: string[];
   stats: DistributionStats;
   rowsWithMissing: number;
@@ -412,7 +549,7 @@ export type ConditionCvPoint = {
 
 export type QcSummaryResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   sampleColumns: string[];
   coverage: SampleMetricPoint[];
   intensityHistogram: HistogramBin[];
@@ -431,6 +568,11 @@ export type QcPcaFeatureSummary = {
   featuresComplete: number;
   featuresUsed: number;
   featuresRequired: number;
+  /** Groups whose points do not span the plane, so no ellipse was drawn for
+   * them. The figure never says so itself -- a plot taken out of the tool
+   * should carry no caption about how the tool drew it -- so this notice is
+   * the only place the omission is stated. */
+  ellipseSkippedGroups: string[];
 };
 
 export type QcPlotOptionsResponse = {
@@ -439,6 +581,12 @@ export type QcPlotOptionsResponse = {
   samples?: string[];
   sampleLabels?: Record<string, string>;
   sampleLabelsWithId?: Record<string, string>;
+  availableDataSources: DataSource[];
+  defaultDataSource: DataSource;
+  /** True only for a phosphoprotein dataset collapsed with `robust_site_median`,
+   * whose stored values are ratios to each site's own median rather than
+   * abundances. */
+  centredPhosprotValues: boolean;
 };
 
 export type PeptideMetadataGenerateRequest = {
@@ -461,6 +609,14 @@ export type StatsTestType =
 export type SimulationTestType = "unpaired" | "unpaired_welch";
 export type AnovaSource = "anova" | "anova_cluster";
 export type AnovaPostHoc = "none" | "tukey";
+// Mirrors AnovaClusterMethod in backend/app/schemas/stats.py; the union and the
+// selector options are held to it by tests/repository/test_frontend_backend_enums.py.
+export type AnovaClusterMethod =
+  | "average"
+  | "ward"
+  | "complete"
+  | "weighted"
+  | "single";
 export type StatsTab =
   | "volcano"
   | "anova"
@@ -476,18 +632,20 @@ export type PeptideTab =
 
 export type StatisticalOptionsResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   imputedAvailable: boolean;
   availableConditions: string[];
   samplesByCondition: Record<string, string[]>;
   pairIdsBySample: Record<string, string>;
   availableIdentifiers: { key: StatsIdentifier; label: string }[];
   warnings: string[];
+  availableDataSources: DataSource[];
+  defaultDataSource: DataSource;
 };
 
 export type VolcanoRequest = {
   kind: AnnotationKind;
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   condition1: string;
   condition2: string;
   identifier: StatsIdentifier;
@@ -505,7 +663,7 @@ export type VolcanoControlRequest = VolcanoRequest & {
 
 export type VolcanoResultResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   labelColumn: string;
   totalRows: number;
   upregulatedCount: number;
@@ -515,10 +673,20 @@ export type VolcanoResultResponse = {
   warnings: string[];
 };
 
+/** Which Gene Ontology database the query is matched against. One entry today;
+ * a second organism is a member here and a table on the backend, not a new code
+ * path. The backend refuses a key it has no database for rather than falling
+ * back to human. */
+export type EnrichmentOrganism = "human";
+
+export const ENRICHMENT_ORGANISM_OPTIONS: { value: EnrichmentOrganism; label: string }[] = [
+  { value: "human", label: "Human (Homo sapiens)" },
+];
+
 export type EnrichmentRequest = {
   kind: AnnotationKind;
   source: "volcano" | "volcano_control" | "anova";
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   condition1: string;
   condition2: string;
   condition1Control?: string | null;
@@ -529,11 +697,13 @@ export type EnrichmentRequest = {
   useUncorrected: boolean;
   selectedCluster?: number | null;
   nClusters: number;
+  clusterMethod: AnovaClusterMethod;
   adjPValueCutoff: number;
   topN: number;
   minTermSize: number;
   maxTermSize: number;
   backgroundMode: "experiment" | "global";
+  organism: EnrichmentOrganism;
 };
 
 export type EnrichmentTerm = {
@@ -550,7 +720,7 @@ export type EnrichmentTerm = {
 
 export type EnrichmentResultResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   selectedCluster: number | null;
   clusterGenes: string[];
   clusterTerms: EnrichmentTerm[];
@@ -579,6 +749,7 @@ export type ListEnrichmentRequest = {
   minTermSize: number;
   maxTermSize: number;
   adjPValueCutoff: number;
+  organism: EnrichmentOrganism;
 };
 
 export type ListEnrichmentResultResponse = {
@@ -604,7 +775,7 @@ export type PathwayOptionsResponse = {
 export type SimulationRequest = {
   kind: AnnotationKind;
   source: "volcano";
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   condition1: string;
   condition2: string;
   identifier: StatsIdentifier;
@@ -618,7 +789,7 @@ export type SimulationRequest = {
 
 export type SimulationResultResponse = {
   kind: AnnotationKind;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   testType: SimulationTestType;
   condition1: string;
   condition2: string;
@@ -640,7 +811,7 @@ export type SimulationResultResponse = {
 export type AnalysisSource = "volcano" | "volcano_control";
 
 export type AnalysisVolcanoRequest = {
-  dataSource?: VisualizationDataSource;
+  dataSource?: DataSource;
   kind: AnnotationKind;
   source: AnalysisSource;
   condition1: string;
@@ -687,9 +858,9 @@ export type SingleProteinOptionsResponse = {
   conditionCount: number;
   identifier: SingleProteinIdentifier;
   availableIdentifiers: { key: SingleProteinIdentifier; label: string }[];
-  dataSource: VisualizationDataSource;
-  filteredAvailable: boolean;
-  imputedAvailable: boolean;
+  dataSource: DataSource;
+  availableDataSources: DataSource[];
+  defaultDataSource: DataSource;
 };
 
 export type SingleProteinIdentifier = "workflow" | "genes";
@@ -697,7 +868,6 @@ export type SingleProteinIdentifier = "workflow" | "genes";
 // filtered, log2, raw; "log2" is the complete matrix before filtering. "data"
 // is the historical spelling, still accepted by the API, where it resolves to
 // each path's own default -- send a canonical value instead.
-export type VisualizationDataSource = "data" | "auto" | "log2" | "filtered" | "imputed";
 
 export type SingleProteinTableResponse = {
   rows: Record<string, unknown>[];
@@ -709,6 +879,8 @@ export type PhosphoOptionsResponse = {
   pairIdsBySample: Record<string, string>;
   features: string[];
   imputedAvailable: boolean;
+  availableDataSources: DataSource[];
+  defaultDataSource: DataSource;
 };
 
 export type PhosphoTableResponse = {
@@ -722,7 +894,7 @@ export type ComparisonOptionsResponse = {
   conditions: string[];
   sampleCount: number;
   conditionCount: number;
-  dataSource: VisualizationDataSource;
+  dataSource: DataSource;
   filteredAvailable: boolean;
   imputedAvailable: boolean;
 };
@@ -820,10 +992,23 @@ export type ConditionPaletteResponse = {
   palette: Record<string, string>;
 };
 
+// Which renderer draws a volcano. The same two words the QC plots use, so one
+// vocabulary covers every plot that has both.
+export type VolcanoRenderType = "Normal" | "Interactive";
+
+export const VOLCANO_RENDER_TYPE_OPTIONS: { value: VolcanoRenderType; label: string }[] = [
+  { value: "Interactive", label: "Interactive" },
+  { value: "Normal", label: "Normal" },
+];
+
+export function restoreVolcanoRenderType(value: unknown): VolcanoRenderType {
+  return String(value ?? "").trim() === "Normal" ? "Normal" : "Interactive";
+}
+
 export type SummaryVolcanoEntry = {
   kind: AnnotationKind;
   control: boolean;
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   condition1: string;
   condition2: string;
   condition1Control?: string | null;
@@ -834,6 +1019,11 @@ export type SummaryVolcanoEntry = {
   testType: StatsTestType;
   useUncorrected: boolean;
   highlightTerms: string[];
+  // Captured when the entry is added, so the report renders each comparison the
+  // way it was being looked at.
+  renderType?: VolcanoRenderType;
+  labelTopUp?: number;
+  labelTopDown?: number;
 };
 
 export type SummaryReportContext = {
@@ -944,29 +1134,40 @@ export type ModelCapabilityResponse = {
 export type AnovaRequest = {
   kind: AnnotationKind;
   source: AnovaSource;
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   identifier: StatsIdentifier;
   pValueThreshold: number;
   useUncorrected: boolean;
   showDendrograms: boolean;
   showLegend: boolean;
   nClusters: number;
+  clusterMethod: AnovaClusterMethod;
   postHoc: AnovaPostHoc;
+  // Which pair the post-hoc reports. Tukey's q still uses every condition -- k
+  // and the pooled MSE come from the whole design -- so restricting the
+  // comparison changes what comes back, never what a returned number means.
+  // Both absent means every pair.
+  postHocCondition1?: string;
+  postHocCondition2?: string;
 };
 
 export type AnovaResultResponse = {
   kind: AnnotationKind;
   source: AnovaSource;
-  sourceUsed: DataSource;
+  sourceUsed: ResolvedSource;
   labelColumn: string;
   totalRows: number;
   significantCount: number;
   clusterCount: number | null;
+  completenessNotice: string | null;
   rows: Record<string, unknown>[];
   clusterRows: Record<string, unknown>[];
   postHocMethod: string | null;
   postHocRows: Record<string, unknown>[];
   postHocSignificantCount: number;
+  // The pair actually compared, echoed so the table can say so; null when every
+  // pair was computed.
+  postHocComparison: string | null;
   warnings: string[];
 };
 

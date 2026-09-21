@@ -181,7 +181,7 @@ def test_configured_but_unmaterialized_imputation_is_rejected(
     )
 
     with pytest.raises(ValueError, match="Run imputation successfully first"):
-        functions.analysis_data_source("protein", data_source="imputed")
+        functions.select_matrix("protein", data_source="imputed")
 
 
 def test_imputed_request_uses_exact_stored_matrix_without_recomputing(
@@ -214,12 +214,9 @@ def test_imputed_request_uses_exact_stored_matrix_without_recomputing(
         lambda **kwargs: pytest.fail("stored imputation must not be recomputed"),
     )
 
-    source, frame, _, warnings = functions.analysis_data_source(
-        "protein", data_source="imputed"
-    )
+    source, frame, _ = functions.select_matrix("protein", "imputed")
     assert source == "imputed"
     pd.testing.assert_frame_equal(frame, stored_imputed)
-    assert warnings == []
 
 
 def test_single_protein_gene_mode_uses_one_median_per_sample_and_reports_counts(

@@ -4,15 +4,24 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.annotation import AnnotationKind
+from app.schemas.annotation import AnnotationKind, DataSource, ResolvedSource
 
-StatsSource = Literal["filtered", "log2", "raw", "imputed"]
-# Same vocabulary as VisualizationDataSource; see the note there on "data".
-VolcanoDataSource = Literal["data", "auto", "log2", "filtered", "imputed"]
+# Same vocabulary as DataSource; see the note there on "data".
 AnovaSource = Literal["anova", "anova_cluster"]
 # Post-hoc pairwise test run after a significant omnibus F. Gated on the ANOVA
 # threshold, as Perseus and classical practice do it.
 AnovaPostHoc = Literal["none", "tukey"]
+# Hierarchical linkage for ANOVA row clustering. Restricted to the methods that
+# scipy accepts with a euclidean metric, which is what the clustering uses:
+# ward, centroid and median are rejected outright with any other metric, and the
+# metric is not exposed, so every value here is always valid.
+#
+# "average" is the default because it is what the clustering has always used and
+# every previously generated cluster figure reproduces under it. It is prone to
+# chaining, though: on the bundled HEK293 protein data, k=4 returns clusters of
+# 1680, 1196, 3 and 2 features, so two of the four are unusable. "ward" returns
+# 1201, 741, 531 and 408 on the same data.
+AnovaClusterMethod = Literal["average", "ward", "complete", "weighted", "single"]
 # Design and variance model in one field, for backwards compatibility: "unpaired"
 # and "paired" keep their original meaning (pooled Student's t), so stored
 # requests and saved reports resolve to exactly the test they always did.
@@ -22,10 +31,20 @@ StatsTestType = Literal[
     "paired",
 ]
 StatsIdentifier = Literal["workflow", "genes"]
+# Which renderer draws a volcano. The same two words the QC plots have always
+# used for the same choice, so one vocabulary covers every plot that has both.
+VolcanoRenderType = Literal["Normal", "Interactive"]
 OraDirection = Literal["up", "down", "cluster"]
 HeatmapValueType = Literal["log2", "z"]
 EnrichmentSource = Literal["volcano", "volcano_control", "anova"]
 EnrichmentBackgroundMode = Literal["experiment", "global"]
+
+# Which Gene Ontology database the query is matched against. One entry today --
+# the bundled human GO -- and it is a request parameter rather than a constant
+# so that adding a second organism is a database and a Literal member, not a new
+# code path. An unrecognised value is refused; it must never fall back to human,
+# because the numbers would be real and the species wrong.
+EnrichmentOrganism = Literal["human"]
 SimulationSource = Literal["volcano"]
 SimulationTestType = Literal["unpaired", "unpaired_welch"]
 
@@ -37,8 +56,11 @@ class IdentifierOption(BaseModel):
 
 class StatisticalOptionsResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: StatsSource
+    sourceUsed: ResolvedSource
     imputedAvailable: bool = False
+    # What the selector may offer, and what a fresh panel opens on.
+    availableDataSources: list[DataSource] = Field(default_factory=list)
+    defaultDataSource: DataSource = "data"
     availableConditions: list[str]
     samplesByCondition: dict[str, list[str]] = Field(default_factory=dict)
     pairIdsBySample: dict[str, str] = Field(default_factory=dict)
@@ -48,7 +70,7 @@ class StatisticalOptionsResponse(BaseModel):
 
 class VolcanoRequest(BaseModel):
     kind: AnnotationKind
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     condition1: str
     condition2: str
     identifier: StatsIdentifier = "workflow"
@@ -67,7 +89,7 @@ class VolcanoRequest(BaseModel):
 
 class VolcanoControlRequest(BaseModel):
     kind: AnnotationKind
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     condition1: str
     condition2: str
     # A blank control is a contradiction on this endpoint: the service treats a
@@ -103,7 +125,7 @@ class VolcanoControlRequest(BaseModel):
 
 class VolcanoResultResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: StatsSource
+    sourceUsed: ResolvedSource
     labelColumn: str
     totalRows: int
     upregulatedCount: int
@@ -128,7 +150,7 @@ class EnrichmentTerm(BaseModel):
 class EnrichmentRequest(BaseModel):
     kind: AnnotationKind
     source: EnrichmentSource = "volcano"
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     condition1: str = ""
     condition2: str = ""
     condition1Control: str | None = None
@@ -139,16 +161,21 @@ class EnrichmentRequest(BaseModel):
     useUncorrected: bool = False
     selectedCluster: int | None = Field(default=None, ge=1)
     nClusters: int = Field(default=4, ge=1, le=100)
+    # ORA rebuilds the ANOVA clustering to turn selectedCluster into a gene list,
+    # so it has to cluster the same way the page the user selected from did.
+    # Without this, cluster 2 on screen and cluster 2 in ORA can be different sets.
+    clusterMethod: AnovaClusterMethod = "average"
     adjPValueCutoff: float = Field(default=0.05, gt=0.0, le=1.0)
     topN: int = Field(default=10, ge=1, le=100)
     minTermSize: int = Field(default=20, ge=1)
     maxTermSize: int = Field(default=300, ge=1)
     backgroundMode: EnrichmentBackgroundMode = "experiment"
+    organism: EnrichmentOrganism = "human"
 
 
 class EnrichmentResultResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: StatsSource
+    sourceUsed: ResolvedSource
     selectedCluster: int | None = None
     clusterGenes: list[str] = Field(default_factory=list)
     clusterTerms: list[EnrichmentTerm] = Field(default_factory=list)
@@ -191,29 +218,46 @@ class EnrichmentResultResponse(BaseModel):
 class AnovaRequest(BaseModel):
     kind: AnnotationKind
     source: AnovaSource = "anova"
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     identifier: StatsIdentifier = "workflow"
     pValueThreshold: float = Field(default=0.05, gt=0.0, le=1.0)
     useUncorrected: bool = False
     showDendrograms: bool = True
     showLegend: bool = True
+    # The feature names beside the rows of a cluster heatmap. Off by default:
+    # a whole-dataset heatmap has too many rows to label.
+    showRowLabels: bool = False
     nClusters: int = Field(default=4, ge=1, le=100)
+    clusterMethod: AnovaClusterMethod = "average"
     postHoc: AnovaPostHoc = "none"
+    # Which pair the post-hoc reports. Tukey's q still uses every condition --
+    # k and the pooled MSE come from the whole design -- so restricting the
+    # comparison changes what is returned, never what a returned number means.
+    # Both absent means every pair, which is what the API did before.
+    postHocCondition1: str | None = None
+    postHocCondition2: str | None = None
 
 
 class AnovaResultResponse(BaseModel):
     kind: AnnotationKind
     source: AnovaSource
-    sourceUsed: StatsSource
+    sourceUsed: ResolvedSource
     labelColumn: str
     totalRows: int
     significantCount: int
     clusterCount: int | None = None
+    # Features dropped because they are not observed in every sample. Kept apart
+    # from `warnings` because the interface shows it as a notice directly under
+    # the plot whose contents it changed.
+    completenessNotice: str | None = None
     rows: list[dict[str, Any]]
     clusterRows: list[dict[str, Any]] = Field(default_factory=list)
     postHocMethod: str | None = None
     postHocRows: list[dict[str, Any]] = Field(default_factory=list)
     postHocSignificantCount: int = 0
+    # The pair actually compared, echoed so the table can say so; None when
+    # every pair was computed.
+    postHocComparison: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -225,6 +269,7 @@ class ListEnrichmentRequest(BaseModel):
     minTermSize: int = Field(default=20, ge=1)
     maxTermSize: int = Field(default=300, ge=1)
     adjPValueCutoff: float = Field(default=0.05, gt=0.0, le=1.0)
+    organism: EnrichmentOrganism = "human"
 
 
 class ListEnrichmentResultResponse(BaseModel):
@@ -266,7 +311,7 @@ class PathwayOptionsResponse(BaseModel):
 class SimulationRequest(BaseModel):
     kind: AnnotationKind
     source: SimulationSource = "volcano"
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     condition1: str
     condition2: str
     identifier: StatsIdentifier = "workflow"
@@ -290,7 +335,7 @@ class SimulationRequest(BaseModel):
 
 class SimulationResultResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: StatsSource
+    sourceUsed: ResolvedSource
     testType: SimulationTestType
     condition1: str
     condition2: str

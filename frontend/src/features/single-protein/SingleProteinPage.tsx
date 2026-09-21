@@ -1,4 +1,6 @@
+import PlotImage from "../../components/PlotImage";
 import { AssistantSelect } from "../../components/AssistantFields";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
 import PreviewTable from "../../components/PreviewTable";
@@ -9,6 +11,7 @@ import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable, isAbortEr
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -20,8 +23,12 @@ import type {
   SingleProteinIdentifier,
   SingleProteinOptionsResponse,
   SingleProteinTab,
-  VisualizationDataSource,
+  DataSource,
 } from "../../lib/types";
+import {
+  dataSourceOptions,
+} from "../../lib/types";
+import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 
 type Props = {
   activeTab: SingleProteinTab;
@@ -58,21 +65,19 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   });
   const { availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
   const [options, setOptions] = useState<SingleProteinOptionsResponse | null>(null);
-  const [dataSource, setDataSource] = useState<VisualizationDataSource>(() => {
-    const value = String(persisted.dataSource ?? "log2").trim();
-    // "data" is the historical spelling for this control's default.
-    return value === "filtered" || value === "imputed" || value === "auto" ? value : "log2";
-  });
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [imageError, setImageError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png").trim();
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
 
   const [box, setBox] = useState({
     sampleN: Boolean(persistedBox.sampleN ?? true),
@@ -82,37 +87,37 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     outliers: Boolean(persistedBox.outliers ?? false),
     dots: Boolean(persistedBox.dots ?? false),
     randomSeed: Number(persistedBox.randomSeed ?? 69),
-    header: Boolean(persistedBox.header ?? true),
-    legend: Boolean(persistedBox.legend ?? true),
-    widthCm: Number(persistedBox.widthCm ?? 20),
-    heightCm: Number(persistedBox.heightCm ?? 10),
-    dpi: Number(persistedBox.dpi ?? 300),
+    header: true,
+    legend: true,
+    widthCm: restorePlotDimensionCm(persistedBox.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedBox.heightCm, 10),
+    dpi: restorePlotDpi(persistedBox.dpi, 300),
   });
   const [line, setLine] = useState({
     identifier: (String(persistedLine.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
     proteins: Array.isArray(persistedLine.proteins) ? persistedLine.proteins.map((value) => String(value ?? "")) : ([] as string[]),
     conditions: Array.isArray(persistedLine.conditions) ? persistedLine.conditions.map((value) => String(value ?? "")) : ([] as string[]),
     includeId: Boolean(persistedLine.includeId ?? false),
-    header: Boolean(persistedLine.header ?? true),
-    legend: Boolean(persistedLine.legend ?? true),
-    widthCm: Number(persistedLine.widthCm ?? 20),
-    heightCm: Number(persistedLine.heightCm ?? 10),
-    dpi: Number(persistedLine.dpi ?? 300),
+    header: true,
+    legend: true,
+    widthCm: restorePlotDimensionCm(persistedLine.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedLine.heightCm, 10),
+    dpi: restorePlotDpi(persistedLine.dpi, 300),
   });
   const [heatmap, setHeatmap] = useState({
     identifier: (String(persistedHeatmap.identifier ?? "workflow") === "genes" ? "genes" : "workflow") as SingleProteinIdentifier,
     protein: String(persistedHeatmap.protein ?? ""),
     conditions: Array.isArray(persistedHeatmap.conditions) ? persistedHeatmap.conditions.map((value) => String(value ?? "")) : ([] as string[]),
     includeId: Boolean(persistedHeatmap.includeId ?? false),
-    header: Boolean(persistedHeatmap.header ?? true),
+    header: true,
     filterM1: Boolean(persistedHeatmap.filterM1 ?? true),
     clusterRows: Boolean(persistedHeatmap.clusterRows ?? false),
     clusterCols: Boolean(persistedHeatmap.clusterCols ?? false),
     valueType: String(persistedHeatmap.valueType ?? "log2"),
     cmap: String(persistedHeatmap.cmap ?? "plasma"),
-    widthCm: Number(persistedHeatmap.widthCm ?? 20),
-    heightCm: Number(persistedHeatmap.heightCm ?? 12),
-    dpi: Number(persistedHeatmap.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedHeatmap.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedHeatmap.heightCm, 12),
+    dpi: restorePlotDpi(persistedHeatmap.dpi, 300),
   });
 
   useEffect(() => {
@@ -159,9 +164,12 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     getSingleProteinOptions(effectiveKind, activeTab, activeIdentifier, dataSource, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        if (data.dataSource !== dataSource) {
-          setDataSource(data.dataSource);
-        }
+        // Unconditionally. This used to be gated on the response echoing back a
+        // different source than the one requested -- but the request carries the
+        // panel's current source, so the echo always matched and the ladder was
+        // never applied. After the first apply the hook keeps a valid choice, so
+        // running this every time changes nothing else.
+        applyDataSourceChoices(data);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -176,7 +184,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     return () => {
       controller.abort();
     };
-  }, [activeTab, effectiveKind, hasRequiredDataset, activeIdentifier, dataSource]);
+  }, [activeTab, effectiveKind, hasRequiredDataset, activeIdentifier, dataSource, applyDataSourceChoices]);
 
   useEffect(() => {
     if (!options) return;
@@ -487,22 +495,6 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     [tableRows]
   );
 
-  async function handleImageError(url: string) {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const parsed = JSON.parse(text) as { detail?: string };
-          if (parsed?.detail) {
-            setImageError(parsed.detail);
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setImageError("Failed to load plot image. Check backend logs for details.");
-  }
 
   return (
     <div className="space-y-6">
@@ -541,13 +533,15 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             <span className="mb-2 block font-medium text-slate-700">Data source</span>
             <AssistantSelect
               value={dataSource}
-              onChange={(event) => setDataSource(event.target.value as VisualizationDataSource)}
+              onChange={(event) => chooseDataSource(event.target.value as DataSource)}
               disabled={!hasRequiredDataset || optionsLoading}
               className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
-              <option value="log2">Log2 data</option>
-              {options?.filteredAvailable ? <option value="filtered">Filtered data</option> : null}
-              {options?.imputedAvailable ? <option value="imputed">Imputed data</option> : null}
+              {dataSourceOptions(options, dataSource).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </AssistantSelect>
           </label>
         </div>
@@ -585,14 +579,6 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
 
       {hasRequiredDataset ? advancedPlotOptions : null}
 
-      {hasRequiredDataset && !tableLoading && tableWarnings.length > 0 ? (
-        <section className="rounded-2xl border border-amber-200 bg-amber-50 px-6 py-4 text-sm text-amber-900">
-          {tableWarnings.map((warning) => (
-            <p key={warning}>{warning}</p>
-          ))}
-        </section>
-      ) : null}
-
       {hasRequiredDataset ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -623,16 +609,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
 
         {plotView ? (
           <div className="mt-4">
-            <img
-              key={plotView.url}
-              src={plotView.url}
-              alt={plotView.title}
-              className="w-full rounded-xl border border-slate-200"
-              onLoad={() => setImageError(null)}
-              onError={() => {
-                handleImageError(plotView.url);
-              }}
-            />
+            <PlotImage url={plotView.url} alt={plotView.title} />
           </div>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -640,11 +617,14 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           </div>
         )}
 
-        {imageError ? (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {imageError}
+        {!tableLoading && tableWarnings.length > 0 ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            {tableWarnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
           </div>
         ) : null}
+
       </section>
       ) : null}
 
@@ -729,8 +709,6 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               : []),
           ]}
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={box.header} onChange={(value) => setBox({ ...box, header: value })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={box.legend} onChange={(value) => setBox({ ...box, legend: value })} />,
             <Checkbox key="dots" label="Toggle Dots" checked={box.dots} onChange={(value) => setBox({ ...box, dots: value })} />,
             <Checkbox key="sampleN" label="Toggle Sample n" checked={box.sampleN} onChange={(value) => setBox({ ...box, sampleN: value })} />,
             <Checkbox key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(value) => setBox({ ...box, outliers: value })} />,
@@ -740,9 +718,9 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               widthCm={box.widthCm}
               heightCm={box.heightCm}
               dpi={box.dpi}
-              onWidthChange={(value) => setBox({ ...box, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setBox({ ...box, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setBox({ ...box, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setBox({ ...box, widthCm: value })}
+              onHeightChange={(value) => setBox({ ...box, heightCm: value })}
+              onDpiChange={(value) => setBox({ ...box, dpi: value })}
             />
           }
         />
@@ -780,17 +758,15 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           ]}
           toggles={[
             <Checkbox key="id" label="Toggle ID" checked={line.includeId} onChange={(value) => setLine({ ...line, includeId: value })} />,
-            <Checkbox key="header" label="Toggle Header" checked={line.header} onChange={(value) => setLine({ ...line, header: value })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={line.legend} onChange={(value) => setLine({ ...line, legend: value })} />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={line.widthCm}
               heightCm={line.heightCm}
               dpi={line.dpi}
-              onWidthChange={(value) => setLine({ ...line, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setLine({ ...line, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setLine({ ...line, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setLine({ ...line, widthCm: value })}
+              onHeightChange={(value) => setLine({ ...line, heightCm: value })}
+              onDpiChange={(value) => setLine({ ...line, dpi: value })}
             />
           }
         />
@@ -841,7 +817,6 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         ]}
         toggles={[
           <Checkbox key="id" label="Toggle ID" checked={heatmap.includeId} onChange={(value) => setHeatmap({ ...heatmap, includeId: value })} />,
-          <Checkbox key="header" label="Toggle Header" checked={heatmap.header} onChange={(value) => setHeatmap({ ...heatmap, header: value })} />,
           <Checkbox key="filter" label="Filter *_M1" checked={heatmap.filterM1} onChange={(value) => setHeatmap({ ...heatmap, filterM1: value })} />,
           <Checkbox key="rows" label="Cluster Rows" checked={heatmap.clusterRows} onChange={(value) => setHeatmap({ ...heatmap, clusterRows: value })} />,
           <Checkbox key="cols" label="Cluster Columns" checked={heatmap.clusterCols} onChange={(value) => setHeatmap({ ...heatmap, clusterCols: value })} />,
@@ -851,9 +826,9 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             widthCm={heatmap.widthCm}
             heightCm={heatmap.heightCm}
             dpi={heatmap.dpi}
-            onWidthChange={(value) => setHeatmap({ ...heatmap, widthCm: Math.max(1, value) })}
-            onHeightChange={(value) => setHeatmap({ ...heatmap, heightCm: Math.max(1, value) })}
-            onDpiChange={(value) => setHeatmap({ ...heatmap, dpi: Math.max(72, Math.round(value)) })}
+            onWidthChange={(value) => setHeatmap({ ...heatmap, widthCm: value })}
+            onHeightChange={(value) => setHeatmap({ ...heatmap, heightCm: value })}
+            onDpiChange={(value) => setHeatmap({ ...heatmap, dpi: value })}
           />
         }
       />

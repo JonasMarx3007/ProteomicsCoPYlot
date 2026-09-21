@@ -2,11 +2,14 @@ import type {
   AnnotationKind,
   AdvancedPlotSettings,
   CurrentDatasetsResponse,
+  DataSource,
   SummaryReportContext,
   SummaryVolcanoEntry,
 } from "./types";
+import { DATA_SOURCE_LABELS, restoreVolcanoRenderType } from "./types";
 import { getAdvancedPlotMode, getAdvancedPlotSettingsByKey } from "./appSettings";
 import { readPersistedUiState } from "./persistedUiState";
+import { IS_VIEWER_MODE } from "./appMode";
 
 const QC_SETTINGS_KEY = "pcopylot.report.qcSettings.v1";
 const VOLCANO_LOG_KEY = "pcopylot.report.volcanoLog.v1";
@@ -114,24 +117,43 @@ export function listVolcanoReportEntries(): SummaryVolcanoEntry[] {
 
 function readAdvancedUiState(key: string): Record<string, AdvancedPlotSettings> {
   const state = readPersistedUiState<Record<string, unknown>>(key, {});
-  const advanced = state.advanced;
+  // `advancedV2` since the panel stopped storing its displayed defaults; the
+  // QC and Completeness pages write nothing under the old name any more.
+  const advanced = state.advancedV2;
   return advanced && typeof advanced === "object" && !Array.isArray(advanced)
     ? (advanced as Record<string, AdvancedPlotSettings>)
     : {};
 }
 
-function normalizeDataSource(value: unknown): "data" | "imputed" {
-  if (String(value ?? "").trim().toLowerCase() === "data") return "data";
-  return "imputed";
+function normalizeDataSource(value: unknown): DataSource {
+  // Anything-but-"data" used to mean "imputed" here, from when those were the
+  // only two matrices. A volcano built on the filtered matrix was therefore
+  // logged as imputed, and the report then described a matrix the figure had
+  // not used. An unrecognised value falls back to the least processed one
+  // rather than inventing the most processed one.
+  const text = String(value ?? "").trim().toLowerCase();
+  return text in DATA_SOURCE_LABELS ? (text as DataSource) : "data";
+}
+
+function normalizeLabelCount(value: unknown): number {
+  const count = Number(value ?? 0);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
 function normalizeEntry(entry: SummaryVolcanoEntry): SummaryVolcanoEntry {
+  const renderType = restoreVolcanoRenderType(entry.renderType);
   return {
     ...entry,
     dataSource: normalizeDataSource(entry.dataSource),
     highlightTerms: [...entry.highlightTerms].map((item) => item.trim()).filter(Boolean),
     condition1Control: entry.condition1Control ?? null,
     condition2Control: entry.condition2Control ?? null,
+    renderType,
+    // The label counts only reach the static renderer, so an interactive entry
+    // stores zeros and two entries that differ only in a setting neither of
+    // them uses stay one entry.
+    labelTopUp: renderType === "Normal" ? normalizeLabelCount(entry.labelTopUp) : 0,
+    labelTopDown: renderType === "Normal" ? normalizeLabelCount(entry.labelTopDown) : 0,
   };
 }
 
@@ -150,6 +172,9 @@ function isSameVolcanoEntry(a: SummaryVolcanoEntry, b: SummaryVolcanoEntry): boo
   if (left.useUncorrected !== right.useUncorrected) return false;
   if (left.pValueThreshold !== right.pValueThreshold) return false;
   if (left.log2fcThreshold !== right.log2fcThreshold) return false;
+  if (left.renderType !== right.renderType) return false;
+  if (left.labelTopUp !== right.labelTopUp) return false;
+  if (left.labelTopDown !== right.labelTopDown) return false;
   if (left.highlightTerms.length !== right.highlightTerms.length) return false;
   return left.highlightTerms.every((item, index) => item === right.highlightTerms[index]);
 }
@@ -185,7 +210,13 @@ export function getSummaryReportContext(): SummaryReportContext {
     completenessSettings: readPersistedUiState<{ missingPlot?: Record<string, unknown> }>("completeness.v1", {}).missingPlot ?? {},
     advancedPlotMode: getAdvancedPlotMode(),
     advancedPlotSettingsByKey: getAdvancedPlotSettingsByKey(),
-    qcAdvancedSettingsByTab: readAdvancedUiState("qc.pipeline.v1"),
+    // In viewer mode the QC page writes its advanced settings to their own
+    // session key instead of into the persisted page state, so reading only
+    // "qc.pipeline.v1" produced a report whose QC plots carried none of the
+    // styling -- renamed conditions included -- that the viewer was looking at.
+    qcAdvancedSettingsByTab: IS_VIEWER_MODE
+      ? readPersistedUiState<Record<string, AdvancedPlotSettings>>("qc.advanced.v2", {})
+      : readAdvancedUiState("qc.pipeline.v1"),
     completenessAdvancedSettingsByTab: readAdvancedUiState("completeness.v1"),
   };
 }

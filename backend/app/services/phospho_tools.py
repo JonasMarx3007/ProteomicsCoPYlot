@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.html_security import GENERATED_HTML_META
+from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     cm_to_inch as _cm_to_inch,
@@ -8,20 +9,30 @@ from app.services.plot_export import (
 )
 
 import re
-from typing import Literal
 
 import numpy as np
 import pandas as pd
 
 from app.services.annotation_store import get_annotation
+from app.schemas.annotation import DataSource
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
+    DATA_SOURCES,
     comparison_contrast,
-    analysis_data_source,
+    data_source_options,
+    select_matrix,
     extract_sample_id as _extract_id_or_number,
     imputed_data_available,
 )
-from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
+from app.services.plot_images import (
+    _advanced_label,
+    _advanced_plotly_layout,
+    _apply_advanced_axes,
+    advanced_color,
+    marker_style,
+    plotly_marker,
+    resolve_reference_line,
+)
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -55,6 +66,7 @@ def _get_plotly_go():
 
 
 def _plotly_html(fig) -> str:
+    fig = force_svg_rendering(fig)
     bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
     body = fig.to_html(
         full_html=False,
@@ -124,9 +136,9 @@ def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
 
 def _ksea_context(
     *,
-    data_source: Literal["data", "imputed"] = "data",
+    data_source: DataSource = "data",
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    _, frame, meta, _ = analysis_data_source("phospho", data_source=data_source)
+    _, frame, meta = select_matrix("phospho", data_source)
     sample_columns = [
         sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
     ]
@@ -142,7 +154,7 @@ def _phospho_regulation_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]
     """Use the processed analysis matrix, retaining the legacy raw fallback."""
     annotation = get_annotation("phospho")
     if annotation is not None and not annotation.metadata.empty:
-        _, frame, meta, _ = analysis_data_source("phospho", data_source="data")
+        _, frame, meta = select_matrix("phospho", "data")
         sample_columns = [
             sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
         ]
@@ -204,6 +216,7 @@ def phospho_options() -> dict[str, object]:
             "PTM_Collapse_key" if has_ptm_key else "",
         ],
         "imputedAvailable": imputed_available,
+        **data_source_options("phospho"),
     }
 
 
@@ -254,7 +267,7 @@ def phosphosite_plot_png(
         ax.axis("off")
         return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
-    ax.barh(summary["Term"], summary["Count"], color=color)
+    ax.barh(summary["Term"], summary["Count"], color=advanced_color(advanced, "barColor", color))
     max_count = max(summary["Count"].max(), 1)
     for index, value in enumerate(summary["Count"]):
         ax.text(float(value) + max_count * 0.01, index, str(int(value)), va="center", fontweight="bold")
@@ -363,7 +376,14 @@ def phospho_coverage_png(
         rng = np.random.default_rng(random_seed)
         conds = summary["Condition"].astype(str).tolist()
         x = np.arange(len(conds))
-        categories = [("Class I", "classI", color_class_i), ("Not Class I", "notClassI", color_not_class_i)]
+        categories = [
+            ("Class I", "classI", advanced_color(advanced, "classIColor", color_class_i)),
+            (
+                "Not Class I",
+                "notClassI",
+                advanced_color(advanced, "classNotIColor", color_not_class_i),
+            ),
+        ]
         if counts["Unclassified"].any():
             categories.append(("Unclassified", "unclassified", "#94a3b8"))
         width = .7 / len(categories)
@@ -376,7 +396,11 @@ def phospho_coverage_png(
                 ax.scatter(rng.normal(idx + offset, .04, values.size), values,
                            color="black", alpha=.6, s=8)
         ax.set_xticks(x)
-        ax.set_xticklabels(conds, rotation=45, ha="right")
+        ax.set_xticklabels(
+            [_advanced_label(str(condition), advanced, "conditionLabels") for condition in conds],
+            rotation=45,
+            ha="right",
+        )
         if header:
             ax.set_title("Phosphosites per condition")
         ax.set_ylabel("Number of phosphosites")
@@ -384,8 +408,19 @@ def phospho_coverage_png(
         x = np.arange(len(counts))
         class_vals = counts["Class I"].to_numpy(dtype=float)
         not_vals = counts["Not Class I"].to_numpy(dtype=float)
-        ax.bar(x, class_vals, color=color_class_i, label="Class I")
-        ax.bar(x, not_vals, bottom=class_vals, color=color_not_class_i, label="Not Class I")
+        ax.bar(
+            x,
+            class_vals,
+            color=advanced_color(advanced, "classIColor", color_class_i),
+            label="Class I",
+        )
+        ax.bar(
+            x,
+            not_vals,
+            bottom=class_vals,
+            color=advanced_color(advanced, "classNotIColor", color_not_class_i),
+            label="Not Class I",
+        )
         if counts["Unclassified"].any():
             ax.bar(x, counts["Unclassified"], bottom=class_vals + not_vals,
                    color="#94a3b8", label="Unclassified")
@@ -448,7 +483,11 @@ def phospho_distribution_png(
         ax.axis("off")
         return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
-    ax.bar(table["SiteCount"].to_numpy(), table["Frequency"].to_numpy(), color=color)
+    ax.bar(
+        table["SiteCount"].to_numpy(),
+        table["Frequency"].to_numpy(),
+        color=advanced_color(advanced, "barColor", color),
+    )
     max_site = int(table["SiteCount"].max())
     xticks = np.arange(0, max_site + 1, 10 if max_site >= 10 else 1)
     ax.set_xticks(xticks)
@@ -499,7 +538,9 @@ def phospho_sty_png(
     ax.bar(table["Residue"], table["Count"], color=bar_colors, edgecolor="black", linewidth=0.6)
 
     if header:
-        ax.set_title("Modified S/T/Y peptide counts", pad=10, fontweight="bold")
+        # One bar counts rows of the phosphosite matrix -- site identifiers, not
+        # peptides. A peptide carrying two sites is two rows here.
+        ax.set_title("Modified S/T/Y site counts", pad=10, fontweight="bold")
     ax.set_xlabel("Residue")
     ax.set_ylabel("Count")
     ax.spines["top"].set_visible(False)
@@ -655,8 +696,8 @@ def ksea_table(
     if source_mode not in {"volcano", "volcano_control"}:
         raise ValueError("Unsupported KSEA source. Choose 'volcano' or 'volcano_control'.")
     data_mode = str(data_source).strip().lower()
-    if data_mode not in {"data", "imputed"}:
-        raise ValueError("Unsupported KSEA data source. Choose 'data' or 'imputed'.")
+    if data_mode not in DATA_SOURCES:
+        raise ValueError("Unsupported KSEA data source. Choose 'data', 'filtered', or 'imputed'.")
 
     if source_mode == "volcano_control":
         if not condition1_control or not condition2_control:
@@ -737,26 +778,39 @@ def ksea_plot_png(
         ax.scatter(
             subset["log2FC"].to_numpy(dtype=float),
             subset["neg_log10_adj_pval"].to_numpy(dtype=float),
-            s=12,
-            c=color,
             label=significance,
-            alpha=0.85,
-            edgecolors="none",
+            **marker_style(advanced, size=3.5, alpha=0.85, color=color),
         )
 
     y_line = float(-np.log10(max(p_value_threshold, 1e-300)))
     max_y = max(y_line, float(table["neg_log10_adj_pval"].max()) if not table.empty else y_line)
-    ax.axvline(float(log2fc_threshold), color="black", linestyle="--", linewidth=1)
-    ax.axvline(float(-log2fc_threshold), color="black", linestyle="--", linewidth=1)
-    ax.hlines(y_line, xmin=float(table["log2FC"].min()), xmax=float(table["log2FC"].max()), colors="black", linestyles="--", linewidth=1)
-    ax.set_ylim(bottom=0, top=max_y * 1.05 if max_y > 0 else 1)
-    if str(source).strip().lower() == "volcano_control" and condition1_control and condition2_control:
-        ax.set_xlabel(
-            f"log2 fold change (({condition2} - {condition2_control}) - "
-            f"({condition1} - {condition1_control}))"
+    threshold_line = resolve_reference_line(advanced, color="black", width=1.0)
+    if threshold_line.visible:
+        style = threshold_line.matplotlib()
+        ax.axvline(float(log2fc_threshold), **style)
+        ax.axvline(float(-log2fc_threshold), **style)
+        ax.hlines(
+            y_line,
+            xmin=float(table["log2FC"].min()),
+            xmax=float(table["log2FC"].max()),
+            colors=style["color"],
+            linestyles=style["linestyle"],
+            linewidth=style["linewidth"],
         )
-    else:
-        ax.set_xlabel(f"log2 fold change ({condition2} - {condition1})")
+    ax.set_ylim(bottom=0, top=max_y * 1.05 if max_y > 0 else 1)
+    # Through the shared helper, not spelled out here. Written by hand this read
+    # "(cond2 - cond2ctrl) - (cond1 - cond1ctrl)" while the computation is the
+    # other way round, so every point on the control plot carried the wrong sign.
+    ax.set_xlabel(
+        "log2 fold change ("
+        + comparison_contrast(
+            condition1,
+            condition2,
+            condition1_control if str(source).strip().lower() == "volcano_control" else None,
+            condition2_control if str(source).strip().lower() == "volcano_control" else None,
+        )
+        + ")"
+    )
     ax.set_ylabel("-log10 adj. p-value" if not use_uncorrected else "-log10 p-value")
     if header:
         if str(source).strip().lower() == "volcano_control" and condition1_control and condition2_control:
@@ -919,7 +973,9 @@ def ksea_uploaded_volcano_html(
                 )
             )
     y_line = float(-np.log10(max(float(p_value_threshold), 1e-300)))
-    fig.add_hline(y=y_line, line_dash="dash", line_color="green")
+    threshold_line = resolve_reference_line(advanced, color="green")
+    if threshold_line.visible:
+        fig.add_hline(y=y_line, line=threshold_line.plotly())
 
     title = ""
     if header:
@@ -1050,7 +1106,41 @@ def phosprot_regulation_table(
     return collapsed_df.sort_values("Protein_group").reset_index(drop=True)
 
 
-def _phosprot_regulation_figure(table: pd.DataFrame, header: bool = True):
+PHOSPROT_REGULATION_EMPTY_MESSAGE = (
+    "No phosphosites pass the selected significance and fold-change thresholds"
+)
+
+
+def _empty_phosprot_regulation_html(
+    *, header: bool = True, advanced: dict | None = None
+) -> str:
+    """An empty figure that says why it is empty, matching the PNG."""
+    go = _get_plotly_go()
+    fig = go.Figure()
+    fig.update_layout(
+        title="Cumulative Significant Phosphosite Regulation by Protein" if header else "",
+        template="plotly_white",
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        margin=dict(l=40, r=20, t=60 if header else 30, b=40),
+        annotations=[
+            dict(
+                text=PHOSPROT_REGULATION_EMPTY_MESSAGE,
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+            )
+        ],
+    )
+    fig.update_layout(**_advanced_plotly_layout(advanced))
+    return _plotly_html(fig)
+
+
+def _phosprot_regulation_figure(
+    table: pd.DataFrame, header: bool = True, advanced: dict | None = None
+):
     px = _get_plotly()
     fig = px.scatter(
         table,
@@ -1072,7 +1162,13 @@ def _phosprot_regulation_figure(table: pd.DataFrame, header: bool = True):
         opacity=0.7,
     )
     fig.update_traces(
-        marker=dict(size=8, line=dict(width=0.5, color="DarkSlateGrey")),
+        marker=plotly_marker(
+            advanced,
+            size=8,
+            use_color=False,
+            edge_width_default=0.5,
+            edge_color_default="DarkSlateGrey",
+        ),
         text=None,
     )
     fig.update_layout(
@@ -1118,7 +1214,7 @@ def phosprot_regulation_png(
         ax.text(
             0.5,
             0.5,
-            "No phosphosites pass the selected significance and fold-change thresholds",
+            PHOSPROT_REGULATION_EMPTY_MESSAGE,
             ha="center",
             va="center",
         )
@@ -1130,9 +1226,10 @@ def phosprot_regulation_png(
         table["y"].to_numpy(dtype=float),
         c=table["color_val"].to_numpy(dtype=float),
         cmap="coolwarm",
-        s=20,
-        alpha=0.75,
-        edgecolors="none",
+        # `use_color=False`: this scatter colours its points from `color_val`
+        # through the colour map, so it must not also be handed one colour.
+        # marker_style supplies edgecolors; the outline is off unless asked for.
+        **marker_style(advanced, size=4.5, alpha=0.75, use_color=False),
     )
     cbar = fig.colorbar(scatter, ax=ax)
     cbar.set_label("Up score - Down score")
@@ -1169,10 +1266,13 @@ def phosprot_regulation_html(
         show_phosphosites=show_phosphosites,
     )
     if table.empty:
-        raise ValueError(
-            "No phosphosites pass the selected significance and fold-change thresholds."
-        )
-    fig = _phosprot_regulation_figure(table, header=header)
+        # The same empty result the PNG draws an explanation for. It used to
+        # raise here, so the interactive view answered a legitimate question --
+        # "does anything pass these thresholds?" -- with an error in the frame
+        # while the static view answered it with a sentence. One question, one
+        # answer, whichever renderer the Type selector is on.
+        return _empty_phosprot_regulation_html(header=header, advanced=advanced)
+    fig = _phosprot_regulation_figure(table, header=header, advanced=advanced)
     fig.update_layout(**_advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 

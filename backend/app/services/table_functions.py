@@ -8,6 +8,7 @@ from app.services.annotation_store import get_annotation
 from app.services.data_tools import _get_current_frame, _get_sample_columns, original_intensity_frame
 from app.services.functions import (
     extract_sample_id as _extract_id_or_number,
+    qc_matrix,
     raw_zero_to_nan,
 )
 from app.services.runtime_cache import apply_cached_wrappers
@@ -46,28 +47,11 @@ def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
 
 
 def _coverage_frame(kind: AnnotationKind) -> pd.DataFrame:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    frame = (
-        annotation.source_data.copy()
-        if annotation is not None and not annotation.source_data.empty
-        else raw
-    )
-    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
-        return frame
-    return raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
+    return qc_matrix(kind)[0]
 
 
 def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.log2_data.empty:
-        return annotation.log2_data.copy()
-    if annotation is not None and not annotation.filtered_data.empty:
-        return annotation.filtered_data.copy()
-    if annotation is not None and bool(getattr(annotation, "is_log2_transformed", False)):
-        return raw
-    return raw_zero_to_nan(raw, _get_sample_columns(kind, raw))
+    return qc_matrix(kind)[0]
 
 
 def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
@@ -109,19 +93,34 @@ def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = Fal
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=annotated_columns, ordered=True)
     summary = summary.sort_values(["Sample"])
 
-    if "ProteinNames" in data.columns:
-        total_value = int(len(data["ProteinNames"]))
-    elif "PTM_Collapse_key" in data.columns:
-        total_value = int(len(data["PTM_Collapse_key"]))
-    elif "Phosphoprotein" in data.columns:
-        total_value = int(len(data["Phosphoprotein"]))
-    else:
-        total_value = int(data_filtered.shape[0])
+    # The union of the per-sample counts above, not the row count of the matrix.
+    # A feature can be identified -- real sequence, localization, protein -- with
+    # no quantity surviving in any run, and those rows are in the matrix but in
+    # none of the bars. Counting them here made the total larger than the union
+    # of the rows beneath it, and disagree with the missing-value plot, which
+    # already excludes them.
+    quantified_anywhere = data_filtered.sum(axis=1) > 0
+    total_value = int(quantified_anywhere.sum())
 
     all_samples_row: dict[str, object] = {"Sample": "All samples", "Number": total_value}
     if name:
         all_samples_row["Original_Name"] = ""
-    summary = pd.concat([summary, pd.DataFrame([all_samples_row])], ignore_index=True)
+    extra_rows = [all_samples_row]
+
+    # Never silently dropped: an identified-but-unquantified feature is a real
+    # finding (two of the HEK293 ones are Class I), so the count is stated rather
+    # than folded into the total or left out of the table altogether.
+    identified_only = int(len(quantified_anywhere) - total_value)
+    if identified_only:
+        unquantified_row: dict[str, object] = {
+            "Sample": "Identified, not quantified",
+            "Number": identified_only,
+        }
+        if name:
+            unquantified_row["Original_Name"] = ""
+        extra_rows.append(unquantified_row)
+
+    summary = pd.concat([summary, pd.DataFrame(extra_rows)], ignore_index=True)
     return summary
 
 

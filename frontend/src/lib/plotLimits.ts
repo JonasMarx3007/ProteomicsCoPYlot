@@ -15,6 +15,31 @@ export function clampPlotDpi(value: number): number {
   return Math.min(MAX_PLOT_DPI, Math.max(MIN_PLOT_DPI, Math.round(value)));
 }
 
+/**
+ * A saved width or height, or the plot's default when nothing usable was saved.
+ *
+ * Save files outlive the code that wrote them: a key can be missing, or hold a
+ * string, or `null`. `Number(null)` is `0`, which would ask the backend for a
+ * figure 0 cm wide, so anything that is not a finite number falls back to the
+ * default the page ships with rather than to a value no one chose.
+ */
+export function restorePlotDimensionCm(value: unknown, fallback: number): number {
+  const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+  if (value === null || value === undefined || !Number.isFinite(parsed)) {
+    return clampPlotDimensionCm(fallback);
+  }
+  return clampPlotDimensionCm(parsed);
+}
+
+/** A saved DPI, or the plot's default when nothing usable was saved. */
+export function restorePlotDpi(value: unknown, fallback: number): number {
+  const parsed = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+  if (value === null || value === undefined || !Number.isFinite(parsed)) {
+    return clampPlotDpi(fallback);
+  }
+  return clampPlotDpi(parsed);
+}
+
 export function normalizePlotSizeParams(
   params: Record<string, string | number | boolean>
 ): Record<string, string | number | boolean> {

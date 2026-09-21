@@ -11,11 +11,13 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 from scipy.cluster.hierarchy import leaves_list, linkage
-from scipy.special import digamma, polygamma
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.completeness import CompletenessTablesResponse
-from app.services.clustering_tools import require_complete_clustering_matrix
+from app.services.clustering_tools import (
+    completeness_message,
+    drop_incomplete_features,
+)
 from app.services.runtime_cache import apply_cached_wrappers
 
 
@@ -51,7 +53,9 @@ except ModuleNotFoundError:
         return reject, adjusted, None, None
 
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
-DataSource = Literal["filtered", "log2", "raw"]
+# What `choose_best_source` reports. Narrower than the schema's
+# ResolvedSource because this helper only ever sees these three.
+ChosenSource = Literal["filtered", "log2", "raw"]
 
 AUTO_SAMPLE_PATTERN = re.compile(r"20\d{6}")
 _SAMPLE_DOTTED_SUFFIX = re.compile(
@@ -115,6 +119,66 @@ def extract_sample_id(value):
     original = str(value).strip()
     numbers = _SAMPLE_NUMBER.findall(strip_sample_measurement_suffix(original))
     return numbers[-1] if numbers else original
+
+
+# What a row of each dataset level actually is. Reports and explanations should
+# say "1,204 phosphosites", never "1,204 features": the noun is the difference
+# between a sentence a reader can check and one they cannot.
+ENTITY_LABELS_BY_KIND: dict[str, tuple[str, str]] = {
+    "protein": ("protein", "proteins"),
+    "phospho": ("phosphosite", "phosphosites"),
+    "phosprot": ("phosphoprotein", "phosphoproteins"),
+    "peptide": ("peptide", "peptides"),
+    "precursor": ("precursor", "precursors"),
+}
+
+
+def entity_labels_for_kind(kind) -> tuple[str, str]:
+    """(singular, plural) name for one row of a dataset level."""
+    key = str(kind).strip().lower()
+    return ENTITY_LABELS_BY_KIND.get(key, ENTITY_LABELS_BY_KIND["protein"])
+
+
+def sample_label_frame(metadata: pd.DataFrame) -> pd.DataFrame:
+    """Original sample name -> the generic ``condition_N`` label used in plots.
+
+    Every plot renames its sample columns to ``{condition}_{n}``, where ``n`` is
+    the sample's 1-based position among the samples of its own condition, in
+    metadata order. The plot paths each compute that inline as
+    ``groupby("condition").cumcount() + 1``; this is the same rule in one place,
+    so the report's sample-mapping table cannot drift from the axis labels it
+    claims to explain.
+
+    Ordering note: the protein/phospho plot paths sort by condition before
+    numbering, the peptide path does not. The sort is stable and grouping by
+    condition preserves each condition's internal order either way, so the
+    number a sample receives is identical. `tests/backend/test_sample_mapping.py`
+    holds the two to that.
+
+    Returns the columns ``sample``, ``condition``, ``label`` and ``pair_id``
+    (empty strings when the annotation carries no pairing), in metadata order.
+    """
+    columns = ["sample", "condition", "label", "pair_id"]
+    if metadata is None or metadata.empty:
+        return pd.DataFrame(columns=columns)
+    if "sample" not in metadata.columns or "condition" not in metadata.columns:
+        return pd.DataFrame(columns=columns)
+
+    frame = metadata.copy()
+    frame["sample"] = frame["sample"].astype(str).str.strip()
+    frame["condition"] = frame["condition"].astype(str).str.strip()
+    frame = frame[(frame["sample"] != "") & (frame["condition"] != "")]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    frame = frame.reset_index(drop=True)
+
+    index = frame.groupby("condition").cumcount() + 1
+    frame["label"] = frame["condition"] + "_" + index.astype(str)
+    if "pair_id" in frame.columns:
+        frame["pair_id"] = frame["pair_id"].fillna("").astype(str).str.strip()
+    else:
+        frame["pair_id"] = ""
+    return frame[columns].reset_index(drop=True)
 
 
 def sample_id_map(names) -> dict[str, str]:
@@ -240,8 +304,8 @@ def resolve_test_type(value) -> tuple[bool, str]:
 
 def comparison_contrast(condition1, condition2, condition1_control=None, condition2_control=None) -> str:
     if condition1_control and condition2_control:
-        return f"({condition2} - {condition2_control}) - ({condition1} - {condition1_control})"
-    return f"{condition2} - {condition1}"
+        return f"({condition1} - {condition1_control}) - ({condition2} - {condition2_control})"
+    return f"{condition1} - {condition2}"
 
 
 def paired_test_enabled(value) -> bool:
@@ -624,7 +688,7 @@ def choose_best_source(
     filtered_df: pd.DataFrame | None,
     log2_df: pd.DataFrame | None,
     raw_df: pd.DataFrame,
-) -> tuple[DataSource, pd.DataFrame]:
+) -> tuple[ChosenSource, pd.DataFrame]:
     # Filtering preserves columns even when no rows pass. Only None or the
     # legacy schema-less placeholder means that no filtered matrix exists.
     if filtered_df is not None and len(filtered_df.columns) > 0:
@@ -755,88 +819,156 @@ def impute_values_with_diagnostics(
     )
 
 
-DATA_SOURCE_CHOICES = ("auto", "log2", "filtered", "imputed")
+# One vocabulary, in ladder order: least processed first.
+#
+# "data" is the complete annotated log2 matrix, "filtered" the matrix the filter
+# kept, "imputed" the filled matrix. There is deliberately no "auto" and no
+# "log2" alias: those were two names for one matrix and one name that meant a
+# different matrix on each of the two former resolvers, so the same request
+# returned 11,580 rows through one path and 11,916 through the other.
+DATA_SOURCES: tuple[str, ...] = ("data", "filtered", "imputed")
+
+_EMPTY_FILTER_MESSAGE = (
+    "No features passed the selected filter. Adjust the filter in "
+    "Data > Annotation and generate annotation again to continue. "
+    "Unfiltered data has not been substituted."
+)
 
 
-def resolve_data_source_choice(data_source, default):
-    """Canonical name for a requested matrix, shared by every pipeline.
+def data_source_availability(kind) -> dict[str, bool]:
+    """Which of the three matrices this level actually holds.
 
-    ``auto`` takes the first available of filtered, log2, raw. ``log2`` is the
-    complete annotated matrix before filtering. ``filtered`` and ``imputed``
-    name their materialized outputs.
-
-    ``data`` is the historical spelling. It meant ``auto`` on the analysis path
-    and ``log2`` on the visualization path, which is why it is resolved against
-    a per-path default rather than to a fixed matrix.
-    """
-    requested = str(data_source or "data").strip().lower()
-    if requested == "data":
-        requested = str(default).strip().lower()
-    if requested not in DATA_SOURCE_CHOICES:
-        raise ValueError(
-            "Unsupported data source. Choose 'auto', 'log2', 'filtered', or 'imputed'."
-        )
-    return requested
-
-
-def _visualization_data_source(kind, data_source="log2"):
-    """Select an explicit visualization matrix without silently substituting one.
-
-    Defaults to ``log2``: the complete annotated matrix before filtering.
-    ``filtered`` and ``imputed`` are only accepted when their materialized
-    outputs exist; ``auto`` resolves the way the analysis path does.
+    A completed empty filter is still a processing stage. Keep it selectable
+    so analysis reports the empty result instead of substituting unfiltered rows.
     """
     from app.services.annotation_store import get_annotation
-    from app.services.data_tools import _get_current_frame
 
-    source_alias = str(data_source or "data").strip().lower()
-    requested_source = resolve_data_source_choice(data_source, default="log2")
-
-    _get_current_frame(kind)  # Preserve the existing loaded-dataset requirement.
     annotation = get_annotation(kind)
     if annotation is None or annotation.metadata.empty:
-        raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
+        return {source: False for source in DATA_SOURCES}
+    log2 = getattr(annotation, "log2_data", None)
+    filtered = getattr(annotation, "filtered_data", None)
+    return {
+        "data": isinstance(log2, pd.DataFrame) and not log2.empty,
+        "filtered": isinstance(filtered, pd.DataFrame) and len(filtered.columns) > 0,
+        "imputed": imputed_data_available(kind),
+    }
 
-    if requested_source == "auto":
-        source_used, frame, metadata, _ = analysis_data_source(kind, data_source="auto")
-        return source_used, frame, metadata
 
-    if requested_source == "log2":
+def most_processed_data_source(kind) -> str:
+    """imputed > filtered > data -- what a fresh panel opens on.
+
+    The default is the most processed matrix that exists, because that is the
+    one the user built by configuring the pipeline. It is a *default*, not a
+    coercion: a panel restoring a saved choice keeps that choice.
+    """
+    available = data_source_availability(kind)
+    for source in reversed(DATA_SOURCES):
+        if available[source]:
+            return source
+    return "data"
+
+
+def data_source_options(kind) -> dict[str, object]:
+    """What a selector should offer, and what it should open on.
+
+    One payload for every panel that offers a choice, so the UI never has to
+    work out the ladder itself and cannot get it different on two pages.
+    """
+    available = data_source_availability(kind)
+    return {
+        "availableDataSources": [s for s in DATA_SOURCES if available[s]],
+        "defaultDataSource": most_processed_data_source(kind),
+    }
+
+
+def select_matrix(kind, data_source="data") -> tuple[str, pd.DataFrame, pd.DataFrame]:
+    """The matrix an analysis runs on. The only way to get one.
+
+    Returns the resolved name, the frame and the metadata. Every unavailable or
+    unrecognised request raises with a message naming what to do about it --
+    nothing is silently substituted, because a substituted matrix produces real
+    numbers under the wrong label, which is worse than an error.
+    """
+    from app.services.annotation_store import get_annotation
+
+    requested = str(data_source or "data").strip().lower()
+    if requested not in DATA_SOURCES:
+        raise ValueError(
+            "Unsupported data source "
+            f"{str(data_source)!r}. Choose one of: {', '.join(DATA_SOURCES)}."
+        )
+
+    annotation = get_annotation(kind)
+    if annotation is None or annotation.metadata.empty:
+        raise ValueError(
+            f"No annotation metadata available for {kind}. Generate annotation first."
+        )
+    metadata = annotation.metadata.copy()
+
+    if requested == "data":
         log2_data = getattr(annotation, "log2_data", None)
         if not isinstance(log2_data, pd.DataFrame) or log2_data.empty:
             raise ValueError(
-                f"Log2 {kind} data is not available. Generate annotation first."
+                f"{kind.capitalize()} data is not available. Generate annotation first."
             )
-        # The web UI's historical/public label is "data" even though its exact
-        # matrix contract is the complete annotated log2 matrix.
-        source_used = "data" if source_alias == "data" else "log2"
-        return source_used, log2_data.copy(), annotation.metadata.copy()
+        return "data", log2_data.copy(), metadata
 
-    if requested_source == "filtered":
+    if requested == "filtered":
         filtered = getattr(annotation, "filtered_data", None)
-        if not isinstance(filtered, pd.DataFrame) or filtered.empty:
+        if not isinstance(filtered, pd.DataFrame) or len(filtered.columns) == 0:
             raise ValueError(
                 f"Filtered {kind} data is not available. Generate annotation/filtering first."
             )
-        return "filtered", filtered.copy(), annotation.metadata.copy()
+        if filtered.empty:
+            raise ValueError(_EMPTY_FILTER_MESSAGE)
+        return "filtered", filtered.copy(), metadata
 
-    if not imputed_data_available(kind):
+    imputation = getattr(annotation, "imputation", None)
+    imputed_data = getattr(annotation, "imputed_data", None)
+    if (
+        imputation is None
+        or str(getattr(imputation, "mode", "none")).strip().lower() == "none"
+        or not isinstance(imputed_data, pd.DataFrame)
+        or imputed_data.empty
+    ):
         raise ValueError(
             f"Imputed {kind} data is not available. Run imputation successfully first."
         )
-    imputed = getattr(annotation, "imputed_data", None)
-    return "imputed", imputed.copy(), annotation.metadata.copy()
+    missing_samples = [
+        sample
+        for sample in metadata["sample"].astype(str).tolist()
+        if sample not in imputed_data.columns
+    ]
+    if missing_samples:
+        raise ValueError(
+            f"Stored imputed {kind} data is invalid because sample columns are missing: "
+            f"{missing_samples}. Run imputation again."
+        )
+    return "imputed", imputed_data.copy(), metadata
 
 
-def _visualization_data_source_availability(kind) -> dict[str, bool]:
-    from app.services.annotation_store import get_annotation
+def qc_matrix(kind) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The data as loaded, with its metadata. What QC describes.
 
-    annotation = get_annotation(kind)
-    filtered = getattr(annotation, "filtered_data", None) if annotation is not None else None
-    return {
-        "filteredAvailable": isinstance(filtered, pd.DataFrame) and not filtered.empty,
-        "imputedAvailable": imputed_data_available(kind),
-    }
+    QC has no data-source choice by design: it exists to show what the
+    instrument produced, *before* any decision about filtering or imputation, so
+    offering to describe the filtered subset would defeat the purpose. Every QC
+    surface therefore reads this one matrix, and PCA is the single deliberate
+    exception -- it cannot use incomplete features, so choosing its input is a
+    real scientific decision and it keeps the selector.
+
+    This is `select_matrix(kind, "data")`, not a parallel accessor, so QC cannot
+    drift away from what "data" means everywhere else. The helpers this replaced
+    fell back to the filtered matrix when log2 was missing and said nothing, so a
+    QC plot could quietly describe the filtered subset.
+
+    CV and the abundance plot read the same data back-transformed to the linear
+    scale, which is the scale those statistics are defined on -- a scale choice,
+    not a matrix choice.
+    """
+    _, frame, metadata = select_matrix(kind, "data")
+    return frame, metadata
 
 
 def _phosprot_values_are_centred(kind) -> bool:
@@ -848,79 +980,6 @@ def _phosprot_values_are_centred(kind) -> bool:
     annotation = get_annotation(kind)
     aggregation = getattr(annotation, "phosprot_aggregation", None) if annotation else None
     return str(aggregation or "").strip().lower() == "robust_site_median"
-
-
-def analysis_data_source(kind, data_source="auto"):
-    """Select the matrix an analysis runs on.
-
-    Defaults to ``auto``: filtered if filtering has run, else log2, else raw.
-    ``log2``, ``filtered`` and ``imputed`` name one matrix each and raise when it
-    does not exist.
-    """
-    from app.services.annotation_store import get_annotation
-    from app.services.data_tools import _get_current_frame
-
-    requested_source = resolve_data_source_choice(data_source, default="auto")
-
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    if annotation is None or annotation.metadata.empty:
-        raise ValueError(f"No annotation metadata available for {kind}. Generate annotation first.")
-
-    if requested_source == "imputed":
-        imputation = getattr(annotation, "imputation", None)
-        imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
-        imputed_data = getattr(annotation, "imputed_data", None)
-        if (
-            imputation is None
-            or imputation_mode == "none"
-            or not isinstance(imputed_data, pd.DataFrame)
-            or imputed_data.empty
-        ):
-            raise ValueError(
-                f"Imputed {kind} data is not available. Run imputation successfully first."
-            )
-        sample_columns = annotation.metadata["sample"].astype(str).tolist()
-        missing_samples = [sample for sample in sample_columns if sample not in imputed_data.columns]
-        if missing_samples:
-            raise ValueError(
-                f"Stored imputed {kind} data is invalid because sample columns are missing: "
-                f"{missing_samples}. Run imputation again."
-            )
-        return "imputed", imputed_data.copy(), annotation.metadata.copy(), []
-
-    if requested_source == "log2":
-        log2_data = getattr(annotation, "log2_data", None)
-        if not isinstance(log2_data, pd.DataFrame) or log2_data.empty:
-            raise ValueError(f"Log2 {kind} data is not available. Generate annotation first.")
-        return "log2", log2_data.copy(), annotation.metadata.copy(), []
-
-    if requested_source == "filtered":
-        filtered = getattr(annotation, "filtered_data", None)
-        if not isinstance(filtered, pd.DataFrame) or len(filtered.columns) == 0:
-            raise ValueError(
-                f"Filtered {kind} data is not available. Generate annotation/filtering first."
-            )
-        source_used, frame = choose_best_source(filtered, None, raw)
-        return source_used, frame, annotation.metadata.copy(), []
-
-    source_used, base_frame = choose_best_source(
-        annotation.filtered_data,
-        annotation.log2_data,
-        raw,
-    )
-    warnings: list[str] = []
-    if source_used == "raw":
-        sample_columns = [
-            sample
-            for sample in annotation.metadata["sample"].astype(str).tolist()
-            if sample in base_frame.columns
-        ]
-        if not bool(getattr(annotation, "is_log2_transformed", False)):
-            base_frame = raw_zero_to_nan(base_frame, sample_columns)
-        warnings.append("Using raw data because filtered/log2 annotated data is unavailable.")
-
-    return source_used, base_frame, annotation.metadata.copy(), warnings
 
 
 def imputed_data_available(kind):
@@ -975,11 +1034,20 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     cols_to_use = [label_col] + sample_cols
 
     if workflow == "Phosphoprotein":
-        extra_cols = []
-        if "site_num" in data.columns:
-            extra_cols.append("site_num")
-        if "PTM_Collapse_keys" in data.columns:
-            extra_cols.append("PTM_Collapse_keys")
+        # The gene column first, then the site provenance -- the same set both
+        # notebook packages carry. This copy used to omit the gene column, so a
+        # Phosphoprotein ANOVA here returned a narrower table than the same call
+        # in the pip or R package.
+        extra_cols = [
+            column
+            for column in ("Gene_group", "GeneNames")
+            if column in data.columns
+        ][:1]
+        extra_cols += [
+            column
+            for column in ("site_num", "PTM_Collapse_keys")
+            if column in data.columns
+        ]
         cols_to_use += extra_cols
 
     df = data[cols_to_use].copy()
@@ -995,7 +1063,10 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     df = df.loc[valid].copy()
     groups = [group[valid] for group in groups]
     if df.empty:
-        return df.reset_index(drop=True)
+        # Raise rather than return an empty frame, matching both notebook
+        # packages: an empty result reads downstream as "nothing was
+        # significant" when in fact nothing could be tested.
+        raise ValueError("No rows have enough replicate values for ANOVA.")
 
     try:
         f_stat, pvals = stats.f_oneway(*groups, axis=1, nan_policy="omit")
@@ -1027,7 +1098,28 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     for condition in means.columns:
         out[f"mean_{condition}"] = means[condition].to_numpy()
 
-    return out.sort_values("adj_pval").reset_index(drop=True)
+    # Benjamini-Hochberg ties many features to the same adjusted p, so sorting on
+    # it alone leaves the order within those groups to whichever sort the
+    # language happens to use -- the R package returned a different one. Raw p
+    # then the label makes the order identical across all three pipelines.
+    try:
+        sort_keys = ["adj_pval", "pval", _auto_label_col(out)]
+    except ValueError:
+        sort_keys = ["adj_pval", "pval"]
+    return out.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
+
+
+
+def _warn_dropped_features(completeness, *, purpose: str = "clustering") -> None:
+    """Report dropped features where a notebook user will see them.
+
+    The web app returns this as a field and renders it beneath the plot. A
+    notebook has no such surface, so the equivalent is a warning printed under
+    the cell that produced the figure.
+    """
+    message = completeness_message(completeness, purpose=purpose)
+    if message:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
 def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster"):
@@ -1051,7 +1143,9 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
 
     matrix = cluster_df[sample_cols].to_numpy(dtype=float)
     if matrix.shape[0] > 1:
-        require_complete_clustering_matrix(matrix, context="ANOVA")
+        matrix, completeness = drop_incomplete_features(matrix, context="ANOVA clustering")
+        cluster_df = cluster_df.loc[completeness.kept]
+        _warn_dropped_features(completeness, purpose="clustering")
     if z_score:
         row_mean = np.nanmean(matrix, axis=1, keepdims=True)
         row_sd = np.nanstd(matrix, axis=1, keepdims=True)
@@ -1133,7 +1227,7 @@ def condition_mean(data, columns, min_present=1):
     return means.where(counts >= int(min_present)), counts
 
 
-def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None):
+def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None, pair=None):
     """Tukey HSD for every condition pair, following a one-way ANOVA.
 
     A significant omnibus F says only that some condition differs; this supplies the
@@ -1145,6 +1239,13 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
     values are handled correctly. Returns one row per feature and condition pair;
     an empty frame when fewer than three conditions are present, because with two
     the omnibus F and the single pairwise comparison test the same hypothesis.
+
+    `pair` restricts which comparison is *reported*, not how it is computed: the
+    studentized range still takes k from every condition in the design and the
+    MSE is still pooled across all of them, so a pair computed alone is
+    numerically identical to the same pair computed alongside the others. It is
+    there because each comparison costs a studentized-range integral per feature,
+    which dominates the request.
     """
     if label_col is None:
         label_col = _auto_label_col(anova_df)
@@ -1192,34 +1293,56 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
         if "adj_pval" in posthoc_df.columns
         else np.full(len(posthoc_df), np.nan)
     )
+    # `names` stays the whole design: it sets k for the studentized range, and
+    # the MSE above is already pooled across all of it.
     names = list(condition_cols.keys())
+    if pair is None:
+        comparisons = [
+            (names[first], names[second])
+            for first in range(len(names))
+            for second in range(first + 1, len(names))
+        ]
+    else:
+        left_wanted, right_wanted = (str(value) for value in pair)
+        missing = [name for name in (left_wanted, right_wanted) if name not in condition_cols]
+        if missing:
+            raise ValueError(
+                f"Post-hoc conditions not present in this dataset: {', '.join(missing)}."
+            )
+        if left_wanted == right_wanted:
+            raise ValueError("Post-hoc comparison needs two different conditions.")
+        # In the order asked for, so the sign follows the same rule as every
+        # other comparison in the tool: the condition named first is the
+        # minuend. The Tukey p-value itself is symmetric -- q uses |difference|.
+        comparisons = [(left_wanted, right_wanted)]
+
     frames = []
-    for first in range(len(names)):
-        for second in range(first + 1, len(names)):
-            left, right = names[first], names[second]
-            n_left, n_right = counts[left], counts[right]
-            with np.errstate(divide="ignore", invalid="ignore"):
-                standard_error = np.sqrt(mse / 2.0 * (1.0 / n_left + 1.0 / n_right))
-                difference = means[right] - means[left]
-                q_statistic = np.abs(difference) / standard_error
-            pvals = stats.studentized_range.sf(q_statistic, len(names), df_resid)
-            pvals = np.where(np.isfinite(q_statistic) & (df_resid > 0), pvals, np.nan)
-            usable = np.isfinite(pvals) & (n_left >= 2) & (n_right >= 2)
-            if not np.any(usable):
-                continue
-            frames.append(pd.DataFrame({
-                label_col: labels[usable],
-                "comparison": f"{right} vs {left}",
-                "group1": left,
-                "group2": right,
-                "log2FC": difference[usable],
-                "n_group1": n_left[usable].astype(int),
-                "n_group2": n_right[usable].astype(int),
-                "q_statistic": q_statistic[usable],
-                "tukey_pval": pvals[usable],
-                "significance": np.where(pvals[usable] < in_pval, "Significant", "Not significant"),
-                "anova_adj_pval": anova_adj[usable],
-            }))
+    for left, right in comparisons:
+        n_left, n_right = counts[left], counts[right]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            standard_error = np.sqrt(mse / 2.0 * (1.0 / n_left + 1.0 / n_right))
+            # group1 minus group2, matching the volcano convention: the
+            # condition named first in `comparison` is the minuend.
+            difference = means[left] - means[right]
+            q_statistic = np.abs(difference) / standard_error
+        pvals = stats.studentized_range.sf(q_statistic, len(names), df_resid)
+        pvals = np.where(np.isfinite(q_statistic) & (df_resid > 0), pvals, np.nan)
+        usable = np.isfinite(pvals) & (n_left >= 2) & (n_right >= 2)
+        if not np.any(usable):
+            continue
+        frames.append(pd.DataFrame({
+            label_col: labels[usable],
+            "comparison": f"{left} vs {right}",
+            "group1": left,
+            "group2": right,
+            "log2FC": difference[usable],
+            "n_group1": n_left[usable].astype(int),
+            "n_group2": n_right[usable].astype(int),
+            "q_statistic": q_statistic[usable],
+            "tukey_pval": pvals[usable],
+            "significance": np.where(pvals[usable] < in_pval, "Significant", "Not significant"),
+            "anova_adj_pval": anova_adj[usable],
+        }))
 
     if not frames:
         return pd.DataFrame()
@@ -1327,7 +1450,10 @@ def anova_plot(
     if (cluster_rows and raw_matrix.shape[0] > 1) or (
         cluster_samples and raw_matrix.shape[1] > 1
     ):
-        require_complete_clustering_matrix(raw_matrix, context="ANOVA heatmap")
+        _, completeness = drop_incomplete_features(raw_matrix, context="ANOVA heatmap")
+        plot_df = plot_df.loc[completeness.kept]
+        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+        _warn_dropped_features(completeness, purpose="clustering")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -1471,7 +1597,12 @@ def anova_plot_cluster(
     plot_df = anova_cluster_df.copy()
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
     if cluster_samples and raw_matrix.shape[1] > 1:
-        require_complete_clustering_matrix(raw_matrix, context="ANOVA cluster heatmap")
+        _, completeness = drop_incomplete_features(
+            raw_matrix, context="ANOVA cluster heatmap"
+        )
+        plot_df = plot_df.loc[completeness.kept]
+        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+        _warn_dropped_features(completeness, purpose="clustering")
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -1600,13 +1731,34 @@ def normal_fit_curve(values: np.ndarray, points: int = 200, ddof: int = 0) -> li
     return [(float(px), float(py)) for px, py in zip(x, y)]
 
 
+QQ_MAX_POINTS = 100_000
+"""Above this many observations the Q-Q plot draws a random sample.
+
+One number, used by the PNG, by the JSON summary and as the default below, so
+the plot the user sees and the sentence that describes it cannot disagree.
+"""
+
+
 def qqnorm_plot_data(
     values: np.ndarray,
-    max_points: int = 100_000,
+    max_points: int = QQ_MAX_POINTS,
     seed: int = 187,
 ) -> dict[str, list[tuple[float, float]]]:
-    clean = values[~np.isnan(values)]
-    clean = clean[clean > 0]
+    """Sample quantiles against normal quantiles, on whatever scale is passed.
+
+    Every value is kept. This used to drop everything at or below zero, which
+    is indefensible on the log2 matrix this plot is fed: a log2 intensity is
+    negative wherever the linear intensity is below 1, and a `robust_site_median`
+    phosphoprotein matrix holds ratios centred on zero, so roughly half of it
+    was discarded before the question "are these values normal?" was asked --
+    and discarding the lower half is exactly what makes a distribution look
+    normal. Neither `notebook_functions.py` nor `notebook_functions.R` filtered,
+    so the backend also disagreed with both packages on the same data.
+    """
+    clean = np.asarray(values, dtype=float)
+    # Non-finite rather than merely non-NaN: an infinity has no quantile and
+    # would poison the least-squares fit line for every other point.
+    clean = clean[np.isfinite(clean)]
     if clean.size == 0:
         return {"points": [], "fitLine": []}
 
@@ -1866,6 +2018,7 @@ def qc_coverage_plot(
     height_cm: float = 10,
     dpi: int = 300,
     advanced: dict | None = None,
+    reference_line: bool = True,
 ) -> bytes:
     from app.services.plot_images import qc_coverage_plot as _impl
 
@@ -1882,6 +2035,7 @@ def qc_coverage_plot(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
+        reference_line=reference_line,
     )
 
 
@@ -1895,6 +2049,7 @@ def qc_peptide_coverage_plot(
     advanced: dict | None = None,
     quantity_column: str | None = None,
     level: str = "peptide",
+    reference_line: bool = True,
 ) -> bytes:
     from app.services.plot_images import qc_peptide_coverage_plot as _impl
 
@@ -1908,6 +2063,7 @@ def qc_peptide_coverage_plot(
         advanced=advanced,
         quantity_column=quantity_column,
         level=level,
+        reference_line=reference_line,
     )
 
 
@@ -2390,7 +2546,6 @@ def comparison_pearson_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> bytes:
     from app.services.comparison_tools import pearson_correlation_png as _impl
 
@@ -2410,7 +2565,6 @@ def comparison_pearson_png(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
-        data_source=data_source,
     )
 
 
@@ -2429,7 +2583,6 @@ def comparison_pearson_html(
     width_cm: float = 20,
     height_cm: float = 12,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> str:
     from app.services.comparison_tools import pearson_correlation_html as _impl
 
@@ -2448,7 +2601,6 @@ def comparison_pearson_html(
         width_cm=width_cm,
         height_cm=height_cm,
         advanced=advanced,
-        data_source=data_source,
     )
 
 
@@ -2469,7 +2621,6 @@ def comparison_venn_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> bytes:
     from app.services.comparison_tools import venn_png as _impl
 
@@ -2490,7 +2641,6 @@ def comparison_venn_png(
         height_cm=height_cm,
         dpi=dpi,
         advanced=advanced,
-        data_source=data_source,
     )
 
 

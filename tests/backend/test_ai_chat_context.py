@@ -374,7 +374,7 @@ def test_pca_context_and_report_use_selected_scaling(monkeypatch):
     samples = ['s1', 's2', 's3', 's4']
     frame = pd.DataFrame([[0, 100, 200, 300], [0, 1, 0, 1], [1, 0, 1, 0]], columns=samples)
     meta = pd.DataFrame({'sample': samples, 'condition': ['A', 'A', 'B', 'B']})
-    monkeypatch.setattr(plot_images, 'analysis_data_source', lambda *a, **k: (None, frame, None, None))
+    monkeypatch.setattr(plot_images, 'select_matrix', lambda *a, **k: (None, frame, None))
     monkeypatch.setattr(plot_images, '_get_sample_columns', lambda *a: samples)
     monkeypatch.setattr(plot_images, '_metadata_for_kind', lambda *a: meta)
     projection = plot_images._pca_projection
@@ -534,15 +534,18 @@ def test_volcano_context_is_rank_limited_and_uses_informative_significance_value
     text = context(
         "stats.volcano",
         mode=(
-            "source=volcano|kind=protein|dataSource=data|condition1=WT|condition2=GRK|"
+            # Pinned on the filtered matrix: this test is about how the context
+            # is formatted and rank-limited, so it names its matrix explicitly
+            # rather than riding on whatever the default happens to be.
+            "source=volcano|kind=protein|dataSource=filtered|condition1=WT|condition2=GRK|"
             "identifier=workflow|testType=unpaired|pValueThreshold=0.05|"
             "log2fcThreshold=1|useUncorrected=false|maxRanked=2"
         ),
     )
     assert "max per group: 2" in text
     assert text.count("Volcano Term:") == 4
-    assert "term: CCN1_HUMAN; log2fc: 2.75; selected p value: 2.588e-07" in text
-    assert "term: NFM_HUMAN; log2fc: -1.00; selected p value: 3.942e-08" in text
+    assert "term: CCN1_HUMAN; log2fc: -2.75; selected p value: 2.588e-07" in text
+    assert "term: NFM_HUMAN; log2fc: 1.00; selected p value: 3.942e-08" in text
     assert "do not replace small p values with rounded zero" in text
     assert "|" not in text
 
@@ -580,7 +583,7 @@ def test_all_ai_statistical_contexts_preserve_the_selected_test_type(
     )
     for payload in (volcano, ora):
         assert f"selected_test_description={control_description}" in payload
-    assert "_minus_(mean_condition2_control_minus_mean_condition1_control)" in volcano
+    assert "_minus_(mean_condition1_control_minus_mean_condition2_control)" in volcano
 
     assert ("volcano_pairing|" in volcano) is is_paired
     assert "supported_tests=unpaired,unpaired_welch,paired" in volcano
@@ -677,17 +680,16 @@ def test_distribution_adapter_uses_actual_summary_and_preserves_zero(monkeypatch
     import pandas as pd
     from app.services import data_tools
     frame = pd.DataFrame({"A": [0.0, 2.0], "B": [None, 4.0]})
-    monkeypatch.setattr(data_tools, "_best_distribution_source", lambda kind: ("log2", frame, []))
+    monkeypatch.setattr(data_tools, "qc_matrix", lambda kind: (frame, pd.DataFrame()))
     monkeypatch.setattr(data_tools, "_get_sample_columns", lambda kind, data: ["A", "B"])
     text = ai_functions.data_distribution_summary("protein")["data"]["text"]
-    assert "source_used=log2" in text and "count=3" in text and "missingCount=1" in text
+    assert "source_used=data" in text and "count=3" in text and "missingCount=1" in text
     assert "min=0.0" in text and "mean=2.0" in text
     assert "summary_is_not_a_normality_test" in text
 
 
 @pytest.mark.parametrize("test_type", ["unpaired", "unpaired_welch"])
 def test_simulation_adapter_matches_actual_sensitivity_results(monkeypatch, test_type):
-    import json
     import pandas as pd
     from app.schemas.stats import SimulationRequest
     from app.services import stats_tools

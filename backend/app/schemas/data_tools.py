@@ -4,13 +4,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.annotation import AnnotationKind
+from app.schemas.annotation import AnnotationKind, ResolvedSource
 
-DataSource = Literal["filtered", "log2", "raw", "imputed"]
 # One vocabulary for every pipeline. "data" is the historical spelling and is
 # still accepted on the wire; it resolves to each path's own default, which is
 # why it is not a canonical value.
-VisualizationDataSource = Literal["data", "auto", "log2", "filtered", "imputed"]
 
 
 class HistogramBin(BaseModel):
@@ -48,7 +46,7 @@ class ValueDistributionStats(BaseModel):
 
 class DistributionSummaryResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: DataSource
+    sourceUsed: ResolvedSource
     sampleColumns: list[str]
     stats: ValueDistributionStats
     rowsWithMissing: int
@@ -104,7 +102,7 @@ class ImputationRunRequest(BaseModel):
 class ImputationResultResponse(BaseModel):
     kind: AnnotationKind
     method: Literal["quantile", "numerical"]
-    sourceUsed: DataSource
+    sourceUsed: ResolvedSource
     rows: int
     columns: int
     sampleColumns: list[str]

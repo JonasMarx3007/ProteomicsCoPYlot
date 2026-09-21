@@ -157,7 +157,6 @@ def viewer_auth_login_route(
 
     _set_rotated_session_cookie(response)
     return ViewerAuthLoginResponse(
-        sessionId=get_session_id(),
         ok=True,
         project=auth.project,
         projectLabel=auth.project_label,
@@ -188,7 +187,6 @@ def viewer_auth_qr_login_route(
 
     _set_rotated_session_cookie(response)
     return ViewerAuthLoginResponse(
-        sessionId=get_session_id(),
         ok=True,
         project=auth.project,
         projectLabel=auth.project_label,

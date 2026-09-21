@@ -1,4 +1,6 @@
+import PlotImage from "../../components/PlotImage";
 import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   buildPlotUrl,
@@ -6,7 +8,8 @@ import {
   getPeptideSequenceCoverage,
   isAbortError,
 } from "../../lib/api";
-import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
+import { withoutStaticSize } from "../../lib/plotRenderType";
+import { SizeRow } from "../../components/PlotFields";
 import { saveQcReportSettings } from "../../lib/reportState";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
@@ -50,32 +53,32 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     type: String(persistedRt.type ?? "Normal"),
     method: String(persistedRt.method ?? "Hexbin Plot"),
     addLine: Boolean(persistedRt.addLine ?? false),
-    header: Boolean(persistedRt.header ?? true),
+    header: true,
     bins: Number(persistedRt.bins ?? 1000),
     randomSeed: Number(persistedRt.randomSeed ?? 69),
-    widthCm: Number(persistedRt.widthCm ?? 20),
-    heightCm: Number(persistedRt.heightCm ?? 15),
-    dpi: Number(persistedRt.dpi ?? 100),
+    widthCm: restorePlotDimensionCm(persistedRt.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedRt.heightCm, 15),
+    dpi: restorePlotDpi(persistedRt.dpi, 100),
   });
   const [modification, setModification] = useState({
     includeId: Boolean(persistedModification.includeId ?? false),
-    header: Boolean(persistedModification.header ?? true),
-    legend: Boolean(persistedModification.legend ?? true),
-    widthCm: Number(persistedModification.widthCm ?? 25),
-    heightCm: Number(persistedModification.heightCm ?? 15),
-    dpi: Number(persistedModification.dpi ?? 100),
+    header: true,
+    legend: true,
+    widthCm: restorePlotDimensionCm(persistedModification.widthCm, 25),
+    heightCm: restorePlotDimensionCm(persistedModification.heightCm, 15),
+    dpi: restorePlotDpi(persistedModification.dpi, 100),
   });
   const [missedCleavage, setMissedCleavage] = useState({
     includeId: Boolean(persistedMissedCleavage.includeId ?? false),
     text: Boolean(persistedMissedCleavage.text ?? true),
     textSize: Number(persistedMissedCleavage.textSize ?? 8),
-    header: Boolean(persistedMissedCleavage.header ?? true),
+    header: true,
     // Determines whether K-P counts as a cleavage site: trypsin is blocked by
     // proline, a trypsin/Lys-C mix is not. Must match the digest actually used.
     protease: String(persistedMissedCleavage.protease ?? "trypsin"),
-    widthCm: Number(persistedMissedCleavage.widthCm ?? 25),
-    heightCm: Number(persistedMissedCleavage.heightCm ?? 15),
-    dpi: Number(persistedMissedCleavage.dpi ?? 100),
+    widthCm: restorePlotDimensionCm(persistedMissedCleavage.widthCm, 25),
+    heightCm: restorePlotDimensionCm(persistedMissedCleavage.heightCm, 15),
+    dpi: restorePlotDpi(persistedMissedCleavage.dpi, 100),
   });
   const [coverage, setCoverage] = useState({
     species: (String(persistedCoverage.species ?? "human") === "mouse" ? "mouse" : "human") as PeptideSpecies,
@@ -253,7 +256,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     () => {
       void advancedPlotSignal;
       const rtParams = rtInteractive
-        ? { ...rt, _rtInteractiveV: rtInteractiveSessionNonce }
+        ? { ...withoutStaticSize(rt), _rtInteractiveV: rtInteractiveSessionNonce }
         : rt;
       return (
       buildPlotUrl(
@@ -327,12 +330,18 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           <SectionCard title="RT Plot Options">
             <OptionsLayout
               controls={[
+                // `peptide_rt_interactive_html` always draws a scatter and
+                // reads neither Mode nor Bins, so neither is offered while the
+                // interactive renderer is selected: a control that changes
+                // nothing is worse than no control.
                 <SelectField
                   key="method"
                   label="Mode"
                   value={rt.method}
                   onChange={(value) => setRt({ ...rt, method: value })}
                   options={["Scatter Plot", "Hexbin Plot", "Density Plot"]}
+                  disabled={rtInteractive}
+                  disabledHint="The interactive plot always draws a scatter."
                 />,
                 <SelectField
                   key="type"
@@ -346,6 +355,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   label="Bins"
                   value={rt.bins}
                   onCommit={(value) => setRt({ ...rt, bins: Math.max(10, Math.round(value)) })}
+                  disabled={rtInteractive}
+                  disabledHint="Binning applies to the hexbin and density modes only."
                 />,
                 <CommittedNumberField
                   key="randomSeed"
@@ -353,28 +364,19 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   value={rt.randomSeed}
                   onCommit={(value) => setRt({ ...rt, randomSeed: Math.max(0, Math.round(value)) })}
                 />,
-                <CommittedNumberField
-                  key="width"
-                  label="Width (cm)"
-                  value={rt.widthCm}
-                  onCommit={(value) => setRt({ ...rt, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="height"
-                  label="Height (cm)"
-                  value={rt.heightCm}
-                  onCommit={(value) => setRt({ ...rt, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="dpi"
-                  label="DPI"
-                  value={rt.dpi}
-                  onCommit={(value) => setRt({ ...rt, dpi: clampPlotDpi(value) })}
-                />,
               ]}
+              size={
+                rtInteractive ? null : <SizeRow
+                  widthCm={rt.widthCm}
+                  heightCm={rt.heightCm}
+                  dpi={rt.dpi}
+                  onWidthChange={(value) => setRt({ ...rt, widthCm: value })}
+                  onHeightChange={(value) => setRt({ ...rt, heightCm: value })}
+                  onDpiChange={(value) => setRt({ ...rt, dpi: value })}
+                />
+              }
               toggles={[
                 <CheckboxField key="line" label="Add Line" checked={rt.addLine} onChange={(value) => setRt({ ...rt, addLine: value })} />,
-                <CheckboxField key="header" label="Toggle Header" checked={rt.header} onChange={(value) => setRt({ ...rt, header: value })} />,
               ]}
             />
           </SectionCard>
@@ -384,7 +386,6 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
             url={rtPlotUrl}
             downloadName="peptide_rt_plot.png"
             renderMode={rtInteractive ? "html" : "image"}
-            heightCm={rt.heightCm}
           />
         </>
       ) : null}
@@ -393,30 +394,19 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
         <>
           <SectionCard title="Modification Plot Options">
             <OptionsLayout
-              controls={[
-                <CommittedNumberField
-                  key="width"
-                  label="Width (cm)"
-                  value={modification.widthCm}
-                  onCommit={(value) => setModification({ ...modification, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="height"
-                  label="Height (cm)"
-                  value={modification.heightCm}
-                  onCommit={(value) => setModification({ ...modification, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="dpi"
-                  label="DPI"
-                  value={modification.dpi}
-                  onCommit={(value) => setModification({ ...modification, dpi: clampPlotDpi(value) })}
-                />,
-              ]}
+              controls={[]}
+              size={
+                <SizeRow
+                  widthCm={modification.widthCm}
+                  heightCm={modification.heightCm}
+                  dpi={modification.dpi}
+                  onWidthChange={(value) => setModification({ ...modification, widthCm: value })}
+                  onHeightChange={(value) => setModification({ ...modification, heightCm: value })}
+                  onDpiChange={(value) => setModification({ ...modification, dpi: value })}
+                />
+              }
               toggles={[
                 <CheckboxField key="ids" label="Toggle IDs" checked={modification.includeId} onChange={(value) => setModification({ ...modification, includeId: value })} />,
-                <CheckboxField key="header" label="Toggle Header" checked={modification.header} onChange={(value) => setModification({ ...modification, header: value })} />,
-                <CheckboxField key="legend" label="Toggle Legend" checked={modification.legend} onChange={(value) => setModification({ ...modification, legend: value })} />,
               ]}
             />
           </SectionCard>
@@ -442,35 +432,20 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   options={["trypsin", "trypsin_lysc"]}
                   labels={{ trypsin: "Trypsin", trypsin_lysc: "Trypsin / Lys-C" }}
                 />,
-                <CommittedNumberField
-                  key="text-size"
-                  label="Text Size"
-                  value={missedCleavage.textSize}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, textSize: Math.max(6, Math.round(value)) })}
-                />,
-                <CommittedNumberField
-                  key="width"
-                  label="Width (cm)"
-                  value={missedCleavage.widthCm}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, widthCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="height"
-                  label="Height (cm)"
-                  value={missedCleavage.heightCm}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, heightCm: clampPlotDimensionCm(Math.max(5, value)) })}
-                />,
-                <CommittedNumberField
-                  key="dpi"
-                  label="DPI"
-                  value={missedCleavage.dpi}
-                  onCommit={(value) => setMissedCleavage({ ...missedCleavage, dpi: clampPlotDpi(value) })}
-                />,
               ]}
+              size={
+                <SizeRow
+                  widthCm={missedCleavage.widthCm}
+                  heightCm={missedCleavage.heightCm}
+                  dpi={missedCleavage.dpi}
+                  onWidthChange={(value) => setMissedCleavage({ ...missedCleavage, widthCm: value })}
+                  onHeightChange={(value) => setMissedCleavage({ ...missedCleavage, heightCm: value })}
+                  onDpiChange={(value) => setMissedCleavage({ ...missedCleavage, dpi: value })}
+                />
+              }
               toggles={[
                 <CheckboxField key="ids" label="Toggle IDs" checked={missedCleavage.includeId} onChange={(value) => setMissedCleavage({ ...missedCleavage, includeId: value })} />,
                 <CheckboxField key="text" label="Toggle Text" checked={missedCleavage.text} onChange={(value) => setMissedCleavage({ ...missedCleavage, text: value })} />,
-                <CheckboxField key="header" label="Toggle Header" checked={missedCleavage.header} onChange={(value) => setMissedCleavage({ ...missedCleavage, header: value })} />,
               ]}
             />
           </SectionCard>
@@ -616,21 +591,33 @@ function SelectField({
   onChange,
   options,
   labels,
+  disabled = false,
+  disabledHint,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   options: string[];
   labels?: Record<string, string>;
+  /** Greyed out where the active renderer does not read this setting. */
+  disabled?: boolean;
+  disabledHint?: string;
 }) {
   const fieldId = useId();
   return (
     <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <label
+        htmlFor={fieldId}
+        className={`mb-2 block text-sm font-medium ${disabled ? "text-slate-400" : "text-slate-700"}`}
+      >
+        {label}
+      </label>
       <AssistantSelect id={fieldId}
         value={value}
+        disabled={disabled}
+        title={disabled ? disabledHint : undefined}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -638,6 +625,9 @@ function SelectField({
           </option>
         ))}
       </AssistantSelect>
+      {disabled && disabledHint ? (
+        <p className="mt-1 text-xs text-slate-400">{disabledHint}</p>
+      ) : null}
     </div>
   );
 }
@@ -650,10 +640,15 @@ function CommittedNumberField({
   label,
   value,
   onCommit,
+  disabled = false,
+  disabledHint,
 }: {
   label: string;
   value: number;
   onCommit: (value: number) => void;
+  /** Greyed out where the active renderer does not read this setting. */
+  disabled?: boolean;
+  disabledHint?: string;
 }) {
   const fieldId = useId();
   const [draft, setDraft] = useState(() => formatNumberValue(value));
@@ -679,12 +674,19 @@ function CommittedNumberField({
 
   return (
     <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <label
+        htmlFor={fieldId}
+        className={`mb-2 block text-sm font-medium ${disabled ? "text-slate-400" : "text-slate-700"}`}
+      >
+        {label}
+      </label>
       <AssistantInput id={fieldId}
         type="text"
         lang="en-US"
         inputMode="decimal"
         value={draft}
+        disabled={disabled}
+        title={disabled ? disabledHint : undefined}
         onChange={(e) => setDraft(e.target.value.replace(",", "."))}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -693,22 +695,29 @@ function CommittedNumberField({
             commit();
           }
         }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
       />
+      {disabled && disabledHint ? (
+        <p className="mt-1 text-xs text-slate-400">{disabledHint}</p>
+      ) : null}
     </div>
   );
 }
 
 function OptionsLayout({
   controls,
+  size,
   toggles,
 }: {
   controls: ReactNode[];
+  /** The shared width/height/DPI row, so this page sizes plots like every other. */
+  size?: ReactNode;
   toggles?: ReactNode[];
 }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-3">{controls}</div>
+      {controls.length > 0 ? <div className="grid gap-4 lg:grid-cols-3">{controls}</div> : null}
+      {size}
       {toggles && toggles.length > 0 ? <div className="flex flex-wrap gap-3">{toggles}</div> : null}
     </div>
   );
@@ -727,29 +736,11 @@ function ImagePlotCard({
   renderMode?: "image" | "html";
   heightCm?: number;
 }) {
-  const [errorState, setErrorState] = useState<{ url: string; message: string } | null>(null);
-  const error = errorState?.url === url ? errorState.message : null;
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
 
   const downloadUrl = withPlotDownloadFormat(url, downloadFormat);
   const downloadFilename = withPlotDownloadFilename(downloadName, downloadFormat);
 
-  async function handleError() {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const parsed = JSON.parse(text) as { detail?: string };
-          if (parsed?.detail) {
-            setErrorState({ url, message: parsed.detail });
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setErrorState({ url, message: "Failed to load plot image. Check backend logs for details." });
-  }
 
   return (
     <SectionCard title={title}>
@@ -787,16 +778,9 @@ function ImagePlotCard({
         )}
       </div>
       {renderMode === "image" ? (
-        <img
-          key={url}
-          src={url}
-          alt={title}
-          className="mt-4 w-full rounded-xl border border-slate-200"
-          onLoad={() => setErrorState(null)}
-          onError={() => {
-            handleError();
-          }}
-        />
+        <div className="mt-4">
+          <PlotImage url={url} alt={title} />
+        </div>
       ) : (
         <iframe
           sandbox="allow-scripts allow-downloads"
@@ -805,10 +789,8 @@ function ImagePlotCard({
           title={`${title} interactive`}
           className="mt-4 block w-full rounded-xl border border-slate-200"
           style={{ height: `max(${cmToIframeHeight(heightCm)}px, 78vh)` }}
-          onLoad={() => setErrorState(null)}
         />
       )}
-      {error ? <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
     </SectionCard>
   );
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import json
 import os
 import re
 import sys
@@ -100,6 +101,68 @@ def _set_frontend_dist_env(project_root: Path, bundle_root: Path) -> None:
         if (candidate / "index.html").is_file():
             os.environ["COPYLOT_FRONTEND_DIST"] = str(candidate)
             return
+
+
+def frontend_bundle_mode(dist: Path) -> str | None:
+    """Which mode the bundle in `dist` was built for, or None if it cannot say.
+
+    Vite writes `build-mode.json` from VITE_APP_MODE. A bundle built before that
+    existed has no marker, which is not the same as being built for analysis.
+    """
+    marker = dist / "build-mode.json"
+    if not marker.is_file():
+        return None
+    try:
+        mode = json.loads(marker.read_text(encoding="utf-8")).get("appMode")
+    except (OSError, ValueError):
+        return None
+    return mode if mode in {"analysis", "viewer"} else None
+
+
+def viewer_mode_requested(viewer_flag: bool) -> bool:
+    """Whether this process will serve the viewer.
+
+    `--viewer` is one way in; `COPYLOT_VIEWER_MODE=1` is the other, and it is the
+    one the backend itself reads. The Docker images start `launch.py` without
+    flags and select viewer mode through the environment, so the bundle check
+    has to honour both or every viewer container refuses its own viewer bundle.
+    """
+    return bool(viewer_flag) or _truthy_env("COPYLOT_VIEWER_MODE")
+
+
+def check_frontend_bundle_mode(viewer: bool) -> str | None:
+    """Refuse to serve a bundle built for the other mode. Returns a warning.
+
+    The two bundles are byte-different builds of the same source and the mode is
+    invisible once built, so a viewer backend serving the analysis bundle shows
+    every data-processing module -- Upload, Imputation, Restore, peptide
+    collapse, simulation -- over read-only data, with nothing on screen to say
+    the gating is not running. That is silent, and it is the failure this
+    catches. Raises ValueError on a definite mismatch; returns a message when
+    the bundle predates the marker and cannot be checked.
+    """
+    configured = os.getenv("COPYLOT_FRONTEND_DIST", "").strip()
+    if not configured:
+        return None
+    dist = Path(configured)
+    wanted = "viewer" if viewer else "analysis"
+    found = frontend_bundle_mode(dist)
+    if found is None:
+        return (
+            f"Cannot tell which mode the frontend bundle in {dist} was built for "
+            "(no build-mode.json). Rebuild it to be sure: in frontend/, "
+            f'cmd /c "set VITE_APP_MODE={wanted}&& npm run build".'
+        )
+    if found != wanted:
+        raise ValueError(
+            f"The frontend bundle in {dist} was built for {found} mode, but this "
+            f"is the {wanted} launcher. Serving it would show the {found} UI: in "
+            "viewer mode that means every data-processing module on screen over "
+            "read-only data, with no gating. Rebuild in frontend/ with "
+            f'cmd /c "set VITE_APP_MODE={wanted}&& npm run build", or point '
+            "COPYLOT_FRONTEND_DIST at the bundle built for this mode."
+        )
+    return None
 
 
 def _set_viewer_env(project_root: Path, bundle_root: Path, args: argparse.Namespace) -> None:
@@ -320,6 +383,12 @@ def main() -> None:
     _ensure_backend_on_path(project_root, bundle_root)
     _set_frontend_dist_env(project_root, bundle_root)
     _set_viewer_env(project_root, bundle_root, args)
+    try:
+        warning = check_frontend_bundle_mode(viewer_mode_requested(bool(args.viewer)))
+    except ValueError as exc:
+        parser.error(str(exc))
+    if warning:
+        print(f"Warning: {warning}", file=sys.stderr)
     try:
         _validate_network_binding(
             args.host,

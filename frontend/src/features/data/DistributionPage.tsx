@@ -5,6 +5,7 @@ import { buildPlotUrl, getDistributionSummary, isAbortError } from "../../lib/ap
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -33,10 +34,9 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DistributionSummaryResponse | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png");
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
   const [randomSeed, setRandomSeed] = useState(() => Number(persisted.randomSeed ?? 187));
   useEffect(() => {
     onContextModeChange?.(JSON.stringify({ kind, randomSeed }));
@@ -89,7 +89,6 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
   const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
   const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
   const qqReferenceImageUrl = withBasePath("/assets/qqnorm.jpg");
-  const qqReferenceTextUrl = withBasePath("/assets/qqnorm_txt.jpg");
 
   return (
     <div className="space-y-6">
@@ -181,18 +180,53 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">QQ Norm Reference</h3>
-            <div className="mt-4 grid gap-4 grid-cols-1">
+            <p className="mt-2 text-sm text-slate-600">
+              Three quantile-quantile plots of data whose distribution is known, for comparison with the
+              plot above. Read the middle of the cloud first and the ends second: a departure in the
+              central mass describes the whole matrix, while a departure confined to the last few points
+              on either side describes a handful of features.
+            </p>
+            <div className="mt-4">
               <img
                 src={qqReferenceImageUrl}
-                alt="QQ norm reference"
-                className="w-full rounded-xl border border-slate-200"
-              />
-              <img
-                src={qqReferenceTextUrl}
-                alt="QQ norm reference text"
+                alt="Three reference quantile-quantile plots: normal, skewed and heavy-tailed"
                 className="w-full rounded-xl border border-slate-200"
               />
             </div>
+            <dl className="mt-5 space-y-4 text-sm text-slate-700">
+              <div>
+                <dt className="font-semibold text-slate-900">A straight line — normal</dt>
+                <dd className="mt-1">
+                  The values follow a normal distribution, and only the extreme few wander, which they do
+                  in any finite sample. This is what a log<sub>2</sub> intensity matrix should look like,
+                  and it is why intensities are log-transformed at all: raw intensities span orders of
+                  magnitude and are strongly right-skewed, while their logarithms are close to normal.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">A curve — skewed</dt>
+                <dd className="mt-1">
+                  Bending upwards at the right means a long upper tail: a minority of features far more
+                  abundant than the bulk. The consequence is on the tests that follow, since a t-test
+                  assumes approximate normality and its p-values are optimistic on a strongly skewed
+                  matrix, the more so the fewer replicates there are. A pronounced curve on a matrix that
+                  should be log-transformed usually means it is not — check the scale on the annotation
+                  page before reading anything into the shape.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-900">Ends lifting away — heavy tails</dt>
+                <dd className="mt-1">
+                  More extreme values at both ends than a normal distribution would produce. In a
+                  proteomics matrix this is ordinary in moderation, because the dynamic range is real. It
+                  matters when it is not moderate: extreme values pull means and standard deviations, so a
+                  fold change computed over a feature sitting in such a tail rests on one or two
+                  measurements. Ends bending <em>towards</em> the line are the opposite case — truncation,
+                  from a quantitation floor, an upstream filter, or a report that writes a fixed value in
+                  place of a low measurement.
+                </dd>
+              </div>
+            </dl>
           </section>
         </>
       ) : null}

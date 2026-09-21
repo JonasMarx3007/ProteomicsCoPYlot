@@ -38,14 +38,15 @@ def test_pca_feature_summary_reports_complete_variable_features(monkeypatch) -> 
     frame = _missingness_fixture()
     monkeypatch.setattr(
         plot_images,
-        "analysis_data_source",
-        lambda kind, data_source: (data_source, frame.copy(), pd.DataFrame(), []),
+        "select_matrix",
+        lambda kind, data_source: (data_source, frame.copy(), pd.DataFrame()),
     )
     monkeypatch.setattr(plot_images, "_get_sample_columns", lambda kind, source: ["s1", "s2", "s3"])
 
     summary = plot_images.qc_pca_feature_summary("protein")
 
     assert summary == {
+        "ellipseSkippedGroups": [],
         "featuresTotal": 4,
         "featuresComplete": 2,
         "featuresUsed": 2,
@@ -85,7 +86,7 @@ def _pc1(monkeypatch: pytest.MonkeyPatch, scaling: str, method: str = "PCA") -> 
     samples = [column for column in frame.columns if column != "ProteinNames"]
     invalidate_runtime_cache(f"pca-scaling-{method}-{scaling}")
     monkeypatch.setattr(
-        plot_images, "analysis_data_source", lambda kind, data_source="data": ("filtered", frame, metadata, [])
+        plot_images, "select_matrix", lambda kind, data_source="data": ("filtered", frame, metadata)
     )
     monkeypatch.setattr(plot_images, "_get_sample_columns", lambda kind, f: samples)
     monkeypatch.setattr(plot_images, "_metadata_for_kind", lambda kind, f, cols: metadata)

@@ -33,7 +33,7 @@ def test_volcano_figure_labels_actual_contrast(control):
         p_value_threshold=0.05, log2fc_threshold=1,
         use_uncorrected=False, highlight_terms=[],
     )
-    contrast = "(B - D) - (A - C)" if control else "B - A"
+    contrast = "(A - C) - (B - D)" if control else "A - B"
     assert fig.layout.xaxis.title.text == f"log2 fold change ({contrast})"
     assert ("controls: C vs D" in fig.layout.title.text) is control
 
@@ -99,10 +99,12 @@ def _patch_stats_source(
     "test_type",
     ["unpaired", "unpaired_welch", "paired"],
 )
+@pytest.mark.parametrize("data_source", ["data", "filtered", "imputed"])
 def test_ksea_standard_formats_exact_volcano_output(
     monkeypatch: pytest.MonkeyPatch,
     use_uncorrected: bool,
     test_type: str,
+    data_source: str,
 ) -> None:
     frame, metadata = _control_fixture(40, seed=17)
     _patch_stats_source(monkeypatch, frame, metadata)
@@ -110,7 +112,7 @@ def test_ksea_standard_formats_exact_volcano_output(
     direct = stats_tools.run_volcano(
         VolcanoRequest(
             kind="phospho",
-            dataSource="data",
+            dataSource=data_source,
             condition1=CONDITIONS[0],
             condition2=CONDITIONS[2],
             identifier="workflow",
@@ -122,7 +124,7 @@ def test_ksea_standard_formats_exact_volcano_output(
     )
     ksea = phospho_tools.ksea_table(
         source="volcano",
-        data_source="data",
+        data_source=data_source,
         condition1=CONDITIONS[0],
         condition2=CONDITIONS[2],
         p_value_threshold=0.05,
@@ -146,10 +148,12 @@ def test_ksea_standard_formats_exact_volcano_output(
     "test_type",
     ["unpaired", "unpaired_welch", "paired"],
 )
+@pytest.mark.parametrize("data_source", ["data", "filtered", "imputed"])
 def test_ksea_control_formats_exact_control_volcano_output(
     monkeypatch: pytest.MonkeyPatch,
     use_uncorrected: bool,
     test_type: str,
+    data_source: str,
 ) -> None:
     frame, metadata = _control_fixture(40, seed=7)
     _patch_stats_source(monkeypatch, frame, metadata)
@@ -157,7 +161,7 @@ def test_ksea_control_formats_exact_control_volcano_output(
     direct = stats_tools.run_volcano_control(
         VolcanoControlRequest(
             kind="phospho",
-            dataSource="data",
+            dataSource=data_source,
             condition1=CONDITIONS[0],
             condition1Control=CONDITIONS[1],
             condition2=CONDITIONS[2],
@@ -171,7 +175,7 @@ def test_ksea_control_formats_exact_control_volcano_output(
     )
     ksea = phospho_tools.ksea_table(
         source="volcano_control",
-        data_source="data",
+        data_source=data_source,
         condition1=CONDITIONS[0],
         condition1_control=CONDITIONS[1],
         condition2=CONDITIONS[2],

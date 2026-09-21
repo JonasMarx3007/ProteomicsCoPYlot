@@ -36,6 +36,7 @@ import type {
   PhosprotAggregationMode,
   PhosprotAggregationSource,
 } from "../../lib/types";
+import { NORMALIZATION_LABELS } from "../../lib/types";
 
 type ConditionDraft = {
   id: number;
@@ -1036,11 +1037,11 @@ export default function AnnotationPage() {
                 }
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
               >
-                <option value="none">None</option>
-                <option value="median">Median centering</option>
-                <option value="quantile">Quantile</option>
+                <option value="none">{NORMALIZATION_LABELS.none}</option>
+                <option value="median">{NORMALIZATION_LABELS.median}</option>
+                <option value="quantile">{NORMALIZATION_LABELS.quantile}</option>
                 {normalizationCapability?.vsnAvailable ? (
-                  <option value="vsn">VSN</option>
+                  <option value="vsn">{NORMALIZATION_LABELS.vsn}</option>
                 ) : null}
               </select>
             </div>

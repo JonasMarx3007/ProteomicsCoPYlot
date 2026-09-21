@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 import sys
 from pathlib import Path
 
@@ -31,7 +30,11 @@ ENUM_PROBES = [
     ("/api/plots/qc/protein/pca.png", "colorBy", "NOT_A_FIELD", "Condition", {}),
     ("/api/plots/qc/protein/pca.png", "method", "NOT_A_METHOD", "PCA", {}),
     ("/api/plots/qc/protein/pca.png", "clusterMethod", "NOT_A_CLUSTER", "None", {}),
-    ("/api/plots/qc/protein/pca.png", "dataSource", "NOT_A_SOURCE", "log2", {}),
+    ("/api/plots/qc/protein/pca-features", "clusterMethod", "NOT_A_CLUSTER", "None", {}),
+    ("/api/plots/qc/protein/pca-features", "plotDim", "9D", "3D", {}),
+    ("/api/plots/qc/protein/pca-features", "colorBy", "NOT_A_FIELD", "Condition", {}),
+    ("/api/plots/qc/protein/pca-features", "scaling", "NOT_A_SCALING", "auto", {}),
+    ("/api/plots/qc/protein/pca.png", "dataSource", "NOT_A_SOURCE", "data", {}),
     ("/api/plots/qc/protein/pca.png", "scaling", "NOT_A_SCALING", "auto", {}),
     ("/api/plots/qc/protein/boxplot.png", "mode", "NOT_A_MODE", "Single", {}),
     ("/api/plots/qc/protein/correlation.png", "method", "NOT_A_METHOD", "Matrix", {}),
@@ -203,6 +206,7 @@ SERVICE_VALIDATED = {
     ("/stats/{kind}/pathway-heatmap.png", "valueType"),
     ("/stats/{kind}/simulation.html", "dataSource"),
     ("/qc/{kind}/pca-features", "dataSource"),
+    ("/qc/{kind}/pca-features", "clusterMethod"),
     ("/qc/{kind}/pca.png", "dataSource"),
     ("/qc/{kind}/pca.png", "clusterMethod"),
     ("/qc/{kind}/pca-interactive.html", "dataSource"),

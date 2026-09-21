@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.html_security import GENERATED_HTML_META
+from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -26,7 +27,14 @@ from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import sample_id_map
 from app.services.peptide_metadata_store import get_peptide_metadata
-from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
+from app.services.plot_images import (
+    _advanced_plotly_layout,
+    _apply_advanced_axes,
+    advanced_label_size,
+    marker_style,
+    plotly_marker,
+    resolve_reference_line,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -125,6 +133,7 @@ def peptide_modification_counts(
 
 
 def _plotly_html(fig) -> str:
+    fig = force_svg_rendering(fig)
     bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
     body = fig.to_html(
         full_html=False,
@@ -566,7 +575,7 @@ def peptide_rt_plot(
     if method == "Scatter Plot":
         if len(data) > 100000:
             data = data.sample(n=100000, random_state=int(sampling_seed))
-        ax.scatter(data["Predicted.RT"], data["RT"], alpha=0.2, s=1)
+        ax.scatter(data["Predicted.RT"], data["RT"], **marker_style(advanced, size=1.0, alpha=0.2))
     elif method == "Density Plot":
         from matplotlib.colors import LogNorm
 
@@ -586,10 +595,15 @@ def peptide_rt_plot(
         )
         fig.colorbar(hb, ax=ax)
 
-    if add_line:
+    # The plot's own switch still decides whether there is a line at all; the
+    # reference-line settings decide what it looks like. Its interactive twin
+    # used to draw #ef4444 where this drew "red" -- the same line in two
+    # different colours depending on which renderer you were looking at.
+    identity_line = resolve_reference_line(advanced, color="red")
+    if add_line and identity_line.visible:
         x_min = float(data["Predicted.RT"].min())
         x_max = float(data["Predicted.RT"].max())
-        ax.plot([x_min, x_max], [x_min, x_max], ls="--", color="red")
+        ax.plot([x_min, x_max], [x_min, x_max], **identity_line.matplotlib())
 
     ax.set_xlabel("Predicted RT")
     ax.set_ylabel("Actual RT")
@@ -656,11 +670,13 @@ def peptide_rt_interactive_html(
 
     fig = go.Figure()
     fig.add_trace(
-        go.Scattergl(
+        # SVG, not Scattergl: see plot_webgl - WebGL fails outright without
+        # hardware acceleration, and _plotly_html enforces the same policy.
+        go.Scatter(
             x=data["predicted"],
             y=data["actual"],
             mode="markers",
-            marker=dict(size=4, color="#1f77b4", opacity=0.35),
+            marker=plotly_marker(advanced, size=4, alpha=0.35, color_default="#1f77b4"),
             customdata=custom_data,
             hovertemplate=(
                 "Feature: %{customdata[3]}<br>"
@@ -674,7 +690,8 @@ def peptide_rt_interactive_html(
         )
     )
 
-    if add_line:
+    identity_line = resolve_reference_line(advanced, color="red", width=2.0)
+    if add_line and identity_line.visible:
         x_min = float(min(data["predicted"].min(), data["actual"].min()))
         x_max = float(max(data["predicted"].max(), data["actual"].max()))
         line_x = np.array([x_min, x_max], dtype=float)
@@ -683,7 +700,7 @@ def peptide_rt_interactive_html(
                 x=line_x,
                 y=line_x,
                 mode="lines",
-                line=dict(color="#ef4444", dash="dash", width=2),
+                line=identity_line.plotly(),
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -877,15 +894,20 @@ def peptide_missed_cleavage_plot(
     ax.set_xticklabels(sample_order, rotation=90)
 
     if text:
-        single = (
-            summary[summary["Count"] == 1]
-            .set_index("Sample")
-            .reindex(sample_order)["Percentage"]
+        # The number quoted when a digest is assessed is the share of sequences
+        # with *at least one* missed cleavage, so every non-zero class counts.
+        # Printing only the Count == 1 class understated a sample whose peptides
+        # carry two or more, which is exactly the sample worth noticing.
+        with_missed = (
+            summary[summary["Count"] != 0]
+            .groupby("Sample", observed=False)["Percentage"]
+            .sum()
+            .reindex(sample_order)
             .fillna(0.0)
         )
         base_y = float(bottom.max()) * 0.03 if len(bottom) else 0.0
-        for index, value in enumerate(single.tolist()):
-            ax.text(index, base_y, f"{value:.1f}%", ha="center", va="bottom", fontsize=text_size)
+        for index, value in enumerate(with_missed.tolist()):
+            ax.text(index, base_y, f"{value:.1f}%", ha="center", va="bottom", fontsize=advanced_label_size(advanced, text_size))
 
     ax.legend(title="Number", bbox_to_anchor=(1.05, 1), loc="upper left")
     _apply_advanced_axes(ax, advanced)

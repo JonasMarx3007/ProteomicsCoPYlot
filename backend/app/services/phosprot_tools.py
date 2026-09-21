@@ -17,7 +17,7 @@ from app.services.annotation_store import StoredAnnotation, clear_annotation, ge
 from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.functions import (
-    analysis_data_source,
+    select_matrix,
     choose_best_source,
     filter_data,
     inverse_log2_transform_data,
@@ -438,10 +438,7 @@ def aggregate_from_phospho(
 
     coverage_source = log2_source.copy()
     if source == "imputed":
-        _, log2_source, _, _ = analysis_data_source(
-            "phospho",
-            data_source="imputed",
-        )
+        _, log2_source, _ = select_matrix("phospho", "imputed")
         source_label = "stored, verified imputed phospho data"
 
     phosprot = transform_phosprot(

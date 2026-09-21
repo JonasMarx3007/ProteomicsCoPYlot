@@ -3,6 +3,8 @@ import re
 import logging
 import math
 import time
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -438,39 +440,56 @@ def _select_evidence_plan(request: AssistantRequest, plan: AssistantPlan, model:
     return plan.model_copy(update={"task": task, "module": module, "query": query, "clarification": ""})
 
 
-def assistant_step(request: AssistantRequest, cancelled=None) -> AssistantResponse:
-    def check_cancelled():
-        if cancelled is not None and cancelled.is_set():
-            raise ValueError("The assistant request was cancelled.")
-        deadline = provider_deadline.get()
-        if deadline is not None and time.monotonic() >= deadline:
-            raise ValueError("The assistant time limit was reached.")
+@dataclass(frozen=True)
+class PlannerCall:
+    """Everything the planner turn needs, and nothing that needs a session.
 
-    check_cancelled()
-    revision = runtime_cache_version()
-    addition = None if request.answerOnly else canvas_add_request(request.message)
-    if addition:
-        navigation = request.view.module != "analysis.canvas"
-        if addition['count'] + len(request.receipts) + int(navigation) > 8:
-            raise ValueError("This request exceeds the remaining action budget. Open the canvas and ask for a smaller batch.")
-        if navigation and "analysis.canvas" not in request.view.destinations:
-            raise ValueError("The analysis canvas is not available in this view.")
-        action = ({"type": "navigate", "target": "analysis.canvas"} if navigation else
-                  {"type": "add_canvas_tiles", "value": json.dumps(addition)})
-        return AssistantResponse(model=request.model or "application", revision=revision, actions=[action])
-    if requests_canvas_guidance(request.message):
-        guidance = canvas_workflow_guidance()
-        return AssistantResponse(model=request.model or "application", revision=revision, answer=guidance.text, evidence=[guidance])
+    `assistant_step` used to build the instruction, the inputs and the schema
+    inline, which meant the only way to ask "would this model produce an
+    acceptable plan for this view?" was to run a whole request against a loaded
+    dataset. That is the question the model benchmark exists to answer, and the
+    question a regression test wants to ask cheaply, so it is a function now.
+
+    Pure: given a request it returns the same three strings every time, touches
+    no session state and performs no I/O. The only outside call is the model
+    capability lookup that picks the execution profile, which is cached and
+    falls back to `compact`.
+    """
+
+    instruction: str
+    inputs: dict[str, Any]
+    schema: dict[str, Any]
+    tasks: list[str]
+    history: list[dict[str, str]]
+    profile: str
+    max_actions: int
+    all_sites_requested: bool
+    stated: str | None
+
+    @property
+    def system(self) -> str:
+        """The system message, schema included, exactly as the provider sees it."""
+        return self.instruction + "\nSchema: " + json.dumps(self.schema)
+
+    @property
+    def payload(self) -> str:
+        """The user message: the compact JSON envelope."""
+        return json.dumps(self.inputs, separators=(",", ":"))
+
+
+def plan_request(request: AssistantRequest) -> PlannerCall:
+    """Build the planner turn for this request.
+
+    Narrows the task list, prunes the view to what the task needs, and derives
+    the action schema from the live controls -- so the enum of legal targets and
+    values is the current interface rather than a fixed vocabulary.
+    """
     # Never forward arbitrary caller-supplied system messages or stale generated context.
     profile, count, characters = _execution_profile(request)
     history = [{"role": m.role, "content": m.content[:characters]} for m in request.messages[-count:] if m.role in {"user", "assistant"}]
     tasks = planner_tasks(request.message)
     if request.answerOnly:
         tasks = ["current_plot", "qc_review", "entity_lookup", "project_state", "help", "clarify"]
-    if (not request.answerOnly and not request.view.advancedOptions and request.view.controls
-            and request.view.module in _MODULE_SPECIFIC_AI_FUNCTIONS and requests_advanced_styling(request.message)):
-        return AssistantResponse(model=_resolve_chat_model(request, request.provider), revision=revision,
-                                 actions=[{"type": "advanced_options", "value": True}])
     view = request.view.model_dump(exclude_defaults=True, exclude_none=True)
     kind = ai_functions._parse_mode_pairs(request.view.mode).get("kind", "")
     view["workflow"] = {"protein": "protein", "phospho": "phosphosite", "phosprot": "phosphoprotein", "peptide": "peptide"}.get(kind, request.view.workflow)
@@ -504,7 +523,41 @@ def assistant_step(request: AssistantRequest, cancelled=None) -> AssistantRespon
                        + _CANVAS_WORKFLOW + "\nChoose canvas_focus when the user supplies an identifier, even an unfamiliar one. "
                        "Only choose clarify with clarification=entity or condition when that information is missing or ambiguous. "
                        "Never infer site membership or availability; the application checks those. No UI button actions.")
-    model, raw = assistant_completion(request, instruction + "\nSchema: " + json.dumps(schema), json.dumps(inputs, separators=(",", ":")), schema=schema)
+    return PlannerCall(instruction=instruction, inputs=inputs, schema=schema, tasks=tasks, history=history, profile=profile,
+                       max_actions=max_actions, all_sites_requested=all_sites_requested, stated=stated)
+
+
+def assistant_step(request: AssistantRequest, cancelled=None) -> AssistantResponse:
+    def check_cancelled():
+        if cancelled is not None and cancelled.is_set():
+            raise ValueError("The assistant request was cancelled.")
+        deadline = provider_deadline.get()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ValueError("The assistant time limit was reached.")
+
+    check_cancelled()
+    revision = runtime_cache_version()
+    addition = None if request.answerOnly else canvas_add_request(request.message)
+    if addition:
+        navigation = request.view.module != "analysis.canvas"
+        if addition['count'] + len(request.receipts) + int(navigation) > 8:
+            raise ValueError("This request exceeds the remaining action budget. Open the canvas and ask for a smaller batch.")
+        if navigation and "analysis.canvas" not in request.view.destinations:
+            raise ValueError("The analysis canvas is not available in this view.")
+        action = ({"type": "navigate", "target": "analysis.canvas"} if navigation else
+                  {"type": "add_canvas_tiles", "value": json.dumps(addition)})
+        return AssistantResponse(model=request.model or "application", revision=revision, actions=[action])
+    if requests_canvas_guidance(request.message):
+        guidance = canvas_workflow_guidance()
+        return AssistantResponse(model=request.model or "application", revision=revision, answer=guidance.text, evidence=[guidance])
+    if (not request.answerOnly and not request.view.advancedOptions and request.view.controls
+            and request.view.module in _MODULE_SPECIFIC_AI_FUNCTIONS and requests_advanced_styling(request.message)):
+        return AssistantResponse(model=_resolve_chat_model(request, request.provider), revision=revision,
+                                 actions=[{"type": "advanced_options", "value": True}])
+    call = plan_request(request)
+    profile, tasks, max_actions = call.profile, call.tasks, call.max_actions
+    all_sites_requested, stated, history = call.all_sites_requested, call.stated, call.history
+    model, raw = assistant_completion(request, call.system, call.payload, schema=call.schema)
     check_cancelled()
     try:
         plan = AssistantPlan.model_validate_json(raw)

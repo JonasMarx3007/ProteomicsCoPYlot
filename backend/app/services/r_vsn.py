@@ -19,7 +19,6 @@ validation numbers.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import tempfile
 from functools import lru_cache

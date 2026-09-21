@@ -50,6 +50,24 @@ def _request(
     )
 
 
+
+def _rotated_session_id(response, cookie_name: str = "copylot_session_id") -> str:
+    """The session id a login handed out, read the way a client reads it.
+
+    From the `Set-Cookie` header, not the response body. A browser takes it as an
+    HttpOnly cookie it cannot read; a header-based client reads the same header
+    directly. Neither needs it echoed in the JSON, and putting it there gave a
+    live authenticated session to anything that could read a response.
+    """
+    for key, value in response.headers.raw:
+        if key.lower() != b"set-cookie":
+            continue
+        text = value.decode("latin-1").lstrip()
+        if text.startswith(f"{cookie_name}="):
+            return text.split("=", 1)[1].split(";", 1)[0]
+    raise AssertionError(f"login set no {cookie_name} cookie: {response.headers.raw}")
+
+
 def test_protected_deployments_fail_closed_without_session_isolation(monkeypatch) -> None:
     monkeypatch.setenv("COPYLOT_TOOL_ACCESS_ENABLED", "1")
     monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "0")
@@ -267,9 +285,12 @@ def test_protected_backend_rejects_shell_bypass_and_anonymous_session_flood(
             json={"password": "test-password"},
         )
         assert login.status_code == 200
-        # Authentication rotates the session id; a header-based client adopts the
-        # one the login response hands back.
-        session_id = login.json()["sessionId"]
+        # Authentication rotates the session id. A header-based client adopts the
+        # new one from the `Set-Cookie` response header -- which it can read even
+        # though it stores no cookies. It is deliberately not in the response
+        # body: that copy was readable by anything that could read a response.
+        assert "sessionId" not in login.json()
+        session_id = _rotated_session_id(login)
 
         for index in range(4):
             client.cookies.clear()
@@ -377,7 +398,7 @@ def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
             and value.lstrip().startswith(b"copylot_session_id=")
         ]
         assert len(handed_out) == 1, f"login set {len(handed_out)} session cookies: {handed_out}"
-        assert client.cookies.get("copylot_session_id") == login.json()["sessionId"]
+        assert client.cookies.get("copylot_session_id") == _rotated_session_id(login)
 
         assert client.get("/api/datasets/current").status_code == 200
 
@@ -479,8 +500,8 @@ def test_login_registers_rotated_session_without_followup(monkeypatch, mode, met
     for _ in range(2):
         response = client.post(path, json=payload)
         assert response.status_code == 200
-        current = response.json()['sessionId']
         cookie_name = f'copylot_session_id_{tab}' if tab else 'copylot_session_id'
+        current = _rotated_session_id(response, cookie_name)
         assert client.cookies.get(cookie_name) == current
         if tab:
             assert f'Path={prefix}' in response.headers['set-cookie']
@@ -604,3 +625,46 @@ def test_authenticated_browsers_cannot_read_each_others_packages(monkeypatch, tm
         assert selected.json()['protein'] is None
         assert first.get('/api/datasets/packages').json()['activePackage'] == 'First-private'
         assert first.get('/api/datasets/current').json() == original
+
+@pytest.mark.parametrize("mode", ["tool", "viewer"])
+def test_no_auth_response_carries_the_session_id_in_its_body(mode: str) -> None:
+    """The cookie is HttpOnly; a copy in the JSON hands the same value away.
+
+    The backend accepts a session id from the `X-CoPYlot-Session` header as well
+    as from the cookie, so the id is a bearer token. Setting it HttpOnly and then
+    echoing it in a readable body defeats the flag: an injected script, a library
+    that logs responses or a proxy that records them all get a live authenticated
+    session they can replay.
+
+    Checked on the schema rather than by logging in, so it holds for every
+    response those routes can produce, including the failure ones.
+    """
+    from app.schemas.tool_auth import ToolAuthLoginResponse, ToolAuthLogoutResponse
+    from app.schemas.viewer_auth import ViewerAuthLoginResponse, ViewerAuthLogoutResponse
+
+    models = (
+        (ToolAuthLoginResponse, ToolAuthLogoutResponse)
+        if mode == "tool"
+        else (ViewerAuthLoginResponse, ViewerAuthLogoutResponse)
+    )
+    for model in models:
+        fields = set(model.model_fields)
+        leaking = {name for name in fields if "session" in name.lower()}
+        assert not leaking, (
+            f"{model.__name__} would return {sorted(leaking)} in its body; the "
+            "rotated id belongs in Set-Cookie and nowhere else"
+        )
+
+
+def test_the_rotated_id_is_still_reachable_by_a_header_based_client() -> None:
+    """Removing it from the body must not strand a non-browser client."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "backend" / "app" / "api" / "routes_tool_auth.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_set_rotated_session_cookie(response, rotated)" in source, (
+        "the login has to hand the new id out somehow; Set-Cookie is the channel "
+        "a header-based client reads without storing anything"
+    )

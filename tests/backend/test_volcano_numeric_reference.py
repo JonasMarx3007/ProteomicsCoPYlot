@@ -48,7 +48,7 @@ def _reference(frame, metadata):
     _, pvalue = scipy_stats.ttest_ind(b, a, axis=1, nan_policy="omit", equal_var=True)
     return pd.DataFrame({
         LABEL: frame[LABEL].astype(str).to_numpy(),
-        "ref_log2FC": np.nanmean(b, axis=1) - np.nanmean(a, axis=1),
+        "ref_log2FC": np.nanmean(a, axis=1) - np.nanmean(b, axis=1),
         "ref_pval": np.asarray(pvalue, dtype=float),
     })
 
@@ -62,7 +62,7 @@ def _volcano():
     )[2]
 
 
-def test_the_fold_change_is_condition2_minus_condition1(loaded) -> None:
+def test_the_fold_change_is_condition1_minus_condition2(loaded) -> None:
     """The direction of the volcano, asserted on its own.
 
     Inverting this sign turns every upregulated protein into a downregulated one
@@ -79,7 +79,7 @@ def test_the_fold_change_is_condition2_minus_condition1(loaded) -> None:
 
     worst = float(np.max(np.abs(observed[both] - reference[both])))
     assert worst < 1e-9, (
-        f"the reported fold change differs from condition2 - condition1 by {worst:.3e}; "
+        f"the reported fold change differs from condition1 - condition2 by {worst:.3e}; "
         "a sign inversion here would flip every call in every figure"
     )
 

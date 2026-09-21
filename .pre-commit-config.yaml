@@ -1,0 +1,55 @@
+# Fast, non-rewriting checks that run before every commit.
+#
+#   pip install pre-commit
+#   pre-commit install
+#   pre-commit run --all-files    # once, to see where you stand
+#
+# Deliberately not here: `ruff format` (reformatting the tree today touches 147
+# files, so it is opt-in per file -- see CONTRIBUTING.md), mypy (around 75
+# pre-existing findings, so it would block every commit), and pytest (too slow
+# for a commit hook; CI and `pytest tests/backend tests/repository -q` cover it).
+#
+# `pre-commit autoupdate` bumps the pinned revisions below.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^frontend/(public|dist)/manuals/
+      - id: end-of-file-fixer
+        exclude: ^frontend/(public|dist)/manuals/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^frontend/(public|dist)/manuals/
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: \.(bat|ps1|cmd)$
+      - id: check-added-large-files
+        # Sized so the ~3 MB example reports pass. The 14 MB GO-term database in
+        # data/db is already tracked and so is never re-checked; adding another
+        # file that size should be a deliberate decision, not a quiet one.
+        args: [--maxkb=5120]
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      # Formatting is configured but not enforced; see CONTRIBUTING.md.
+      # - id: ruff-format
+
+exclude: |
+  (?x)^(
+      build/
+    | dist/
+    | release/
+    | local/
+    | viewer_data/
+    | frontend/(public|dist)/manuals/
+    | .*\.ipynb$
+  )

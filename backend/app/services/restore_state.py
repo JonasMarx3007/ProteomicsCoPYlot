@@ -21,7 +21,6 @@ from app.app_version import APP_VERSION
 from app.schemas.annotation import (
     AnnotationFilterConfig,
     AnnotationImputationInfo,
-    AnnotationKind,
     NormalizationMethod,
     phosprot_filter_config,
 )

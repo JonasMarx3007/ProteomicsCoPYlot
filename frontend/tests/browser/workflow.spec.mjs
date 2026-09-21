@@ -20,6 +20,71 @@ const field = (page, label, tag = 'select') => page.getByLabel(label, { exact: t
   page.locator('label:not(:has(input, select, textarea))').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).locator('..').locator(tag));
 const tab = (page, name) => page.getByRole('button', { name, exact: true });
 
+for (const heatmap of [false, true]) {
+  test(`${heatmap ? 'heatmap' : 'standard plot'} safely renders structured errors and recovers`, async ({ page }) => {
+    await annotated(page);
+    const crashes = [];
+    page.on('pageerror', error => crashes.push(error.message));
+    if (heatmap) {
+      await tab(page, 'Statistical Analysis').click();
+      await tab(page, 'ANOVA').click();
+    } else {
+      await tab(page, 'Single Protein').click();
+    }
+    const image = page.getByRole('img', { name: heatmap ? 'ANOVA Heatmap' : 'Protein Boxplot', exact: true });
+    await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+    const pattern = heatmap ? '**/api/plots/stats/*/anova.png*' : '**/api/plots/single-protein/*/boxplot.png*';
+    const control = heatmap ? field(page, 'P-value threshold', 'input') : page.getByLabel('Width (cm)', { exact: true });
+    const fallback = 'Failed to load the plot image. Check the selected data and plot options.';
+    const cases = [
+      [JSON.stringify({ detail: 'No matching features' }), 'No matching features'],
+      [JSON.stringify({ detail: [{ msg: 'Select a condition', input: 'private-input' }, { msg: 'Invalid width' }] }), 'Select a condition; Invalid width'],
+      [JSON.stringify({ detail: { msg: 'Invalid selection' } }), 'Invalid selection'],
+      [JSON.stringify({ detail: { unexpected: 'private-input' } }), fallback],
+      ['<html>Proxy failure</html>', fallback],
+      [JSON.stringify({ detail: '<img src=x onerror="window.errorInjected=true">' }), '<img src=x onerror="window.errorInjected=true">'],
+    ];
+    let body = '';
+    await page.route(pattern, route => route.fulfill({ status: 422, contentType: 'application/json', body }));
+    for (let i = 0; i < cases.length; i++) {
+      const [responseBody, message] = cases[i];
+      body = responseBody;
+      await control.fill(String(heatmap ? .02 + i * .001 : 21 + i));
+      await control.press('Tab');
+      await expect(page.getByText(message, { exact: true })).toBeVisible();
+      await expect(image).toHaveCount(0);
+      await expect(page.getByText('private-input', { exact: true })).toHaveCount(0);
+    }
+    expect(await page.evaluate(() => Boolean(window.errorInjected))).toBe(false);
+    await page.unroute(pattern);
+    await control.fill(heatmap ? '0.05' : '20');
+    await control.press('Tab');
+    await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+    expect(crashes).toEqual([]);
+  });
+}
+
+test('heatmap notice follows the rendered result and disappears on replacement failure', async ({ page }) => {
+  await annotated(page);
+  await tab(page, 'Statistical Analysis').click();
+  const responsePromise = page.waitForResponse(response => response.url().includes('/anova.png') && response.ok());
+  await tab(page, 'ANOVA').click();
+  const response = await responsePromise;
+  const notice = decodeURIComponent(response.headers()['x-copylot-notice']);
+  expect(notice).toMatch(/^Heatmap-usable features: \d/);
+  await expect(page.getByText(notice, { exact: true })).toBeVisible();
+  const image = page.locator('img[alt*="ANOVA"]').first();
+  await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  await page.route('**/api/plots/stats/*/anova.png*', route => route.fulfill({
+    status: 400, contentType: 'application/json', body: JSON.stringify({ detail: 'Synthetic heatmap refusal' }),
+  }));
+  await field(page, 'P-value threshold', 'input').fill('0.01');
+  await field(page, 'P-value threshold', 'input').press('Tab');
+  await expect(page.getByText('Synthetic heatmap refusal', { exact: true })).toBeVisible();
+  await expect(page.getByText(notice, { exact: true })).toHaveCount(0);
+  await expect(page.locator('img[alt*="ANOVA"]')).toHaveCount(0);
+});
+
 test('scientific assistant navigates, selects an entity and applies cumulative plot styling', async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; provider answers are synthetic.');
   await annotated(page);
@@ -43,8 +108,8 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
       actions = [action('Protein / Site', selectedProtein)];
     }
     if (calls === 2) actions = [{ type: 'advanced_options', target: '', value: true }];
-    if (calls === 3) actions = [action('Top', false, 'checkbox'), action('X tick rotation', '45', 'number')];
-    if (calls === 4) actions = [action('Condition colors / A', '#ff0000', 'color'), action('Sample names / A1', 'Control 1', 'text')];
+    if (calls === 3) actions = [action('Top', false, 'checkbox'), action('X tick label rotation', '45', 'number')];
+    if (calls === 4) actions = [action('Condition colors / A', '#ff0000', 'color'), action('Condition names / A', 'Control', 'text')];
     if (calls === 6) {
       const memory = route.request().postDataJSON().conversationState;
       expect(memory.status).toBe('completed');
@@ -58,14 +123,14 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
   await tab(page, 'Open chatbot sidebar').click();
   await tab(page, 'Toggle AI settings').click();
   await page.getByLabel('Select chatbot provider').selectOption('openai');
-  await page.getByPlaceholder('Ask about this analysis...').fill('Open the protein boxplot, select a protein, remove the top border, rotate labels, change the condition color and rename sample A1.');
+  await page.getByPlaceholder('Ask about this analysis...').fill('Open the protein boxplot, select a protein, remove the top border, rotate labels, change the condition color and rename condition A.');
   await tab(page, 'Send').click();
   await tab(page, 'Confirm and send').click();
   await expect(page.getByText(/View updated\./)).toBeVisible({ timeout: 45000 });
   expect(calls).toBe(6);
   await expect(page.getByRole('combobox', { name: 'Protein / Site', exact: true })).toHaveValue(selectedProtein);
-  const settings = await page.evaluate(() => JSON.parse(sessionStorage.getItem('copylot:activeAdvancedPlotSettings')));
-  expect(settings).toMatchObject({ axisLineTop: false, xTickLabelRotation: 45, conditionColors: { A: '#ff0000' }, sampleLabels: { A1: 'Control 1' } });
+  const settings = JSON.parse(new URL(await page.getByRole('img', { name: 'Protein Boxplot', exact: true }).getAttribute('src'), page.url()).searchParams.get('advanced'));
+  expect(settings).toMatchObject({ axisLineTop: false, xTickLabelRotation: 45, conditionColors: { A: '#ff0000' }, conditionLabels: { A: 'Control' } });
   const plot = page.locator('main img').first();
   await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
   await page.getByPlaceholder('Ask about this analysis...').fill('Explain the current plot.');
@@ -322,8 +387,10 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   const observeStyle = request => { if (request.url().endsWith('/api/analysis/volcano/data')) statisticalRequests.push(request); };
   page.on('request', observeStyle);
   await styledTile.getByText('Plot styling', { exact: true }).click();
-  await styledTile.getByRole('textbox', { name: 'Plot title', exact: true }).fill('A & B <test>');
-  await styledTile.getByRole('textbox', { name: 'Point radius', exact: true }).fill('4');
+  await styledTile.locator('summary').filter({ has: page.getByText('Title', { exact: true }) }).click();
+  await styledTile.getByPlaceholder('Overwrite plot title', { exact: true }).fill('A & B <test>');
+  await styledTile.locator('summary').filter({ has: page.getByText('Volcano points', { exact: true }) }).click();
+  await styledTile.getByText('All classes', { exact: true }).locator('..').getByLabel('Size', { exact: true }).fill('8');
   await expect(styledTile.locator('svg')).toContainText('A & B <test>');
   await expect(styledTile.locator('svg circle title').first()).toContainText('-log10(BH-adjusted p-value)');
   const pointAttributes = await styledTile.locator('svg circle').evaluateAll(points => points.map(point =>
@@ -392,7 +459,7 @@ test('end-to-end evidence preserves canvas data sources and matches dedicated ta
     const tile = canvas.locator(`[data-assistant-group="Tile ${index}: ${type}"]`);
     await tile.getByRole('combobox', { name: 'Protein source', exact: true }).selectOption('manual');
     await tile.getByRole('textbox').fill('K0');
-    for (const source of ['log2', 'filtered', 'imputed']) {
+    for (const source of ['data', 'filtered', 'imputed']) {
       await tile.getByRole('combobox', { name: 'Data source', exact: true }).selectOption(source);
       const img = tile.locator('img');
       await expect(img).toHaveAttribute('src', new RegExp(`dataSource=${source}`));
@@ -410,6 +477,7 @@ test('end-to-end evidence preserves canvas data sources and matches dedicated ta
   for (const [index, type] of [[2, 'proteinBoxplot'], [3, 'proteinLineplot']]) {
     const tile = canvas.locator(`[data-assistant-group="Tile ${index}: ${type}"]`);
     await tile.getByText('Plot styling', { exact: true }).click();
+    await tile.locator('summary').filter({ has: page.getByText('Title', { exact: true }) }).click();
     await tile.getByPlaceholder('Overwrite plot title', { exact: true }).fill(`Styled ${type}`);
     await expect.poll(async () => JSON.parse(new URL(await tile.locator('img').getAttribute('src'), page.url()).searchParams.get('advanced')).titleElement.text).toBe(`Styled ${type}`);
     await expect.poll(() => tile.locator('img').evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
@@ -519,7 +587,8 @@ test('large canvas preserves selected points and avoids requests during layout c
   }
   const id = await canvas.locator('[data-assistant-tile]').first().getAttribute('data-assistant-tile');
   const tile = canvas.locator(`[data-assistant-tile="${id}"]`);
-  await tile.getByRole('button', { name: 'Add all upregulated to list', exact: true }).click();
+  // B is higher in this fixture; the displayed contrast is A minus B.
+  await tile.getByRole('button', { name: 'Add all downregulated to list', exact: true }).click();
   await tile.getByRole('button', { name: 'Multi-select mode: Off', exact: true }).click();
   await tile.getByRole('button', { name: 'Select list in plot', exact: true }).click();
   await expect(tile.locator('svg circle[stroke="#334155"]')).toHaveCount(count);
@@ -1064,9 +1133,14 @@ for (const section of ['QC Pipeline', 'Completeness']) {
     await dpi.press('Tab');
     await expect(dpi).toHaveValue('72');
     await plotReady();
-    await page.getByLabel('Toggle Header', { exact: true }).uncheck();
+    await expect(page.getByLabel('Toggle Header', { exact: true })).toHaveCount(0);
+    await page.getByLabel('Toggle Text', { exact: true }).check();
     await plotReady();
-    await expect(page.getByLabel('Toggle Header', { exact: true })).not.toBeChecked();
+    await expect(plot).toHaveAttribute('src', /text=true(?:&|$)/);
+    await page.getByLabel('Toggle Text', { exact: true }).uncheck();
+    await plotReady();
+    await expect(page.getByLabel('Toggle Text', { exact: true })).not.toBeChecked();
+    await expect(plot).toHaveAttribute('src', /text=false(?:&|$)/);
     if (section === 'QC Pipeline') {
       await tab(page, 'Boxplot Intensity').click();
       await page.getByLabel('Type', { exact: true }).selectOption('Single');
@@ -1126,15 +1200,16 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
   await expect(page.getByRole('table').getByRole('cell', { name: 'B', exact: true })).toBeVisible();
   await expect(page.getByRole('table').getByRole('cell', { name: 'A', exact: true })).toHaveCount(0);
   await plotReady();
-  const requestsBeforeLegend = tableRequests;
-  const legend = page.getByLabel('Toggle Legend', { exact: true });
-  await legend.uncheck();
-  await expect(legend).not.toBeChecked();
+  const requestsBeforeDots = tableRequests;
+  await expect(page.getByLabel('Toggle Legend', { exact: true })).toHaveCount(0);
+  const dots = page.getByLabel('Toggle Dots', { exact: true });
+  await dots.uncheck();
+  await expect(dots).not.toBeChecked();
   await plotReady();
-  await legend.check();
-  await expect(legend).toBeChecked();
+  await dots.check();
+  await expect(dots).toBeChecked();
   await plotReady();
-  expect(tableRequests).toBe(requestsBeforeLegend);
+  expect(tableRequests).toBe(requestsBeforeDots);
   const plotDownload = page.getByRole('link', { name: 'Download Plot', exact: true });
   await expect.poll(async () => {
     const url = new URL(await plotDownload.getAttribute('href'), page.url());
@@ -1155,7 +1230,7 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
 for (const [panel, endpoint, setting, value, parameter] of [
   ['ANOVA', 'anova', 'P-value threshold', '0.01', 'pValueThreshold'],
   ['Simulation', 'simulation', 'Variance multiplier', '2', 'varianceMultiplier'],
-  ['Simulation', 'simulation', 'Sample size override (0 = observed)', '8', 'sampleSizeOverride'],
+  ['Simulation', 'simulation', 'Sample size override (0 = observed, 2-100 fixed)', '8', 'sampleSizeOverride'],
 ]) {
   test(`${panel} hides old results until the changed request completes: ${setting}`, async ({ page }) => {
     await annotated(page);
@@ -1246,7 +1321,7 @@ for (const consumer of ['volcano', 'ksea', 'ora', 'analysis']) {
     await page.getByRole('combobox', { name: consumer === 'ksea' ? 'Test Type' : 'Test type', exact: true }).selectOption('paired');
     const output = consumer === 'ksea'
       ? page.getByRole('link', { name: 'Download KSEA Table (TSV)' })
-      : consumer === 'ora' ? page.getByText('ORA Provenance', { exact: true })
+      : consumer === 'ora' ? page.getByRole('heading', { name: 'Downregulated Genes', exact: true })
       : consumer === 'analysis' ? page.getByText(/^Total rows:/)
       : page.getByText('Result Table', { exact: true });
     await expect(output).toBeVisible();
@@ -1275,6 +1350,7 @@ test('KSEA Data produces a real export with full sequence context', async ({ pag
   await page.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('A');
   await page.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('B');
   const download = page.getByRole('link', { name: 'Download KSEA Table (TSV)' });
+  await expect(page.getByRole('combobox', { name: 'Data Source', exact: true })).toHaveValue('filtered');
   await expect(download).toBeVisible();
   const href = await download.getAttribute('href');
   const exported = decodeURIComponent(href.split(',').slice(1).join(','));
@@ -1291,6 +1367,26 @@ test('KSEA Data produces a real export with full sequence context', async ({ pag
   await page.getByRole('combobox', { name: 'Data Source', exact: true }).selectOption('imputed');
   expect((await imputedResponse).ok()).toBeTruthy();
   await expect(download).toBeVisible();
+  await tab(page, 'Data').click();
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  await expect(page.getByRole('combobox', { name: 'Data Source', exact: true })).toHaveValue('imputed');
+  await expect(download).toBeVisible();
+});
+
+test('KSEA refuses incomplete data-source options instead of selecting unfiltered data', async ({ page }) => {
+  await annotated(page);
+  await page.route('**/api/plots/phospho/options', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.availableDataSources;
+    delete body.defaultDataSource;
+    await route.fulfill({ response, json: body });
+  });
+  await tab(page, 'Phospho-specific').click();
+  await tab(page, 'KSEA').click();
+  await expect(page.getByText('Invalid phospho data-source options. Reload the app and try again.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download KSEA Table (TSV)' })).toHaveCount(0);
 });
 
 test('KSEA export stays bound to the completed selection during debounce and loading', async ({ page }) => {
@@ -1561,10 +1657,38 @@ for (const source of ['non_imputed', 'imputed']) {
     const response = await statsResponse;
     expect(response.ok(), await response.text()).toBeTruthy();
     expect((await response.json()).totalRows).toBe(12);
-    expect(response.request().postDataJSON()).toMatchObject({ condition1: 'A', condition2: 'B', dataSource: 'data' });
+    expect(response.request().postDataJSON()).toMatchObject({ condition1: 'A', condition2: 'B', dataSource: 'filtered' });
     await expect(page.getByText('Result Table', { exact: true })).toBeVisible();
   });
 }
+
+test('empty filtering preserves a selected source and requires an explicit unfiltered choice', async ({ page }) => {
+  await annotated(page);
+  await tab(page, 'Statistical Analysis').click();
+  const source = page.getByRole('combobox', { name: 'Data Source', exact: true });
+  await expect(source).toHaveValue('filtered');
+  await field(page, 'Condition 1').selectOption('A');
+  await field(page, 'Condition 2').selectOption('B');
+  await expect(page.getByText('Result Table', { exact: true })).toBeVisible();
+  await tab(page, 'Data').click();
+  await tab(page, 'Annotation').click();
+  await field(page, 'Minimum valid values', 'input').fill('5');
+  const annotation = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Generate Annotation').click());
+  expect(annotation.body.filteredRows).toBe(0);
+  const requests = [];
+  page.on('request', request => {
+    if (request.url().endsWith('/api/stats/volcano/run')) requests.push(request.postDataJSON());
+  });
+  await tab(page, 'Statistical Analysis').click();
+  await expect(source).toHaveValue('filtered');
+  await expect(page.getByText(/No features passed the selected filter/)).toBeVisible();
+  await expect(page.getByText('Result Table', { exact: true })).toHaveCount(0);
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.every(request => request.dataSource === 'filtered')).toBe(true);
+  await source.selectOption('data');
+  await expect(page.getByText('Result Table', { exact: true })).toBeVisible();
+  expect(requests.at(-1).dataSource).toBe('data');
+});
 
 test('empty filtering stays empty and aggregation displays the API rejection', async ({ page }) => {
   await annotated(page, '5');

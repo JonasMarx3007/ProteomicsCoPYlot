@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.html_security import GENERATED_HTML_META
+from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -17,11 +18,35 @@ from textwrap import fill
 from app.schemas.annotation import AnnotationKind
 from app.services.functions import (
     condition_mean,
-    _visualization_data_source,
-    _visualization_data_source_availability,
+    qc_matrix,
 )
-from app.services.plot_images import _advanced_plotly_layout, _apply_advanced_axes
+from app.services.plot_images import (
+    _advanced_label,
+    _advanced_plotly_layout,
+    _apply_advanced_axes,
+    advanced_color,
+    marker_style,
+    plotly_marker,
+    resolve_reference_line,
+)
 from app.services.runtime_cache import apply_cached_wrappers
+
+
+def _rename_if_condition(label: str, mode: str, advanced: dict | None) -> str:
+    """Apply the condition rename, but only when the label is a condition.
+
+    This page draws either two samples or two conditions, and the axis carries
+    whichever it was given. Renaming unconditionally would rewrite a sample name
+    that happened to match a condition name.
+    """
+    if str(mode).strip().lower() in {"single", "sample"}:
+        return str(label)
+    return _advanced_label(str(label), advanced, "conditionLabels")
+
+
+def _legacy_area_as_diameter(dot_size: float) -> float:
+    """The old correlation `dotSize`, which was an area, read as a diameter."""
+    return max(1.0, float(dot_size)) ** 0.5
 
 
 def _wrap_label(label: str, width_cm: float) -> str:
@@ -66,6 +91,7 @@ def _get_plotly():
 
 
 def _plotly_html(fig) -> str:
+    fig = force_svg_rendering(fig)
     background = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff")
     body = fig.to_html(
         full_html=False,
@@ -136,9 +162,17 @@ def _truncate_hover_text(value: object, max_len: int) -> str:
 
 def _analysis_context(
     kind: AnnotationKind,
-    data_source: str = "data",
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    _, frame, meta = _visualization_data_source(kind, data_source=data_source)
+    """Comparison is QC: it describes the samples as loaded, with no choice.
+
+    A Venn of what each sample identified, and a correlation between two
+    samples, are both statements about the data that arrived -- filtering or
+    imputing first would remove the very thing being inspected (a Venn on
+    imputed data has no missingness left to compare). Fixing it here also keeps
+    the Pearson plots and the correlation heatmap on one matrix, which is what
+    lets a reader compare them.
+    """
+    frame, meta = qc_matrix(kind)
     sample_columns = [
         sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
     ]
@@ -167,16 +201,9 @@ def _id_column(kind: AnnotationKind, frame: pd.DataFrame) -> str:
 
 def comparison_options(
     kind: AnnotationKind,
-    data_source: str = "data",
 ) -> dict[str, list[str] | int | bool | str]:
-    availability = _visualization_data_source_availability(kind)
-    requested_source = str(data_source or "data").strip().lower()
-    if (
-        (requested_source == "filtered" and not availability["filteredAvailable"])
-        or (requested_source == "imputed" and not availability["imputedAvailable"])
-    ):
-        requested_source = "data"
-    source_used, frame, meta = _visualization_data_source(kind, data_source=requested_source)
+    source_used = "data"
+    frame, meta = qc_matrix(kind)
     sample_columns = [
         sample for sample in meta["sample"].astype(str).tolist()
         if sample in frame.columns
@@ -206,21 +233,19 @@ def comparison_options(
         "sampleCount": len(samples),
         "conditionCount": len(conditions),
         "dataSource": source_used,
-        **availability,
     }
 
 
 def _pearson_vectors(
     kind: AnnotationKind,
     mode: str,
-    data_source: str = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
     condition2: str = "",
     min_present: int = 1,
 ) -> tuple[pd.Series, pd.Series, str, str]:
-    frame, meta, _ = _analysis_context(kind, data_source=data_source)
+    frame, meta, _ = _analysis_context(kind)
     mode_norm = str(mode).strip().lower()
 
     if mode_norm in {"single", "sample"}:
@@ -258,14 +283,13 @@ def _pearson_vectors(
 def _pearson_vectors_with_features(
     kind: AnnotationKind,
     mode: str,
-    data_source: str = "data",
     sample1: str = "",
     sample2: str = "",
     condition1: str = "",
     condition2: str = "",
     min_present: int = 1,
 ) -> tuple[pd.Series, pd.Series, pd.Series, str, str]:
-    frame, meta, _ = _analysis_context(kind, data_source=data_source)
+    frame, meta, _ = _analysis_context(kind)
     mode_norm = str(mode).strip().lower()
     id_col = _id_column(kind, frame)
     features = frame[id_col].fillna("").astype(str)
@@ -312,12 +336,10 @@ def pearson_correlation_table(
     alias1: str = "",
     alias2: str = "",
     min_present: int = 1,
-    data_source: str = "data",
 ) -> pd.DataFrame:
     x, y, label1, label2 = _pearson_vectors(
         kind=kind,
         mode=mode,
-        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
@@ -359,13 +381,11 @@ def pearson_correlation_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     x, y, label1, label2 = _pearson_vectors(
         kind=kind,
         mode=mode,
-        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
@@ -375,18 +395,24 @@ def pearson_correlation_png(
     if pairs.empty:
         raise ValueError("No overlapping non-missing values were found for the selected comparison.")
 
-    left = alias1.strip() or label1
-    right = alias2.strip() or label2
+    left = alias1.strip() or _rename_if_condition(label1, mode, advanced)
+    right = alias2.strip() or _rename_if_condition(label2, mode, advanced)
     corr = float(np.corrcoef(pairs["x"], pairs["y"])[0, 1]) if len(pairs) > 1 else float("nan")
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     ax.scatter(
         pairs["x"].to_numpy(dtype=float),
         pairs["y"].to_numpy(dtype=float),
-        c=color,
-        s=max(1.0, float(dot_size)),
-        alpha=0.65,
-        edgecolors="none",
+        # `dot_size` is the legacy control, kept for the notebook API. The
+        # advanced setting is a diameter, like every other plot's; the old one
+        # was a matplotlib area here and the square root of that in the plotly
+        # twin, so one number drew two different dots.
+        **marker_style(
+            advanced,
+            size=_legacy_area_as_diameter(dot_size),
+            alpha=0.65,
+            color_default=color,
+        ),
     )
     ax.set_xlabel(_wrap_label(left, width_cm))
     ax.set_ylabel(_wrap_label(right, height_cm))
@@ -423,13 +449,11 @@ def pearson_correlation_html(
     width_cm: float = 20,
     height_cm: float = 12,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> str:
     go = _get_plotly()
     x, y, features, label1, label2 = _pearson_vectors_with_features(
         kind=kind,
         mode=mode,
-        data_source=data_source,
         sample1=sample1,
         sample2=sample2,
         condition1=condition1,
@@ -449,8 +473,8 @@ def pearson_correlation_html(
     points["feature_short"] = points["feature"].map(lambda value: _truncate_hover_text(value, max_len=48))
     points["diff"] = points["y"] - points["x"]
 
-    left = alias1.strip() or label1
-    right = alias2.strip() or label2
+    left = alias1.strip() or _rename_if_condition(label1, mode, advanced)
+    right = alias2.strip() or _rename_if_condition(label2, mode, advanced)
     left_short = _truncate_hover_text(left, max_len=16)
     right_short = _truncate_hover_text(right, max_len=16)
     corr = float(np.corrcoef(points["x"], points["y"])[0, 1]) if len(points) > 1 else float("nan")
@@ -470,20 +494,22 @@ def pearson_correlation_html(
         "<extra></extra>"
     )
 
-    marker_size = max(2.0, float(np.sqrt(max(1.0, float(dot_size)))))
+    marker = plotly_marker(
+        advanced,
+        size=_legacy_area_as_diameter(dot_size),
+        alpha=0.65,
+        color_default=color,
+    )
 
     fig = go.Figure()
     fig.add_trace(
-        go.Scattergl(
+        # SVG, not Scattergl: see plot_webgl - WebGL fails outright without
+        # hardware acceleration, and _plotly_html enforces the same policy.
+        go.Scatter(
             x=points["x"],
             y=points["y"],
             mode="markers",
-            marker=dict(
-                size=marker_size,
-                color=color,
-                opacity=0.65,
-                line=dict(width=0),
-            ),
+            marker=marker,
             customdata=custom_data,
             hovertemplate=hover_template,
             showlegend=False,
@@ -491,7 +517,8 @@ def pearson_correlation_html(
         )
     )
 
-    if len(points) > 1:
+    fit_line = resolve_reference_line(advanced, color="#475569", style="solid", width=2.0)
+    if len(points) > 1 and fit_line.visible:
         slope, intercept = np.polyfit(points["x"], points["y"], 1)
         x_min = float(points["x"].min())
         x_max = float(points["x"].max())
@@ -502,7 +529,7 @@ def pearson_correlation_html(
                 x=line_x,
                 y=line_y,
                 mode="lines",
-                line=dict(color="#475569", width=2),
+                line=fit_line.plotly(),
                 hoverinfo="skip",
                 showlegend=False,
                 name="Fit",
@@ -562,9 +589,8 @@ def _venn_sets(
     first: str,
     second: str,
     third: str = "",
-    data_source: str = "data",
 ) -> tuple[set[str], set[str], set[str] | None]:
-    frame, meta, _ = _analysis_context(kind, data_source=data_source)
+    frame, meta, _ = _analysis_context(kind)
     id_col = _id_column(kind, frame)
     mode_norm = str(mode).strip().lower()
     if not first or not second:
@@ -596,7 +622,6 @@ def venn_table(
     alias1: str = "",
     alias2: str = "",
     alias3: str = "",
-    data_source: str = "data",
 ) -> pd.DataFrame:
     set1, set2, set3 = _venn_sets(
         kind=kind,
@@ -604,7 +629,6 @@ def venn_table(
         first=first,
         second=second,
         third=third,
-        data_source=data_source,
     )
     label1 = alias1.strip() or first
     label2 = alias2.strip() or second
@@ -654,7 +678,6 @@ def venn_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
-    data_source: str = "data",
 ) -> bytes:
     plt = _get_plt()
     venn2, venn3 = _get_venn()
@@ -664,18 +687,20 @@ def venn_png(
         first=first,
         second=second,
         third=third,
-        data_source=data_source,
     )
-    label1 = alias1.strip() or first
-    label2 = alias2.strip() or second
-    label3 = alias3.strip() or third
+    label1 = alias1.strip() or _rename_if_condition(first, mode, advanced)
+    label2 = alias2.strip() or _rename_if_condition(second, mode, advanced)
+    label3 = alias3.strip() or _rename_if_condition(third, mode, advanced)
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     if set3 is None:
         venn2(
             [set1, set2],
             set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2)),
-            set_colors=(color1, color2),
+            set_colors=(
+                advanced_color(advanced, "vennColor1", color1),
+                advanced_color(advanced, "vennColor2", color2),
+            ),
             alpha=0.5,
             ax=ax,
         )
@@ -683,7 +708,11 @@ def venn_png(
         venn3(
             [set1, set2, set3],
             set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2, label3)),
-            set_colors=(color1, color2, color3),
+            set_colors=(
+                advanced_color(advanced, "vennColor1", color1),
+                advanced_color(advanced, "vennColor2", color2),
+                advanced_color(advanced, "vennColor3", color3),
+            ),
             alpha=0.5,
             ax=ax,
         )

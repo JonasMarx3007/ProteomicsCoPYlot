@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from app.schemas.annotation import AnnotationKind
-from app.schemas.data_tools import DataSource, HistogramBin
+from app.schemas.annotation import ResolvedSource
+from app.schemas.data_tools import HistogramBin
 
 # How features are weighted before a projection. "auto" keeps each method's
 # established default: PCA centred, UMAP and t-SNE on unit variance.
@@ -57,7 +58,7 @@ class ConditionCvPoint(BaseModel):
 
 class QcSummaryResponse(BaseModel):
     kind: AnnotationKind
-    sourceUsed: DataSource
+    sourceUsed: ResolvedSource
     sampleColumns: list[str]
     coverage: list[SampleMetricPoint]
     intensityHistogram: list[HistogramBin]

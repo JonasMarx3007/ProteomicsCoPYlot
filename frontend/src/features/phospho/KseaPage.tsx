@@ -3,7 +3,10 @@ import { Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
-import type { StatsTestType } from "../../lib/types";
+import type { StatsTestType, DataSource } from "../../lib/types";
+import {
+  dataSourceOptions,
+} from "../../lib/types";
 import {
   getPhosphoOptions,
   getPhosphoTable,
@@ -17,9 +20,11 @@ import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datase
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { PhosphoOptionsResponse } from "../../lib/types";
+import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
+
+const NO_TABLE_ROWS: Record<string, unknown>[] = [];
 
 type KseaSourceMode = "volcano" | "volcano_control";
-type KseaDataSource = "data" | "imputed";
 
 type Props = {
   onContextModeChange?: (mode: string) => void;
@@ -43,10 +48,11 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   const [sourceMode, setSourceMode] = useState<KseaSourceMode>(() =>
     persisted.sourceMode === "volcano_control" ? "volcano_control" : "volcano"
   );
-  const [dataSource, setDataSource] = useState<KseaDataSource>(() =>
-    // "data" is the historical spelling for this control's default.
-    persisted.dataSource === "imputed" ? "imputed" : "data"
-  );
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
   const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
@@ -64,7 +70,8 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   const [fileSt, setFileSt] = useState<File | null>(null);
   const [fileTnc, setFileTnc] = useState<File | null>(null);
   const [volcanoPValueThreshold, setVolcanoPValueThreshold] = useState(() => Number(persisted.volcanoPValueThreshold ?? 0.1));
-  const [volcanoHeader, setVolcanoHeader] = useState(() => Boolean(persisted.volcanoHeader ?? true));
+  // Shown or hidden from the advanced panel's Title card, like every other plot.
+  const volcanoHeader = true;
   const [annotateHits, setAnnotateHits] = useState(() => Boolean(persisted.annotateHits ?? false));
   const [volcanoHtml, setVolcanoHtml] = useState("");
   const [externalEvidenceToken, setExternalEvidenceToken] = useState("");
@@ -122,9 +129,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     getPhosphoOptions({ signal: controller.signal })
       .then((payload) => {
         setOptions(payload);
-        setDataSource((current) =>
-          current === "imputed" && !payload.imputedAvailable ? "data" : current
-        );
+        applyDataSourceChoices(payload);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -138,7 +143,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     return () => {
       controller.abort();
     };
-  }, [hasPhosphoDataset]);
+  }, [hasPhosphoDataset, applyDataSourceChoices]);
 
   useEffect(() => {
     const conditionOptions = options?.conditions ?? [];
@@ -194,7 +199,11 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     useUncorrected,
   ]);
   const debouncedTableRequest = useDebouncedValue(tableRequest, 650);
-  const tableRows = tableResult?.requestKey === JSON.stringify({ revision, ...tableRequest }) ? tableResult.rows : [];
+  // One shared empty array: a fresh `[]` here is a new identity every render,
+  // which made every memo downstream of tableRows recompute every render.
+  const tableRows = tableResult?.requestKey === JSON.stringify({ revision, ...tableRequest })
+    ? tableResult.rows
+    : NO_TABLE_ROWS;
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -248,7 +257,10 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     const c1Ctrl = toFilenameToken(condition1Control);
     const c2Ctrl = toFilenameToken(condition2Control);
     if (sourceMode === "volcano_control") {
-      return `(${c2}-${c2Ctrl})_minus_(${c1}-${c1Ctrl})`;
+      // Condition 1 is the minuend: the exported log2FC is
+      // (cond1 - its control) - (cond2 - its control). Written the other way
+      // round, the file name claimed the opposite sign to the numbers in it.
+      return `(${c1}-${c1Ctrl})_minus_(${c2}-${c2Ctrl})`;
     }
     return `${c1}_vs_${c2}`;
   }, [sourceMode, condition1, condition2, condition1Control, condition2Control]);
@@ -323,13 +335,14 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                 <span className="mb-2 block font-medium text-slate-700">Data Source</span>
                 <AssistantSelect
                   value={dataSource}
-                  onChange={(event) => setDataSource(event.target.value as KseaDataSource)}
+                  onChange={(event) => chooseDataSource(event.target.value as DataSource)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
                 >
-                  <option value="data">Data</option>
-                  {options?.imputedAvailable ? (
-                    <option value="imputed">Imputed Data</option>
-                  ) : null}
+                  {dataSourceOptions(options).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </AssistantSelect>
               </label>
             </div>
@@ -482,7 +495,6 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
           />
         </div>
         <div className="mt-4 flex flex-wrap gap-3">
-          <Checkbox label="Toggle Header" checked={volcanoHeader} onChange={setVolcanoHeader} />
           <Checkbox label="Annotate Hits" checked={annotateHits} onChange={setAnnotateHits} />
         </div>
         {!validSelection ? (

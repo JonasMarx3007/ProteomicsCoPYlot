@@ -9,7 +9,7 @@ from app.schemas.data_tools import (
     ConditionPaletteUpdateRequest,
     ComparativeHistogramBin,
     CurvePoint,
-    DataSource,
+    ResolvedSource,
     DistributionSummaryResponse,
     IdTranslationRequest,
     IdTranslationResponse,
@@ -26,12 +26,14 @@ from app.services.dataset_store import get_current_dataset
 from app.services.id_translation import export_id_translation as export_id_translation_service
 from app.services.id_translation import run_id_translation as run_id_translation_service
 from app.services.functions import (
+    QQ_MAX_POINTS,
     choose_best_source,
     comparative_histogram,
     histogram,
     impute_values_with_diagnostics,
     inverse_log2_transform_data,
     normal_fit_curve,
+    qc_matrix,
     qqnorm_plot_data,
 )
 from app.services.runtime_cache import apply_cached_wrappers
@@ -69,6 +71,24 @@ def _get_sample_columns(kind: AnnotationKind, frame: pd.DataFrame) -> list[str]:
     return []
 
 
+def skipped_sample_warnings(diagnostics) -> list[str]:
+    """Samples whose missing values were left as they are, named.
+
+    A sample with fewer than two observations, or none with any spread, has
+    nothing to draw a distribution from, so its missing values survive
+    imputation. The count still reports as imputed overall, so without this the
+    gap is invisible. Shared with the viewer's bootstrap, which reported
+    `applied=True` and said nothing about the samples it had to skip.
+    """
+    skipped = list(getattr(diagnostics, "skipped_samples", []) or [])
+    if not skipped:
+        return []
+    return [
+        "Missing values left unchanged: fewer than two observations or no usable "
+        "spread in sample(s): " + ", ".join(skipped)
+    ]
+
+
 def require_imputable_kind(kind: AnnotationKind) -> None:
     if kind == "phosprot":
         raise ValueError(
@@ -77,7 +97,7 @@ def require_imputable_kind(kind: AnnotationKind) -> None:
         )
 
 
-def _best_imputation_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
+def _best_imputation_source(kind: AnnotationKind) -> tuple[ResolvedSource, pd.DataFrame, list[str]]:
     require_imputable_kind(kind)
     raw_frame = _get_current_frame(kind)
     annotation = get_annotation(kind)
@@ -89,21 +109,6 @@ def _best_imputation_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFr
     if source == "raw":
         warnings.append("Using raw data because filtered/log2 data is unavailable.")
     return source, frame, warnings
-
-
-def _best_distribution_source(kind: AnnotationKind) -> tuple[DataSource, pd.DataFrame, list[str]]:
-    raw_frame = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    warnings: list[str] = []
-
-    if annotation is not None and not annotation.log2_data.empty:
-        return "log2", annotation.log2_data.copy(), warnings
-    if annotation is not None and not annotation.filtered_data.empty:
-        warnings.append("Log2 data unavailable; using filtered data.")
-        return "filtered", annotation.filtered_data.copy(), warnings
-
-    warnings.append("Log2/filtered data unavailable; using raw data.")
-    return "raw", raw_frame, warnings
 
 
 def _persist_imputation_result(
@@ -128,6 +133,7 @@ def _persist_imputation_result(
         seed=payload.seed,
         sampleWise=payload.sampleWise,
         sampleCount=len(sample_columns),
+        rowCount=int(len(imputed_data)),
         missingBefore=missing_before,
         missingAfter=missing_after,
     )
@@ -227,10 +233,7 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
             )
             for start, end, left, right in after_hist
         ],
-        warnings=warnings + ([
-            "Missing values left unchanged: fewer than two observations or no usable spread in sample(s): "
-            + ", ".join(diagnostics.skipped_samples)
-        ] if diagnostics.skipped_samples else []),
+        warnings=warnings + skipped_sample_warnings(diagnostics),
         preview=diagnostics.imputed_data.head(20).astype(object).where(
             diagnostics.imputed_data.head(20).notna(), None
         ).to_dict(orient="records"),
@@ -258,7 +261,14 @@ def imputed_dataframe(payload: ImputationRunRequest) -> pd.DataFrame:
 
 
 def distribution_summary(kind: AnnotationKind) -> DistributionSummaryResponse:
-    source_used, data, warnings = _best_distribution_source(kind)
+    # Distribution is a QC surface: it describes the data as annotated, and it
+    # offers no selector. It used to read its own resolver, which substituted
+    # the filtered and then the raw matrix when log2 was missing -- so the
+    # numbers beside the Q-Q plot could describe a different matrix from the
+    # plot itself, which reads qc_matrix.
+    data, _ = qc_matrix(kind)
+    source_used: ResolvedSource = "data"
+    warnings: list[str] = []
     sample_columns = _get_sample_columns(kind, data)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -289,7 +299,13 @@ def distribution_summary(kind: AnnotationKind) -> DistributionSummaryResponse:
             median=float(np.median(observed)),
             std=float(np.std(observed)),
         )
-        qq_data = qqnorm_plot_data(observed, max_points=100_000)
+        finite = observed[np.isfinite(observed)]
+        qq_data = qqnorm_plot_data(finite, max_points=QQ_MAX_POINTS)
+        if finite.size > QQ_MAX_POINTS:
+            warnings.append(
+                f"The Q-Q plot shows a random sample of {QQ_MAX_POINTS:,} of the "
+                f"{int(finite.size):,} observed values."
+            )
 
     row_missing = numeric.isna().any(axis=1)
     rows_with_missing = int(row_missing.sum())

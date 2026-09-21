@@ -100,32 +100,60 @@ rm(.copylot_source_file)
   m
 }
 
-.require_complete_clustering_matrix <- function(matrix, context = "heatmap") {
+.drop_incomplete_features <- function(matrix, context = "heatmap", minimum_rows = 1) {
+  # Hierarchical clustering is undefined for a feature missing in any sample.
+  # Refusing the whole matrix over a handful of them denies the plot entirely;
+  # dropping them silently hides that the figure rests on a subset. Drop them
+  # and let .warn_dropped_features state the cost.
   matrix <- as.matrix(matrix)
   storage.mode(matrix) <- "numeric"
-  finite <- is.finite(matrix)
-  if (all(finite)) return(matrix)
-
   rows <- nrow(matrix)
   columns <- ncol(matrix)
-  complete_rows <- if (rows) sum(rowSums(finite) == columns) else 0L
-  missing_values <- sum(!finite)
-  stop(
-    paste0(
-      tools::toTitleCase(context),
-      " clustering cannot be computed because the selected matrix contains ",
-      missing_values,
-      " missing or non-finite value(s); only ",
-      complete_rows,
-      " of ",
-      rows,
-      " features are complete across all ",
-      columns,
-      " samples. Impute the matrix before calling this function, or disable row and ",
-      "column clustering. The data was not changed automatically."
-    ),
-    call. = FALSE
+  complete <- rowSums(is.finite(matrix)) == columns
+  kept <- sum(complete)
+  if (kept < max(1L, as.integer(minimum_rows))) {
+    stop(
+      paste0(
+        tools::toTitleCase(context),
+        " cannot be computed because only ", kept, " of ", rows,
+        " features are observed in all ", columns,
+        " samples. Impute the matrix before calling this function. ",
+        "The data was not changed automatically."
+      ),
+      call. = FALSE
+    )
+  }
+  list(
+    matrix = matrix[complete, , drop = FALSE],
+    kept = complete,
+    dropped = rows - kept,
+    total = rows
   )
+}
+
+.dropped_features_message <- function(dropped, total, purpose = "clustering",
+                                      noun = "features") {
+  # The same sentence the web app shows beneath the plot.
+  if (!length(dropped) || dropped <= 0 || !total) return(NULL)
+  percent <- dropped / total * 100
+  text <- if (percent < 0.1) {
+    "<0.1%"
+  } else if (percent < 10) {
+    sprintf("%.1f%%", percent)
+  } else {
+    sprintf("%.0f%%", percent)
+  }
+  paste0(
+    text, " of ", noun, " dropped for ", purpose,
+    " (", format(dropped, big.mark = ","), " of ", format(total, big.mark = ","), ")",
+    " \u2014 not observed in every sample"
+  )
+}
+
+.warn_dropped_features <- function(dropped, total, purpose = "clustering") {
+  # Report the drop where a notebook user sees it: under the cell.
+  message_text <- .dropped_features_message(dropped, total, purpose = purpose)
+  if (!is.null(message_text)) warning(message_text, call. = FALSE)
 }
 
 .raw_zero_to_na <- function(data, columns) {
@@ -1073,6 +1101,7 @@ coverage_plot <- function(
   }
 
   counts <- colSums(!is.na(renamed_data[, samples, drop = FALSE]))
+  quantified <- sum(rowSums(!is.na(renamed_data[, samples, drop = FALSE])) > 0)
   conditions <- meta$condition[match(samples, meta$new_sample)]
   condition_levels <- unique(meta$condition)
   condition_colors <- setNames(
@@ -1085,15 +1114,15 @@ coverage_plot <- function(
   y_label <- "Number"
 
   if ("Phosphoprotein" %in% names(data)) {
-    redline <- length(data$Phosphoprotein)
+    redline <- quantified
     title <- "Phosphoproteins per sample"
     y_label <- "Number of phosphoproteins"
   } else if ("ProteinNames" %in% names(data)) {
-    redline <- length(data$ProteinNames)
+    redline <- quantified
     title <- "Proteins per sample"
     y_label <- "Number of proteins"
   } else if ("PTM_Collapse_key" %in% names(data)) {
-    redline <- length(data$PTM_Collapse_key)
+    redline <- quantified
     title <- "Phosphosites per sample"
     y_label <- "Number of phosphosites"
   }
@@ -1186,6 +1215,7 @@ coverage_plot_summary <- function(
   renamed_data <- .rename_samples(data, meta)
 
   counts <- colSums(!is.na(renamed_data[, meta$new_sample, drop = FALSE]))
+  quantified <- sum(rowSums(!is.na(renamed_data[, meta$new_sample, drop = FALSE])) > 0)
   condition_values <- split(counts, meta$condition)
   means <- vapply(condition_values, mean, numeric(1))
   sds <- vapply(condition_values, sd, numeric(1))
@@ -1199,15 +1229,15 @@ coverage_plot_summary <- function(
   y_label <- "Number"
 
   if ("Phosphoprotein" %in% names(data)) {
-    redline <- length(data$Phosphoprotein)
+    redline <- quantified
     title <- "Phosphoproteins per sample"
     y_label <- "Number of phosphoproteins"
   } else if ("ProteinNames" %in% names(data)) {
-    redline <- length(data$ProteinNames)
+    redline <- quantified
     title <- "Proteins per sample"
     y_label <- "Number of proteins"
   } else if ("PTM_Collapse_key" %in% names(data)) {
-    redline <- length(data$PTM_Collapse_key)
+    redline <- quantified
     title <- "Phosphosites per sample"
     y_label <- "Number of phosphosites"
   }
@@ -1661,7 +1691,7 @@ minimum_enclosing_ellipse <- function(points, tol=1e-3) {
   weights <- rep(1 / n_points, n_points)
   error <- tol + 1
 
-  while (error > tol) {
+  for (iteration in seq_len(10000L)) {
     x_matrix <- q_matrix %*% diag(weights) %*% t(q_matrix)
     distances <- diag(t(q_matrix) %*% solve(x_matrix) %*% q_matrix)
     index <- which.max(distances)
@@ -1672,7 +1702,9 @@ minimum_enclosing_ellipse <- function(points, tol=1e-3) {
     new_weights[index] <- new_weights[index] + step_size
     error <- sqrt(sum((new_weights - weights)^2))
     weights <- new_weights
+    if (error <= tol) break
   }
+  if (!is.finite(error) || error > tol) stop("Enclosing ellipse did not converge.")
 
   center <- as.vector(t(points) %*% weights)
   a_matrix <- solve(
@@ -1684,6 +1716,59 @@ minimum_enclosing_ellipse <- function(points, tol=1e-3) {
     center = center,
     axes = 1 / sqrt(decomposition$d),
     angle = atan2(decomposition$u[2, 1], decomposition$u[1, 1]) * 180 / pi
+  )
+}
+
+# Fit an enclosing ellipse only when the group reliably spans the plane.
+fitted_group_ellipse <- function(points) {
+  points <- as.matrix(points)
+  if (nrow(points) < 3 || ncol(points) != 2 || !all(is.finite(points))) {
+    return(NULL)
+  }
+  origin <- colMeans(points)
+  centered <- sweep(points, 2, origin, "-")
+  scale <- max(abs(centered))
+  if (!is.finite(scale) || scale == 0) return(NULL)
+  normalized <- centered / scale
+  fit <- tryCatch({
+    singular <- svd(normalized, nu=0, nv=0)$d
+    # The scatter matrix squares the coordinate condition number.
+    if (min(singular) <= max(singular) * sqrt(.Machine$double.eps)) return(NULL)
+    minimum_enclosing_ellipse(normalized)
+  }, error = function(e) NULL)
+  if (is.null(fit)) {
+    return(NULL)
+  }
+  fit$center <- origin + fit$center * scale
+  fit$axes <- fit$axes * scale
+  if (!all(is.finite(fit$center)) || !all(is.finite(fit$axes)) || !is.finite(fit$angle)) {
+    return(NULL)
+  }
+  if (min(fit$axes) <= 0) {
+    return(NULL)
+  }
+  fit
+}
+
+# What to say about the groups that got no ellipse. Said out loud, never drawn
+# into the figure: a plot that leaves the tool should carry no caption about
+# how the tool drew it.
+ellipse_skip_message <- function(groups) {
+  names <- as.character(groups)
+  names <- names[nzchar(trimws(names))]
+  if (length(names) == 0) {
+    return("")
+  }
+  one <- length(names) == 1
+  sprintf(
+    paste0(
+      "No ellipse was drawn for %s %s: %s points have no spread in one direction ",
+      "-- they fall on a line, or two samples share the same position -- so ",
+      "there is no enclosing ellipse to fit. The points themselves are unaffected."
+    ),
+    if (one) "group" else "groups",
+    paste(names, collapse = ", "),
+    if (one) "its" else "their"
   )
 }
 
@@ -1794,11 +1879,15 @@ pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=
     )
 
     if (add_ellipses) {
+      skipped_ellipses <- character(0)
       for (condition in condition_levels) {
         condition_scores <- scores[conditions == condition, 1:2, drop = FALSE]
-        if (nrow(condition_scores) <= 2) next
 
-        ellipse <- minimum_enclosing_ellipse(condition_scores)
+        ellipse <- fitted_group_ellipse(condition_scores)
+        if (is.null(ellipse)) {
+          skipped_ellipses <- c(skipped_ellipses, condition)
+          next
+        }
         angles <- seq(0, 2 * pi, length.out = 200)
         rotation <- matrix(
           c(
@@ -1825,6 +1914,9 @@ pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=
           pch = 16,
           cex = dot_size / 3
         )
+      }
+      if (length(skipped_ellipses) > 0) {
+        warning(ellipse_skip_message(skipped_ellipses), call. = FALSE)
       }
     }
   }
@@ -1906,12 +1998,16 @@ pca_plot_interactive <- function(data, meta, plot_colors=NULL, header=TRUE, lege
 
   if (add_ellipses) {
     condition_levels <- unique(scores$condition)
+    skipped_ellipses <- character(0)
     for (i in seq_along(condition_levels)) {
       condition <- condition_levels[i]
       subset <- scores[scores$condition == condition, c("PC1", "PC2"), drop = FALSE]
-      if (nrow(subset) <= 2) next
 
-      ellipse <- minimum_enclosing_ellipse(subset)
+      ellipse <- fitted_group_ellipse(subset)
+      if (is.null(ellipse)) {
+        skipped_ellipses <- c(skipped_ellipses, condition)
+        next
+      }
       angles <- seq(0, 2 * pi, length.out = 200)
       angle <- ellipse$angle * pi / 180
       x <- ellipse$axes[1] * cos(angles)
@@ -1932,6 +2028,9 @@ pca_plot_interactive <- function(data, meta, plot_colors=NULL, header=TRUE, lege
         showlegend = FALSE,
         inherit = FALSE
       )
+    }
+    if (length(skipped_ellipses) > 0) {
+      warning(ellipse_skip_message(skipped_ellipses), call. = FALSE)
     }
   }
 
@@ -1968,7 +2067,12 @@ abundance_plot <- function(data, meta, workflow="Protein", plot_colors=NULL, wid
 
   ranked_values <- lapply(conditions, function(condition) {
     columns <- meta$sample[meta$condition == condition]
-    values <- log10(rowMeans(.numeric_matrix(data, columns), na.rm = TRUE) + 1)
+    # log10 of the value, with no pseudocount: the axis names the quantity, so
+    # log10(x + 1) would plot something else. Non-positive means have no
+    # logarithm and are dropped by the is.finite filter below.
+    means <- rowMeans(.numeric_matrix(data, columns), na.rm = TRUE)
+    means[!is.na(means) & means <= 0] <- NA_real_
+    values <- log10(means)
     sort(values[is.finite(values)], decreasing = TRUE)
   })
 
@@ -2034,9 +2138,10 @@ interactive_abundance_plot <- function(
   if (tolower(trimws(data_scale)) == "log2") {
     data <- inverse_log2_transform_data(data, meta[meta$condition == condition, , drop = FALSE])
   }
-  condition_means <- log10(
-    rowMeans(.numeric_matrix(data, sample_columns), na.rm = TRUE) + 1
-  )
+  # See plot_abundance: log10 of the value, no pseudocount.
+  condition_means <- rowMeans(.numeric_matrix(data, sample_columns), na.rm = TRUE)
+  condition_means[!is.na(condition_means) & condition_means <= 0] <- NA_real_
+  condition_means <- log10(condition_means)
 
   plot_data <- data.frame(
     Feature = sub(";.*$", "", as.character(data[[feature_col]])),
@@ -2311,12 +2416,12 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   y_data <- y_data[valid, , drop = FALSE]
   if (is_paired) {
     pair_mask <- is.finite(x_data) & is.finite(y_data)
-    differences <- y_data - x_data
+    differences <- x_data - y_data
     differences[!pair_mask] <- NA_real_
     n_pairs <- rowSums(pair_mask)
     log2fc <- rowMeans(differences, na.rm = TRUE)
   } else {
-    log2fc <- rowMeans(y_data, na.rm = TRUE) - rowMeans(x_data, na.rm = TRUE)
+    log2fc <- rowMeans(x_data, na.rm = TRUE) - rowMeans(y_data, na.rm = TRUE)
   }
 
   # Welch needs whole-column arithmetic, so it is computed vectorised rather
@@ -2681,7 +2786,7 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
     fig,
     title = paste(condition1, "vs", condition2),
     xaxis = list(
-      title = paste0("log2 fold change (", condition2, " - ", condition1, ")")
+      title = paste0("log2 fold change (", condition1, " - ", condition2, ")")
     ),
     yaxis = list(
       title = if (uncorrected) "-log10 p-value" else "-log10 adj. p-value"
@@ -2884,7 +2989,10 @@ anova_cluster_data <- function(
 
   matrix <- .numeric_matrix(cluster_data, sample_columns)
   if (nrow(matrix) > 1) {
-    .require_complete_clustering_matrix(matrix, "ANOVA")
+    dropped_info <- .drop_incomplete_features(matrix, "ANOVA clustering")
+    matrix <- dropped_info$matrix
+    cluster_data <- cluster_data[dropped_info$kept, , drop = FALSE]
+    .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
   if (z_score) matrix <- .row_zscore(matrix)
 
@@ -3281,7 +3389,7 @@ anova_posthoc_data <- function(
       n_left <- counts[[left]]
       n_right <- counts[[right]]
       standard_error <- sqrt(mse / 2 * (1 / n_left + 1 / n_right))
-      difference <- means[[right]] - means[[left]]
+      difference <- means[[left]] - means[[right]]
       q_statistic <- abs(difference) / standard_error
       pvalues <- stats::ptukey(
         q_statistic,
@@ -3294,7 +3402,7 @@ anova_posthoc_data <- function(
       if (!any(usable)) next
       frames[[length(frames) + 1]] <- data.frame(
         label = labels[usable],
-        comparison = paste(right, "vs", left),
+        comparison = paste(left, "vs", right),
         group1 = left,
         group2 = right,
         log2FC = difference[usable],
@@ -3394,7 +3502,10 @@ anova_plot <- function(
   raw_matrix <- .numeric_matrix(plot_data, sample_columns)
   if ((cluster_rows && nrow(raw_matrix) > 1) ||
       (cluster_samples && ncol(raw_matrix) > 1)) {
-    .require_complete_clustering_matrix(raw_matrix, "ANOVA heatmap")
+    dropped_info <- .drop_incomplete_features(raw_matrix, "ANOVA heatmap")
+    plot_data <- plot_data[dropped_info$kept, , drop = FALSE]
+    raw_matrix <- raw_matrix[dropped_info$kept, , drop = FALSE]
+    .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
   rownames(raw_matrix) <- as.character(plot_data[[label_col]])
   missing_mask <- !is.finite(raw_matrix)
@@ -3582,7 +3693,10 @@ anova_plot_cluster <- function(
 
   matrix <- .numeric_matrix(anova_cluster_df, sample_columns)
   if (cluster_samples && ncol(matrix) > 1) {
-    .require_complete_clustering_matrix(matrix, "ANOVA cluster heatmap")
+    dropped_info <- .drop_incomplete_features(matrix, "ANOVA cluster heatmap")
+    anova_cluster_df <- anova_cluster_df[dropped_info$kept, , drop = FALSE]
+    matrix <- matrix[dropped_info$kept, , drop = FALSE]
+    .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
   rownames(matrix) <- as.character(anova_cluster_df[[label_col]])
   missing_mask <- !is.finite(matrix)
@@ -4048,7 +4162,7 @@ load_go_db <- function() {
   list(data = heatmap_data, source_feature_count = source_counts)
 }
 
-proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsize=c(12,8), cmap_name="plasma", remove_empty=TRUE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="z", header=TRUE, id=TRUE, gene_column=NULL) {
+proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsize=c(12,8), cmap_name="plasma", remove_empty=TRUE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="z", header=TRUE, id=TRUE, show_source_count=FALSE, gene_column=NULL) {
   if (is.null(gene_column)) {
     candidates <- intersect(c("GeneNames", "Gene_group"), names(data))
     if (length(candidates) != 1) stop("Specify gene_column when gene labels are missing or ambiguous.", call.=FALSE)
@@ -4115,17 +4229,25 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
     stop("No informative pathway rows remain after heatmap transformation.", call. = FALSE)
   }
 
-  rownames(heatmap_data) <- paste0(
-    rownames(heatmap_data),
-    " (n=",
-    as.integer(source_feature_counts[rownames(heatmap_data)]),
-    ")"
-  )
+  # How many dataset rows collapsed onto each gene. Off by default: on a pathway
+  # of forty genes it is forty parentheticals down the side of the figure, and
+  # most of them read 1.
+  if (isTRUE(show_source_count)) {
+    rownames(heatmap_data) <- paste0(
+      rownames(heatmap_data),
+      " (n=",
+      as.integer(source_feature_counts[rownames(heatmap_data)]),
+      ")"
+    )
+  }
 
   cluster_data <- NULL
   if ((cluster_rows && nrow(heatmap_data) > 1) ||
       (cluster_cols && ncol(heatmap_data) > 1)) {
-    cluster_data <- .require_complete_clustering_matrix(heatmap_data, "pathway heatmap")
+    dropped_info <- .drop_incomplete_features(heatmap_data, "pathway heatmap")
+    cluster_data <- dropped_info$matrix
+    heatmap_data <- heatmap_data[dropped_info$kept, , drop = FALSE]
+    .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
   if (cluster_rows && nrow(heatmap_data) > 1) {
     order <- hclust(dist(cluster_data), method = "average")$order
@@ -4196,7 +4318,7 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
   ) / (n1 + n2 - 2)
   pooled_variance <- pooled_variance * mod_var
   standard_error <- sqrt(pooled_variance * (1 / n1 + 1 / n2))
-  log2fc <- mean2 - mean1
+  log2fc <- mean1 - mean2
   t_statistic <- log2fc / standard_error
   degrees_freedom <- n1 + n2 - 2
   pvals <- 2 * stats::pt(abs(t_statistic), degrees_freedom, lower.tail = FALSE)
@@ -4674,7 +4796,7 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     as.numeric(counts) / sum(counts) * 100
   })
   if (is.null(dim(percentages))) {
-    percentages <- matrix(percentages, ncol = 1)
+    percentages <- matrix(percentages, nrow = length(cleavage_levels), ncol = length(samples))
   }
   rownames(percentages) <- cleavage_levels
   colnames(percentages) <- samples
@@ -4700,11 +4822,12 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     }
   )
 
-  if (text && "1" %in% rownames(percentages)) {
+  if (text) {
+    with_missed <- colSums(percentages[cleavage_levels > 0, , drop = FALSE])
     text(
       mids,
       3,
-      labels = sprintf("%.1f%%", percentages["1", ]),
+      labels = sprintf("%.1f%%", with_missed),
       cex = text_size / 10,
       adj = c(0.5, 0)
     )
@@ -5077,7 +5200,10 @@ phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id
   cluster_data <- NULL
   if ((cluster_rows && nrow(heatmap_data) > 1) ||
       (cluster_cols && ncol(heatmap_data) > 1)) {
-    cluster_data <- .require_complete_clustering_matrix(heatmap_data, "phosphosite heatmap")
+    dropped_info <- .drop_incomplete_features(heatmap_data, "phosphosite heatmap")
+    cluster_data <- dropped_info$matrix
+    heatmap_data <- heatmap_data[dropped_info$kept, , drop = FALSE]
+    .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
   if (cluster_rows && nrow(heatmap_data) > 1) {
     row_order <- hclust(dist(cluster_data), method = "average")$order
@@ -5171,7 +5297,7 @@ sty_plot <- function(data) {
     border = "black",
     lwd = 0.6,
     ylim = c(0, max(1, max(counts) * 1.13)),
-    main = "Modified S/T/Y Peptide Counts",
+    main = "Modified S/T/Y Site Counts",
     xlab = "Peptide",
     ylab = "Count"
   )
@@ -5359,7 +5485,7 @@ ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condit
     NULL
   }
   x_label <- if (!is.null(condition1) && !is.null(condition2)) {
-    paste0("log2(Frequency Factor) (", condition2, " - ", condition1, ")")
+    paste0("log2(Frequency Factor) (", condition1, " - ", condition2, ")")
   } else {
     "log2(Frequency Factor)"
   }

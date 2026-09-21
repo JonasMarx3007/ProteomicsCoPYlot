@@ -124,7 +124,7 @@ def tool_auth_login_route(
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
     _set_rotated_session_cookie(response, rotated)
-    return ToolAuthLoginResponse(ok=True, sessionId=rotated)
+    return ToolAuthLoginResponse(ok=True)
 
 
 @router.post("/link-login", response_model=ToolAuthLoginResponse)
@@ -145,7 +145,7 @@ def tool_auth_link_login_route(
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
     _set_rotated_session_cookie(response, rotated)
-    return ToolAuthLoginResponse(ok=True, sessionId=rotated)
+    return ToolAuthLoginResponse(ok=True)
 
 
 @router.post("/logout", response_model=ToolAuthLogoutResponse)
