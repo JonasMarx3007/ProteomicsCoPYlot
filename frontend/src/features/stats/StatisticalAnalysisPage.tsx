@@ -953,7 +953,7 @@ function VolcanoPanel({
           </div>
         )}
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <SelectField
             label="Type"
             value={renderType}
@@ -961,6 +961,8 @@ function VolcanoPanel({
             options={VOLCANO_RENDER_TYPE_OPTIONS}
           />
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
           <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
           <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
@@ -1002,22 +1004,24 @@ function VolcanoPanel({
               Ranked by significance. A label that cannot be placed without
               covering another one is left off rather than drawn over it.
             </p>
-            <div className="mt-4 max-w-3xl">
-              <SizeRow
-                widthCm={widthCm}
-                heightCm={heightCm}
-                dpi={dpi}
-                onWidthChange={setWidthCm}
-                onHeightChange={setHeightCm}
-                onDpiChange={setDpi}
-              />
-            </div>
           </div>
         ) : null}
 
         <div className="mt-4 max-w-3xl">
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
         </div>
+        {renderType === "Normal" ? (
+          <div className="mt-4 max-w-3xl">
+            <SizeRow
+              widthCm={widthCm}
+              heightCm={heightCm}
+              dpi={dpi}
+              onWidthChange={setWidthCm}
+              onHeightChange={setHeightCm}
+              onDpiChange={setDpi}
+            />
+          </div>
+        ) : null}
 
         {sourceMode === "volcano" && !IS_VIEWER_MODE ? (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">

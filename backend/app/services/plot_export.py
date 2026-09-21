@@ -30,6 +30,28 @@ MAX_AUTO_FIT_PIXELS = 24_000_000
 AUTO_FIT_MARGIN_INCHES = 0.12
 
 
+def _tick_label_space(fig, renderer) -> tuple[float, float]:
+    """Extra inches needed to separate adjacent tick labels, without hiding any."""
+    extra = [0.0, 0.0]
+    for ax in getattr(fig, "axes", []):
+        for dimension, labels in enumerate((ax.get_xticklabels(), ax.get_yticklabels())):
+            boxes = [label.get_window_extent(renderer) for label in labels
+                     if label.get_visible() and label.get_text()]
+            boxes.sort(key=lambda box: box.x0 if dimension == 0 else box.y0)
+            ratio = 1.0
+            for first, second in zip(boxes, boxes[1:]):
+                first_center = (first.x0 + first.x1) / 2 if dimension == 0 else (first.y0 + first.y1) / 2
+                second_center = (second.x0 + second.x1) / 2 if dimension == 0 else (second.y0 + second.y1) / 2
+                distance = second_center - first_center
+                if distance <= 0:
+                    continue
+                extent = (first.width + second.width) / 2 if dimension == 0 else (first.height + second.height) / 2
+                ratio = max(ratio, (extent + fig.dpi * 0.02) / distance)
+            span = ax.bbox.width if dimension == 0 else ax.bbox.height
+            extra[dimension] = max(extra[dimension], span * (ratio - 1) / fig.dpi)
+    return tuple(extra)
+
+
 def fit_figure_to_labels(
     fig,
     plt,
@@ -41,20 +63,9 @@ def fit_figure_to_labels(
     max_passes: int = 3,
     max_pixels: int = MAX_AUTO_FIT_PIXELS,
 ) -> tuple[float, float]:
-    """Treat the requested figure size as a floor and grow it until labels fit.
+    """Grow a crowded figure within the physical/pixel limits, preserving DPI.
 
-    ``to_png_bytes`` refuses to render a figure whose tight bounding box spills
-    off the canvas, because silently shrinking or cropping a scientific figure
-    is worse than an error. For label-heavy plots (a GO term with forty gene
-    names down the side) the requested size is simply too small, and the honest
-    fix is a bigger canvas rather than a smaller error. Measure what the labels
-    actually need, enlarge to that, and re-measure a couple of times because
-    ``tight_layout`` redistributes the extra room. The figure is never shrunk,
-    the caller's DPI is untouched, and growth stops at the same physical and
-    pixel ceilings the HTTP layer enforces - so ``to_png_bytes`` still raises
-    for a figure that does not fit even at the maximum size.
-
-    Returns the final figure size in inches.
+    Requested dimensions are a minimum. Return the final size in inches.
     """
     resolved_dpi = max(72, int(dpi))
     tolerance = 1.0 / resolved_dpi
@@ -73,6 +84,9 @@ def fit_figure_to_labels(
             width, height = (float(value) for value in fig.get_size_inches())
             overflow_x = max(0.0, -bounds.x0) + max(0.0, bounds.x1 - width)
             overflow_y = max(0.0, -bounds.y0) + max(0.0, bounds.y1 - height)
+            tick_width, tick_height = _tick_label_space(fig, fig.canvas.get_renderer())
+            overflow_x += tick_width
+            overflow_y += tick_height
             if overflow_x <= tolerance and overflow_y <= tolerance:
                 break
             target_width = width + (overflow_x + margin_inches if overflow_x > tolerance else 0.0)
@@ -87,6 +101,10 @@ def fit_figure_to_labels(
                 shrink = math.sqrt(pixel_budget / pixels)
                 target_width = max(width, target_width * shrink)
                 target_height = max(height, target_height * shrink)
+                # Preserving an existing dimension can undo the proportional
+                # reduction above. Cap the other dimension to the remaining budget.
+                target_width = min(target_width, pixel_budget / resolved_dpi**2 / height)
+                target_height = min(target_height, pixel_budget / resolved_dpi**2 / target_width)
             if target_width <= width + tolerance and target_height <= height + tolerance:
                 break
             fig.set_size_inches(max(width, target_width), max(height, target_height))
@@ -134,7 +152,7 @@ def fit_figure_to_labels(
 
 
 def to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
-    """Serialize the request's image format; tight fits layout, never crops the canvas."""
+    """Serialize without clipping labels; grow crowded plots within safe limits."""
     buf = io.BytesIO()
     fmt = plot_output_format.get()
     save_kwargs = {"format": fmt, "dpi": max(72, int(dpi))}
@@ -155,14 +173,23 @@ def to_png_bytes(fig, plt, dpi: int = 150, tight: bool = True) -> bytes:
             bounds = fig.get_tightbbox(fig.canvas.get_renderer())
             width, height = fig.get_size_inches()
             tolerance = 1 / save_kwargs["dpi"]
-            if bounds is not None and (
+            crowded_ticks = max(_tick_label_space(fig, fig.canvas.get_renderer())) > tolerance
+            if crowded_ticks or (bounds is not None and (
                 bounds.x0 < -tolerance or bounds.y0 < -tolerance
                 or bounds.x1 > width + tolerance or bounds.y1 > height + tolerance
-            ):
-                raise ValueError(
-                    "Plot labels do not fit the selected figure size. "
-                    "Increase width/height or reduce text size."
-                )
+            )):
+                fit_figure_to_labels(fig, plt, dpi=save_kwargs["dpi"])
+                fig.canvas.draw()
+                bounds = fig.get_tightbbox(fig.canvas.get_renderer())
+                width, height = fig.get_size_inches()
+                if bounds is not None and (
+                    bounds.x0 < -tolerance or bounds.y0 < -tolerance
+                    or bounds.x1 > width + tolerance or bounds.y1 > height + tolerance
+                ):
+                    raise ValueError(
+                        "Plot labels do not fit even after automatic layout adjustment. "
+                        "Increase width/height or reduce text size."
+                    )
             fig.savefig(buf, **save_kwargs)
     finally:
         plt.close(fig)

@@ -83,6 +83,14 @@ def test_project_versions_agree() -> None:
     assert package["version"] == lock["version"] == lock["packages"][""]["version"] == version
 
 
+def test_react_and_react_dom_versions_agree() -> None:
+    package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
+    assert package["dependencies"]["react"] == package["dependencies"]["react-dom"]
+    packages = lock["packages"]
+    assert packages["node_modules/react"]["version"] == packages["node_modules/react-dom"]["version"]
+
+
 def test_packaging_includes_canonical_example_data() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     windows_build = (ROOT / "packaging" / "windows" / "build_exe_windows.ps1").read_text(encoding="utf-8")

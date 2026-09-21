@@ -24,43 +24,41 @@ report = importlib.import_module('app.services.report_function')
 # argument (`protease`); under this harness the probe's arguments are what the
 # figure's bytes are, so those cases' HTML moves with it. The pass-through
 # itself is covered by test_missed_cleavage_reporting.py.
-# 2026-09-17: the report's version line is now derived from APP_VERSION rather
-# than from a hand-maintained constant beside it. The string it prints is
-# unchanged today, so these hashes did not move; they will move on the release
-# that changes the application version, and that is the point of the change.
+# Layout snapshots use a fixed version; test_report_version_and_ksea_filename
+# independently verifies that real reports print the current application version.
 # 2026-09-21: the coverage plot's total line became a switch of its own
 # (`referenceLine` in the coverage settings), so the report now forwards
 # `reference_line=True` to the two coverage renderers. Reverting just that
 # argument reproduces the previous hashes; it is the whole difference.
 SNAPSHOTS = {
-    'qc_custom:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
-    'qc_custom:protein': 'c6c5cb984e0d4be84bad8fd5d5ecff646fef601190553fc05d0f69b6684e07d6',
-    'qc_custom:phospho': '08038dd69d5cc0a0ccbdc9fb8dc6b3ad43808a7a65719af60ef436bb8b5bc04f',
-    'qc_custom:peptide,protein,phospho': 'c9b3bcd836b222e52d9dd31446eebe157868724002b25c55afd430ac531cbb3b',
-    'qc_invalid:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
-    'qc_invalid:protein': 'b19fbf64dd73e59b4a7ec9a59c4652e585e627f303d9e2a2de4eb91d710e9258',
-    'qc_invalid:phospho': 'c03c8d8b6c75f09779a56653a9d9bd521eb6e14f62a4e28b4725c5b5367a620f',
-    'qc_invalid:peptide,protein,phospho': '1f4cee4f8057c2d5cfd5af0c54016ee9bd076d217290dae202afc56531551060',
-    'default:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
+    'qc_custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
+    'qc_custom:protein': 'cc2e315afea439d6a7cd515c8463437a5c5fef34141e7d6d996336d98db1515b',
+    'qc_custom:phospho': '5665da5297b8694a4818ed85e30f2705827f32815fd68cc48cadbde53194a7dd',
+    'qc_custom:peptide,protein,phospho': 'cb89e35ff052b1d2248fb0f5d2d67916f1021966bd9347e937fe96142ecaf3cb',
+    'qc_invalid:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
+    'qc_invalid:protein': 'd9ea4cdce061e79971e6fe44d0e6e800a418b93298d2610d1efd4ee5e9326af3',
+    'qc_invalid:phospho': 'ec5f19d6bec30d4b8c7643fb433624e7dc3ed7fc4ef66ad8fb13f984e185101d',
+    'qc_invalid:peptide,protein,phospho': 'ed88f3e3aa06c83aa5be0806d76b3b6a823a0f5cec9906574d42b779cc68d28d',
+    'default:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
     # The three `default` snapshots below changed when advanced mode stopped
     # gating the appearance settings: the case's custom PCA title now reaches
     # the PCA renderer with the panel closed, as it reaches the plot on screen.
     # That forwarded title is the whole difference.
-    'default:protein': '0d7b12a96ad23e44f29a9e953c54c37c4ae8109737dc8db4df7838df641b0ced',
-    'default:phospho': '56ef025baa8a779e62337655f313b9382b095e56245dc76d3c1c1590e092de1b',
-    'default:peptide,protein,phospho': 'da1b29b4277de191111fea37c0fd416448f198e2e22a30b0eb434db4e78ae8dd',
-    'custom:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
-    'custom:protein': '68dfc320b90b50ce69285e4e61ef94506b46c194e7d3c48d56f32e0e4dd2f216',
-    'custom:phospho': '5189d27a20d730826a7a54e131347a41badc3092322b8415b108691367b00e90',
-    'custom:peptide,protein,phospho': '0a3cd239f7a54c723d78849ba251aede7fe5274aacfe5f2e84193b3d57a302cf',
-    'interactive:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
-    'interactive:protein': 'c35203e727c1327d570c5e373d2566176be41216c574ab37af30c90d53ff63f1',
-    'interactive:phospho': '09a31f515434c0e04b9e3c5fa602e76a5ed215718251a38be31fd3dae9007b62',
-    'interactive:peptide,protein,phospho': 'e4e49b6cd51b70cee6fa12deab630195e2888d8b34ecc18000da4ea9aa9b90e9',
-    'failure:': '51b8f6856c2b611a19b9879bf620335be238d64f8d0926725a1272e4d735638e',
-    'failure:protein': '3374964ac23d8915ad04fb61ceb62d976dd38c5c48a8603d812371ae20d75991',
-    'failure:phospho': '8d568138e7dcaac30b734f86f86b38ff2ed2bf22e88fe6c423ae12dbf0409ce8',
-    'failure:peptide,protein,phospho': '4d6268584101f534255dd285fe0df8647fb587f4a605f4c268cdc3566de891a3',
+    'default:protein': 'fb5bb3b1ea3327da2371a56e2351c167ae35e67842e5822ed02c98a6d2f2d34e',
+    'default:phospho': '118adddf0e0d811052cc61a9bc352bc888afbba7810fa6b5ea363a2a255094b1',
+    'default:peptide,protein,phospho': '726dc107ca4818929430365ed6551193041b74915854c6a8030a09b8b992ebea',
+    'custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
+    'custom:protein': '56c09da69fa15397cedcdf3b17c9b4b37e15ab890db170e5382e8062f011f54f',
+    'custom:phospho': '7c47a4dff5caa0e719ca8b99352fb07eec2e0317475f92b416f9cd7e915a551e',
+    'custom:peptide,protein,phospho': '543e5b8937c13381779de11edf11198c4823876575f9bada3382e884a4f866f9',
+    'interactive:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
+    'interactive:protein': 'a067a34210df5f79925ebb25e27ada2d5aa334a9a19f17a19cfdc91af91aa4e9',
+    'interactive:phospho': '3a0e271cd9b3e0fe3f88f2c487bbab5113a766d060b9ffd0821cfda5824d7b6a',
+    'interactive:peptide,protein,phospho': 'd61f48763e718c47c3f3bf03d0e0fe7ac7eff7a08de1a3e385116d3a5ba53e33',
+    'failure:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
+    'failure:protein': 'e41907b6ee2ac8ff1553e96a5027e82133923f961424d886082ce861b0dfad53',
+    'failure:phospho': '25e26eac47207662a331fabcf33730e53c2d2cc8a19ca8c3eaab0b58059a95b3',
+    'failure:peptide,protein,phospho': 'e9762520408c9e0c7f40f2fb0d3aa90725a455f1bdee55819ba672638bebd689',
 }
 
 
@@ -147,6 +145,7 @@ def render_case(monkeypatch, kinds, mode, *, pca_scaling=None, selected_settings
 @pytest.mark.parametrize('kinds', [(), ('protein',), ('phospho',), ('peptide', 'protein', 'phospho')])
 @pytest.mark.parametrize('mode', ['default', 'custom', 'interactive', 'failure', 'qc_custom', 'qc_invalid'])
 def test_report_output_and_renderer_arguments_are_unchanged(monkeypatch, kinds, mode):
+    monkeypatch.setattr(report, 'VERSION', 'Proteomics CoPYlot V1.0.0')
     result, calls = render_case(monkeypatch, kinds, mode)
     assert result.html.count(GENERATED_HTML_META) == 1
     # Only the newly added policy differs from the pre-hardening report baseline.
