@@ -141,9 +141,9 @@ change, via a `[[tool.mypy.overrides]]` block.
 
 - One concern per pull request.
 - Say what a reviewer should check to believe the change works.
-- Add a `CHANGELOG.md` entry under `## [Unreleased]`. If the change alters
-  numbers or labels a released version produced, it goes under
-  **Changed (breaking)**, even when no signature moved.
+- Leave `CHANGELOG.md` as a placeholder until the first official release.
+  After that, record changes under `## [Unreleased]`, marking changes to
+  previously released numbers or labels as **Changed (breaking)**.
 - Do not edit the plot manuals (`frontend/public/manuals/`) or their build
   copies. They are maintained separately, and a user-facing rename that
   desynchronises them is a coordinated change, not an incidental one.

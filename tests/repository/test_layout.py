@@ -61,27 +61,26 @@ def test_project_guidance_files_exist() -> None:
         assert (ROOT / relative).is_file(), relative
 
 
-def test_the_changelog_covers_the_current_version() -> None:
-    """A release with no entry is a release nobody can diff against.
-
-    The version lives in three places -- pyproject, CITATION.cff and the
-    changelog -- and the changelog is the one that silently falls behind,
-    because nothing imports it.
-    """
+def test_project_versions_agree() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.M).group(1)
-    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-
-    assert "## [Unreleased]" in changelog, (
-        "changes land under Unreleased until they are released"
-    )
-    assert f"## [{version}]" in changelog, (
-        f"pyproject declares {version}, which the changelog does not mention"
-    )
 
     citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
     cited = re.search(r'^version:\s*"?([^"\n]+)"?', citation, re.M).group(1).strip()
     assert cited == version, f"CITATION.cff says {cited}, pyproject says {version}"
+
+    for relative, name in (
+        ("backend/app/app_version.py", "APP_VERSION"),
+        ("proteomicscopylot/_version.py", "__version__"),
+        ("proteomicscopylot/__init__.py", "__version__"),
+    ):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        declared = re.search(rf'^\s*{name}\s*=\s*"([^"]+)"', source, re.M).group(1)
+        assert declared == version, relative
+
+    package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
+    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == version
 
 
 def test_packaging_includes_canonical_example_data() -> None:
