@@ -35,7 +35,7 @@ def test_secret_and_local_artifact_ignore_contract() -> None:
         "private/server.key",
         "backup.sql",
         "cache.sqlite3",
-        "release/python/1.0.1/package.whl",
+        "release/python/1.0.0/package.whl",
     ]
     visible = [
         ".env.example",
@@ -81,7 +81,7 @@ def test_release_build_cleans_only_managed_python_output(
     stale.write_bytes(b"stale")
     monkeypatch.setattr(build_script, "RELEASE_ROOT", release_root)
 
-    output = build_script.release_output_dir("1.0.1")
+    output = build_script.release_output_dir("1.0.0")
     build_script.prepare_release_output(output)
 
     assert output.is_dir()
