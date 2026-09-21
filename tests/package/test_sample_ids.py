@@ -240,7 +240,7 @@ def test_backend_and_notebook_paired_statistics_match_identity_and_missingness(
         notebook_result[columns].to_numpy(dtype=float),
     )
     assert notebook_result["n_pairs"].tolist() == [3, 4, 4, 4]
-    assert notebook_result["log2FC"].tolist() == [5.0, 0.0, 2.0, 1.0]
+    assert notebook_result["log2FC"].tolist() == [-5.0, 0.0, -2.0, -1.0]
     assert np.isnan(notebook_result["pval"].iloc[1])
     assert notebook_result["pval"].iloc[2] == 0.0
 
@@ -691,7 +691,7 @@ def test_paired_phospho_paths_use_the_same_identity(
         use_uncorrected=True,
     )
     assert ksea["n_pairs"].tolist() == [3, 4, 4, 4]
-    assert ksea["log2FC"].tolist() == [5.0, 0.0, 2.0, 1.0]
+    assert ksea["log2FC"].tolist() == [-5.0, 0.0, -2.0, -1.0]
     with pytest.raises(ValueError, match="paired.*unpaired"):
         phospho_tools.ksea_table(
             condition1="before",
@@ -718,8 +718,10 @@ def test_paired_phospho_paths_use_the_same_identity(
         use_uncorrected=True,
     )
     assert regulation["Protein_group"].tolist() == ["P3"]
-    assert regulation["Upregulated_count"].tolist() == [1]
-    assert regulation["Upregulated_log2FC_sum"].tolist() == [2.0]
+    # log2FC is condition1 - condition2, so P3's +2 in "after" is reported as a
+    # downregulated site of magnitude 2 here.
+    assert regulation["Downregulated_count"].tolist() == [1]
+    assert regulation["Downregulated_log2FC_sum"].tolist() == [2.0]
     with pytest.raises(ValueError, match="paired.*unpaired"):
         phospho_tools.phosprot_regulation_table(
             condition1="before",
@@ -767,11 +769,13 @@ def test_phosprot_regulation_uses_only_significant_site_log2fc(
         use_uncorrected=True,
     )
     assert result["Protein_group"].tolist() == ["P1"]
-    assert result["Upregulated_count"].tolist() == [2]
-    assert result["Downregulated_count"].tolist() == [1]
-    assert result["Upregulated_log2FC_sum"].tolist() == pytest.approx([3.5])
-    assert result["Downregulated_log2FC_sum"].tolist() == pytest.approx([3.0])
-    assert "noise" not in result.loc[0, "Upregulated_sites"]
+    # log2FC is condition1 - condition2, so the sites that rose in B relative
+    # to A are reported as downregulated here; magnitudes are unchanged.
+    assert result["Upregulated_count"].tolist() == [1]
+    assert result["Downregulated_count"].tolist() == [2]
+    assert result["Upregulated_log2FC_sum"].tolist() == pytest.approx([3.0])
+    assert result["Downregulated_log2FC_sum"].tolist() == pytest.approx([3.5])
+    assert "noise" not in result.loc[0, "Downregulated_sites"]
     assert phospho_tools.phosprot_regulation_png(
         condition1="A",
         condition2="B",
@@ -795,8 +799,8 @@ def test_phosprot_regulation_uses_only_significant_site_log2fc(
         use_uncorrected=True,
     )
     assert stricter["Upregulated_count"].tolist() == [1]
-    assert stricter["Upregulated_log2FC_sum"].tolist() == pytest.approx([2.0])
-    assert stricter["Downregulated_log2FC_sum"].tolist() == pytest.approx([3.0])
+    assert stricter["Upregulated_log2FC_sum"].tolist() == pytest.approx([3.0])
+    assert stricter["Downregulated_log2FC_sum"].tolist() == pytest.approx([2.0])
 
     no_hits = phospho_tools.phosprot_regulation_table(
         condition1="A",
@@ -824,5 +828,5 @@ def test_phosprot_regulation_uses_only_significant_site_log2fc(
         in_log2fc=1.0,
         uncorrected=True,
     )
-    assert list(figure.data[0].x) == pytest.approx([3.5])
-    assert list(figure.data[0].y) == pytest.approx([3.0])
+    assert list(figure.data[0].x) == pytest.approx([3.0])
+    assert list(figure.data[0].y) == pytest.approx([3.5])

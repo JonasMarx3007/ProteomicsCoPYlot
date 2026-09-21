@@ -29,8 +29,6 @@ function GONetViewTool() {
   const doiUrl = "https://doi.org/10.5281/zenodo.20271711";
   const imageUrl =
     "https://raw.githubusercontent.com/JonasMarx3007/GONetView/main/docs/assets/gonetview-overview.png";
-  const imagePageUrl =
-    "https://github.com/JonasMarx3007/GONetView/blob/main/docs/assets/gonetview-overview.png";
 
   return (
     <div className="space-y-6">
@@ -70,7 +68,9 @@ function GONetViewTool() {
           </div>
 
           <a
-            href={imagePageUrl}
+            // The picture is a picture of the tool, so it opens the tool. It
+            // used to open the PNG's page in the source repository.
+            href={appUrl}
             target="_blank"
             rel="noreferrer"
             className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"

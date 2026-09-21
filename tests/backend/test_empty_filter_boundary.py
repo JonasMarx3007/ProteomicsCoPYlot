@@ -53,17 +53,38 @@ def empty_filtered(request, tmp_path):
         dataset_store.reset_all_datasets()
 
 
-@pytest.mark.parametrize("source", ["auto", "data", "filtered"])
-def test_completed_empty_filter_never_falls_back(empty_filtered, source):
+def test_asking_for_the_filtered_matrix_is_refused_not_substituted(empty_filtered):
     kind, _, _ = empty_filtered
     with pytest.raises(ValueError, match="No features passed the selected filter"):
-        functions.analysis_data_source(kind, source)
+        functions.select_matrix(kind, "filtered")
 
 
-def test_explicit_unfiltered_lookup_still_works(empty_filtered):
+def test_an_empty_filter_remains_the_default_processing_stage(empty_filtered):
+    """Empty is a completed result, not permission to undo filtering."""
+    kind, _, _ = empty_filtered
+    options = functions.data_source_options(kind)
+    assert options["availableDataSources"] == ["data", "filtered"]
+    assert options["defaultDataSource"] == "filtered"
+
+
+@pytest.mark.parametrize("endpoint", [
+    "/api/plots/qc/{kind}/options", "/api/stats/options/{kind}",
+    "/api/plots/single-protein/{kind}/options",
+])
+def test_selector_endpoints_keep_the_empty_filtered_stage(empty_filtered, endpoint):
+    kind, _, _ = empty_filtered
+    with TestClient(app) as client:
+        response = client.get(endpoint.format(kind=kind))
+    assert response.status_code == 200, response.text
+    assert response.json()["defaultDataSource"] == "filtered"
+    assert response.json()["availableDataSources"] == ["data", "filtered"]
+
+
+def test_the_unfiltered_matrix_is_still_its_own_answer(empty_filtered):
+    """"data" means the annotated matrix, so an empty filter does not block it."""
     kind, frame, _ = empty_filtered
-    source, selected, _, _ = functions.analysis_data_source(kind, "log2")
-    assert source == "log2"
+    source, selected, _ = functions.select_matrix(kind, "data")
+    assert source == "data"
     assert len(selected) == len(frame) == 2
     assert annotation_store.get_annotation(kind).filtered_data.empty
 
@@ -74,8 +95,19 @@ def test_explicit_unfiltered_lookup_still_works(empty_filtered):
     "/api/data-tools/imputation/run", "/api/data-tools/imputation/download",
 ])
 def test_ui_api_consumers_report_no_data_without_substitution(empty_filtered, endpoint):
+    """Asking for the filtered matrix when the filter kept nothing is refused.
+
+    The refusal is what matters, not which request happens to trigger it: the
+    failure this guards against is an endpoint quietly running on the unfiltered
+    matrix while the user believes a filter is in force. Every request here
+    names `filtered` explicitly, because that is the claim being tested. A
+    request that names `data` is asking for the unfiltered matrix and gets it,
+    labelled as such -- see the test below.
+    """
     kind, _, _ = empty_filtered
-    payload = {"kind": kind, "condition1": "A", "condition2": "B"}
+    payload = {"kind": kind, "condition1": "A", "condition2": "B", "dataSource": "filtered"}
+    if "/imputation/" in endpoint:
+        payload.pop("dataSource")  # imputation follows its own input, not a selector
     if "volcano-control" in endpoint:
         payload.update(condition1Control="C", condition2Control="D")
     with TestClient(app) as client:
@@ -161,3 +193,22 @@ def test_r_notebook_keeps_empty_filtered_set(tmp_path):
     result = subprocess.run([runtime["executable"], "-e", script], cwd=tmp_path,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("endpoint", [
+    "/api/stats/volcano/run", "/api/stats/anova/run", "/api/stats/simulation/run",
+])
+def test_the_unfiltered_matrix_is_served_and_labelled_as_itself(empty_filtered, endpoint):
+    """An empty filter does not block a request that asked for unfiltered data.
+
+    What would be wrong is serving it under the filtered label. The response
+    names the matrix it used, so the report and the UI can say so too.
+    """
+    kind, _, _ = empty_filtered
+    if kind == "phosprot" and endpoint == "/api/stats/simulation/run":
+        pytest.skip("phosprot simulation needs conditions this fixture does not build")
+    payload = {"kind": kind, "condition1": "A", "condition2": "B", "dataSource": "data"}
+    with TestClient(app) as client:
+        response = client.post(endpoint, json=payload)
+    assert response.status_code == 200, response.text[:200]
+    assert response.json()["sourceUsed"] == "data"

@@ -1,6 +1,5 @@
 ﻿
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
 import { AssistantInput, AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
@@ -13,12 +12,15 @@ import type {
   AdvancedPlotSettings,
   AnalysisVolcanoResponse,
   AnnotationKind,
+  DataSource,
+  DataSourceChoices,
   ListEnrichmentResultResponse,
   ListEnrichmentRequest,
   StatsIdentifier,
   StatsTestType,
   StatisticalOptionsResponse,
 } from "../../lib/types";
+import { DATA_SOURCE_LABELS, dataSourceOptions } from "../../lib/types";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { useCanvasFocus } from "../../lib/canvasFocus";
 
@@ -28,7 +30,7 @@ type LineplotSourceMode = "active" | "selected" | "list" | "manual";
 type PValueMode = "corrected" | "uncorrected";
 
 type VolcanoSettings = {
-  dataSource: "data" | "imputed";
+  dataSource: DataSource;
   condition1: string;
   condition2: string;
   testType: StatsTestType;
@@ -42,26 +44,89 @@ type VolcanoControlSettings = VolcanoSettings & {
   condition2Control: string;
 };
 
-type VolcanoStyle = { title: string; up: string; down: string; other: string; radius: number };
+/**
+ * The canvas volcano is styled with the same settings as every other plot.
+ *
+ * It used to carry its own five-field shape -- title, point radius and the
+ * three class colours -- edited in a panel of its own. Those are exactly the
+ * Title and Volcano points cards of `AdvancedPlotOptions`, so a colour set on
+ * this tile had no effect anywhere else and vice versa. The tile now stores
+ * `AdvancedPlotSettings` and a saved canvas is migrated on read.
+ */
+type VolcanoStyle = AdvancedPlotSettings;
+
+const CANVAS_VOLCANO_DEFAULTS = {
+  up: "#dc2626",
+  down: "#2563eb",
+  other: "#94a3b8",
+  radius: 2.8,
+} as const;
 
 function restoredVolcanoStyle(value: unknown): VolcanoStyle {
-  const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const color = (key: string, fallback: string) => typeof saved[key] === "string" && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback;
+  const saved = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  // Already the shared shape.
+  if ("titleElement" in saved || "volcanoUpColor" in saved) {
+    return saved as VolcanoStyle;
+  }
+  const color = (key: string, fallback: string) =>
+    typeof saved[key] === "string" && /^#[0-9a-f]{6}$/i.test(saved[key] as string)
+      ? (saved[key] as string)
+      : fallback;
+  const radius =
+    typeof saved.radius === "number" && Number.isFinite(saved.radius)
+      ? Math.min(10, Math.max(1, saved.radius))
+      : CANVAS_VOLCANO_DEFAULTS.radius;
+  const title = typeof saved.title === "string" ? saved.title : "";
+  // The old radius was an SVG radius; the shared setting is a diameter.
+  const size = radius * 2;
   return {
-    title: typeof saved.title === "string" ? saved.title : "",
-    up: color("up", "#dc2626"), down: color("down", "#2563eb"), other: color("other", "#94a3b8"),
-    radius: typeof saved.radius === "number" && Number.isFinite(saved.radius) ? Math.min(10, Math.max(1, saved.radius)) : 2.8,
+    ...(title ? { titleElement: { text: title } } : {}),
+    volcanoUpColor: color("up", CANVAS_VOLCANO_DEFAULTS.up),
+    volcanoDownColor: color("down", CANVAS_VOLCANO_DEFAULTS.down),
+    volcanoNsColor: color("other", CANVAS_VOLCANO_DEFAULTS.other),
+    volcanoUpSize: size,
+    volcanoDownSize: size,
+    volcanoNsSize: size,
+  };
+}
+
+/** One class of point, as the SVG needs it. */
+function canvasPointStyle(style: VolcanoStyle, significance: string) {
+  const lower = significance.toLowerCase();
+  const [colorKey, sizeKey, alphaKey, fallbackColor] = lower.includes("up")
+    ? (["volcanoUpColor", "volcanoUpSize", "volcanoUpAlpha", CANVAS_VOLCANO_DEFAULTS.up] as const)
+    : lower.includes("down")
+    ? (["volcanoDownColor", "volcanoDownSize", "volcanoDownAlpha", CANVAS_VOLCANO_DEFAULTS.down] as const)
+    : (["volcanoNsColor", "volcanoNsSize", "volcanoNsAlpha", CANVAS_VOLCANO_DEFAULTS.other] as const);
+  const size = style[sizeKey];
+  const alpha = style[alphaKey];
+  return {
+    color: style[colorKey] || fallbackColor,
+    // Diameter in the shared vocabulary, radius in SVG.
+    radius: (typeof size === "number" && size > 0 ? size : CANVAS_VOLCANO_DEFAULTS.radius * 2) / 2,
+    opacity: typeof alpha === "number" ? Math.min(1, Math.max(0, alpha)) : 1,
+  };
+}
+
+function canvasText(style: VolcanoStyle, key: "titleElement" | "xLabelElement" | "yLabelElement") {
+  const element = style[key] ?? {};
+  return {
+    text: element.text?.trim() ?? "",
+    size: element.size,
+    color: element.color,
+    bold: element.bold === true,
+    italic: element.italic === true,
   };
 }
 
 type AnalysisTile = { collapsed?: boolean; focusGroup?: string; highlightFeatures?: string[]; conditions?: string[]; plotIdentifier?: StatsIdentifier } & (
   | { id: string; type: "volcano" | "volcanoControl"; settings: VolcanoControlSettings; style?: VolcanoStyle }
-  | { id: string; type: "proteinBoxplot"; sourceMode: BoxplotSourceMode; protein: string; dataSource: PlotDataSource; advanced?: AdvancedPlotSettings }
+  | { id: string; type: "proteinBoxplot"; sourceMode: BoxplotSourceMode; protein: string; dataSource: DataSource; advanced?: AdvancedPlotSettings }
   | {
       id: string;
       type: "proteinLineplot";
       advanced?: AdvancedPlotSettings;
-      dataSource: PlotDataSource;
+      dataSource: DataSource;
       sourceMode: LineplotSourceMode;
       listName: string;
       proteinsText: string;
@@ -90,10 +155,33 @@ type OraState = {
 
 const ANALYSIS_UI_STATE_KEY = "analysis.v1";
 const EMPTY_SELECTION: string[] = [];
-type PlotDataSource = "log2" | "filtered" | "imputed";
+// A saved "log2" is the old name for the annotated, unfiltered matrix, which
+// is now called "data" -- so a panel saved before the rename restores to the
+// same matrix rather than to an unsupported one.
+function restoredPlotSource(value: unknown): DataSource {
+  return value === "filtered" || value === "imputed" ? value : "data";
+}
 
-function restoredPlotSource(value: unknown): PlotDataSource {
-  return value === "filtered" || value === "imputed" ? value : "log2";
+/** The contrast, written the way the number is computed.
+ *
+ * Mirrors `functions.comparison_contrast` on the backend. The first condition
+ * is the minuend everywhere in this tool, so a positive log2FC means higher in
+ * the condition named first. The canvas used to label its own axis
+ * `(condition2 vs condition1)`, which reads as the opposite of what the points
+ * mean, and "vs" does not say which way round a difference was taken at all.
+ */
+function comparisonContrast(
+  condition1: string,
+  condition2: string,
+  condition1Control?: string,
+  condition2Control?: string
+): string {
+  const first = condition1 || "Condition 1";
+  const second = condition2 || "Condition 2";
+  if (condition1Control && condition2Control) {
+    return `(${first} - ${condition1Control}) - (${second} - ${condition2Control})`;
+  }
+  return `${first} - ${second}`;
 }
 
 function asString(value: unknown, fallback = ""): string {
@@ -124,7 +212,12 @@ function restoredVolcanoSettings(value: unknown, control: boolean): VolcanoContr
   const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const test = restoreTestType(saved.testType);
   return {
-    dataSource: saved.dataSource === "imputed" ? "imputed" : "data",
+    // Through `restoredPlotSource`, like every other tile on this canvas. This
+    // used to collapse a saved "filtered" to "data", so a volcano restored from
+    // a save file silently ran on the unfiltered matrix -- a different row
+    // count, a different BH denominator, different adjusted p-values -- while
+    // the selector agreed with the value it had just been changed to.
+    dataSource: restoredPlotSource(saved.dataSource),
     condition1: asString(saved.condition1), condition2: asString(saved.condition2),
     condition1Control: asString(saved.condition1Control), condition2Control: asString(saved.condition2Control),
     testType: control ? controlTestType(test) : test,
@@ -370,23 +463,41 @@ export default function AnalysisPage({
     ? preferredKind
     : kindOptions[0]?.value ?? preferredKind) as AnnotationKind;
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
-  const [plotSources, setPlotSources] = useState<{ kind: AnnotationKind; revision: number; filteredAvailable: boolean; imputedAvailable: boolean } | null>(null);
+  const [plotSources, setPlotSources] = useState<{ kind: AnnotationKind; revision: number; choices: DataSourceChoices } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    getSingleProteinOptions(kind, "boxplot", "workflow", "log2", { signal: controller.signal })
+    getSingleProteinOptions(kind, "boxplot", "workflow", "data", { signal: controller.signal })
       .then(data => {
-        if (!controller.signal.aborted) setPlotSources({ kind, revision, filteredAvailable: data.filteredAvailable, imputedAvailable: data.imputedAvailable });
+        if (!controller.signal.aborted) setPlotSources({
+          kind,
+          revision,
+          choices: {
+            availableDataSources: data.availableDataSources ?? ["data"],
+            defaultDataSource: data.defaultDataSource ?? "data",
+          },
+        });
       }).catch(() => {
         if (!controller.signal.aborted) setPlotSources(null);
       });
     return () => controller.abort();
   }, [kind, revision]);
-  const plotSourceAvailable = (source: PlotDataSource) => source === "log2" ||
-    (plotSources?.kind === kind && plotSources.revision === revision &&
-      (source === "filtered" ? plotSources.filteredAvailable : plotSources.imputedAvailable));
-  function plotSourceOptions(selected: PlotDataSource) {
-    return (["log2", "filtered", "imputed"] as const).filter(source => source === selected || plotSourceAvailable(source))
-      .map(value => ({ value, label: `${value === "log2" ? "Log2" : value === "filtered" ? "Filtered" : "Imputed"} data${plotSourceAvailable(value) ? "" : " (unavailable)"}` }));
+  // The backend decides which matrices exist; this page only renders the answer,
+  // so a canvas tile cannot offer a different ladder from the Statistics page.
+  const plotSourceChoices = plotSources?.kind === kind && plotSources.revision === revision
+    ? plotSources.choices
+    : null;
+  const plotSourceAvailable = (source: DataSource) =>
+    plotSourceChoices ? plotSourceChoices.availableDataSources.includes(source) : source === "data";
+  // A new tile opens on the most processed matrix available, like every other
+  // panel; "data" until the ladder has loaded.
+  const newTilePlotSource: DataSource = plotSourceChoices?.defaultDataSource ?? "data";
+  function plotSourceOptions(selected: DataSource) {
+    const offered = dataSourceOptions(plotSourceChoices);
+    // A saved choice whose matrix has since gone is kept on screen and marked,
+    // rather than silently becoming a different one.
+    return offered.some(option => option.value === selected)
+      ? offered
+      : [...offered, { value: selected, label: `${DATA_SOURCE_LABELS[selected]} (unavailable)` }];
   }
 
   const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
@@ -474,7 +585,8 @@ export default function AnalysisPage({
     const conditions = control
       ? [settings.condition1, settings.condition2, settings.condition1Control, settings.condition2Control]
       : [settings.condition1, settings.condition2];
-    return (settings.dataSource !== "imputed" || options?.imputedAvailable === true) &&
+    const offered = options?.availableDataSources ?? ["data"];
+    return offered.includes(settings.dataSource) &&
       conditions.every(value => options?.availableConditions.includes(value)) &&
       new Set(conditions).size === conditions.length &&
       (settings.testType !== "paired" || pairingIsReady(settings.condition1, settings.condition2,
@@ -599,7 +711,7 @@ export default function AnalysisPage({
 
   function addTile() {
     if (addType === "proteinBoxplot") {
-      setTiles((current) => [...current, { id: uid(), type: addType, sourceMode: "active", protein: "", dataSource: "log2" }]);
+      setTiles((current) => [...current, { id: uid(), type: addType, sourceMode: "active", protein: "", dataSource: newTilePlotSource }]);
       return;
     }
     if (addType === "proteinLineplot") {
@@ -609,7 +721,7 @@ export default function AnalysisPage({
           id: uid(),
           type: addType,
           sourceMode: "active",
-          dataSource: "log2",
+          dataSource: newTilePlotSource,
           listName: "",
           proteinsText: "",
         },
@@ -644,14 +756,14 @@ export default function AnalysisPage({
     for (const protein of focus.features) {
       const old = existing.find(tile => tile.type === "proteinBoxplot" && tile.protein === protein);
       focused.push({ ...old, id: old?.id ?? uid(), type: "proteinBoxplot", focusGroup: group, collapsed: false,
-        sourceMode: "manual", protein, dataSource: "log2", plotIdentifier: "workflow", conditions: focus.conditions });
+        sourceMode: "manual", protein, dataSource: newTilePlotSource, plotIdentifier: "workflow", conditions: focus.conditions });
     }
     const oldLine = existing.find(tile => tile.type === "proteinLineplot");
     focused.push({ ...oldLine, id: oldLine?.id ?? uid(), type: "proteinLineplot", focusGroup: group, collapsed: false,
-      sourceMode: "manual", proteinsText: focus.features.join("\n"), highlightFeatures: focus.features, listName: "", dataSource: "log2", plotIdentifier: "workflow", conditions: focus.conditions });
+      sourceMode: "manual", proteinsText: focus.features.join("\n"), highlightFeatures: focus.features, listName: "", dataSource: newTilePlotSource, plotIdentifier: "workflow", conditions: focus.conditions });
     setKind(focus.kind);
     setTiles([...tiles.filter(tile => tile.focusGroup !== group), ...focused]);
-    return `Focused the ${focus.kind === "phospho" ? "phosphosite" : focus.kind === "phosprot" ? "phosphoprotein" : "protein"} canvas on ${focus.features.join(", ")} (${focus.conditions[1]} vs ${focus.conditions[0]}): volcano highlight, individual boxplots and lineplot. Existing unrelated tiles were kept. Plots may still be loading; a feature excluded from the comparison will have no volcano point.`;
+    return `Focused the ${focus.kind === "phospho" ? "phosphosite" : focus.kind === "phosprot" ? "phosphoprotein" : "protein"} canvas on ${focus.features.join(", ")} (${comparisonContrast(focus.conditions[0], focus.conditions[1])}): volcano highlight, individual boxplots and lineplot. Existing unrelated tiles were kept. Plots may still be loading; a feature excluded from the comparison will have no volcano point.`;
   });
 
   const updateOraState = useCallback((id: string, patch: Partial<OraState>) => {
@@ -818,7 +930,7 @@ export default function AnalysisPage({
             value={sourceTile?.id ?? ""}
             options={tiles.flatMap((tile, index) => "settings" in tile ? [{
               value: tile.id,
-              label: `Tile ${index + 1}: ${tile.type === "volcano" ? "Volcano" : "Volcano Control"} (${tile.settings.condition2 || "?"} vs ${tile.settings.condition1 || "?"})`,
+              label: `Tile ${index + 1}: ${tile.type === "volcano" ? "Volcano" : "Volcano Control"} (${comparisonContrast(tile.settings.condition1, tile.settings.condition2)})`,
             }] : [])}
             onChange={setLinkedVolcanoId}
           />
@@ -889,7 +1001,7 @@ export default function AnalysisPage({
                           pValueThreshold={volcanoSettings.pValueThreshold}
                           useUncorrected={volcanoSettings.pValueMode === "uncorrected"}
                           log2fcThreshold={volcanoSettings.log2fcThreshold}
-                          xAxisLabel={`log2 Fold Change (${volcanoSettings.condition2 || "Condition 2"} vs ${volcanoSettings.condition1 || "Condition 1"})`}
+                          xAxisLabel={`log2 fold change (${comparisonContrast(volcanoSettings.condition1, volcanoSettings.condition2)})`}
                           onAddUpregulatedToList={() =>
                             addProteinsToList(
                               buildDirectionListName(volcanoSettings.condition1, volcanoSettings.condition2, "Upregulated"),
@@ -911,8 +1023,8 @@ export default function AnalysisPage({
                         />
                       ) : (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                          {volcanoSettings.dataSource === "imputed" && !options?.imputedAvailable
-                            ? "The selected imputed data is unavailable."
+                          {!(options?.availableDataSources ?? ["data"]).includes(volcanoSettings.dataSource)
+                            ? `The selected ${DATA_SOURCE_LABELS[volcanoSettings.dataSource].toLowerCase()} is unavailable.`
                             : "Select two different conditions to display the volcano plot."}
                         </div>
                       )}
@@ -953,7 +1065,7 @@ export default function AnalysisPage({
                           pValueThreshold={volcanoControlSettings.pValueThreshold}
                           useUncorrected={volcanoControlSettings.pValueMode === "uncorrected"}
                           log2fcThreshold={volcanoControlSettings.log2fcThreshold}
-                          xAxisLabel={`log2 Fold Change [(${volcanoControlSettings.condition2 || "Condition 2"} vs ${volcanoControlSettings.condition1 || "Condition 1"}) - (${volcanoControlSettings.condition2Control || "Control 2"} vs ${volcanoControlSettings.condition1Control || "Control 1"})]`}
+                          xAxisLabel={`log2 fold change (${comparisonContrast(volcanoControlSettings.condition1, volcanoControlSettings.condition2, volcanoControlSettings.condition1Control || "Control 1", volcanoControlSettings.condition2Control || "Control 2")})`}
                           onAddUpregulatedToList={() =>
                             addProteinsToList(
                               buildDirectionListName(volcanoControlSettings.condition1, volcanoControlSettings.condition2, "Upregulated"),
@@ -975,8 +1087,8 @@ export default function AnalysisPage({
                         />
                       ) : (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                          {volcanoControlSettings.dataSource === "imputed" && !options?.imputedAvailable
-                            ? "The selected imputed data is unavailable."
+                          {!(options?.availableDataSources ?? ["data"]).includes(volcanoControlSettings.dataSource)
+                            ? `The selected ${DATA_SOURCE_LABELS[volcanoControlSettings.dataSource].toLowerCase()} is unavailable.`
                             : "Select four different conditions to display the control volcano plot."}
                         </div>
                       )}
@@ -1009,7 +1121,7 @@ export default function AnalysisPage({
 
                       <div className="grid gap-3 lg:grid-cols-2">
                         <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
-                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as PlotDataSource })} />
+                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as DataSource })} />
                         <SelectField
                           label="Protein source"
                           value={tile.sourceMode}
@@ -1076,7 +1188,7 @@ export default function AnalysisPage({
 
                       <div className="grid gap-3 lg:grid-cols-2">
                         <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
-                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as PlotDataSource })} />
+                          onChange={value => updateTile(tile.id, { ...tile, dataSource: value as DataSource })} />
                         <SelectField
                           label="Protein source"
                           value={tile.sourceMode}
@@ -1403,6 +1515,10 @@ function OraListTile({
       minTermSize: Math.max(1, Math.round(minTermSize)),
       maxTermSize: Math.max(1, Math.round(maxTermSize)),
       adjPValueCutoff: Math.max(1e-12, Math.min(1, adjPValueCutoff)),
+      // The canvas tile has no organism picker -- it is a compact tile, and the
+      // Statistics page is where an ORA is configured. Named rather than left
+      // to the schema default so the request says which database it wants.
+      organism: "human",
     };
     try {
       const response = await runListEnrichmentAnalysis(request, { signal: controller.signal });
@@ -1440,10 +1556,8 @@ function OraListTile({
         backgroundSize: result.backgroundSize,
         annotatedBackgroundSize: result.annotatedBackgroundSize,
         correctionMethod: result.correctionMethod,
-        databaseSha256: result.databaseSha256,
         testedTermCount: result.testedTermCount,
         ...result.termCounts.query,
-        correctionScope: ORA_CORRECTION_SCOPE,
         adjPValueCutoff: completed.request.adjPValueCutoff,
         minTermSize: completed.request.minTermSize,
         maxTermSize: completed.request.maxTermSize,
@@ -1575,7 +1689,6 @@ function OraListTile({
             <span className="font-medium text-slate-900">{result.correctionMethod}</span> | Terms in search space:{" "}
             <span className="font-medium text-slate-900">{result.testedTermCount}</span>
           </div>
-          <OraTermCounts counts={result.termCounts} />
           <div className="flex flex-wrap gap-2">
             {oraCsvUrl ? (
               <a
@@ -1603,10 +1716,6 @@ function OraListTile({
               </a>
             ) : null}
           </div>
-          <div className="break-all rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-            GO database SHA-256: {result.databaseSha256}
-          </div>
-
           {result.warnings.length > 0 ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
               {result.warnings.join(" ")}
@@ -1671,10 +1780,15 @@ function VolcanoBundleControls({
   return (
     <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3">
       <SelectField label="Data source" value={settings.dataSource}
-        options={[{ value: "data", label: "Data" },
-          ...(options?.imputedAvailable || settings.dataSource === "imputed"
-            ? [{ value: "imputed", label: options?.imputedAvailable ? "Imputed data" : "Imputed data (unavailable)" }] : [])]}
-        onChange={value => onChange({ dataSource: value as "data" | "imputed" })} />
+        options={
+          dataSourceOptions(options).some(option => option.value === settings.dataSource)
+            ? dataSourceOptions(options)
+            : [...dataSourceOptions(options), {
+                value: settings.dataSource,
+                label: `${DATA_SOURCE_LABELS[settings.dataSource]} (unavailable)`,
+              }]
+        }
+        onChange={value => onChange({ dataSource: value as DataSource })} />
       {isControl ? (
         <div className="grid gap-3 lg:grid-cols-4">
           <SelectField
@@ -1845,7 +1959,11 @@ function VolcanoPointsPanel({
 
   const width = 900;
   const height = 460;
-  const margin = { top: style.title ? 42 : 20, right: 20, bottom: 40, left: 56 };
+  const titleStyle = canvasText(style, "titleElement");
+  const xLabelStyle = canvasText(style, "xLabelElement");
+  const yLabelStyle = canvasText(style, "yLabelElement");
+  const titleShown = style.titleVisible !== false && Boolean(titleStyle.text);
+  const margin = { top: titleShown ? 42 : 20, right: 20, bottom: 40, left: 56 };
   const pAxisLabel = useUncorrected ? "-log10(p-value)" : "-log10(BH-adjusted p-value)";
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
@@ -1946,12 +2064,6 @@ function VolcanoPointsPanel({
     setDragCurrent(null);
   }
 
-  function pointColor(significance: string) {
-    const lower = significance.toLowerCase();
-    if (lower.includes("up")) return style.up;
-    if (lower.includes("down")) return style.down;
-    return style.other;
-  }
 
   function downloadSvg() {
     if (!svgRef.current) return;
@@ -1977,14 +2089,26 @@ function VolcanoPointsPanel({
         className="float-right mb-2 ml-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:opacity-50">Download SVG</button>
       <details>
         <summary className="w-fit cursor-pointer py-2 text-sm text-slate-700">Plot styling</summary>
-        <div className="clear-both grid gap-3 py-3 lg:grid-cols-2">
-          <TextField label="Plot title" value={style.title} onChange={title => onStyleChange({ ...style, title })} />
-          <NumberField label="Point radius" value={style.radius} onChange={radius => onStyleChange(restoredVolcanoStyle({ ...style, radius }))} />
-          {([['up', 'Upregulated color'], ['down', 'Downregulated color'], ['other', 'Not significant color']] as const).map(([key, label]) => (
-            <label key={key} className="flex items-center gap-2 text-sm">
-              {label}<AssistantInput type="color" value={style[key]} onChange={event => onStyleChange({ ...style, [key]: event.target.value })} />
-            </label>
-          ))}
+        <div className="clear-both py-3">
+            <AdvancedPlotOptions
+              value={style}
+              onChange={onStyleChange}
+              visibleControls={{
+                // This tile is drawn in the browser, so only the parts the SVG
+                // knows how to honour are offered: no frame, grid, background
+                // theme or renderer-side maps. The whole tile is typeset in the
+                // one face set on the <svg> element, and no *FontFamily key is
+                // read anywhere in it, so there is no font to choose either.
+                volcanoMarkers: true,
+                fontControls: false,
+                legendControls: false,
+                conditionLabels: false,
+                sampleLabels: false,
+                conditionColors: false,
+                axisLineControls: false,
+                backgroundControls: false,
+              }}
+            />
         </div>
       </details>
       </div>
@@ -2102,7 +2226,19 @@ function VolcanoPointsPanel({
           onPointerLeave={handlePointerUp}
         >
           <rect width={width} height={height} fill="white" />
-          {style.title ? <text x={width / 2} y={24} textAnchor="middle" fontSize="16" fill="#334155">{style.title}</text> : null}
+          {titleShown ? (
+            <text
+              x={width / 2}
+              y={24}
+              textAnchor="middle"
+              fontSize={titleStyle.size ?? 16}
+              fill={titleStyle.color ?? "#334155"}
+              fontWeight={titleStyle.bold ? "bold" : undefined}
+              fontStyle={titleStyle.italic ? "italic" : undefined}
+            >
+              {titleStyle.text}
+            </text>
+          ) : null}
           {yTicks.map((tick, idx) => (
             <line
               key={`ygrid_${idx}`}
@@ -2167,7 +2303,8 @@ function VolcanoPointsPanel({
             const selectionId = volcanoPointSelectionKey(point);
             const isSelected = selected.has(selectionId) || highlighted.has(point.workflowLabel ?? point.label);
             const isActive = !multiSelectMode && activeProtein === selectionId;
-            const radius = style.radius + (multiSelectMode ? (isSelected ? 1 : 0) : isActive ? 1.7 : isSelected ? 0.8 : 0);
+            const pointStyle = canvasPointStyle(style, point.significance);
+            const radius = pointStyle.radius + (multiSelectMode ? (isSelected ? 1 : 0) : isActive ? 1.7 : isSelected ? 0.8 : 0);
             const stroke = multiSelectMode
               ? isSelected
                 ? "#334155"
@@ -2197,10 +2334,10 @@ function VolcanoPointsPanel({
                 cx={mapX(point.log2FC)}
                 cy={mapY(point.negLog10P)}
                 r={radius}
-                fill={pointColor(point.significance)}
+                fill={pointStyle.color}
                 stroke={stroke}
                 strokeWidth={strokeWidth}
-                opacity={0.9}
+                opacity={pointStyle.opacity}
                 onPointerDown={(event) => {
                   if (!multiSelectMode) return;
                   event.stopPropagation();
@@ -2267,9 +2404,28 @@ function VolcanoPointsPanel({
             </text>
           ))}
 
-          <text x={width / 2} y={height - 10} textAnchor="middle" fontSize="12" fill="#334155">{xAxisLabel}</text>
-          <text x={16} y={height / 2} textAnchor="middle" fontSize="12" fill="#334155" transform={`rotate(-90 16 ${height / 2})`}>
-            {pAxisLabel}
+          <text
+            x={width / 2}
+            y={height - 10}
+            textAnchor="middle"
+            fontSize={xLabelStyle.size ?? 12}
+            fill={xLabelStyle.color ?? "#334155"}
+            fontWeight={xLabelStyle.bold ? "bold" : undefined}
+            fontStyle={xLabelStyle.italic ? "italic" : undefined}
+          >
+            {xLabelStyle.text || xAxisLabel}
+          </text>
+          <text
+            x={16}
+            y={height / 2}
+            textAnchor="middle"
+            fontSize={yLabelStyle.size ?? 12}
+            fill={yLabelStyle.color ?? "#334155"}
+            fontWeight={yLabelStyle.bold ? "bold" : undefined}
+            fontStyle={yLabelStyle.italic ? "italic" : undefined}
+            transform={`rotate(-90 16 ${height / 2})`}
+          >
+            {yLabelStyle.text || pAxisLabel}
           </text>
         </svg>
       </div>

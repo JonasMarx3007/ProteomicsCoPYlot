@@ -1,14 +1,17 @@
-import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
+import { AssistantSelect } from "../../components/AssistantFields";
+import { MATPLOTLIB_CONTROLS, MATPLOTLIB_NO_FRAME_CONTROLS, MATPLOTLIB_Y_DASHED_GRID_CONTROLS } from "../../lib/plotControlDefaults";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import SelectField from "../../components/SelectField";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
-import { compactMap, compactTextElement } from "../../lib/plotSerialization";
+import { compactAdvancedPlotSettings as compactAdvancedSettings } from "../../lib/plotSerialization";
 import SummaryCard from "../../components/SummaryCard";
 import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useId, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getCompletenessTables, getPeptideQuantityOptions, getQcPlotOptions, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -39,71 +42,9 @@ function isAnnotationKind(kind: CompletenessKind): kind is AnnotationKind {
   return kind === "protein" || kind === "phospho" || kind === "phosprot";
 }
 
-function compactAdvancedSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
-  const next: AdvancedPlotSettings = {};
-  const title = settings.title?.trim();
-  const xLabel = settings.xLabel?.trim();
-  const yLabel = settings.yLabel?.trim();
-  const backgroundColor = settings.backgroundColor?.trim();
-  const plotTheme = settings.plotTheme?.trim();
-  const axisLineColor = settings.axisLineColor?.trim();
-  const axisLineStyle = settings.axisLineStyle?.trim();
-  const gridLineAxis = settings.gridLineAxis?.trim();
-  const gridLineColor = settings.gridLineColor?.trim();
-  const gridLineStyle = settings.gridLineStyle?.trim();
-  const titleElement = compactTextElement(settings.titleElement);
-  const xLabelElement = compactTextElement(settings.xLabelElement);
-  const yLabelElement = compactTextElement(settings.yLabelElement);
-
-  if (title) next.title = title;
-  if (xLabel) next.xLabel = xLabel;
-  if (yLabel) next.yLabel = yLabel;
-  if (titleElement) {
-    next.titleElement = titleElement;
-    if (titleElement.text) next.title = titleElement.text;
-    if (titleElement.size) next.titleSize = titleElement.size;
-  }
-  if (xLabelElement) {
-    next.xLabelElement = xLabelElement;
-    if (xLabelElement.text) next.xLabel = xLabelElement.text;
-  }
-  if (yLabelElement) {
-    next.yLabelElement = yLabelElement;
-    if (yLabelElement.text) next.yLabel = yLabelElement.text;
-  }
-  if (settings.titleSize && settings.titleSize > 0) next.titleSize = settings.titleSize;
-  if (settings.axisLabelSize && settings.axisLabelSize > 0) next.axisLabelSize = settings.axisLabelSize;
-  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
-  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
-  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
-  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
-  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
-  if (settings.textXOffset) next.textXOffset = settings.textXOffset;
-  if (settings.textYOffset) next.textYOffset = settings.textYOffset;
-  if (backgroundColor) next.backgroundColor = backgroundColor;
-  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
-  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
-  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
-  if (axisLineColor) next.axisLineColor = axisLineColor;
-  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
-  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
-  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
-  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
-  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
-  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
-  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
-  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
-  if (gridLineColor) next.gridLineColor = gridLineColor;
-  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
-  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
-
-  const sampleLabels = compactMap(settings.sampleLabels);
-  if (sampleLabels) next.sampleLabels = sampleLabels;
-  return next;
-}
-
-function advancedParam(settings: AdvancedPlotSettings, enabled: boolean): string {
-  if (!enabled) return "";
+// The page's appearance settings apply whether the panel is open or not:
+// advanced mode only shows the panel, it never switches the settings.
+function advancedParam(settings: AdvancedPlotSettings): string {
   const compacted = compactAdvancedSettings(settings);
   return Object.keys(compacted).length ? JSON.stringify(compacted) : "";
 }
@@ -116,6 +57,7 @@ function withAdvancedParams(
 }
 
 export default function CompletenessPage({ activeTab, onContextModeChange }: Props) {
+  const fieldId = useId();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("completeness.v1", {}),
     []
@@ -123,7 +65,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const persistedMissing = (persisted.missingPlot as Record<string, unknown>) ?? {};
   const persistedHeatmap = (persisted.heatmap as Record<string, unknown>) ?? {};
   const persistedTables = (persisted.tables as Record<string, unknown>) ?? {};
-  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advanced as AdvancedPlotState) ?? {};
+  // Versioned for the same reason as the QC page's.
+  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advancedV2 as AdvancedPlotState) ?? {};
   const [kind, setKind] = useState<CompletenessKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
@@ -140,31 +83,30 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png").trim();
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
   const [advancedModeEnabled, setAdvancedModeEnabled] = useState(() => getAdvancedPlotMode());
   const [advancedByTab, setAdvancedByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
   const [advancedRenderByTab, setAdvancedRenderByTab] = useState<AdvancedPlotState>(() => persistedAdvanced);
 
   const [missingPlot, setMissingPlot] = useState({
     quantityColumn: String(persistedMissing.quantityColumn ?? ""),
-    header: Boolean(persistedMissing.header ?? true),
+    header: true,
     text: Boolean(persistedMissing.text ?? true),
     binCount: Number(persistedMissing.binCount ?? 0),
     textSize: Number(persistedMissing.textSize ?? 8),
     color: String(persistedMissing.color ?? "#2563eb"),
-    widthCm: Number(persistedMissing.widthCm ?? 20),
-    heightCm: Number(persistedMissing.heightCm ?? 10),
-    dpi: Number(persistedMissing.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedMissing.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedMissing.heightCm, 10),
+    dpi: restorePlotDpi(persistedMissing.dpi, 300),
   });
   const [heatmap, setHeatmap] = useState({
     includeId: Boolean(persistedHeatmap.includeId ?? true),
-    header: Boolean(persistedHeatmap.header ?? true),
-    widthCm: Number(persistedHeatmap.widthCm ?? 10),
-    heightCm: Number(persistedHeatmap.heightCm ?? 10),
-    dpi: Number(persistedHeatmap.dpi ?? 300),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedHeatmap.widthCm, 10),
+    heightCm: restorePlotDimensionCm(persistedHeatmap.heightCm, 10),
+    dpi: restorePlotDpi(persistedHeatmap.dpi, 300),
   });
   const [tables, setTables] = useState({
     includeId: Boolean(persistedTables.includeId ?? true),
@@ -180,7 +122,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
       tables,
     };
     if (!IS_VIEWER_MODE) {
-      nextState.advanced = advancedByTab;
+      nextState.advancedV2 = advancedByTab;
     }
     writePersistedUiState("completeness.v1", nextState);
   }, [kind, downloadFormat, missingPlot, heatmap, tables, advancedByTab]);
@@ -346,8 +288,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     return rawLabels;
   }, [activeTab, heatmap.includeId, sampleDisplayLabels, sampleDisplayLabelsWithId, sampleOptions]);
   const activeAdvancedParam = useMemo(
-    () => advancedParam(activeAdvancedRenderSettings, advancedModeEnabled),
-    [activeAdvancedRenderSettings, advancedModeEnabled]
+    () => advancedParam(activeAdvancedRenderSettings),
+    [activeAdvancedRenderSettings]
   );
   const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
     if (activeTab === "missingPlot") {
@@ -356,6 +298,11 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         conditionLabels: false,
         sampleLabels: false,
         conditionColors: false,
+        // `_missing_value_plot_from_matrix` reads both: `barColor` for the bars
+        // and `valueLabelSize` for the count printed over each one. Neither was
+        // offered here, so the plot's own colour could not be changed anywhere.
+        barColor: true,
+        valueLabels: true,
       };
     }
     if (activeTab === "heatmap") {
@@ -368,29 +315,12 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     }
     return {};
   }, [activeTab]);
+  // The plot as drawn: the missing value plot has a dashed y grid, the missing
+  // value heatmap has no frame at all.
   const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
-    if (activeTab === "missingPlot") {
-      return {
-        gridLineVisible: true,
-        gridLineAxis: "y",
-        gridLineColor: "#b0b0b0",
-        gridLineStyle: "dashed",
-        gridLineWidth: 0.8,
-        axisLineLeft: true,
-        axisLineRight: true,
-        axisLineBottom: true,
-        axisLineTop: true,
-      };
-    }
-    return {
-      gridLineVisible: false,
-      gridLineAxis: "y",
-      gridLineStyle: "dashed",
-      axisLineLeft: true,
-      axisLineRight: true,
-      axisLineBottom: true,
-      axisLineTop: true,
-    };
+    if (activeTab === "missingPlot") return MATPLOTLIB_Y_DASHED_GRID_CONTROLS;
+    if (activeTab === "heatmap") return MATPLOTLIB_NO_FRAME_CONTROLS;
+    return MATPLOTLIB_CONTROLS;
   }, [activeTab]);
 
   const plotView = useMemo(() => {
@@ -452,8 +382,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         <h2 className="text-lg font-semibold text-slate-900">Data Completeness</h2>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
+            <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
             <AssistantSelect
+              id={fieldId}
               value={kind}
               onChange={(e) => setKind(e.target.value as CompletenessKind)}
               disabled={activeKindOptions.length === 0}
@@ -651,7 +582,6 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
       return (
         <OptionsLayout
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={missingPlot.header} onChange={(v) => setMissingPlot({ ...missingPlot, header: v })} />,
             <Checkbox key="text" label="Toggle Text" checked={missingPlot.text} onChange={(v) => setMissingPlot({ ...missingPlot, text: v })} />,
           ]}
           inputs={[
@@ -668,17 +598,15 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                 ]
               : []),
             <NumericField key="bin" label="Bin missing values" value={missingPlot.binCount} onChange={(v) => setMissingPlot({ ...missingPlot, binCount: Math.max(0, Math.round(v)) })} />,
-            <NumericField key="text-size" label="Text Size" value={missingPlot.textSize} onChange={(v) => setMissingPlot({ ...missingPlot, textSize: Math.max(6, Math.min(24, Math.round(v))) })} />,
-            <ColorField key="color" label="Bar Color" value={missingPlot.color} onChange={(value) => setMissingPlot({ ...missingPlot, color: value })} />,
           ]}
           sizeRow={
             <SizeRow
               dpi={missingPlot.dpi}
               heightCm={missingPlot.heightCm}
               widthCm={missingPlot.widthCm}
-              onDpiChange={(v) => setMissingPlot({ ...missingPlot, dpi: Math.max(72, Math.round(v)) })}
-              onHeightChange={(v) => setMissingPlot({ ...missingPlot, heightCm: Math.max(1, v) })}
-              onWidthChange={(v) => setMissingPlot({ ...missingPlot, widthCm: Math.max(1, v) })}
+              onDpiChange={(v) => setMissingPlot({ ...missingPlot, dpi: v })}
+              onHeightChange={(v) => setMissingPlot({ ...missingPlot, heightCm: v })}
+              onWidthChange={(v) => setMissingPlot({ ...missingPlot, widthCm: v })}
             />
           }
         />
@@ -690,16 +618,15 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
         <OptionsLayout
           toggles={[
             <Checkbox key="id" label="Toggle IDs" checked={heatmap.includeId} onChange={(v) => setHeatmap({ ...heatmap, includeId: v })} />,
-            <Checkbox key="header" label="Toggle Header" checked={heatmap.header} onChange={(v) => setHeatmap({ ...heatmap, header: v })} />,
           ]}
           sizeRow={
             <SizeRow
               dpi={heatmap.dpi}
               heightCm={heatmap.heightCm}
               widthCm={heatmap.widthCm}
-              onDpiChange={(v) => setHeatmap({ ...heatmap, dpi: Math.max(72, Math.round(v)) })}
-              onHeightChange={(v) => setHeatmap({ ...heatmap, heightCm: Math.max(1, v) })}
-              onWidthChange={(v) => setHeatmap({ ...heatmap, widthCm: Math.max(1, v) })}
+              onDpiChange={(v) => setHeatmap({ ...heatmap, dpi: v })}
+              onHeightChange={(v) => setHeatmap({ ...heatmap, heightCm: v })}
+              onWidthChange={(v) => setHeatmap({ ...heatmap, widthCm: v })}
             />
           }
         />
@@ -739,29 +666,6 @@ function OptionsLayout({
       <div className="flex flex-wrap gap-3">{toggles}</div>
       {inputs && inputs.length > 0 ? <div className="grid gap-4 lg:grid-cols-3">{inputs}</div> : null}
       <div>{sizeRow}</div>
-    </div>
-  );
-}
-
-function ColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const fieldId = useId();
-  return (
-    <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <AssistantInput id={fieldId}
-        type="color"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-1 py-1"
-      />
     </div>
   );
 }

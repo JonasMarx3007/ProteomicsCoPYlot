@@ -11,14 +11,24 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.services.clustering_tools import require_complete_clustering_matrix
+from app.services.clustering_tools import drop_incomplete_features, heatmap_notice
 from app.services.annotation_store import get_annotation
 from app.services.functions import (
     extract_sample_id as _extract_id_or_number,
-    _visualization_data_source,
-    _visualization_data_source_availability,
+    _phosprot_values_are_centred,
+    data_source_options,
+    select_matrix,
+    intensity_unit_label,
 )
-from app.services.plot_images import _apply_advanced_axes
+from app.services.plot_images import (
+    _advanced_condition_colors,
+    _advanced_label,
+    _advanced_number,
+    _advanced_text,
+    _apply_advanced_axes,
+    advanced_color_map,
+    resolve_marker,
+)
 from app.services.runtime_cache import apply_cached_wrappers
 
 SingleProteinIdentifier = Literal["workflow", "genes"]
@@ -70,7 +80,7 @@ def _analysis_frame(
     kind: AnnotationKind,
     data_source: str = "data",
 ) -> tuple[pd.DataFrame, list[str], pd.DataFrame]:
-    _, frame, metadata = _visualization_data_source(kind, data_source=data_source)
+    _, frame, metadata = select_matrix(kind, data_source)
     sample_columns = [
         sample for sample in metadata["sample"].astype(str).tolist() if sample in frame.columns
     ]
@@ -111,6 +121,23 @@ def _line_box_key_column_for_identifier(
         f"Could not find a feature identifier column for {kind}. "
         f"Expected one of: {', '.join(candidates)}"
     )
+
+
+def _site_label(site_key: object, filter_m1: bool) -> str:
+    """The short row label the heatmap draws for one phosphosite.
+
+    `A0A590UK10~ARHGEF18_S1035_M1` becomes `ARHGEF18_S1035_M1`, and `_M1` comes
+    off as well when the view is already filtered to multiplicity 1, because
+    then it is the same on every row. This is a display label: it drops the
+    protein accession, so it is not a collapse key and must never be exported
+    under that name.
+    """
+    text = str(site_key)
+    if "~" in text:
+        text = text.split("~", maxsplit=1)[1]
+    if filter_m1 and text.endswith("_M1"):
+        text = text.rsplit("_", maxsplit=1)[0]
+    return text
 
 
 def _heatmap_protein_group_column(frame: pd.DataFrame) -> str:
@@ -217,7 +244,9 @@ def _feature_match_mask(
 
     if kind == "protein":
         return text_values.str.split(";").str[0].str.strip().isin(selected)
-    return text_values.isin(selected)
+    # Stripped, because _feature_options strips before it offers a value: an
+    # unstripped compare here would make a legitimate selection match nothing.
+    return text_values.str.strip().isin(selected)
 
 
 def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[dict[str, str]]:
@@ -582,15 +611,19 @@ def _heatmap_matrix(
     if "PTM_Collapse_key" not in frame.columns:
         raise ValueError("Phospho dataset is missing PTM_Collapse_key column.")
 
+    # The same matcher as the boxplot and the lineplot. This used to be a
+    # case-insensitive substring search on the protein-group column, which
+    # merged every accession the selection is a prefix of -- an isoform group
+    # `P12345-2`, or the group `P12345;Q67890` -- into one heatmap, under the
+    # label of the one protein the user picked. The selector offers whole
+    # values from this column, so an exact match reaches everything it can
+    # reach, and a stale selection now says so instead of drawing something
+    # else.
     selected_value = str(protein).strip()
-    if resolved_identifier == "genes":
-        selected_set = {selected_value}
-        mask = _feature_match_mask(frame[key_col], selected_set, kind="phospho", identifier="genes")
-        protein_data = frame[mask].copy()
-    else:
-        protein_data = frame[
-            frame[key_col].astype(str).str.contains(selected_value, case=False, na=False, regex=False)
-        ].copy()
+    mask = _feature_match_mask(
+        frame[key_col], {selected_value}, kind="phospho", identifier=resolved_identifier
+    )
+    protein_data = frame[mask].copy()
 
     if protein_data.empty:
         entity_label = "gene" if resolved_identifier == "genes" else "protein"
@@ -611,21 +644,18 @@ def _heatmap_matrix(
 
     rename_map = dict(zip(labeled["sample"], labeled["new_sample"]))
     matrix = protein_data.set_index("PTM_Collapse_key")[sample_cols].rename(columns=rename_map)
+    total_features = len(matrix)
     matrix = matrix.apply(pd.to_numeric, errors="coerce")
     matrix = matrix.dropna(how="all")
     if matrix.empty:
         raise ValueError("No numeric phosphosite values available for the selected settings.")
 
-    def _extract_site(site_key: str) -> str:
-        text = str(site_key)
-        if "~" in text:
-            text = text.split("~", maxsplit=1)[1]
-        if filter_m1 and text.endswith("_M1"):
-            text = text.rsplit("_", maxsplit=1)[0]
-        return text
-
-    matrix.index = matrix.index.map(_extract_site)
-
+    # The index stays the full PTM_Collapse_key from here on. The heatmap draws
+    # the short site label, because every row belongs to the one protein the
+    # user selected and repeating its accession down the axis says nothing --
+    # but the table keeps the whole identifier, so an exported row can be traced
+    # back to the matrix it came from. Full keys are also unique, which the
+    # short labels are not guaranteed to be.
     value_type_normalized = str(value_type).lower()
     if value_type_normalized == "z":
         def _z_row(row: pd.Series) -> pd.Series:
@@ -637,7 +667,7 @@ def _heatmap_matrix(
         matrix = matrix.apply(_z_row, axis=1)
         cbar_label = "Z-score"
     elif value_type_normalized == "log2":
-        cbar_label = "log2 Intensity"
+        cbar_label = intensity_unit_label(_phosprot_values_are_centred(kind))
     else:
         raise ValueError("valueType must be 'log2' or 'z'.")
 
@@ -650,10 +680,11 @@ def _heatmap_matrix(
 
     cluster_matrix = None
     if (cluster_rows and matrix.shape[0] > 1) or (cluster_cols and matrix.shape[1] > 1):
-        cluster_matrix = require_complete_clustering_matrix(
+        cluster_matrix, completeness = drop_incomplete_features(
             matrix,
             context="single-protein heatmap",
         )
+        matrix = matrix.loc[completeness.kept]
 
     if cluster_rows and matrix.shape[0] > 1:
         try:
@@ -676,6 +707,7 @@ def _heatmap_matrix(
             ) from exc
         col_linkage = linkage(cluster_matrix.T, method="average", metric="euclidean")
         matrix = matrix.iloc[:, leaves_list(col_linkage)]
+    matrix.attrs["heatmap_notice"] = heatmap_notice(total_features, len(matrix), noun="phosphosites")
     return matrix, cbar_label
 
 
@@ -685,12 +717,12 @@ def single_protein_options(
     identifier: str = "workflow",
     data_source: str = "data",
 ) -> dict[str, object]:
-    availability = _visualization_data_source_availability(kind)
+    availability = data_source_options(kind)
     requested_source = str(data_source or "data").strip().lower()
-    if (
-        (requested_source == "filtered" and not availability["filteredAvailable"])
-        or (requested_source == "imputed" and not availability["imputedAvailable"])
-    ):
+    if requested_source not in availability["availableDataSources"]:
+        # Asking for a matrix this level does not have is a stale selection, not
+        # a mistake worth an error in an options call; the panel is told what it
+        # actually got, and what it may pick instead.
         requested_source = "data"
     frame, _, meta = _analysis_frame(kind, data_source=requested_source)
     tab_normalized = str(tab).lower()
@@ -815,12 +847,18 @@ def single_protein_lineplot_plot(
     ax.set_xticks(range(len(ordered_samples)))
     ax.set_xticklabels(ordered_samples, rotation=90)
     ax.set_xlabel("Sample")
-    ax.set_ylabel("log2 intensity")
+    # `robust_site_median` phosphoprotein values are ratios to each site's own
+    # across-sample median, not intensities. The heatmap colourbar beside these
+    # plots already asks; these two hardcoded it, so the same matrix was called
+    # two different things on one page.
+    ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         workflow = "Gene" if resolved_identifier == "genes" else ("Protein" if kind == "protein" else "Phosphosite")
-        suffix = " (per-sample median across mapped source features)" if resolved_identifier == "genes" else ""
-        ax.set_title(f"{workflow} expression across samples{suffix}")
+        # The collapse is stated in a note under the plot, not in the title: a
+        # figure taken out of the tool should not carry a caption about how the
+        # tool built it.
+        ax.set_title(f"{workflow} expression across samples")
     ax.grid(True, alpha=0.2)
     if legend:
         ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
@@ -882,8 +920,10 @@ def single_protein_boxplot_plot(
         ax.axis("off")
         return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
-    color_map = plt.get_cmap("tab20", max(1, len(labels)))
-    condition_color = {label: color_map(index) for index, label in enumerate(labels)}
+    # The project palette, and the advanced condition colours over it. This used
+    # to be a bare tab20 lookup, so a colour set on the Colors page or in the
+    # advanced panel was ignored here while every QC plot honoured it.
+    condition_color = _advanced_condition_colors(kind, plt, list(labels), advanced)
     box_positions = [
         index
         for index, label in enumerate(labels, start=1)
@@ -896,10 +936,46 @@ def single_protein_boxplot_plot(
             positions=box_positions,
             patch_artist=True,
             showfliers=outliers,
+            # Fliers are a different class of mark from the jittered points
+            # below -- they are the values those points deliberately exclude --
+            # so they are styled separately. Both were unstyleable before: the
+            # advanced panel offered these controls and this figure read none
+            # of them.
+            flierprops={
+                "marker": "o",
+                "markersize": max(1.0, _advanced_number(advanced, "boxOutlierSize", 5.0)),
+                "markerfacecolor": _advanced_text(advanced, "boxOutlierColor") or "red",
+                "markeredgecolor": _advanced_text(advanced, "boxOutlierEdgeColor") or "black",
+                "markeredgewidth": 0.5,
+            },
+            medianprops={"color": _advanced_text(advanced, "boxMedianColor") or "#b22222"},
+            boxprops={"edgecolor": _advanced_text(advanced, "boxBorderColor") or "#000000"},
         )
         for patch, label in zip(box["boxes"], box_labels):
             patch.set_facecolor(condition_color[label])
 
+    # A thin dark edge by default. Filled dots in the condition's own colour sit
+    # on a box of that same colour, so without an outline the points that matter
+    # most -- the ones inside the box -- are the ones you cannot see.
+    def point_kwargs_for(condition: str) -> dict:
+        """This condition's points: its own settings, then this plot's general ones.
+
+        `boxPointSize` and its siblings are the general layer here -- they are
+        this plot's own controls and predate the shared ones -- and the
+        per-condition overrides sit above them, as on every other point plot.
+        """
+        return resolve_marker(
+            advanced,
+            size=4.5,
+            alpha=0.8,
+            group=condition,
+            use_color=False,
+            size_key="boxPointSize",
+            alpha_key="boxPointAlpha",
+            edge_width_key="boxPointEdgeWidth",
+            edge_color_key="boxPointEdgeColor",
+            edge_width_default=0.4,
+        ).matplotlib()
     rng = np.random.default_rng(random_seed)
     for index, label in enumerate(labels, start=1):
         values = condition_values[label]
@@ -917,35 +993,50 @@ def single_protein_boxplot_plot(
         ax.scatter(
             jitter,
             visible_values,
-            s=20,
-            alpha=0.8,
             color=condition_color[label],
             zorder=3,
+            **point_kwargs_for(label),
         )
 
     ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(
-        [f"{label} (n={condition_values[label].size})" if sample_n else label for label in labels],
+        [
+            f"{_advanced_label(label, advanced, 'conditionLabels')} (n={condition_values[label].size})"
+            if sample_n
+            else _advanced_label(label, advanced, "conditionLabels")
+            for label in labels
+        ],
         rotation=45,
         ha="right",
     )
     ax.set_xlabel("Condition")
-    ax.set_ylabel("log2 intensity")
+    # `robust_site_median` phosphoprotein values are ratios to each site's own
+    # across-sample median, not intensities. The heatmap colourbar beside these
+    # plots already asks; these two hardcoded it, so the same matrix was called
+    # two different things on one page.
+    ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         label = str(protein).strip() if resolved_identifier == "genes" else _feature_label(protein, kind)
-        if not summary_df.empty and int(summary_df["SourceFeatureCount"].iloc[0]) > 1:
-            source_count = int(summary_df["SourceFeatureCount"].iloc[0])
-            ax.set_title(
-                f"Measured {label} intensity values (log2)\n"
-                f"one median per sample across {source_count} matching source row(s)"
-            )
-        else:
-            ax.set_title(f"Measured {label} intensity values (log2)")
+        # The collapse is stated in a note under the plot, not in the title: a
+        # figure taken out of the tool should not carry a caption about how the
+        # tool built it.
+        # "Measured" is a claim about where the numbers came from, and on the
+        # imputed matrix some of them are draws from a down-shifted normal. The
+        # exported figure carries no data-source selector, so the title is the
+        # only place that can say so.
+        measured = "Measured" if data_source != "imputed" else "Imputed"
+        ax.set_title(f"{measured} {label} {intensity_unit_label(_phosprot_values_are_centred(kind)).lower()} values")
 
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_color[label], lw=4) for label in labels]
-        ax.legend(handles, labels, title="Condition", bbox_to_anchor=(1.02, 1), loc="upper left")
+        ax.legend(
+            handles,
+            [_advanced_label(label, advanced, "conditionLabels") for label in labels],
+            title="Condition",
+            bbox_to_anchor=(1.02, 1),
+            loc="upper left",
+        )
         _apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.84, 1])
     else:
@@ -979,8 +1070,18 @@ def single_protein_heatmap_table(
         identifier=identifier,
         data_source=data_source,
     )
-    table = matrix.reset_index().rename(columns={"index": "Site"})
-    numeric_cols = [col for col in table.columns if col != "Site"]
+    # Two label columns, both honest: `Site` is what the plot draws, so a row
+    # here can be found on the figure, and `PTM_Collapse_key` is the whole
+    # identifier the value was read under. The header used to say
+    # `PTM_Collapse_key` over the short label -- a `rename(columns={"index":
+    # ...})` that never fired, because reset_index restores the index's own
+    # name -- so the exported accession was simply missing.
+    keys = matrix.index.astype(str)
+    table = matrix.reset_index(drop=True)
+    table.insert(0, "PTM_Collapse_key", keys)
+    table.insert(0, "Site", [_site_label(key, filter_m1) for key in keys])
+    label_cols = {"Site", "PTM_Collapse_key"}
+    numeric_cols = [col for col in table.columns if col not in label_cols]
     table[numeric_cols] = table[numeric_cols].round(4)
     return table
 
@@ -1018,10 +1119,13 @@ def single_protein_heatmap_plot(
         data_source=data_source,
     )
 
+    # The axis carries the short site label; the full key stays in the table.
+    matrix = matrix.rename(index=lambda key: _site_label(key, filter_m1))
+
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     sns.heatmap(
         matrix,
-        cmap=plt.get_cmap(str(cmap_name)),
+        cmap=plt.get_cmap(advanced_color_map(advanced, str(cmap_name))),
         cbar_kws={"label": cbar_label},
         linewidths=0.5,
         linecolor="gray",
@@ -1029,6 +1133,7 @@ def single_protein_heatmap_plot(
         annot=False,
         ax=ax,
     )
+    fig._copylot_notice = matrix.attrs.get("heatmap_notice", "")
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
     if header:

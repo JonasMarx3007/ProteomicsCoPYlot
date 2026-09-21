@@ -98,6 +98,14 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
+    // The mode can also be toggled with Ctrl/Cmd+Shift+E while this page is
+    // open; without this the switch would keep showing the old position.
+    const refresh = () => setAdvancedPlots(getAdvancedPlotMode());
+    window.addEventListener("copylot:advancedPlotModeChanged", refresh);
+    return () => window.removeEventListener("copylot:advancedPlotModeChanged", refresh);
+  }, []);
+
+  useEffect(() => {
     let active = true;
     getRRuntimeStatus()
       .then((status) => {
@@ -163,7 +171,7 @@ export default function SettingsPage() {
             checked={advancedPlots}
             onChange={updateAdvancedPlots}
             label="Advanced plot option mode"
-            description="Store the preference now; advanced controls will use it when they are built."
+            description="Show the full styling panel under every plot: title, axes, legend, points, colours. Toggle it from anywhere with Ctrl/Cmd + Shift + E."
           />
         </SettingsCard>
 

@@ -3,7 +3,7 @@ import json
 import re
 
 from app.schemas.assistant import CanvasFocusRequest
-from app.services.functions import _visualization_data_source
+from app.services.functions import select_matrix
 
 
 class CanvasIdentifierCandidate(ValueError):
@@ -24,7 +24,7 @@ def resolve_canvas_focus(request: CanvasFocusRequest, mode: str, *, message: str
     if context.get("tiles") and context.get("kind") != request.kind:
         raise ValueError("The canvas contains another data level. Use an empty canvas at the requested level; existing tiles were not changed.")
     try:
-        _, frame, metadata = _visualization_data_source(request.kind, data_source="log2")
+        _, frame, metadata = select_matrix(request.kind, "data")
     except ValueError as exc:
         raise ValueError("The requested data level is not available. No other level will be substituted.") from exc
     key = {"protein": "ProteinNames", "phospho": "PTM_Collapse_key", "phosprot": "Phosphoprotein"}[request.kind]

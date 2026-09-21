@@ -16,6 +16,7 @@ from typing import Any, Mapping, Callable
 
 import pandas as pd
 
+from app.app_version import APP_VERSION
 from app.schemas.stats import VolcanoRequest
 from app.schemas.summary import (
     SummaryReportContext,
@@ -25,7 +26,10 @@ from app.schemas.summary import (
 )
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_current_dataset
+from app.services.peptide_metadata_store import get_peptide_metadata
 from app.services.functions import (
+    entity_labels_for_kind,
+    sample_label_frame,
     completeness_missing_value_plot,
     completeness_missing_value_plot_peptide,
     phospho_coverage_png,
@@ -41,12 +45,14 @@ from app.services.functions import (
     qc_pca_plot,
     qc_pca_interactive_html,
 )
+from app.services.plot_images import qc_pca_feature_summary
 from app.services.peptide_tools import (
+    normalize_protease,
     peptide_missed_cleavage_plot,
     peptide_modification_plot,
     peptide_rt_plot,
 )
-from app.services.stats_tools import volcano_html
+from app.services.stats_tools import run_volcano, volcano_html, volcano_png
 from app.services.table_functions import (
     qc_boxplot_table,
     qc_coverage_table,
@@ -55,7 +61,10 @@ from app.services.table_functions import (
 
 LOGGER = logging.getLogger(__name__)
 
-VERSION = "Proteomics CoPYlot V1.0.1"
+# One version number for the application, read the same way everywhere. Held as
+# its own literal here, the report kept printing whatever the constant said long
+# after the application had moved on.
+VERSION = f"Proteomics CoPYlot V{APP_VERSION}"
 
 def _report_comment_candidates() -> list[Path]:
     here = Path(__file__).resolve()
@@ -138,7 +147,9 @@ def _file_name_from_title(title: str) -> str:
 
 def _png_to_html(png_bytes: bytes) -> str:
     encoded = base64.b64encode(png_bytes).decode("utf-8")
-    return f"<img src='data:image/png;base64,{encoded}' style='width:100%;height:auto;border:1px solid #d6d6d6;border-radius:8px;'/>"
+    image = f"<img src='data:image/png;base64,{encoded}' style='width:100%;height:auto;border:1px solid #d6d6d6;border-radius:8px;'/>"
+    notice = getattr(png_bytes, "notice", "")
+    return image + (f"<p>{html.escape(notice)}</p>" if notice else "")
 
 
 def _plotly_to_iframe(plot_html: str, height_px: int = 740) -> str:
@@ -159,6 +170,107 @@ def _table_to_html(title: str, frame: pd.DataFrame) -> str:
         f"{table_html}"
         "</div>"
     )
+
+
+def _sample_mapping_rows_html(frame: pd.DataFrame, *, show_pairs: bool) -> str:
+    header = ["Plot label", "Original sample name", "Condition"]
+    if show_pairs:
+        header.append("Pair")
+    head = "".join(f"<th>{html.escape(name)}</th>" for name in header)
+
+    body_rows: list[str] = []
+    for row in frame.itertuples(index=False):
+        cells = [
+            f"<td class='map-label'>{html.escape(str(row.label))}</td>",
+            # The original run name is the point of the table, so it is never
+            # shortened: it wraps inside its cell instead of being clipped or
+            # pushing the table into horizontal scroll.
+            f"<td class='map-name'>{html.escape(str(row.sample))}</td>",
+            f"<td>{html.escape(str(row.condition))}</td>",
+        ]
+        if show_pairs:
+            cells.append(f"<td>{html.escape(str(row.pair_id))}</td>")
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    return (
+        "<div class='map-scroll'>"
+        f"<table class='map-table'><thead><tr>{head}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
+        "</div>"
+    )
+
+
+def _peptide_mapping_metadata() -> pd.DataFrame | None:
+    """The metadata the peptide plots label with.
+
+    Mirrors `peptide_tools._prepare_metadata`: a loaded protein dataset means the
+    peptide plots reuse the protein annotation, and only a peptide-only session
+    falls back to the dedicated peptide metadata.
+    """
+    if get_current_dataset("protein") is not None:
+        stored = get_annotation("protein")
+        if stored is None or stored.metadata.empty:
+            return None
+        return stored.metadata.copy()
+    peptide_metadata = get_peptide_metadata()
+    if peptide_metadata is None or peptide_metadata.frame.empty:
+        return None
+    return peptide_metadata.frame.copy()
+
+
+def _sample_mapping_html(
+    *,
+    levels: list[tuple[str, pd.DataFrame | None]],
+    warnings: list[str],
+) -> str:
+    """Per-level tables mapping original run names to their plot labels."""
+    parts: list[str] = [
+        "<p>Plots label every sample as <code>condition_number</code>. "
+        "The tables below give the original sample name behind each label, as it "
+        "appears in the uploaded data.</p>"
+    ]
+
+    rendered: list[tuple[str, pd.DataFrame]] = []
+    for level_name, metadata in levels:
+        if metadata is None:
+            continue
+        try:
+            mapping = sample_label_frame(metadata)
+        except Exception as exc:  # pragma: no cover - defensive runtime behavior
+            warnings.append(f"Sample mapping ({level_name}): {exc}")
+            continue
+        if mapping.empty:
+            continue
+
+        # Peptide plots reuse the protein annotation whenever a protein dataset
+        # is loaded, so the two tables would be byte-identical. Name both above
+        # one table rather than printing it twice.
+        duplicate_of = next(
+            (name for name, existing in rendered if existing.equals(mapping)),
+            None,
+        )
+        if duplicate_of is not None:
+            rendered = [
+                (f"{name} and {level_name}" if name == duplicate_of else name, existing)
+                for name, existing in rendered
+            ]
+            continue
+        rendered.append((level_name, mapping))
+
+    if not rendered:
+        return (
+            "<div style='padding:10px;border:1px solid #d6d6d6;background:#f8fafc;"
+            "color:#475569;border-radius:8px;'>No annotated samples available.</div>"
+        )
+
+    for level_name, mapping in rendered:
+        show_pairs = bool((mapping["pair_id"].astype(str).str.strip() != "").any())
+        parts.append(
+            f"<h3>{html.escape(level_name)} "
+            f"<span class='map-count'>({len(mapping)} samples)</span></h3>"
+        )
+        parts.append(_sample_mapping_rows_html(mapping, show_pairs=show_pairs))
+    return "".join(parts)
 
 
 def _clean_text_entries(raw: dict[str, str]) -> dict[str, str]:
@@ -282,7 +394,15 @@ def _module_settings(
 
 
 def _advanced_enabled(context: SummaryReportContext) -> bool:
-    return bool(getattr(context, "advancedPlotMode", False))
+    """Whether the appearance settings go into the report: always.
+
+    Advanced mode only decides whether the panel is on screen. The settings are
+    the plot's -- the figure the user is looking at carries them with the panel
+    closed -- so a report built from that session reproduces them either way.
+    `advancedPlotMode` is still carried in the context for older clients and is
+    no longer read.
+    """
+    return True
 
 
 def _advanced_settings_from_map(values: Mapping[str, Any], key: str) -> dict[str, Any] | None:
@@ -381,10 +501,6 @@ def _volcano_entries(
     ]
 
 
-def _is_imputed_volcano_entry(entry: SummaryVolcanoEntry) -> bool:
-    return str(getattr(entry, "dataSource", "data")).strip().lower() == "imputed"
-
-
 def _format_imputation_value(value: Any, *, digits: int = 4) -> str:
     if value is None:
         return "n/a"
@@ -395,16 +511,16 @@ def _format_imputation_value(value: Any, *, digits: int = 4) -> str:
     return str(value)
 
 
-def _imputation_settings_html(
-    *,
-    kind: str,
-    enabled=False,
-) -> str:
-    if not enabled:
-        return ""
+def _imputation_paragraphs(kind: str) -> list[str]:
+    """How this level's missing values were imputed, as plain sentences.
 
+    Shared so every block that describes this level's imputation -- a volcano's
+    own statistics block and a PCA built on imputed data -- uses the same
+    settings in the same words. There is no level-wide imputation note; the
+    level preamble describes filtering and normalization only.
+    """
     if kind not in {"protein", "phospho", "phosprot"}:
-        return ""
+        return []
 
     q_value = "n/a"
     adjust_std = "n/a"
@@ -417,6 +533,11 @@ def _imputation_settings_html(
     imputation = getattr(annotation, "imputation", None) if annotation is not None else None
     if imputation is not None:
         imputation_mode = str(getattr(imputation, "mode", "none")).strip().lower()
+        # A configured-but-refused imputation keeps its mode on the annotation so
+        # the refusal can be reported; describing it here would tell a reader
+        # that values were imputed when they were not.
+        if not bool(getattr(imputation, "applied", True)):
+            imputation_mode = "none"
         if imputation_mode != "none":
             q_value = _format_imputation_value(getattr(imputation, "qValue", None))
             adjust_std = _format_imputation_value(getattr(imputation, "adjustStd", None))
@@ -455,7 +576,7 @@ def _imputation_settings_html(
         f"{'sample-wise' if sample_wise else 'dataset-wide'} parameters; the generator was local to this analysis."
     )
 
-    return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in rendered)
+    return rendered
 
 
 _NORMALIZATION_REPORT_LABELS = {
@@ -480,6 +601,225 @@ _TEST_TYPE_REPORT_LABELS = {
     "unpaired_welch": "unpaired two-sample t-test (Welch, unequal variance)",
     "paired": "paired t-test (pooled variance)",
 }
+
+
+def _filter_description(annotation) -> str | None:
+    """How this level's rows were filtered and normalized, as one sentence.
+
+    Shared so the level-wide filtering note and a volcano's own statistics block
+    cannot describe the same filtering differently.
+    """
+    if annotation is None:
+        return None
+    filter_config = getattr(annotation, "filter_config", None)
+    if filter_config is None:
+        return None
+
+    method = str(getattr(filter_config, "method", "at_least_n")).strip().lower()
+    mode = str(getattr(filter_config, "mode", "per_group")).strip().lower()
+    if mode == "overall":
+        scope = "across all annotated samples, independent of condition groups"
+    elif mode == "in_at_least_one_group":
+        scope = "in at least one condition group"
+    else:
+        scope = "in every condition group"
+    if method == "percentage":
+        threshold = float(getattr(filter_config, "minPercentage", 70.0))
+        threshold_text = f"{threshold:.4f}".rstrip("0").rstrip(".")
+        description = (
+            f"Rows with at least {threshold_text}% completeness {scope} were retained."
+        )
+    else:
+        threshold = int(getattr(filter_config, "minPresent", 0))
+        description = (
+            f"Rows with at least {threshold} valid values {scope} were retained."
+        )
+    description += (
+        f" Filtered data contains {len(annotation.filtered_data)} out of "
+        f"{len(annotation.source_data)} source rows."
+    )
+    # Normalization is applied to the log2 matrix before filtering, so it
+    # belongs with the filtering description. Without it a median-centred,
+    # quantile-normalised or VSN-normalised analysis is indistinguishable
+    # from an unnormalised one in the report.
+    normalization = str(getattr(filter_config, "normalization", "none")).strip().lower()
+    description += (
+        f" {_NORMALIZATION_REPORT_LABELS.get(normalization, f'Normalization: {normalization}.')}"
+    )
+    return description
+
+
+def _imputation_html(*, kind: str, imputed: bool, subject: str = "this comparison") -> str:
+    """Whether this plot ran on imputed values, and on what settings.
+
+    Shared by every block whose numbers depend on which matrix reached it, so
+    two blocks can never describe the same imputation differently.
+    """
+    if not imputed:
+        return (
+            f"<p><strong>Imputation:</strong> Not applied; {subject} uses the "
+            "non-imputed data.</p>"
+        )
+    paragraphs = _imputation_paragraphs(kind)
+    if not paragraphs:
+        return (
+            "<p><strong>Imputation:</strong> Imputed data was selected, but no "
+            "imputation settings are recorded for this dataset.</p>"
+        )
+    head, *rest = paragraphs
+    return f"<p><strong>Imputation:</strong> {html.escape(head)}</p>" + "".join(
+        f"<p>{html.escape(paragraph)}</p>" for paragraph in rest
+    )
+
+
+# The same words the selector offers, so a report and the panel that produced
+# it name the matrix identically. Keep in step with DATA_SOURCE_LABELS in
+# frontend/src/lib/types.ts.
+_DATA_SOURCE_LABELS = {"data": "Data", "filtered": "Filtered Data", "imputed": "Imputed Data"}
+
+
+def _report_data_source(value: Any) -> str:
+    """A saved data source, or "data" when it is not one of the three.
+
+    This used to be a boolean -- imputed or not -- which was right while those
+    were the only two choices. Once `filtered` existed, every `filtered` plot
+    was described as "Data", and the PCA was *re-rendered* on the unfiltered
+    matrix to match the label.
+    """
+    text = _to_str(value, "data").strip().lower()
+    return text if text in _DATA_SOURCE_LABELS else "data"
+
+
+def _data_provenance_html(
+    *, kind: str, data_source: str, subject: str, completeness: str = ""
+) -> str:
+    """Which matrix reached this plot: source, filtering and imputation.
+
+    Every figure whose numbers depend on the rows and values behind it carries
+    this block, in one voice and one order. A reader checking a single volcano
+    or PCA should not have to scroll back to the level preamble to learn which
+    rows survived the filter or whether the values were drawn rather than
+    measured.
+
+    `completeness` is for plots that drop rows of their own after the filter --
+    a projection cannot use a feature with a missing value -- so the block can
+    say how much of the matrix actually reached the figure.
+    """
+    source = _report_data_source(data_source)
+    parts = [
+        f"<p><strong>Data source:</strong> {_DATA_SOURCE_LABELS[source]}</p>"
+    ]
+    filter_description = _filter_description(get_annotation(kind))
+    if filter_description:
+        if source == "data":
+            filter_description = "Not applied to this plot. Configured filtering: " + filter_description
+        parts.append(
+            f"<p><strong>Filtering:</strong> {html.escape(filter_description)}</p>"
+        )
+    parts.append(
+        _imputation_html(kind=kind, imputed=source == "imputed", subject=subject)
+    )
+    if completeness:
+        parts.append(f"<p><strong>Features used:</strong> {html.escape(completeness)}</p>")
+    return "".join(parts)
+
+
+def _pca_completeness_description(kind: str, data_source: str) -> str:
+    """How much of the selected matrix was complete and variable for PCA."""
+    try:
+        summary = qc_pca_feature_summary(kind, data_source=data_source)
+        total = _to_int(summary.get("featuresTotal"), 0, minimum=0)
+        used = _to_int(summary.get("featuresUsed"), 0, minimum=0)
+    except Exception:
+        # A level without an annotation, a source this project does not hold, or
+        # a stubbed renderer: say nothing rather than a number from elsewhere.
+        return ""
+    if not total:
+        return ""
+    share = used / total * 100.0
+    sentence = (
+        f"{used:,} of {total:,} features ({share:.1f}%) were complete across every "
+        "sample, showed variation and entered the projection"
+    )
+    if used < total:
+        sentence += (
+            f"; the remaining {total - used:,} were excluded because of missing "
+            "values or no variation"
+        )
+    return sentence + "."
+
+
+def _level_imputation_html(kind: str) -> str:
+    """The imputation available at this level, stated with the filtering.
+
+    Filtering and normalization were described in the level preamble while
+    imputation was not, so a project that imputes at load time and whose report
+    contains no volcano or imputed PCA never mentioned it at all.
+    """
+    if get_annotation(kind) is None:
+        return ""
+    paragraphs = _imputation_paragraphs(kind)
+    if not paragraphs:
+        return (
+            "<p><strong>Imputation:</strong> No imputation was applied; every plot "
+            "below states its own data source.</p>"
+        )
+    head, *rest = paragraphs
+    return (
+        f"<p><strong>Imputation:</strong> {html.escape(head)}</p>"
+        + "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in rest)
+        + "<p>Imputed values are used only where a plot names Imputed Data as its "
+        "source; every plot below states its own source.</p>"
+    )
+
+
+def _volcano_counts_html(
+    *,
+    entry: SummaryVolcanoEntry,
+    kind: str,
+    warnings: list[str],
+) -> str:
+    """How many entities the thresholds just described actually selected.
+
+    Counted with `run_volcano`, the same routine the Statistical Analysis page
+    reports, so the report cannot disagree with the screen. Named by entity --
+    proteins, phosphosites -- because "features" tells a reader nothing.
+    """
+    singular, plural = entity_labels_for_kind(kind)
+    try:
+        result = run_volcano(
+            VolcanoRequest(
+                kind=kind,
+                dataSource=entry.dataSource,
+                condition1=entry.condition1,
+                condition2=entry.condition2,
+                identifier=entry.identifier,
+                pValueThreshold=entry.pValueThreshold,
+                log2fcThreshold=entry.log2fcThreshold,
+                testType=entry.testType,
+                useUncorrected=entry.useUncorrected,
+                highlightTerms=entry.highlightTerms,
+            )
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime behavior
+        warnings.append(
+            f"{kind.capitalize()} volcano counts "
+            f"({entry.condition1} vs {entry.condition2}): {exc}"
+        )
+        return ""
+
+    up = int(result.upregulatedCount)
+    down = int(result.downregulatedCount)
+    total = int(result.totalRows)
+    not_significant = int(result.notSignificantCount)
+    # log2FC is condition1 - condition2, so "up" means higher in condition1.
+    description = (
+        f"{up:,} {plural if up != 1 else singular} upregulated in "
+        f"{entry.condition1} and {down:,} downregulated "
+        f"(higher in {entry.condition2}), out of {total:,} tested "
+        f"{plural if total != 1 else singular}; {not_significant:,} not significant."
+    )
+    return f"<p><strong>Result:</strong> {html.escape(description)}</p>"
 
 
 def _volcano_statistics_html(entry: SummaryVolcanoEntry) -> str:
@@ -511,34 +851,59 @@ def _volcano_block_html(
 ) -> str:
     parts: list[str] = []
     for index, entry in enumerate(entries, start=1):
-        source_label = "Imputed Data" if _is_imputed_volcano_entry(entry) else "Data"
         parts.append(
             f"<h3>Comparison {index}: {html.escape(entry.condition1)} vs {html.escape(entry.condition2)}</h3>"
         )
-        parts.append(f"<p><strong>Data source:</strong> {html.escape(source_label)}</p>")
-        parts.append(_volcano_statistics_html(entry))
         parts.append(
-            _safe_plotly(
-                renderer=lambda entry=entry, kind=kind: volcano_html(
-                    VolcanoRequest(
-                        kind=kind,
-                        dataSource=entry.dataSource,
-                        condition1=entry.condition1,
-                        condition2=entry.condition2,
-                        identifier=entry.identifier,
-                        pValueThreshold=entry.pValueThreshold,
-                        log2fcThreshold=entry.log2fcThreshold,
-                        testType=entry.testType,
-                        useUncorrected=entry.useUncorrected,
-                        highlightTerms=entry.highlightTerms,
-                    ),
-                    advanced=advanced,
-                ),
-                fallback_title=f"{kind.capitalize()} Volcano Plot ({entry.condition1} vs {entry.condition2})",
-                warnings=warnings,
-                height_px=920,
+            _data_provenance_html(
+                kind=kind,
+                # The figure below is rendered with entry.dataSource, so the
+                # block has to name the same matrix. It used to collapse to a
+                # boolean, and every `filtered` comparison was headed "Data".
+                data_source=entry.dataSource,
+                subject="this comparison",
             )
         )
+        parts.append(_volcano_statistics_html(entry))
+        parts.append(_volcano_counts_html(entry=entry, kind=kind, warnings=warnings))
+        title = f"{kind.capitalize()} Volcano Plot ({entry.condition1} vs {entry.condition2})"
+        request = VolcanoRequest(
+            kind=kind,
+            dataSource=entry.dataSource,
+            condition1=entry.condition1,
+            condition2=entry.condition2,
+            identifier=entry.identifier,
+            pValueThreshold=entry.pValueThreshold,
+            log2fcThreshold=entry.log2fcThreshold,
+            testType=entry.testType,
+            useUncorrected=entry.useUncorrected,
+            highlightTerms=entry.highlightTerms,
+        )
+        # Each entry renders the way it was added. The PCA blocks make the same
+        # choice from a page-level setting; a volcano is per comparison, so the
+        # mode rides on the entry.
+        if entry.renderType == "Normal":
+            parts.append(
+                _safe_png(
+                    renderer=lambda request=request, entry=entry: volcano_png(
+                        request,
+                        advanced=advanced,
+                        label_top_up=entry.labelTopUp,
+                        label_top_down=entry.labelTopDown,
+                    ),
+                    fallback_title=title,
+                    warnings=warnings,
+                )
+            )
+        else:
+            parts.append(
+                _safe_plotly(
+                    renderer=lambda request=request: volcano_html(request, advanced=advanced),
+                    fallback_title=title,
+                    warnings=warnings,
+                    height_px=920,
+                )
+            )
     return "".join(parts)
 
 
@@ -642,42 +1007,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
 
     filter_paragraphs = {}
     for kind, annotation in (("protein", protein_annotation), ("phospho", phospho_annotation)):
-        if annotation is None:
+        description = _filter_description(annotation)
+        if description is None:
             continue
-        filter_config = getattr(annotation, "filter_config", None)
-        if filter_config is None:
-            continue
-        method = str(getattr(filter_config, "method", "at_least_n")).strip().lower()
-        mode = str(getattr(filter_config, "mode", "per_group")).strip().lower()
-        if mode == "overall":
-            scope = "across all annotated samples, independent of condition groups"
-        elif mode == "in_at_least_one_group":
-            scope = "in at least one condition group"
-        else:
-            scope = "in every condition group"
-        if method == "percentage":
-            threshold = float(getattr(filter_config, "minPercentage", 70.0))
-            threshold_text = f"{threshold:.4f}".rstrip("0").rstrip(".")
-            description = (
-                f"Rows with at least {threshold_text}% completeness {scope} were retained."
-            )
-        else:
-            threshold = int(getattr(filter_config, "minPresent", 0))
-            description = (
-                f"Rows with at least {threshold} valid values {scope} were retained."
-            )
-        description += (
-            f" Filtered data contains {len(annotation.filtered_data)} out of "
-            f"{len(annotation.source_data)} source rows."
-        )
-        # Normalization is applied to the log2 matrix before filtering, so it
-        # belongs with the filtering description. Without it a median-centred,
-        # quantile-normalised or VSN-normalised analysis is indistinguishable
-        # from an unnormalised one in the report.
-        normalization = str(getattr(filter_config, "normalization", "none")).strip().lower()
-        description += f" {_NORMALIZATION_REPORT_LABELS.get(normalization, f'Normalization: {normalization}.')}"
+        # Imputation stands beside the filtering, not only inside the plot
+        # blocks that use it: both decide which numbers a reader is looking at,
+        # and a report with no volcano and no imputed PCA used to say nothing
+        # about imputation at all.
         filter_paragraphs[kind] = (
+            "<p>QC plots use unfiltered, non-imputed data unless another data source is stated. "
+            "Filtering and imputation apply to clustering and statistical plots according to "
+            "the selected data source; PCA also uses its stated data source.</p>"
             f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
+            + _level_imputation_html(kind)
         )
 
     report_context = payload.reportContext or SummaryReportContext()
@@ -724,6 +1066,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         ".toc-item{font-size:15px;margin:2px 0 2px 14px;}",
         ".meta{color:#444;margin:2px 0;}",
         ".warn{border:1px solid #ffe69c;background:#fff3cd;color:#664d03;padding:10px;border-radius:8px;margin:8px 0;}",
+        # The sample mapping is capped in height so a 6-sample run and a
+        # 200-sample run take up the same space in the document; the table
+        # scrolls inside the box instead of growing the page.
+        ".map-scroll{max-height:320px;overflow:auto;border:1px solid #d6d6d6;border-radius:8px;margin-bottom:16px;}",
+        ".map-table{font-size:13px;}",
+        ".map-table th,.map-table td{border:1px solid #d6d6d6;padding:6px;}",
+        # Sticky header: the label column is meaningless once it has scrolled away.
+        ".map-table thead th{position:sticky;top:0;background:#f5f5f5;z-index:1;}",
+        ".map-table td.map-label{white-space:nowrap;font-weight:600;width:1%;}",
+        # Run names are long and must stay complete, so they wrap rather than
+        # overflow. anywhere breaks the run of characters only when needed.
+        ".map-table td.map-name{overflow-wrap:anywhere;word-break:break-word;font-family:Consolas,'DejaVu Sans Mono',monospace;font-size:12px;}",
+        ".map-count{font-weight:400;color:#555;font-size:14px;}",
         "</style>",
         "</head><body>",
         f"<h1>{html.escape(title)}</h1>",
@@ -738,6 +1093,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         html_parts.append(introduction)
 
     html_parts.append("<h2>Table of Contents</h2>")
+    html_parts.append("<p class='toc-group'>Sample Mapping</p>")
     if peptide_block is not None:
         html_parts.extend(
             [
@@ -784,6 +1140,24 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         if phospho_volcano_entries:
             html_parts.append(f"<p class='toc-item'>{phospho_block}.11 Volcano Plot</p>")
 
+    html_parts.append("<h2>Sample Mapping</h2>")
+    html_parts.append(
+        _sample_mapping_html(
+            levels=[
+                ("Peptide Level", _peptide_mapping_metadata() if has_peptide else None),
+                (
+                    "Protein Level",
+                    protein_annotation.metadata.copy() if has_protein else None,
+                ),
+                (
+                    "Phosphosite Level",
+                    phospho_annotation.metadata.copy() if has_phospho else None,
+                ),
+            ],
+            warnings=warnings,
+        )
+    )
+
     if peptide_block is not None:
         html_parts.append(f"<h1>{peptide_block} Peptide Level</h1>")
         peptide_rt = _module_settings(report_context, "peptide", "rtPlot")
@@ -802,6 +1176,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             content_html=_safe_png(
                 renderer=lambda: qc_peptide_coverage_plot(
                     advanced=qc_coverage_advanced,
+                    reference_line=_to_bool(peptide_coverage.get("referenceLine"), True),
                     **({"quantity_column": peptide_coverage["quantityColumn"]}
                        if "quantityColumn" in peptide_coverage else {})),
                 fallback_title="Peptide Coverage Plot",
@@ -885,6 +1260,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     text=_to_bool(peptide_missed_cleavage.get("text"), True),
                     text_size=_to_int(peptide_missed_cleavage.get("textSize"), 8, minimum=6, maximum=24),
                     header=_to_bool(peptide_missed_cleavage.get("header"), True),
+                    # The page saves the rule it used; without passing it the
+                    # report silently re-rendered under trypsin and said so in
+                    # the figure title, whatever the page had been set to.
+                    protease=normalize_protease(
+                        _to_str(peptide_missed_cleavage.get("protease"), "trypsin")
+                    ),
                     width_cm=_to_float(peptide_missed_cleavage.get("widthCm"), 25.0, minimum=5.0, maximum=60.0),
                     height_cm=_to_float(peptide_missed_cleavage.get("heightCm"), 15.0, minimum=5.0, maximum=60.0),
                     dpi=_to_int(peptide_missed_cleavage.get("dpi"), 100, minimum=72, maximum=1200),
@@ -935,6 +1316,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         height_cm=_to_float(protein_coverage.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
                         dpi=_to_int(protein_coverage.get("dpi"), 300, minimum=72, maximum=1200),
                         advanced=qc_coverage_advanced,
+                        reference_line=_to_bool(protein_coverage.get("referenceLine"), True),
                     ),
                     fallback_title="Protein Coverage Plot",
                     warnings=warnings,
@@ -1051,18 +1433,15 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         protein_pca_height_cm = _to_float(protein_pca.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         protein_pca_interactive = _to_str(protein_pca.get("type"), "Normal").lower() == "interactive"
-        protein_pca_data_source = (
-            "imputed"
-            if _to_str(protein_pca.get("dataSource"), "data").strip().lower() == "imputed"
-            else "data"
-        )
-        protein_pca_source_html = (
-            _imputation_settings_html(
-                kind="protein",
-                enabled=protein_pca_data_source == "imputed",
-            )
-            + f"<p><strong>Data source:</strong> "
-            f"{'Imputed Data' if protein_pca_data_source == 'imputed' else 'Data'}</p>"
+        protein_pca_data_source = _report_data_source(protein_pca.get("dataSource"))
+        # A PCA is built from the rows that survived filtering, and from drawn
+        # values when its source is imputed, so it carries the same provenance
+        # block as a volcano rather than a bare source line.
+        protein_pca_source_html = _data_provenance_html(
+            kind="protein",
+            data_source=protein_pca_data_source,
+            subject="this plot",
+            completeness=_pca_completeness_description("protein", protein_pca_data_source),
         )
         _append_plot_section(
             html_parts=html_parts,
@@ -1150,15 +1529,11 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 general_comment_key="VolcanoProt",
                 text_entries=text_entries,
                 text_key="VolcanoProt",
+                # No section-wide imputation note: every comparison now states
+                # its own, which is also the accurate one when some comparisons
+                # use imputed data and others do not.
                 content_html=(
-                    _imputation_settings_html(
-                        kind="protein",
-                        enabled=any(
-                            _is_imputed_volcano_entry(entry)
-                            for entry in protein_volcano_entries
-                        ),
-                    )
-                    + _volcano_block_html(
+                    _volcano_block_html(
                         kind="protein",
                         entries=protein_volcano_entries,
                         warnings=warnings,
@@ -1351,18 +1726,12 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         )
         phospho_pca_height_cm = _to_float(phospho_pca.get("heightCm"), 10.0, minimum=4.0, maximum=60.0)
         phospho_pca_interactive = _to_str(phospho_pca.get("type"), "Normal").lower() == "interactive"
-        phospho_pca_data_source = (
-            "imputed"
-            if _to_str(phospho_pca.get("dataSource"), "data").strip().lower() == "imputed"
-            else "data"
-        )
-        phospho_pca_source_html = (
-            _imputation_settings_html(
-                kind="phospho",
-                enabled=phospho_pca_data_source == "imputed",
-            )
-            + f"<p><strong>Data source:</strong> "
-            f"{'Imputed Data' if phospho_pca_data_source == 'imputed' else 'Data'}</p>"
+        phospho_pca_data_source = _report_data_source(phospho_pca.get("dataSource"))
+        phospho_pca_source_html = _data_provenance_html(
+            kind="phospho",
+            data_source=phospho_pca_data_source,
+            subject="this plot",
+            completeness=_pca_completeness_description("phospho", phospho_pca_data_source),
         )
         _append_plot_section(
             html_parts=html_parts,
@@ -1450,15 +1819,10 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 general_comment_key="VolcanoPhos",
                 text_entries=text_entries,
                 text_key="VolcanoPhos",
+                # See the protein volcano above: each comparison carries its own
+                # imputation note now.
                 content_html=(
-                    _imputation_settings_html(
-                        kind="phospho",
-                        enabled=any(
-                            _is_imputed_volcano_entry(entry)
-                            for entry in phospho_volcano_entries
-                        ),
-                    )
-                    + _volcano_block_html(
+                    _volcano_block_html(
                         kind="phospho",
                         entries=phospho_volcano_entries,
                         warnings=warnings,

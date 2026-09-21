@@ -24,8 +24,17 @@ async function loadModule(path) {
 }
 
 const { collectColumns, rowsToCsv, rowsToQuotedCsv, formatCellValue } = await loadModule('tableData');
+test('empty filtering preserves the source and an options error does not hide it', async () => {
+  const { resolveDataSource, dataSourceOptions } = await loadModule('types');
+  const choices = { availableDataSources: ['data', 'filtered'], defaultDataSource: 'filtered' };
+  assert.equal(resolveDataSource('filtered', choices), 'filtered');
+  assert.equal(resolveDataSource(null, choices), 'filtered');
+  assert.equal(resolveDataSource('data', choices), 'data');
+  assert.ok(dataSourceOptions(null, 'filtered').some(option => option.value === 'filtered'));
+});
 const { compactMap, compactTextElement } = await loadModule('plotSerialization');
 const { resolveSelectedLocalPath } = await loadModule('localFilePath');
+const { PLOT_DOWNLOAD_FORMAT_OPTIONS, coercePlotDownloadFormat, withPlotDownloadFilename, withPlotDownloadFormat } = await loadModule('plotDownload');
 
 test('ORA restoration separates editable inputs from completed results and rejects broken snapshots', async () => {
   const source = await readFile(new URL('../src/features/analysis/AnalysisPage.tsx', import.meta.url), 'utf8');
@@ -123,7 +132,14 @@ test('report context retains peptide coverage alongside module settings and miss
     const url = text => `data:text/javascript;base64,${Buffer.from(text).toString('base64')}`;
     const compiled = compile(source)
       .replace('"./persistedUiState"', JSON.stringify(url(compile(persisted))))
-      .replace('"./appSettings"', JSON.stringify(url('export const getAdvancedPlotMode=()=>false; export const getAdvancedPlotSettingsByKey=()=>({});')));
+      .replace('"./appSettings"', JSON.stringify(url('export const getAdvancedPlotMode=()=>false; export const getAdvancedPlotSettingsByKey=()=>({});')))
+      // `reportState` reads the data-source labels and the render-type guard
+      // from `./types`; without a stub the compiled module cannot resolve it.
+      .replace('"./types"', JSON.stringify(url(
+        'export const DATA_SOURCE_LABELS={data:"Data",filtered:"Filtered Data",imputed:"Imputed Data"};'
+        + 'export const restoreVolcanoRenderType=v=>(v==="Normal"?"Normal":"Interactive");'
+      )))
+      .replace('"./appMode"', JSON.stringify(url('export const IS_VIEWER_MODE=false;')));
     const report = await import(url(compiled));
     report.saveQcReportSettings('peptide', { coverage: { quantityColumn: 'LFQ intensity' } });
     report.saveQcReportSettings('peptide', { rtPlot: { method: 'Scatter' } });
@@ -189,20 +205,43 @@ test('analysis snapshots stay tab-local and exclude the tab routing ID', async (
   }
 });
 
-test('canvas volcano styling validates saved colors and bounds point size', async () => {
+test('canvas volcano styling migrates a saved canvas into the shared settings', async () => {
+  // The tile used to hold its own five-field style object: two colours, a
+  // radius and an opacity. It now holds the same `AdvancedPlotSettings` every
+  // other plot does, so `restoredVolcanoStyle` is a migration: the saved SVG
+  // *radius* becomes the shared *diameter*, which is what every size in this
+  // tool means, and a saved colour is kept only if it is one.
   const source = await readFile(new URL('../src/features/analysis/AnalysisPage.tsx', import.meta.url), 'utf8');
-  const helper = source.slice(source.indexOf('function restoredVolcanoStyle('), source.indexOf('type AnalysisTile ='));
+  const helper = source.slice(source.indexOf('const CANVAS_VOLCANO_DEFAULTS ='), source.indexOf('type AnalysisTile ='));
   const compiled = ts.transpileModule(helper, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const restore = new Function(`${compiled}; return restoredVolcanoStyle;`)();
+  const [restore, pointStyle] = new Function(
+    `${compiled}; return [restoredVolcanoStyle, canvasPointStyle];`
+  )();
+
   const defaults = restore(null);
-  assert.equal(defaults.radius, 2.8);
-  assert.equal(restore({ radius: Infinity }).radius, 2.8);
-  assert.equal(restore({ radius: -5 }).radius, 1);
-  assert.equal(restore({ radius: 100 }).radius, 10);
-  assert.equal(restore({ up: 'url(https://example.invalid/image)' }).up, defaults.up);
-  assert.equal(restore({ up: '#abcdef' }).up, '#abcdef');
-  assert.equal(restore({ title: { bad: true } }).title, '');
-  assert.equal(restore({ title: 'A & B <test>' }).title, 'A & B <test>');
+  assert.equal(defaults.volcanoUpSize, 5.6, 'the 2.8 default radius is a 5.6 diameter');
+  assert.equal(pointStyle(defaults, 'Upregulated').radius, 2.8, 'and draws at the old radius');
+  assert.equal(restore({ radius: Infinity }).volcanoUpSize, 5.6);
+  assert.equal(restore({ radius: -5 }).volcanoUpSize, 2, 'clamped to a radius of 1');
+  assert.equal(restore({ radius: 100 }).volcanoUpSize, 20, 'clamped to a radius of 10');
+
+  assert.equal(restore({ up: 'url(https://example.invalid/image)' }).volcanoUpColor, defaults.volcanoUpColor);
+  assert.equal(restore({ up: '#abcdef' }).volcanoUpColor, '#abcdef');
+  assert.equal(restore({ title: { bad: true } }).titleElement, undefined);
+  assert.deepEqual(restore({ title: 'A & B <test>' }).titleElement, { text: 'A & B <test>' });
+
+  // A canvas already on the shared shape is handed back untouched, so the
+  // migration cannot run twice and halve or double a size.
+  const shared = { volcanoUpSize: 9, volcanoUpColor: '#111111' };
+  assert.equal(restore(shared), shared);
+
+  // Every class resolves, and an out-of-range opacity is brought into [0, 1].
+  for (const significance of ['Upregulated', 'Downregulated', 'Not significant']) {
+    const point = pointStyle({ volcanoUpAlpha: 5, volcanoNsAlpha: -1 }, significance);
+    assert.ok(point.radius > 0);
+    assert.ok(point.opacity >= 0 && point.opacity <= 1);
+    assert.match(point.color, /^#[0-9a-f]{6}$/i);
+  }
 });
 
 test('columns retain first-seen order across heterogeneous rows without mutation', () => {
@@ -243,4 +282,25 @@ test('upload and restore share native-path precedence and reject browser fake pa
   assert.equal(resolveSelectedLocalPath({}, ' C:/data/a.tsv '), 'C:/data/a.tsv');
   assert.equal(resolveSelectedLocalPath({}, 'C:\\FAKEPATH\\a.tsv'), null);
   assert.equal(resolveSelectedLocalPath({ path: ' ' }, ''), null);
+});
+
+// Every page used to keep its own list of download formats, so a format the
+// backend accepted could still be dropped when a page restored its saved state.
+test('the download formats a page offers, remembers and names are one list', () => {
+  const offered = PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => option.value);
+  assert.deepEqual(offered, ['png', 'jpg', 'webp', 'pdf', 'svg']);
+  for (const format of offered) {
+    assert.equal(coercePlotDownloadFormat(format), format);
+    assert.equal(withPlotDownloadFilename('qc_cv_protein.png', format), `qc_cv_protein.${format}`);
+  }
+  // PNG is what the route already returns, so it asks for nothing.
+  assert.equal(withPlotDownloadFormat('/api/plots/qc/protein/cv.png', 'png'), '/api/plots/qc/protein/cv.png');
+  assert.equal(withPlotDownloadFormat('/api/plots/qc/protein/cv.png?dpi=300', 'svg'),
+    '/api/plots/qc/protein/cv.png?dpi=300&downloadFormat=svg');
+  // A saved state from an older build, or a hand-edited one.
+  assert.equal(coercePlotDownloadFormat('tiff'), 'png');
+  assert.equal(coercePlotDownloadFormat(undefined), 'png');
+  assert.equal(coercePlotDownloadFormat(' SVG '), 'svg');
+  // An .svg name is replaced, not appended to.
+  assert.equal(withPlotDownloadFilename('plot.svg', 'pdf'), 'plot.pdf');
 });

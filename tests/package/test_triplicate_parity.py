@@ -33,16 +33,23 @@ _WEB_APP_RENDERING = re.compile(r"(_png|_html|_plot|_heatmap)$|^qc_")
 
 BACKEND_ONLY_ANALYSIS = frozenset({
     "comparison_contrast",  # UI contrast label, not a separate statistical method.
+    "sample_label_frame",  # Plot/report display labels, not a statistical method.
+    "entity_labels_for_kind",  # Entity nouns for report/UI prose, not a method.
     "intensity_unit_label",  # UI units for stored phosphoprotein provenance.
     "parse_selection_list",  # JSON/legacy HTTP selection transport.
-    "analysis_data_source",
+    "select_matrix",
+    "qc_matrix",
+    "data_source_availability",
+    "most_processed_data_source",
     "build_metadata_from_conditions",
     "choose_best_source",
     "imputed_data_available",
-    "resolve_data_source_choice",
     "use_existing_log2_data",
-    "visualization_data_source",
-    "visualization_data_source_availability",
+    # Plumbing that answers "which matrices does this level have"; the
+    # notebooks hand their own frame in and never ask.
+    "data_source_availability",
+    "data_source_options",
+    "most_processed_data_source",
     "phosprot_values_are_centred",
     "impute_values_with_diagnostics",
     "comparative_histogram",

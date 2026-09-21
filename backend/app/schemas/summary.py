@@ -4,8 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import StatsIdentifier, StatsTestType, VolcanoDataSource
+from app.schemas.annotation import AnnotationKind, DataSource
+from app.schemas.stats import StatsIdentifier, StatsTestType, VolcanoRenderType
 
 
 class SummaryMetadataTable(BaseModel):
@@ -25,7 +25,7 @@ class SummaryTablesResponse(BaseModel):
 class SummaryVolcanoEntry(BaseModel):
     kind: AnnotationKind
     control: bool = False
-    dataSource: VolcanoDataSource = "data"
+    dataSource: DataSource = "data"
     condition1: str
     condition2: str
     condition1Control: str | None = None
@@ -36,6 +36,17 @@ class SummaryVolcanoEntry(BaseModel):
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
+    # Which renderer this comparison was added with. Per entry rather than per
+    # report, because the choice is about what a particular figure is for: a
+    # volcano being screened for hits wants hover text, the one going into the
+    # paper wants print styling, and one report can legitimately hold both.
+    # Defaults to Interactive, which is what every entry logged before this
+    # existed was rendered as.
+    renderType: VolcanoRenderType = "Interactive"
+    # Only the static renderer draws labels; ignored when renderType is
+    # Interactive, where hovering a point names it.
+    labelTopUp: int = Field(default=0, ge=0, le=200)
+    labelTopDown: int = Field(default=0, ge=0, le=200)
 
 
 class SummaryReportContext(BaseModel):

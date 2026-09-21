@@ -82,6 +82,13 @@ test('authenticated viewer is read-only', async ({ page, browser }) => {
     ['/api/data-tools/imputation/run', { kind: 'protein' }],
     ['/api/datasets/packages/create', { packageName: 'Forbidden' }],
     ['/api/annotations/phosprot/aggregate', { source: 'non_imputed', mode: 'mean' }],
+    // The whole session in one blob. Quick save is what used to call it; a
+    // viewer has nothing to save and no business taking the matrices away.
+    ['/api/restore/export', { uiState: {}, portable: false }],
+    // Runs the same imputation as /run and returns the filled matrix as CSV.
+    ['/api/data-tools/imputation/download', { kind: 'protein' }],
+    // A write, and the page that offers it is not in the viewer's tab list.
+    ['/api/data-tools/condition-colors/protein', { palette: { A: '#123456' } }],
   ]) {
     const response = await tabRequest(page).post(path, { data });
     expect(response.status(), `${path}: ${await response.text()}`).toBe(403);

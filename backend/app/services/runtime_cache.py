@@ -35,7 +35,17 @@ def _freeze(value: Any) -> Any:
     the second caller would silently receive the first caller's result. An
     unhashable argument is a reason to skip the cache, never to guess.
     """
-    if isinstance(value, (str, int, float, bool, type(None), bytes)):
+    # `True == 1` and `1 == 1.0` in Python, and equal values hash equally, so a
+    # bare bool or int in a key collides with the number beside it. The
+    # `advanced` plot settings arrive as untyped JSON, where `{"x": true}` and
+    # `{"x": 1}` are different instructions -- one renders as "True" and the
+    # other as "1" -- and would otherwise share a cache entry. Tagging the type
+    # keeps them apart.
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, (str, float, type(None), bytes)):
         return value
     if isinstance(value, dict):
         return tuple(

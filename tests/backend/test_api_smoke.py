@@ -123,7 +123,12 @@ def test_report_mentions_annotation_filtering() -> None:
     )
     protein_annotation.imputation = AnnotationImputationInfo(
         mode="numerical",
-        applied=False,
+        # The tool only ever stores applied=True, on success; applied=False with
+        # a real mode means the imputation was asked for and refused, and the
+        # report deliberately does not describe those settings as if they had
+        # been used. This fixture is about the wording of a successful
+        # imputation, so it has to say so.
+        applied=True,
         downShift=1.8,
         width=0.3,
         seed=1337,
@@ -145,7 +150,9 @@ def test_report_mentions_annotation_filtering() -> None:
         )
     assert response.status_code == 200
     report_html = response.json()["html"]
-    assert report_html.count("<strong>Filtering:</strong>") == 2
+    # Two level preambles plus the two PCA blocks, which now carry the same
+    # provenance block as a volcano: source, then filtering, then imputation.
+    assert report_html.count("<strong>Filtering:</strong>") == 4
     assert (
         "Rows with at least 70% completeness across all annotated samples, "
         "independent of condition groups were retained."
@@ -153,7 +160,7 @@ def test_report_mentions_annotation_filtering() -> None:
     assert (
         "Rows with at least 3 valid values in at least one condition group were retained."
     ) in report_html
-    assert report_html.count("Filtered data contains ") == 2
+    assert report_html.count("Filtered data contains ") == 4
     assert "<strong>Data source:</strong> Imputed Data" in report_html
     assert "<strong>Data source:</strong> Data" in report_html
     imputation_text = (
@@ -638,7 +645,7 @@ def test_anova_clustering_does_not_fall_back_to_nonsignificant_rows(monkeypatch)
         pValueThreshold=0.05,
     )
 
-    empty = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
+    empty, _ = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
     assert empty.empty
     assert list(empty.columns)[1] == "cluster"
 
@@ -661,6 +668,8 @@ def test_anova_clustering_does_not_fall_back_to_nonsignificant_rows(monkeypatch)
     figure, plt = stats_tools._anova_heatmap_figure(
         anova_df,
         metadata,
+        kind="protein",
+        advanced=None,
         label_column="GeneNames",
         p_value_threshold=0.05,
         clustered=False,
@@ -672,7 +681,7 @@ def test_anova_clustering_does_not_fall_back_to_nonsignificant_rows(monkeypatch)
     plt.close(figure)
 
     anova_df.loc[0, "adj_pval"] = 0.01
-    one = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
+    one, _ = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
     assert one["GeneNames"].tolist() == ["A"]
     assert one["cluster"].tolist() == [1]
 
@@ -701,11 +710,11 @@ def test_anova_clustering_preserves_small_clusters_and_ignores_raw_label_numbers
 
     first_labels = np.asarray([10] * 10 + [77] + [500] * 10)
     monkeypatch.setattr(stats_tools, "fcluster", lambda *args, **kwargs: first_labels.copy())
-    first = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
+    first, _ = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
 
     second_labels = np.asarray([900] * 10 + [2] + [41] * 10)
     monkeypatch.setattr(stats_tools, "fcluster", lambda *args, **kwargs: second_labels.copy())
-    second = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
+    second, _ = stats_tools._anova_cluster_dataframe(anova_df, metadata, payload)
 
     assert first.groupby("cluster").size().sort_values().tolist() == [1, 10, 10]
     assert second.groupby("cluster").size().sort_values().tolist() == [1, 10, 10]
@@ -795,22 +804,29 @@ def test_pathway_heatmap_labels_show_source_feature_counts(monkeypatch) -> None:
 
     monkeypatch.setattr(stats_tools, "_to_png_bytes", capture_figure)
 
-    image = stats_tools.pathway_heatmap_png(
-        kind="protein",
-        pathway="Test pathway",
-        conditions=[],
-        value_type="log2",
-        include_id=False,
-        header=True,
-        remove_empty=True,
-        cluster_rows=False,
-        cluster_cols=False,
-        width_cm=20,
-        height_cm=12,
-        dpi=150,
-    )
+    def render(**overrides):
+        return stats_tools.pathway_heatmap_png(
+            kind="protein",
+            pathway="Test pathway",
+            conditions=[],
+            value_type="log2",
+            include_id=False,
+            header=True,
+            remove_empty=True,
+            cluster_rows=False,
+            cluster_cols=False,
+            width_cm=20,
+            height_cm=12,
+            dpi=150,
+            **overrides,
+        )
 
-    assert image == b"png"
+    # Off by default: on a real pathway the counts are forty parentheticals down
+    # the side of the figure, and most of them read 1.
+    assert render() == b"png"
+    assert captured["labels"] == ["AKT1", "AKT10"]
+
+    assert render(show_source_count=True) == b"png"
     assert captured["labels"] == ["AKT1 (n=2)", "AKT10 (n=1)"]
     assert "median across mapped features" in str(captured["title"])
 

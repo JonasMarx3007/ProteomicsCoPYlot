@@ -196,12 +196,6 @@ export default function RestorePage({
             {busy ? "Working..." : "Save Portable State..."}
           </button>
         </div>
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Leaving or refreshing starts a new analysis on the next load. The browser asks for confirmation
-          when there are changes since the last saved state. Cancelling keeps the current analysis.
-          Regular save states include local dataset paths for same-machine restore. Use a portable save
-          before sharing: paths are omitted, so the recipient must upload the referenced datasets when restoring.
-        </div>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -209,10 +203,6 @@ export default function RestorePage({
         <p className="mt-1 text-sm text-slate-600">
           Upload a save state file to restore datasets, annotations, and UI state.
         </p>
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Save states are compatibility snapshots. Older files remain usable; settings they contain are restored,
-          while newer options missing from the file use today&apos;s defaults.
-        </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
           <input
             type="file"

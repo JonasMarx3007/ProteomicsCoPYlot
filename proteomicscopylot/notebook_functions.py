@@ -21,7 +21,6 @@ from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 from scipy.stats import gaussian_kde, pearsonr
 from scipy.stats import t
-from scipy.stats import ttest_ind
 from sklearn.decomposition import PCA
 
 _SAMPLE_DOTTED_SUFFIX = re.compile(
@@ -1081,17 +1080,17 @@ def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=Non
 
     if 'Phosphoprotein' in data.columns:
         ax.set_ylabel('Number of phosphoproteins')
-        redline = len(data['Phosphoprotein'])
+        redline = int(data_filtered.any(axis=1).sum())
         if header: fig.suptitle('Phosphoproteins per sample', fontsize=14)
 
     elif 'ProteinNames' in data.columns:
         ax.set_ylabel('Number of proteins')
-        redline = len(data['ProteinNames'])
+        redline = int(data_filtered.any(axis=1).sum())
         if header: fig.suptitle('Proteins per sample', fontsize=14)
 
     elif 'PTM_Collapse_key' in data.columns:
         ax.set_ylabel('Number of phosphosites')
-        redline = len(data['PTM_Collapse_key'])
+        redline = int(data_filtered.any(axis=1).sum())
         if header: fig.suptitle('Phosphosites per sample', fontsize=14)
 
     else:
@@ -1205,26 +1204,21 @@ def coverage_plot_summary(data, meta, header=True, plot_colors=None, width=20, h
     plot_title, y_label = "", "Number"
     red_line_value = None
 
-    if header:
-        if "Phosphoprotein" in data.columns:
-            plot_title = "Phosphoproteins per sample"
-            y_label = "Number of phosphoproteins"
-            red_line_value = len(data["Phosphoprotein"])
-            ax.axhline(red_line_value, linestyle="--", color="red")
+    if "Phosphoprotein" in data.columns:
+        plot_title = "Phosphoproteins per sample"
+        y_label = "Number of phosphoproteins"
+    elif "ProteinNames" in data.columns:
+        plot_title = "Proteins per sample"
+        y_label = "Number of proteins"
+    elif "PTM_Collapse_key" in data.columns:
+        plot_title = "Phosphosites per sample"
+        y_label = "Number of phosphosites"
 
-        elif "ProteinNames" in data.columns:
-            plot_title = "Proteins per sample"
-            y_label = "Number of proteins"
-            red_line_value = len(data["ProteinNames"])
-            ax.axhline(red_line_value, linestyle="--", color="red")
+    if plot_title:
+        red_line_value = int(data_binary.any(axis=1).sum())
+        ax.axhline(red_line_value, linestyle="--", color="red")
 
-        elif "PTM_Collapse_key" in data.columns:
-            plot_title = "Phosphosites per sample"
-            y_label = "Number of phosphosites"
-            red_line_value = len(data["PTM_Collapse_key"])
-            ax.axhline(red_line_value, linestyle="--", color="red")
-
-    ax.set_title(plot_title)
+    ax.set_title(plot_title if header else "")
     ax.set_ylabel(y_label)
     ax.set_xticks(bar_positions)
     ax.set_xticklabels(conditions, rotation=90, ha="center")
@@ -1674,7 +1668,7 @@ def minimum_enclosing_ellipse(points, tol=1e-3):
     QT = Q.T
     u = np.ones(N) / N
     err = tol + 1
-    while err > tol:
+    for _ in range(10000):
         X = Q @ np.diag(u) @ QT
         M = np.diag(QT @ np.linalg.inv(X) @ Q)
         j = np.argmax(M)
@@ -1683,12 +1677,58 @@ def minimum_enclosing_ellipse(points, tol=1e-3):
         new_u[j] += step_size
         err = np.linalg.norm(new_u - u)
         u = new_u
+        if err <= tol:
+            break
+    else:
+        raise ValueError("Enclosing ellipse did not converge.")
     center = points.T @ u
     A = np.linalg.inv(points.T @ np.diag(u) @ points - np.outer(center, center)) / d
     U, s, _ = np.linalg.svd(A)
     axes = 1. / np.sqrt(s)
     angle = np.degrees(np.arctan2(U[1, 0], U[0, 0]))
     return center, axes, angle
+
+
+def fitted_group_ellipse(points):
+    """Fit an enclosing ellipse only when the group reliably spans the plane."""
+    array = np.asarray(points, dtype=float)
+    if array.ndim != 2 or array.shape[0] < 3 or array.shape[1] != 2 or not np.isfinite(array).all():
+        return None
+    try:
+        origin = array.mean(axis=0)
+        centered = array - origin
+        scale = np.max(np.abs(centered))
+        if not np.isfinite(scale) or scale == 0:
+            return None
+        normalized = centered / scale
+        singular = np.linalg.svd(normalized, compute_uv=False)
+        # The solver inverts a scatter matrix, squaring the coordinate condition number.
+        if singular[-1] <= singular[0] * np.sqrt(np.finfo(float).eps):
+            return None
+        center, axes, angle = minimum_enclosing_ellipse(normalized)
+        center, axes = origin + center * scale, axes * scale
+    except (np.linalg.LinAlgError, ValueError, ZeroDivisionError, FloatingPointError):
+        return None
+    if not (np.isfinite(center).all() and np.isfinite(axes).all() and np.isfinite(angle)):
+        return None
+    if float(np.min(axes)) <= 0:
+        return None
+    return center, axes, angle
+
+
+def ellipse_skip_message(groups):
+    """What to say about the groups that got no ellipse."""
+    names = [str(group) for group in groups if str(group).strip()]
+    if not names:
+        return ""
+    listed = ", ".join(names)
+    subject = "group" if len(names) == 1 else "groups"
+    return (
+        f"No ellipse was drawn for {subject} {listed}: {'its' if len(names) == 1 else 'their'} "
+        "points have no spread in one direction -- they fall on a line, or two "
+        "samples share the same position -- so there is no enclosing ellipse to fit. "
+        "The points themselves are unaffected."
+    )
 
 
 def _prepare_pca_matrix(data, meta, *, plot_3d=False):
@@ -1770,6 +1810,7 @@ def pca_plot(data, meta, header=True, legend=True, dot_size=3,
     colors = plot_colors if plot_colors is not None else plt.cm.tab10.colors
     conditions = pca_scores['condition'].unique()
     color_map = {cond: colors[i % len(colors)] for i, cond in enumerate(conditions)}
+    skipped_ellipses = []
     for cond in conditions:
         subset = pca_scores[pca_scores['condition'] == cond]
         if plot_3d:
@@ -1778,13 +1819,20 @@ def pca_plot(data, meta, header=True, legend=True, dot_size=3,
         else:
             ax.scatter(subset['PC1'], subset['PC2'],
                        label=cond, s=dot_size*10, alpha=0.7, color=color_map[cond])
-            if add_ellipses and len(subset) > 2:
-                points = subset[['PC1', 'PC2']].to_numpy()
-                center, axes, angle = minimum_enclosing_ellipse(points)
-                ellipse = Ellipse(xy=center, width=2*axes[0], height=2*axes[1],
-                                  angle=angle, facecolor=color_map[cond], alpha=0.15,
-                                  edgecolor=color_map[cond], lw=1)
-                ax.add_patch(ellipse)
+            if add_ellipses:
+                fit = fitted_group_ellipse(subset[['PC1', 'PC2']].to_numpy())
+                if fit is None:
+                    skipped_ellipses.append(cond)
+                else:
+                    center, axes, angle = fit
+                    ellipse = Ellipse(xy=center, width=2*axes[0], height=2*axes[1],
+                                      angle=angle, facecolor=color_map[cond], alpha=0.15,
+                                      edgecolor=color_map[cond], lw=1)
+                    ax.add_patch(ellipse)
+    # Said out loud, never drawn into the figure: a plot that leaves the tool
+    # should carry no caption about how the tool drew it.
+    if skipped_ellipses:
+        warnings.warn(ellipse_skip_message(skipped_ellipses), stacklevel=2)
     if plot_3d:
         ax.set_xlabel(f"PC1 - {explained_variance[0]:.2f}%")
         ax.set_ylabel(f"PC2 - {explained_variance[1]:.2f}%")
@@ -1853,11 +1901,14 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
         if header:
             layout_kwargs["title"] = "PCA Plot"
         if add_ellipses:
+            skipped_ellipses = []
             for i, cond in enumerate(pca_scores["condition"].unique()):
                 subset = pca_scores[pca_scores["condition"] == cond]
-                if len(subset) > 2:
-                    points = subset[["PC1","PC2"]].to_numpy()
-                    center, axes, angle = minimum_enclosing_ellipse(points)
+                fit = fitted_group_ellipse(subset[["PC1", "PC2"]].to_numpy())
+                if fit is None:
+                    skipped_ellipses.append(cond)
+                else:
+                    center, axes, angle = fit
                     t = np.linspace(0, 2*np.pi, 200)
                     ellipse = np.array([axes[0]*np.cos(t), axes[1]*np.sin(t)])
                     R = np.array([[np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
@@ -1874,6 +1925,8 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
                         fillcolor=fill_str,
                         showlegend=False
                     ))
+            if skipped_ellipses:
+                warnings.warn(ellipse_skip_message(skipped_ellipses), stacklevel=2)
     fig.update_layout(**layout_kwargs)
     return fig
 
@@ -1926,7 +1979,10 @@ def abundance_plot(data, meta, workflow="Protein", plot_colors=None, width_cm=20
         columns = meta.loc[meta['condition'] == condition, 'sample'].tolist()
         condition_data = data_filtered[[key_col] + columns].copy()
         means = condition_data[columns].mean(axis=1, skipna=True)
-        means_log = np.log10(means + 1)
+        # log10 of the value, with no pseudocount: the axis names the quantity,
+        # so `log10(x + 1)` would plot something else. Non-positive means have
+        # no logarithm and drop out with the NaNs below.
+        means_log = np.log10(means.where(means > 0))
         mean_intensities[condition] = means_log
 
     long_intensities = mean_intensities.melt(
@@ -1985,7 +2041,8 @@ def interactive_abundance_plot(data, meta, condition, workflow="Protein", search
     columns_to_use = [feature_col] + annotated_columns
     data_filtered = data[columns_to_use].copy()
     condition_means = data_filtered[annotated_columns].mean(axis=1, skipna=True)
-    condition_means = np.log10(condition_means + 1)
+    # See `plot_abundance`: log10 of the value, no pseudocount.
+    condition_means = np.log10(condition_means.where(condition_means > 0))
 
     mean_intensities = pd.DataFrame({
         "Feature": data_filtered[feature_col],
@@ -2253,7 +2310,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
 
     mean1 = np.nanmean(arr_x, axis=1)
     mean2 = np.nanmean(arr_y, axis=1)
-    log2fc = mean2 - mean1
+    log2fc = mean1 - mean2
 
     if not is_paired:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
@@ -2268,7 +2325,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
     else:
-        diffs = arr_y - arr_x
+        diffs = arr_x - arr_y
         valid_paired = np.sum(np.isfinite(diffs), axis=1) >= 2
         if not np.any(valid_paired):
             raise ValueError("No rows have enough paired values for the selected comparison.")
@@ -2382,7 +2439,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
 
     mean1 = np.nanmean(arr_x, axis=1)
     mean2 = np.nanmean(arr_y, axis=1)
-    log2fc = mean2 - mean1
+    log2fc = mean1 - mean2
 
     # Subtracting each control mean shifts a row by a constant, which leaves the
     # test groups' own variance untouched -- so a two-group standard error omits
@@ -2403,7 +2460,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
     else:
-        diffs = arr_y - arr_x
+        diffs = arr_x - arr_y
         n_diff = np.sum(np.isfinite(diffs), axis=1)
         valid_paired = n_diff >= 2
 
@@ -2503,7 +2560,7 @@ def volcano_plot(volcano_df, condition1, condition2, in_pval=0.05, in_log2fc=1, 
 
     fig.update_layout(
         title=f"{condition1} vs {condition2}",
-        xaxis_title=f"log2 fold change ({condition2} - {condition1})",
+        xaxis_title=f"log2 fold change ({condition1} - {condition2})",
         yaxis_title='-log10 adj. p-value' if not uncorrected else '-log10 p-value',
         shapes=shapes,
         hovermode='closest'
@@ -2598,7 +2655,7 @@ def volcano_plot_h(volcano_df, condition1, condition2,
 
     fig.update_layout(
         title=f"{condition1} vs {condition2}",
-        xaxis_title=f"log2 fold change ({condition2} - {condition1})",
+        xaxis_title=f"log2 fold change ({condition1} - {condition2})",
         yaxis_title='-log10 adj. p-value' if not uncorrected else '-log10 p-value',
         shapes=shapes,
         hovermode='closest'
@@ -2724,7 +2781,11 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
 
     matrix = cluster_df[sample_cols].to_numpy(dtype=float)
     if matrix.shape[0] > 1:
-        _require_complete_clustering_matrix(matrix, context="ANOVA")
+        matrix, kept, dropped, total = _drop_incomplete_features(
+            matrix, context="ANOVA clustering"
+        )
+        cluster_df = cluster_df.loc[kept]
+        _warn_dropped_features(dropped, total)
     if z_score:
         row_mean = np.nanmean(matrix, axis=1, keepdims=True)
         row_sd = np.nanstd(matrix, axis=1, keepdims=True)
@@ -3062,7 +3123,9 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
             n_left, n_right = counts[left], counts[right]
             with np.errstate(divide="ignore", invalid="ignore"):
                 standard_error = np.sqrt(mse / 2.0 * (1.0 / n_left + 1.0 / n_right))
-                difference = means[right] - means[left]
+                # group1 minus group2, matching the volcano convention: the
+                # condition named first in `comparison` is the minuend.
+                difference = means[left] - means[right]
                 q_statistic = np.abs(difference) / standard_error
             pvals = stats.studentized_range.sf(q_statistic, len(names), df_resid)
             pvals = np.where(np.isfinite(q_statistic) & (df_resid > 0), pvals, np.nan)
@@ -3071,7 +3134,7 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
                 continue
             frames.append(pd.DataFrame({
                 label_col: labels[usable],
-                "comparison": f"{right} vs {left}",
+                "comparison": f"{left} vs {right}",
                 "group1": left,
                 "group2": right,
                 "log2FC": difference[usable],
@@ -3151,7 +3214,12 @@ def anova_plot(
 
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
     if (cluster_rows and raw_matrix.shape[0] > 1) or (cluster_samples and raw_matrix.shape[1] > 1):
-        _require_complete_clustering_matrix(raw_matrix, context="ANOVA heatmap")
+        _, kept, dropped, total = _drop_incomplete_features(
+            raw_matrix, context="ANOVA heatmap"
+        )
+        plot_df = plot_df.loc[kept]
+        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+        _warn_dropped_features(dropped, total)
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -3295,7 +3363,12 @@ def anova_plot_cluster(
     plot_df = anova_cluster_df.copy()
     raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
     if cluster_samples and raw_matrix.shape[1] > 1:
-        _require_complete_clustering_matrix(raw_matrix, context="ANOVA cluster heatmap")
+        _, kept, dropped, total = _drop_incomplete_features(
+            raw_matrix, context="ANOVA cluster heatmap"
+        )
+        plot_df = plot_df.loc[kept]
+        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
+        _warn_dropped_features(dropped, total)
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
     labels = plot_df[label_col].astype(str).tolist()
@@ -3746,6 +3819,7 @@ def proteins_in_pathway(
         value_type="z",
         header=True,
         id=True,
+        show_source_count=False,
         gene_column=None
 ):
     if gene_column is None:
@@ -3825,10 +3899,14 @@ def proteins_in_pathway(
     if heatmap_data.empty:
         raise ValueError("No informative pathway rows remain after heatmap transformation.")
 
-    heatmap_data.index = [
-        f"{gene} (n={int(source_feature_counts.loc[gene])})"
-        for gene in heatmap_data.index
-    ]
+    if show_source_count:
+        # How many dataset rows collapsed onto each gene. Off by default: on a
+        # pathway of forty genes it is forty parentheticals down the side of the
+        # figure, and most of them read 1.
+        heatmap_data.index = [
+            f"{gene} (n={int(source_feature_counts.loc[gene])})"
+            for gene in heatmap_data.index
+        ]
 
     heatmap_data = heatmap_data.rename(columns=rename_dict)
     ordered_labels = list(meta_filtered['new_sample'])
@@ -3836,7 +3914,11 @@ def proteins_in_pathway(
 
     cluster_matrix = None
     if (cluster_rows and heatmap_data.shape[0] > 1) or (cluster_cols and heatmap_data.shape[1] > 1):
-        cluster_matrix = _require_complete_clustering_matrix(heatmap_data, context="pathway heatmap")
+        cluster_matrix, kept, dropped, total = _drop_incomplete_features(
+            heatmap_data, context="pathway heatmap"
+        )
+        heatmap_data = heatmap_data.loc[kept]
+        _warn_dropped_features(dropped, total)
     if cluster_rows and heatmap_data.shape[0] > 1:
         row_linkage = linkage(cluster_matrix, method='average', metric='euclidean')
         row_order = leaves_list(row_linkage)
@@ -3903,11 +3985,11 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     pooled_var = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
     pooled_var *= mod_var
     se = np.sqrt(pooled_var * (1 / n1 + 1 / n2))
-    t_stat = _guarded_t_statistic(mean2 - mean1, se)
+    t_stat = _guarded_t_statistic(mean1 - mean2, se)
     df = n1 + n2 - 2
     pvals = 2 * t.sf(np.abs(t_stat), df)
     adj_pvals = _adjust_finite_pvalues(pvals)
-    log2fc = mean2 - mean1
+    log2fc = mean1 - mean2
     significance = np.where((adj_pvals < in_pval) & (log2fc > in_log2fc), "Upregulated",
                             np.where((adj_pvals < in_pval) & (log2fc < -in_log2fc), "Downregulated",
                                      "Not significant"))
@@ -3939,7 +4021,7 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
                   y0=-np.log10(in_pval), y1=-np.log10(in_pval),
                   line=dict(dash='dash', color='black'))
     fig.update_layout(
-        xaxis_title=f"log2 fold change ({condition2} - {condition1})",
+        xaxis_title=f"log2 fold change ({condition1} - {condition2})",
         yaxis_title="-log10 adj. p-value",
         hovermode='closest'
     )
@@ -4174,7 +4256,6 @@ def rt_vs_pred_rt_plot(data_path, method="Hexbin Plot", add_line=False, bins=100
     data = read_data(data_path)
 
     x = data['Predicted.RT']
-    y = data['RT']
 
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
 
@@ -4396,9 +4477,13 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     ax.set_xticklabels(samples_order, rotation=90)
 
     if text:
-        single = summary[summary["Count"] == 1].set_index("Sample").reindex(samples_order)["Percentage"].fillna(0)
+        with_missed = (
+            summary[summary["Count"] > 0]
+            .groupby("Sample", observed=False)["Percentage"].sum()
+            .reindex(samples_order).fillna(0)
+        )
         base_y = bottom.max() * 0.03
-        for i, val in enumerate(single):
+        for i, val in enumerate(with_missed):
             ax.text(i, base_y, f"{val:.1f}%", ha="center", va="bottom", fontsize=text_size)
 
     ax.legend(title="Number", bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -4784,7 +4869,11 @@ def phossite_on_prot_regulation(
 
     cluster_matrix = None
     if (cluster_rows and heatmap_data.shape[0] > 1) or (cluster_cols and heatmap_data.shape[1] > 1):
-        cluster_matrix = _require_complete_clustering_matrix(heatmap_data, context="phosphosite heatmap")
+        cluster_matrix, kept, dropped, total = _drop_incomplete_features(
+            heatmap_data, context="phosphosite heatmap"
+        )
+        heatmap_data = heatmap_data.loc[kept]
+        _warn_dropped_features(dropped, total)
     if cluster_rows and heatmap_data.shape[0] > 1:
         row_linkage = linkage(cluster_matrix, method='average', metric='euclidean')
         row_order = leaves_list(row_linkage)
@@ -4882,7 +4971,7 @@ def sty_plot(data):
 
     ax.bar(counts.index, counts.values, color=bar_colors, edgecolor="black", linewidth=0.6)
 
-    ax.set_title("Modified S/T/Y Peptide Counts", pad=10, fontweight="bold")
+    ax.set_title("Modified S/T/Y Site Counts", pad=10, fontweight="bold")
     ax.set_xlabel("Peptide")
     ax.set_ylabel("Count")
 
@@ -4907,7 +4996,11 @@ def sty_plot(data):
                 ha="center", va="bottom", fontsize=9, fontweight="bold")
 
     plt.tight_layout()
-    plt.show()
+    # Every other plotting function in this module returns its figure, and the
+    # example notebook assigns the result. This one used to call plt.show() and
+    # return None, so `fig = sty_plot(data3)` bound nothing and the figure could
+    # not be saved, sized or put in a report from a script.
+    return fig
 
 
 def phossite_coverage_plot_summary(
@@ -5052,7 +5145,7 @@ def ksea_volcano(
 
     title = f"KSEA Volcano Plot: {condition1} vs. {condition2}" if header and condition1 and condition2 else (
         "KSEA Volcano Plot" if header else "")
-    x_label = f"log₂(Frequency Factor) ({condition2} - {condition1})" if condition1 and condition2 else "log₂(Frequency Factor)"
+    x_label = f"log₂(Frequency Factor) ({condition1} - {condition2})" if condition1 and condition2 else "log₂(Frequency Factor)"
 
     fig = go.Figure()
 
@@ -5484,24 +5577,54 @@ def all_miss_val(data, meta, data_scale="log2"):
     percent_missing = (missing_values / total_values) * 100
     return round(percent_missing, 2)
 
-def _require_complete_clustering_matrix(matrix, context="heatmap"):
-    """Reject hidden zero/mean replacement before hierarchical clustering."""
+def _drop_incomplete_features(matrix, context="heatmap", minimum_rows=1):
+    """Return the fully observed rows, and how many were dropped to get them.
+
+    Hierarchical clustering is undefined for a feature missing in any sample.
+    Refusing the whole matrix over a handful of them denies the plot entirely;
+    dropping them silently hides that the figure rests on a subset. The rows are
+    dropped and `_warn_dropped_features` states the cost.
+
+    Returns ``(complete_matrix, kept_mask, dropped, total)``.
+    """
     if isinstance(matrix, pd.DataFrame):
         numeric = matrix.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
     else:
         numeric = np.asarray(matrix, dtype=float)
     if numeric.ndim != 2:
         raise ValueError("Clustering requires a two-dimensional matrix.")
-    finite = np.isfinite(numeric)
-    if finite.all():
-        return numeric
+
     rows, columns = numeric.shape
-    complete_rows = int(finite.all(axis=1).sum()) if rows else 0
-    missing_values = int((~finite).sum())
-    raise ValueError(
-        f"{context.capitalize()} clustering cannot be computed because the selected matrix "
-        f"contains {missing_values} missing or non-finite value(s); only {complete_rows} of "
-        f"{rows} features are complete across all {columns} samples. Impute the matrix before "
-        "calling this function, or disable row and column clustering. The data was not "
-        "changed automatically."
+    complete = np.isfinite(numeric).all(axis=1)
+    kept = int(complete.sum())
+    if kept < max(1, int(minimum_rows)):
+        raise ValueError(
+            f"{context.capitalize()} cannot be computed because only {kept} of {rows} "
+            f"features are observed in all {columns} samples. Impute the matrix before "
+            "calling this function. The data was not changed automatically."
+        )
+    return numeric[complete], complete, rows - kept, rows
+
+
+def _dropped_features_message(dropped, total, purpose="clustering", noun="features"):
+    """The same sentence the web app shows beneath the plot."""
+    if not dropped or not total:
+        return None
+    percent = dropped / total * 100.0
+    if percent < 0.1:
+        text = "<0.1%"
+    elif percent < 10:
+        text = f"{percent:.1f}%"
+    else:
+        text = f"{percent:.0f}%"
+    return (
+        f"{text} of {noun} dropped for {purpose} ({dropped:,} of {total:,}) "
+        "\u2014 not observed in every sample"
     )
+
+
+def _warn_dropped_features(dropped, total, purpose="clustering"):
+    """Report the drop where a notebook user sees it: under the cell."""
+    message = _dropped_features_message(dropped, total, purpose=purpose)
+    if message:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)

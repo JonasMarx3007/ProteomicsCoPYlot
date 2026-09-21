@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { getActiveAdvancedPlotSettingsJson, getAdvancedPlotMode } from "./appSettings";
+import { getActiveAdvancedPlotSettingsJson } from "./appSettings";
 
+// The settings alone. The mode used to be part of this, so opening or closing
+// the panel re-rendered every plot even though nothing about them had changed.
 function currentAdvancedPlotSignal(): string {
-  return `${getAdvancedPlotMode() ? "1" : "0"}:${getActiveAdvancedPlotSettingsJson()}`;
+  return getActiveAdvancedPlotSettingsJson();
 }
 
 export function useAdvancedPlotSignal(): string {

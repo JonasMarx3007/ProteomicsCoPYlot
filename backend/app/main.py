@@ -121,7 +121,11 @@ async def safe_chat_validation(request: Request, exc: RequestValidationError):
     return await request_validation_exception_handler(request, exc)
 
 
-_SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf"}
+# Formats matplotlib writes itself. The renderer is told the format before it
+# draws, so the response body already is that format and nothing is re-encoded
+# afterwards -- which is the only way to keep a vector export vector.
+_NATIVE_DOWNLOAD_FORMATS = {"pdf", "svg"}
+_SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf", "svg"}
 _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/upload"),
     ("POST", "/api/datasets/table-path"),
@@ -140,7 +144,16 @@ _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/peptide/metadata/upload"),
     ("POST", "/api/peptide/metadata/generate"),
     ("POST", "/api/data-tools/imputation/run"),
+    # `/imputation/download` runs the same imputation as `/run` and hands back
+    # the whole filled matrix as CSV. Denying one and not the other left the
+    # computation reachable by the endpoint that also exports the result.
+    ("POST", "/api/data-tools/imputation/download"),
     ("POST", "/api/restore/import"),
+    # The whole session in one blob: every package, every source, log2, filtered
+    # and imputed matrix, all metadata. A published project is figures to read,
+    # not a dataset to take away, and the only thing that called this in viewer
+    # mode was the Ctrl+S save state -- which a viewer does not need.
+    ("POST", "/api/restore/export"),
     ("POST", "/api/chat/models/install"),
     ("POST", "/api/chat/models/remove"),
 }
@@ -148,6 +161,10 @@ _VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/annotations/"),
     ("DELETE", "/api/peptide/metadata/"),
     ("POST", "/api/external/"),
+    # Writing the palette is a state change, and the page that offers it (Data >
+    # Colors) is not in the viewer's tab list. The GET stays open: the viewer has
+    # to read the colours the published project was saved with.
+    ("POST", "/api/data-tools/condition-colors/"),
 )
 _REMOTE_LOCAL_PATH_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/table-path"),
@@ -241,8 +258,12 @@ def _convert_png_bytes(content: bytes, target_format: str) -> tuple[bytes, str]:
     if fmt not in _SUPPORTED_DOWNLOAD_FORMATS:
         raise ValueError(
             f"Unsupported download format '{target_format}'. Choose one of: "
-            "png, jpg, jpeg, webp, pdf."
+            "png, jpg, jpeg, webp, pdf, svg."
         )
+    if fmt == "svg":
+        # Tracing a raster back into SVG would wrap the pixels in an <image>
+        # tag and call it a vector. SVG only ever comes from the renderer.
+        raise ValueError("SVG is written by the renderer and is never converted from a raster image.")
 
     from PIL import Image
 
@@ -326,6 +347,7 @@ if _CORS_ORIGINS:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-CoPYlot-Notice"],
     )
 
 
@@ -581,16 +603,26 @@ async def security_headers_middleware(request: Request, call_next):
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     )
-    if _auth_route(request.url.path):
+    if request.url.path.startswith("/api/"):
+        # Nothing this API returns is safely cacheable. Every response is a
+        # function of the session's current matrices, and those change under the
+        # same URL: re-filtering or re-imputing rewrites every number without
+        # moving an endpoint. The plot bodies have always said `no-store`; the
+        # JSON tables beside them carry the same numbers and said nothing, so a
+        # table could be answered from a cache while the plot next to it was
+        # re-rendered. Auth responses additionally must never be stored at all.
         response.headers["Cache-Control"] = "no-store"
     return response
 
 
 @app.middleware("http")
 async def plot_download_format_middleware(request: Request, call_next):
-    native_pdf = (request.method == "GET" and request.url.path.startswith("/api/plots/")
-                  and request.query_params.get("downloadFormat", "").strip().lower() == "pdf")
-    token = plot_output_format.set("pdf" if native_pdf else "png")
+    native_format = "png"
+    if request.method == "GET" and request.url.path.startswith("/api/plots/"):
+        asked = request.query_params.get("downloadFormat", "").strip().lower()
+        if asked in _NATIVE_DOWNLOAD_FORMATS:
+            native_format = asked
+    token = plot_output_format.set(native_format)
     try:
         response = await call_next(request)
     finally:

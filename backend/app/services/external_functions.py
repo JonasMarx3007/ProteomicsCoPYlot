@@ -39,7 +39,6 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
     pat_del_all = "\\[(?!Phospho \\(STY\\))[^[]*\\]"
     keep = ['PEP.PeptidePosition', 'PG.ProteinGroups', 'PG.Genes', "PTM_0_num", "PTM_0_aa"]
     protgen = ['PG.Genes', 'PG.ProteinGroups', 'UPD_seq']
-    protgen1 = ['PG.Genes', 'PTM_Collapse_key', 'PG.ProteinGroups']
     fine_names = list(data['R.FileName'].unique())
 
     def fun(x):

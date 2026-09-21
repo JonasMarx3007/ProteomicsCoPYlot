@@ -1,6 +1,8 @@
+import PlotImage from "../../components/PlotImage";
 import { AssistantSelect } from "../../components/AssistantFields";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { contextMode } from "../../lib/plotSerialization";
-import { SizeRow, MultiSelectField, NumericField, ColorField, Checkbox } from "../../components/PlotFields";
+import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -11,6 +13,7 @@ import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -55,27 +58,25 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [imageError, setImageError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() => {
-    const value = String(persisted.downloadFormat ?? "png").trim();
-    return value === "jpg" || value === "webp" || value === "pdf" ? value : "png";
-  });
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
 
   const [phosphositePlot, setPhosphositePlot] = useState({
     cutoff: Number(persistedPhosphositePlot.cutoff ?? 0),
     color: String(persistedPhosphositePlot.color ?? "#87CEEB"),
-    widthCm: Number(persistedPhosphositePlot.widthCm ?? 15),
-    heightCm: Number(persistedPhosphositePlot.heightCm ?? 10),
-    dpi: Number(persistedPhosphositePlot.dpi ?? 100),
+    widthCm: restorePlotDimensionCm(persistedPhosphositePlot.widthCm, 15),
+    heightCm: restorePlotDimensionCm(persistedPhosphositePlot.heightCm, 10),
+    dpi: restorePlotDpi(persistedPhosphositePlot.dpi, 100),
   });
 
   const [coverage, setCoverage] = useState({
     includeId: Boolean(persistedCoverage.includeId ?? false),
-    header: Boolean(persistedCoverage.header ?? true),
-    legend: Boolean(persistedCoverage.legend ?? true),
+    header: true,
+    legend: true,
     mode: String(persistedCoverage.mode ?? "Normal"),
     colorClassI: String(persistedCoverage.colorClassI ?? "#2563eb"),
     colorNotClassI: String(persistedCoverage.colorNotClassI ?? "#f59e0b"),
@@ -83,25 +84,25 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     conditions: Array.isArray(persistedCoverage.conditions)
       ? persistedCoverage.conditions.map((value) => String(value ?? ""))
       : ([] as string[]),
-    widthCm: Number(persistedCoverage.widthCm ?? 20),
-    heightCm: Number(persistedCoverage.heightCm ?? 10),
-    dpi: Number(persistedCoverage.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedCoverage.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedCoverage.heightCm, 10),
+    dpi: restorePlotDpi(persistedCoverage.dpi, 300),
   });
 
   const [distribution, setDistribution] = useState({
     cutoff: Number(persistedDistribution.cutoff ?? 0),
-    header: Boolean(persistedDistribution.header ?? true),
+    header: true,
     color: String(persistedDistribution.color ?? "#87CEEB"),
-    widthCm: Number(persistedDistribution.widthCm ?? 20),
-    heightCm: Number(persistedDistribution.heightCm ?? 15),
-    dpi: Number(persistedDistribution.dpi ?? 300),
+    widthCm: restorePlotDimensionCm(persistedDistribution.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedDistribution.heightCm, 15),
+    dpi: restorePlotDpi(persistedDistribution.dpi, 300),
   });
 
   const [sty, setSty] = useState({
-    header: Boolean(persistedSty.header ?? true),
-    widthCm: Number(persistedSty.widthCm ?? 17.78),
-    heightCm: Number(persistedSty.heightCm ?? 11.43),
-    dpi: Number(persistedSty.dpi ?? 140),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedSty.widthCm, 17.78),
+    heightCm: restorePlotDimensionCm(persistedSty.heightCm, 11.43),
+    dpi: restorePlotDpi(persistedSty.dpi, 140),
   });
 
   const [ksea, setKsea] = useState({
@@ -111,10 +112,10 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     log2fcThreshold: Number(persistedKsea.log2fcThreshold ?? 1),
     testType: String(persistedKsea.testType ?? "unpaired"),
     useUncorrected: Boolean(persistedKsea.useUncorrected ?? false),
-    header: Boolean(persistedKsea.header ?? true),
-    widthCm: Number(persistedKsea.widthCm ?? 20),
-    heightCm: Number(persistedKsea.heightCm ?? 12),
-    dpi: Number(persistedKsea.dpi ?? 220),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedKsea.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedKsea.heightCm, 12),
+    dpi: restorePlotDpi(persistedKsea.dpi, 220),
   });
 
   const [phosprotRegulation, setPhosprotRegulation] = useState({
@@ -126,10 +127,10 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     useUncorrected: Boolean(persistedPhosprotRegulation.useUncorrected ?? false),
     maxHoverSites: Number(persistedPhosprotRegulation.maxHoverSites ?? 20),
     showPhosphosites: Boolean(persistedPhosprotRegulation.showPhosphosites ?? true),
-    header: Boolean(persistedPhosprotRegulation.header ?? true),
-    widthCm: Number(persistedPhosprotRegulation.widthCm ?? 20),
-    heightCm: Number(persistedPhosprotRegulation.heightCm ?? 12),
-    dpi: Number(persistedPhosprotRegulation.dpi ?? 220),
+    header: true,
+    widthCm: restorePlotDimensionCm(persistedPhosprotRegulation.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedPhosprotRegulation.heightCm, 12),
+    dpi: restorePlotDpi(persistedPhosprotRegulation.dpi, 220),
   });
   const debouncedPhosphositePlot = useDebouncedValue(phosphositePlot, 650);
   const debouncedCoverage = useDebouncedValue(coverage, 650);
@@ -559,22 +560,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
   }, [tableRows]);
 
-  async function handleImageError(url: string) {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const parsed = JSON.parse(text) as { detail?: string };
-          if (parsed?.detail) {
-            setImageError(parsed.detail);
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setImageError("Failed to load plot image. Check backend logs for details.");
-  }
 
   return (
     <div className="space-y-6">
@@ -654,16 +639,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
                 className="h-[40rem] w-full rounded-xl border border-slate-200"
               />
             ) : (
-              <img
-                key={plotView.url}
-                src={plotView.url}
-                alt={plotView.title}
-                className="w-full rounded-xl border border-slate-200"
-                onLoad={() => setImageError(null)}
-                onError={() => {
-                  handleImageError(plotView.url);
-                }}
-              />
+              <PlotImage url={plotView.url} alt={plotView.title} />
             )}
           </div>
         ) : (
@@ -672,11 +648,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           </div>
         )}
 
-        {imageError ? (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {imageError}
-          </div>
-        ) : null}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -730,21 +701,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               value={phosphositePlot.cutoff}
               onChange={(value) => setPhosphositePlot({ ...phosphositePlot, cutoff: Math.max(0, value) })}
             />,
-            <ColorField
-              key="color"
-              label="Bar Color"
-              value={phosphositePlot.color}
-              onChange={(value) => setPhosphositePlot({ ...phosphositePlot, color: value })}
-            />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={phosphositePlot.widthCm}
               heightCm={phosphositePlot.heightCm}
               dpi={phosphositePlot.dpi}
-              onWidthChange={(value) => setPhosphositePlot({ ...phosphositePlot, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setPhosphositePlot({ ...phosphositePlot, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setPhosphositePlot({ ...phosphositePlot, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setPhosphositePlot({ ...phosphositePlot, widthCm: value })}
+              onHeightChange={(value) => setPhosphositePlot({ ...phosphositePlot, heightCm: value })}
+              onDpiChange={(value) => setPhosphositePlot({ ...phosphositePlot, dpi: value })}
             />
           }
         />
@@ -769,18 +734,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               options={conditionOptions}
               onChange={(value) => setCoverage({ ...coverage, conditions: value })}
             />,
-            <ColorField
-              key="classI"
-              label="Class I Color"
-              value={coverage.colorClassI}
-              onChange={(value) => setCoverage({ ...coverage, colorClassI: value })}
-            />,
-            <ColorField
-              key="notClassI"
-              label="Not Class I Color"
-              value={coverage.colorNotClassI}
-              onChange={(value) => setCoverage({ ...coverage, colorNotClassI: value })}
-            />,
             ...(coverage.mode === "Summary"
               ? [
                   <NumericField
@@ -796,17 +749,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           ]}
           toggles={[
             <Checkbox key="id" label="Toggle ID" checked={coverage.includeId} onChange={(value) => setCoverage({ ...coverage, includeId: value })} />,
-            <Checkbox key="header" label="Toggle Header" checked={coverage.header} onChange={(value) => setCoverage({ ...coverage, header: value })} />,
-            <Checkbox key="legend" label="Toggle Legend" checked={coverage.legend} onChange={(value) => setCoverage({ ...coverage, legend: value })} />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={coverage.widthCm}
               heightCm={coverage.heightCm}
               dpi={coverage.dpi}
-              onWidthChange={(value) => setCoverage({ ...coverage, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setCoverage({ ...coverage, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setCoverage({ ...coverage, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setCoverage({ ...coverage, widthCm: value })}
+              onHeightChange={(value) => setCoverage({ ...coverage, heightCm: value })}
+              onDpiChange={(value) => setCoverage({ ...coverage, dpi: value })}
             />
           }
         />
@@ -823,24 +774,17 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               value={distribution.cutoff}
               onChange={(value) => setDistribution({ ...distribution, cutoff: Math.max(0, Math.min(1, value)) })}
             />,
-            <ColorField
-              key="color"
-              label="Bar Color"
-              value={distribution.color}
-              onChange={(value) => setDistribution({ ...distribution, color: value })}
-            />,
           ]}
           toggles={[
-            <Checkbox key="header" label="Toggle Header" checked={distribution.header} onChange={(value) => setDistribution({ ...distribution, header: value })} />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={distribution.widthCm}
               heightCm={distribution.heightCm}
               dpi={distribution.dpi}
-              onWidthChange={(value) => setDistribution({ ...distribution, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setDistribution({ ...distribution, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setDistribution({ ...distribution, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setDistribution({ ...distribution, widthCm: value })}
+              onHeightChange={(value) => setDistribution({ ...distribution, heightCm: value })}
+              onDpiChange={(value) => setDistribution({ ...distribution, dpi: value })}
             />
           }
         />
@@ -906,16 +850,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           ]}
           toggles={[
             <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={ksea.useUncorrected} onChange={(value) => setKsea({ ...ksea, useUncorrected: value })} />,
-            <Checkbox key="header" label="Toggle Header" checked={ksea.header} onChange={(value) => setKsea({ ...ksea, header: value })} />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={ksea.widthCm}
               heightCm={ksea.heightCm}
               dpi={ksea.dpi}
-              onWidthChange={(value) => setKsea({ ...ksea, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setKsea({ ...ksea, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setKsea({ ...ksea, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setKsea({ ...ksea, widthCm: value })}
+              onHeightChange={(value) => setKsea({ ...ksea, heightCm: value })}
+              onDpiChange={(value) => setKsea({ ...ksea, dpi: value })}
             />
           }
         />
@@ -961,9 +904,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               value={phosprotRegulation.log2fcThreshold}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, log2fcThreshold: Math.max(0, value) })}
             />,
-            <div key="scoreExplanation" className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 lg:col-span-2">
-              Each protein&apos;s coordinates sum the log2 fold changes of phosphosites that pass both selected thresholds. The down-site score uses absolute magnitudes.
-            </div>,
             <SelectField
               key="testType"
               label="Test Type"
@@ -996,16 +936,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           toggles={[
             <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={phosprotRegulation.useUncorrected} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, useUncorrected: value })} />,
             <Checkbox key="showSites" label="Show Phosphosites in Table" checked={phosprotRegulation.showPhosphosites} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, showPhosphosites: value })} />,
-            <Checkbox key="header" label="Toggle Header" checked={phosprotRegulation.header} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, header: value })} />,
           ]}
           sizeRow={
             <SizeRow
               widthCm={phosprotRegulation.widthCm}
               heightCm={phosprotRegulation.heightCm}
               dpi={phosprotRegulation.dpi}
-              onWidthChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, widthCm: Math.max(1, value) })}
-              onHeightChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, heightCm: Math.max(1, value) })}
-              onDpiChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, dpi: Math.max(72, Math.round(value)) })}
+              onWidthChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, widthCm: value })}
+              onHeightChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, heightCm: value })}
+              onDpiChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, dpi: value })}
             />
           }
         />
@@ -1016,16 +955,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       <OptionsLayout
         fields={[]}
         toggles={[
-          <Checkbox key="header" label="Toggle Header" checked={sty.header} onChange={(value) => setSty({ ...sty, header: value })} />,
         ]}
         sizeRow={
           <SizeRow
             widthCm={sty.widthCm}
             heightCm={sty.heightCm}
             dpi={sty.dpi}
-            onWidthChange={(value) => setSty({ ...sty, widthCm: Math.max(1, value) })}
-            onHeightChange={(value) => setSty({ ...sty, heightCm: Math.max(1, value) })}
-            onDpiChange={(value) => setSty({ ...sty, dpi: Math.max(72, Math.round(value)) })}
+            onWidthChange={(value) => setSty({ ...sty, widthCm: value })}
+            onHeightChange={(value) => setSty({ ...sty, heightCm: value })}
+            onDpiChange={(value) => setSty({ ...sty, dpi: value })}
           />
         }
       />

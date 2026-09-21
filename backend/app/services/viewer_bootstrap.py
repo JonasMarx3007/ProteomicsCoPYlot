@@ -17,13 +17,18 @@ from app.schemas.annotation import (
     FilterMode,
     MetadataSource,
     NormalizationMethod,
+    PhosprotAggregationMode,
     phosprot_filter_config,
 )
+from pydantic import ValidationError as PydanticValidationError
+
+from app.schemas.data_tools import ImputationRunRequest
 from app.services.annotation_processor import compute_annotation, compute_annotation_from_metadata
 from app.services.annotation_store import save_annotation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import save_peptide_path, save_table_dataset, set_active_package
-from app.services.functions import impute_values_with_diagnostics
+from app.services.data_tools import require_imputable_kind, skipped_sample_warnings
+from app.services.functions import choose_best_source, impute_values_with_diagnostics
 from app.services.metadata_upload_store import (
     create_profile as create_metadata_profile,
     list_profiles as list_metadata_profiles,
@@ -37,6 +42,10 @@ DatasetKind = Literal["protein", "phospho", "phosprot"]
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
+# How these config files spell "not provided". `phospho_file`, `meta_phospho_file`
+# and the rest all use the literal string "none", so any key that reads a value
+# out of a config has to treat it as absence rather than as a bad value.
+NOT_PROVIDED_VALUES = {"", "none", "off", "disabled", "false", "0"}
 # Must contain at least one character that is not a dot: the name is used as a
 # single path segment, so a name of "." or ".." would resolve outside its own
 # project directory. Names come from admin-controlled config today, but the
@@ -53,15 +62,29 @@ class ViewerBootstrapResult:
     warnings: list[str] = field(default_factory=list)
 
 
+def _imputation_default(field_name: str) -> Any:
+    """The tool's own default for an imputation parameter.
+
+    Read from `ImputationRunRequest` rather than restated here, so "the standard
+    setting" means the same thing in a viewer project as it does in the tool.
+    These drifted before: a viewer config that named only a mode ran with
+    adjustStd 1.0 and sampleWise off, while the same request from the tool used
+    0.3 and on.
+    """
+    return ImputationRunRequest.model_fields[field_name].get_default(
+        call_default_factory=True
+    )
+
+
 @dataclass
 class ViewerImputationConfig:
     mode: str = "none"
-    q_value: float = 0.01
-    adjust_std: float = 0.3
-    down_shift: float = 1.8
-    width: float = 0.3
-    seed: int = 1337
-    sample_wise: bool = False
+    q_value: float = field(default_factory=lambda: _imputation_default("qValue"))
+    adjust_std: float = field(default_factory=lambda: _imputation_default("adjustStd"))
+    down_shift: float = field(default_factory=lambda: _imputation_default("downShift"))
+    width: float = field(default_factory=lambda: _imputation_default("width"))
+    seed: int = field(default_factory=lambda: _imputation_default("seed"))
+    sample_wise: bool = field(default_factory=lambda: _imputation_default("sampleWise"))
 
 
 def bootstrap_viewer_mode_if_enabled() -> None:
@@ -158,6 +181,12 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 kind=kind,
                 frame=frame,
                 source_path=str(absolute_path),
+                # Provenance for an already-collapsed file; nothing is collapsed here.
+                phosprot_aggregation=(
+                    _phosprot_aggregation(package_config, result.warnings)
+                    if kind == "phosprot"
+                    else None
+                ),
             )
             frames[kind] = frame
             result.loaded_datasets.append(f"{package_name}:{kind}")
@@ -191,7 +220,7 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 )
 
         imputation_configs = {
-            kind: _imputation_config(package_config, kind)
+            kind: _imputation_config(package_config, kind, result.warnings)
             for kind in ("protein", "phospho", "phosprot")
         }
 
@@ -299,6 +328,7 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
                 _bootstrap_annotation(
                     package_name=package_name,
                     kind="phosprot",
+                    phosprot_aggregation=_phosprot_aggregation(package_config),
                     frame=frames["phosprot"],
                     metadata=phospho_metadata,
                     filter_config=_filter_config(package_config, "phosphoprotein", result.warnings),
@@ -330,6 +360,7 @@ def _bootstrap_annotation(
     metadata_profile_name: str | None,
     imputation_config: ViewerImputationConfig,
     result: ViewerBootstrapResult,
+    phosprot_aggregation: PhosprotAggregationMode | None = None,
 ) -> None:
     try:
         source_frame = frame
@@ -363,35 +394,48 @@ def _bootstrap_annotation(
         imputed_data = pd.DataFrame()
         imputation_error = ""
         if metadata is not None:
-            imputation_source = (
-                computed.filtered_data
-                if not computed.filtered_data.empty
-                else computed.log2_data
-                if not computed.log2_data.empty
-                else source_frame
-            )
             try:
-                imputation_info, imputed_data = _viewer_imputation_result(
-                    frame=imputation_source,
-                    metadata=computed.metadata,
-                    config=imputation_config,
+                # Order matters and follows `data_tools._best_imputation_source`:
+                # the kind is refused before a source is chosen, so a
+                # phosphoprotein project whose filter also kept nothing is told
+                # the same thing by the viewer as by the tool. A project that
+                # asked for no imputation has nothing to refuse.
+                if imputation_config.mode != "none":
+                    require_imputable_kind(kind)
+                # Same source precedence, and the same refusal to substitute
+                # unfiltered data for an empty filter, that the tool's own
+                # imputation route uses. This used to be an inline chain here
+                # that silently fell back to log2 data when the filter kept
+                # nothing, so a viewer project could show unfiltered values
+                # while reporting a filter.
+                _, imputation_source = choose_best_source(
+                    computed.filtered_data, computed.log2_data, source_frame
                 )
+                imputation_info, imputed_data, imputation_notes = (
+                    _viewer_imputation_result(
+                        frame=imputation_source,
+                        metadata=computed.metadata,
+                        config=imputation_config,
+                    )
+                )
+                warnings.extend(imputation_notes)
+            except ValueError as exc:
+                # These carry the tool's own user-facing explanation -- an empty
+                # filter, a refused phosphoprotein imputation, too little spread
+                # for a global draw. Surface the reason rather than burying it
+                # in the server log; the viewer has no other way to say it.
+                LOGGER.warning(
+                    "Viewer imputation refused for %s:%s: %s", package_name, kind, exc
+                )
+                imputation_info = _unapplied_imputation_info(imputation_config)
+                imputation_error = str(exc).strip() or "check the server log"
             except Exception as exc:
                 LOGGER.exception(
                     "Viewer imputation generation failed for %s:%s",
                     package_name,
                     kind,
                 )
-                imputation_info = AnnotationImputationInfo(
-                    mode=imputation_config.mode,
-                    applied=False,
-                    qValue=imputation_config.q_value,
-                    adjustStd=imputation_config.adjust_std,
-                    downShift=imputation_config.down_shift,
-                    width=imputation_config.width,
-                    seed=imputation_config.seed,
-                    sampleWise=imputation_config.sample_wise,
-                )
+                imputation_info = _unapplied_imputation_info(imputation_config)
                 imputation_error = "check the server log"
         else:
             imputation_info = AnnotationImputationInfo(mode="none", applied=False)
@@ -416,8 +460,8 @@ def _bootstrap_annotation(
             else:
                 reason = imputation_error or "no matching sample columns were available"
                 warnings.append(
-                    "Viewer imputation was configured but is unavailable because generation "
-                    f"failed: {reason}. Non-imputed data will not be substituted."
+                    "Viewer imputation was configured but was not applied: "
+                    f"{reason.rstrip('.')}. Non-imputed data will not be substituted."
                 )
         else:
             warnings.append("Viewer imputation: none.")
@@ -438,6 +482,7 @@ def _bootstrap_annotation(
             imputed_data=imputed_data,
             package_name=package_name,
             metadata_profile_name=metadata_profile_name,
+            phosprot_aggregation=phosprot_aggregation,
         )
         profile_suffix = (
             f":{metadata_profile_name}" if str(metadata_profile_name or "").strip() else ""
@@ -514,9 +559,11 @@ def _filter_config(
         normalization = _normalize_normalization(normalization_raw)
         if warnings is not None:
             raw_text = str(normalization_raw or "").strip()
-            if raw_text and normalization == "none" and raw_text.lower() not in {
-                "none", "off", "disabled", "false", "0"
-            }:
+            if (
+                raw_text
+                and normalization == "none"
+                and raw_text.lower() not in NOT_PROVIDED_VALUES
+            ):
                 warnings.append(
                     f"Viewer config normalization {raw_text!r} for {suffix} was not recognised; "
                     "no normalization was applied."
@@ -544,51 +591,81 @@ def _filter_config(
     )
 
 
-def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImputationConfig:
+def _imputation_config(
+    config: dict[str, Any],
+    kind: DatasetKind,
+    warnings: list[str] | None = None,
+) -> ViewerImputationConfig:
     raw = config.get("imputation")
     if raw is None:
         return ViewerImputationConfig()
 
     entry: Any = raw
     if isinstance(raw, dict):
-        kind_entry = raw.get(kind)
-        if kind_entry is not None:
-            entry = kind_entry
+        # The filter and log2 keys of the same config spell this level
+        # "phosphoprotein", so a per-level imputation override written that way
+        # has to be honoured too -- it used to resolve to no imputation at all.
+        for key in (kind, *(("phosphoprotein",) if kind == "phosprot" else ())):
+            kind_entry = raw.get(key)
+            if kind_entry is not None:
+                entry = kind_entry
+                break
 
     if isinstance(entry, str):
-        return ViewerImputationConfig(mode=_normalize_imputation_mode(entry))
+        return ViewerImputationConfig(mode=_normalize_imputation_mode(entry, warnings))
 
     if not isinstance(entry, dict):
         return ViewerImputationConfig()
 
-    mode = _normalize_imputation_mode(str(entry.get("method", entry.get("mode", "none"))))
+    def _first_present(*keys: str) -> Any:
+        """The first spelling the config actually uses, else None.
+
+        A chained ``entry.get(a, entry.get(b, <literal>))`` evaluates its inner
+        default eagerly, so when the config named none of the spellings that
+        literal was returned and the tool's own default could never apply. An
+        explicit value always won, then as now; what was unreachable was
+        "standard". Absence is reported as None so the caller can fall back to
+        `ImputationRunRequest` -- one source for what standard means.
+        """
+        for key in keys:
+            if key not in entry:
+                continue
+            value = entry[key]
+            # The shipped reference config writes "none" for parameters it does
+            # not set, so that spelling has to mean absent -- not a bad value,
+            # and not False. Only "none" and empty: "false" and "0" are real
+            # answers here, unlike in a file path.
+            if isinstance(value, str) and value.strip().lower() in {"", "none"}:
+                continue
+            return value
+        return None
+
+    mode = _normalize_imputation_mode(
+        str(_first_present("method", "mode") or "none"), warnings
+    )
     q_value = _float_from_any(
-        entry.get(
-            "q_value",
-            entry.get("qValue", entry.get("q", entry.get("shift", 0.01))),
-        ),
-        default=0.01,
+        _first_present("q_value", "qValue", "q", "shift"),
+        default=_imputation_default("qValue"),
     )
     adjust_std = _float_from_any(
-        entry.get(
-            "adjust_std",
-            entry.get(
-                "adjustStd",
-                entry.get(
-                    "adj_std",
-                    entry.get("variance_modification", entry.get("varianceModification", 1.0)),
-                ),
-            ),
+        _first_present(
+            "adjust_std", "adjustStd", "adj_std",
+            "variance_modification", "varianceModification",
         ),
-        default=0.3,
+        default=_imputation_default("adjustStd"),
     )
     down_shift = _float_from_any(
-        entry.get("down_shift", entry.get("downShift", 1.8)),
-        default=1.8,
+        _first_present("down_shift", "downShift"),
+        default=_imputation_default("downShift"),
     )
-    width = _float_from_any(entry.get("width", 0.3), default=0.3)
-    seed = _int_from_any(entry.get("seed", 1337), default=1337)
-    sample_wise = _bool_from_any(entry.get("sample_wise", entry.get("sampleWise", False)))
+    width = _float_from_any(_first_present("width"), default=_imputation_default("width"))
+    seed = _int_from_any(_first_present("seed"), default=_imputation_default("seed"))
+    sample_wise_raw = _first_present("sample_wise", "sampleWise")
+    sample_wise = (
+        _imputation_default("sampleWise")
+        if sample_wise_raw is None
+        else _bool_from_any(sample_wise_raw)
+    )
 
     return ViewerImputationConfig(
         mode=mode,
@@ -601,14 +678,48 @@ def _imputation_config(config: dict[str, Any], kind: DatasetKind) -> ViewerImput
     )
 
 
+def _unapplied_imputation_info(
+    config: ViewerImputationConfig,
+) -> AnnotationImputationInfo:
+    """Describe an imputation that was configured but did not run.
+
+    This is the failure path, so it must not fail. `AnnotationImputationInfo`
+    constrains its fields (`seed` is `ge=0`, `qValue` is a probability), and the
+    config values reaching here came straight out of a JSON file without going
+    through `ImputationRunRequest`. Echoing an out-of-range one back raised a
+    ValidationError *inside* the except block, which escaped and took down every
+    annotation in the package -- so a single mistyped `seed` cost a viewer the
+    whole project rather than its imputation.
+    """
+    try:
+        return AnnotationImputationInfo(
+            mode=config.mode,
+            applied=False,
+            qValue=config.q_value,
+            adjustStd=config.adjust_std,
+            downShift=config.down_shift,
+            width=config.width,
+            seed=config.seed,
+            sampleWise=config.sample_wise,
+        )
+    except PydanticValidationError:
+        # The settings are unreportable, but the fact that imputation was asked
+        # for and did not happen still is, and that is the part a reader needs.
+        LOGGER.warning(
+            "Viewer imputation settings are out of range and cannot be reported: %r",
+            config,
+        )
+        return AnnotationImputationInfo(mode=config.mode, applied=False)
+
+
 def _viewer_imputation_result(
     *,
     frame: pd.DataFrame,
     metadata: pd.DataFrame,
     config: ViewerImputationConfig,
-) -> tuple[AnnotationImputationInfo, pd.DataFrame]:
+) -> tuple[AnnotationImputationInfo, pd.DataFrame, list[str]]:
     if config.mode == "none":
-        return AnnotationImputationInfo(mode="none", applied=False), pd.DataFrame()
+        return AnnotationImputationInfo(mode="none", applied=False), pd.DataFrame(), []
 
     metadata_samples = (
         metadata.get("sample", pd.Series([], dtype="object"))
@@ -633,6 +744,7 @@ def _viewer_imputation_result(
                 sampleCount=0,
             ),
             pd.DataFrame(),
+            [],
         )
 
     diagnostics = impute_values_with_diagnostics(
@@ -661,6 +773,9 @@ def _viewer_imputation_result(
             missingAfter=diagnostics.missing_after,
         ),
         diagnostics.imputed_data,
+        # The tool names the samples it could not draw for; so must the viewer,
+        # or a project reports a full imputation while some values stayed missing.
+        skipped_sample_warnings(diagnostics),
     )
 
 
@@ -754,15 +869,36 @@ def _normalize_normalization(raw: str) -> NormalizationMethod:
     return "none"
 
 
-def _normalize_imputation_mode(raw: str) -> str:
+def imputation_methods() -> set[str]:
+    """The methods the tool will actually impute with, per its own schema."""
+    return set(get_args(ImputationRunRequest.model_fields["method"].annotation))
+
+
+def _normalize_imputation_mode(raw: str, warnings: list[str] | None = None) -> str:
+    """Map a viewer-config imputation value onto a method the tool supports.
+
+    Unknown values fall back to "none" rather than passing through, matching how
+    normalization, filter mode and collapse mode are handled here. A mode that
+    passed through was stored on the annotation as if it were real, and the
+    report then described an imputation that never ran.
+    """
     value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if value in {"", "none", "off", "disabled", "false", "0"}:
+    if value in NOT_PROVIDED_VALUES:
         return "none"
     if value in {"normal", "gaussian"}:
         return "quantile"
     if value in {"left_shifted_normal", "perseus", "numerical"}:
         return "numerical"
-    return value
+    if value in imputation_methods():
+        return value
+    if warnings is not None:
+        warnings.append(
+            f"Viewer config imputation mode {str(raw).strip()!r} was not recognised; "
+            "no imputation was applied. Expected "
+            + ", ".join(sorted(imputation_methods()))
+            + "."
+        )
+    return "none"
 
 
 def _viewer_mode_enabled() -> bool:
@@ -804,7 +940,16 @@ def bootstrap_current_viewer_session(*, force_reload: bool = False) -> ViewerBoo
         raise FileNotFoundError(f"Viewer config file was not found: {config_path}")
 
     session_id = get_session_id()
-    config_key = str(config_path.resolve())
+    # The modification time is part of the key, not just the path. Keyed on the
+    # path alone, a session that had already bootstrapped kept serving the
+    # matrices it loaded first: an administrator could change the filter, swap a
+    # data file or add a dataset in `viewer_config.json`, reload the page, and
+    # be shown the previous project with nothing to say the edit had not taken.
+    try:
+        stamp = config_path.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    config_key = f"{config_path.resolve()}@{stamp}"
     if not force_reload:
         with _SESSION_BOOTSTRAP_LOCK:
             if _SESSION_BOOTSTRAP_CONFIG.get(session_id) == config_key:
@@ -905,6 +1050,48 @@ def _load_metadata(
 def _read_table_from_path(path: Path) -> pd.DataFrame:
     with path.open("rb") as handle:
         return read_dataframe(path.name, handle)
+
+
+def _phosprot_aggregation(
+    config: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> PhosprotAggregationMode | None:
+    """How the phosphoprotein file being loaded was already collapsed.
+
+    The viewer never collapses anything: it is handed a phosphoprotein matrix
+    that was produced elsewhere. `collapse_mode` in the config is therefore
+    provenance, not an instruction -- but it is provenance the tool needs.
+    `robust_site_median` centres every site on its own across-sample median, so
+    those values are ratios to that median rather than abundances, and
+    `_phosprot_values_are_centred` reads this to label the axes accordingly.
+
+    Dropping it, as this loader used to, made a shared phosphoprotein project
+    label ratios as "Intensity" for everyone viewing it.
+
+    Validated against the schema rather than a hardcoded set, and an
+    unrecognised value falls back to None with a warning rather than raising,
+    matching how normalization and filter mode are handled here.
+    """
+    raw = _config_string(config, "collapse_mode")
+    if not raw:
+        return None
+    value = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    # These configs spell "not provided" as the string "none" -- `phospho_file`,
+    # `meta_phospho_file` and the rest all use it. A protein-only project that
+    # writes `"collapse_mode": "none"` is stating there is nothing to describe,
+    # so it must not be reported as a typo.
+    if value in NOT_PROVIDED_VALUES:
+        return None
+    if value in set(get_args(PhosprotAggregationMode)):
+        return value  # type: ignore[return-value]
+    if warnings is not None:
+        warnings.append(
+            f"Viewer config collapse_mode {raw!r} was not recognised; the "
+            "phosphoprotein values will be described as intensities. Expected "
+            + ", ".join(sorted(get_args(PhosprotAggregationMode)))
+            + "."
+        )
+    return None
 
 
 def _config_string(config: dict[str, Any], key: str) -> str:

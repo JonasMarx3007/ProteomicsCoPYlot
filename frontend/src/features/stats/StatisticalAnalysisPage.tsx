@@ -1,9 +1,18 @@
+import { SizeRow } from "../../components/PlotFields";
+import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
+import {
+  PLOT_DOWNLOAD_FORMAT_OPTIONS,
+  coercePlotDownloadFormat,
+  withPlotDownloadFilename,
+  withPlotDownloadFormat,
+  type PlotDownloadFormat,
+} from "../../lib/plotDownload";
 import { AssistantInput, AssistantSelect, AssistantTextarea } from "../../components/AssistantFields";
 import { contextMode } from "../../lib/plotSerialization";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import { collectColumns, rowsToQuotedCsv } from "../../lib/tableData";
-import OraTermCounts, { ORA_CORRECTION_SCOPE } from "../../components/OraTermCounts";
 import PaginatedTable from "../../components/PaginatedTable";
+import PlotImage from "../../components/PlotImage";
 import PairingEditor from "../../components/PairingEditor";
 import {
   buildPlotUrl,
@@ -17,7 +26,6 @@ import {
   runVolcanoAnalysis,
   runVolcanoControlAnalysis,
 } from "../../lib/api";
-import { clampPlotDimensionCm, clampPlotDpi } from "../../lib/plotLimits";
 import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import {
   addVolcanoReportEntry,
@@ -32,8 +40,10 @@ import type {
   AnnotationKind,
   AnovaRequest,
   AnovaResultResponse,
+  AnovaClusterMethod,
   AnovaPostHoc,
   AnovaSource,
+  EnrichmentOrganism,
   EnrichmentRequest,
   EnrichmentResultResponse,
   EnrichmentTerm,
@@ -47,7 +57,15 @@ import type {
   StatisticalOptionsResponse,
   VolcanoResultResponse,
   SummaryVolcanoEntry,
+  DataSource,
+  VolcanoRenderType,
 } from "../../lib/types";
+import {
+  dataSourceOptions,
+  ENRICHMENT_ORGANISM_OPTIONS,
+  VOLCANO_RENDER_TYPE_OPTIONS,
+} from "../../lib/types";
+import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 
 import { TEST_TYPE_OPTIONS, SIMULATION_TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 
@@ -350,51 +368,82 @@ function PlotFrame({ title, url, height }: { title: string; url: string; height:
   );
 }
 
-function ImageSection({ title, url }: { title: string; url: string }) {
-  const [imageError, setImageError] = useState<{ url: string; message: string } | null>(null);
-
-  async function handleImageError() {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const payload = JSON.parse(text) as { detail?: string };
-          if (payload.detail) {
-            setImageError({ url, message: payload.detail });
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setImageError({
-      url,
-      message: "Failed to load the plot image. Check the selected data and plot options.",
-    });
-  }
-
+// A plot on this page, optionally with its own export control. `download` is
+// what turns the section from a picture into a deliverable: the format is the
+// caller's state so that it can be remembered with the rest of the panel, and
+// the file name is the caller's too, because only the panel knows which
+// conditions and which dataset level produced the figure.
+function ImageSection({
+  title,
+  url,
+  download,
+}: {
+  title: string;
+  url: string;
+  download?: {
+    filename: string;
+    format: PlotDownloadFormat;
+    onFormatChange: (format: PlotDownloadFormat) => void;
+  };
+}) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
-          Open Image
-        </a>
-      </div>
-      <img
-        src={url}
-        alt={title}
-        className="w-full rounded-xl border border-slate-200"
-        onLoad={() => setImageError((current) => (current?.url === url ? null : current))}
-        onError={() => void handleImageError()}
-      />
-      {imageError?.url === url ? (
-        <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {imageError.message}
+        <div className="flex flex-wrap items-center gap-2">
+          {download ? (
+            <>
+              <AssistantSelect
+                aria-label={`${title} download format`}
+                value={download.format}
+                onChange={(e) => download.onFormatChange(e.target.value as PlotDownloadFormat)}
+                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
+              >
+                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </AssistantSelect>
+              <a
+                href={withPlotDownloadFormat(url, download.format)}
+                download={withPlotDownloadFilename(download.filename, download.format)}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download Plot
+              </a>
+            </>
+          ) : null}
+          <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
+            Open Image
+          </a>
         </div>
-      ) : null}
+      </div>
+      <PlotImage url={url} alt={title} />
     </section>
   );
+}
+
+
+// Condition names come from user-supplied annotation files, so they can contain
+// characters a filesystem will not accept. Keep letters, digits, dot, dash and
+// underscore; collapse everything else to a single underscore.
+function sanitizeFilenamePart(value: string): string {
+  const cleaned = value.trim().replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return cleaned.slice(0, 40);
+}
+
+function volcanoExportFilename(
+  sourceMode: "volcano" | "volcano_control",
+  kind: string,
+  condition1: string,
+  condition2: string
+): string {
+  const prefix = sourceMode === "volcano_control" ? "volcano_control" : "volcano";
+  const first = sanitizeFilenamePart(condition1);
+  const second = sanitizeFilenamePart(condition2);
+  if (!first || !second) return `${prefix}_${kind}.csv`;
+  return `${prefix}_${kind}_${first}_vs_${second}.csv`;
 }
 
 function TableSection({ title, rows, filename }: { title: string; rows: Record<string, unknown>[]; filename: string }) {
@@ -436,22 +485,6 @@ function GeneListSection({ title, genes, filename }: { title: string; genes: str
   );
 }
 
-function OraProvenanceSection({ result }: { result: EnrichmentResultResponse }) {
-  return (
-    <SectionCard title="ORA Provenance">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <div className="text-sm text-slate-700">Method: <span className="font-medium text-slate-900">ORA</span></div>
-        <div className="text-sm text-slate-700">Organism: <span className="font-medium text-slate-900">{result.organism}</span></div>
-        <div className="text-sm text-slate-700">Upstream correction: <span className="font-medium text-slate-900">{result.upstreamCorrectionMethod}</span></div>
-        <div className="text-sm text-slate-700">ORA term correction: <span className="font-medium text-slate-900">{result.correctionMethod}</span></div>
-        <div className="text-sm text-slate-700">Terms in search space: <span className="font-medium text-slate-900">{result.testedTermCount}</span></div>
-      </div>
-      <div className="mt-3 break-all text-xs text-slate-600">GO database SHA-256: {result.databaseSha256}</div>
-      <OraTermCounts counts={result.termCounts} />
-    </SectionCard>
-  );
-}
-
 function InfoSection({ message }: { message: string }) {
   return (
     <section className="rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-sm">
@@ -486,10 +519,11 @@ function VolcanoPanel({
     const value = String(persisted.sourceMode ?? "volcano").trim();
     return value === "volcano_control" ? "volcano_control" : "volcano";
   });
-  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
-    const value = String(persisted.dataSource ?? "data").trim();
-    return value === "imputed" ? "imputed" : "data";
-  });
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
   const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
@@ -503,10 +537,29 @@ function VolcanoPanel({
     return restoreTestType(persisted.testType);
   });
   const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
-  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [pValueThreshold, setPValueThreshold] = useState(() =>
+    restorePValueThreshold(persisted.pValueThreshold)
+  );
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
   const [highlightText, setHighlightText] = useState(() => String(persisted.highlightText ?? ""));
+  // Interactive by default, because this panel is for exploring and the hover
+  // text is how you find out which point you are looking at. Normal is the
+  // figure you take away.
+  const [renderType, setRenderType] = useState<VolcanoRenderType>(() =>
+    String(persisted.renderType ?? "Interactive").trim() === "Normal" ? "Normal" : "Interactive"
+  );
+  const [labelTopUp, setLabelTopUp] = useState(() => Number(persisted.labelTopUp ?? 0));
+  const [labelTopDown, setLabelTopDown] = useState(() => Number(persisted.labelTopDown ?? 0));
+  // Size and export belong to the static figure only. The interactive plot
+  // fills its frame and exports itself through Plotly's camera button, so
+  // neither is offered -- nor sent -- while it is selected.
+  const [widthCm, setWidthCm] = useState(() => restorePlotDimensionCm(persisted.widthCm, 18));
+  const [heightCm, setHeightCm] = useState(() => restorePlotDimensionCm(persisted.heightCm, 14));
+  const [dpi, setDpi] = useState(() => restorePlotDpi(persisted.dpi, 300));
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
+  );
   const [error, setError] = useState<string | null>(null);
   const [resultState, setResultState] = useState<{
     key: string;
@@ -517,14 +570,11 @@ function VolcanoPanel({
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   const volcanoDataSourceOptions = useMemo(
-    () =>
-      options?.imputedAvailable
-        ? [
-            { value: "data", label: "Data" },
-            { value: "imputed", label: "Imputed Data" },
-          ]
-        : [{ value: "data", label: "Data" }],
-    [options?.imputedAvailable]
+    // `options`, not `options?.availableDataSources`: the React Compiler infers
+    // the whole object as the dependency and refuses to keep a narrower manual
+    // one, which fails the lint gate.
+    () => dataSourceOptions(options),
+    [options]
   );
 
   useEffect(() => {
@@ -533,11 +583,7 @@ function VolcanoPanel({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        setDataSource((current) =>
-          data.imputedAvailable
-            ? (current === "imputed" ? "imputed" : "data")
-            : "data"
-        );
+        applyDataSourceChoices(data);
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
@@ -550,7 +596,7 @@ function VolcanoPanel({
         }
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, applyDataSourceChoices]);
 
   const controlSelectionValid =
     sourceMode !== "volcano_control" ||
@@ -620,6 +666,7 @@ function VolcanoPanel({
       `pValueThreshold=${pValueThreshold}`,
       `log2fcThreshold=${log2fcThreshold}`,
       `useUncorrected=${useUncorrected ? "true" : "false"}`,
+      `type=${renderType}`,
     ];
     onContextModeChange(contextMode(parts));
   }, [
@@ -636,6 +683,7 @@ function VolcanoPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    renderType,
   ]);
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
   const currentRequestKey = requestPayload ? JSON.stringify({ revision, ...requestPayload }) : "";
@@ -656,8 +704,16 @@ function VolcanoPanel({
       testType,
       useUncorrected,
       highlightTerms,
+      // Captured at the moment it is added, so two comparisons in one report
+      // can render differently -- the panel's current state is the intent.
+      renderType,
+      labelTopUp,
+      labelTopDown,
     }),
     [
+      renderType,
+      labelTopUp,
+      labelTopDown,
       kind,
       sourceMode,
       dataSource,
@@ -712,6 +768,13 @@ function VolcanoPanel({
       log2fcThreshold,
       useUncorrected,
       highlightText,
+      renderType,
+      labelTopUp,
+      labelTopDown,
+      widthCm,
+      heightCm,
+      dpi,
+      downloadFormat,
     });
   }, [
     kind,
@@ -727,6 +790,13 @@ function VolcanoPanel({
     log2fcThreshold,
     useUncorrected,
     highlightText,
+    renderType,
+    labelTopUp,
+    labelTopDown,
+    widthCm,
+    heightCm,
+    dpi,
+    downloadFormat,
   ]);
 
   function handleRemoveFromReport() {
@@ -797,23 +867,15 @@ function VolcanoPanel({
 
   const plotUrl = useMemo(() => {
     void advancedPlotSignal;
+    // Also a recompute trigger rather than a value: buildPlotUrl reads the
+    // dataset-scope nonce, so a new revision has to rebuild this URL.
+    void revision;
     if (!debouncedRequestPayload) return "";
-    if (debouncedRequestPayload.source === "volcano_control") {
-      return buildPlotUrl(`/api/plots/stats/${debouncedRequestPayload.kind}/volcano-control.html`, {
-        condition1: debouncedRequestPayload.condition1,
-        condition2: debouncedRequestPayload.condition2,
-        dataSource: debouncedRequestPayload.dataSource,
-        condition1Control: debouncedRequestPayload.condition1Control,
-        condition2Control: debouncedRequestPayload.condition2Control,
-        identifier: debouncedRequestPayload.identifier,
-        pValueThreshold: debouncedRequestPayload.pValueThreshold,
-        log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
-        testType: debouncedRequestPayload.testType,
-        useUncorrected: debouncedRequestPayload.useUncorrected,
-        highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
-      });
-    }
-    return buildPlotUrl(`/api/plots/stats/${debouncedRequestPayload.kind}/volcano.html`, {
+    const isStatic = renderType === "Normal";
+    const extension = isStatic ? "png" : "html";
+    // The label counts only mean something to the static renderer; the
+    // interactive one names a point when you hover it.
+    const shared = {
       condition1: debouncedRequestPayload.condition1,
       condition2: debouncedRequestPayload.condition2,
       dataSource: debouncedRequestPayload.dataSource,
@@ -823,8 +885,33 @@ function VolcanoPanel({
       testType: debouncedRequestPayload.testType,
       useUncorrected: debouncedRequestPayload.useUncorrected,
       highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
-    });
-  }, [debouncedRequestPayload, advancedPlotSignal, revision]);
+      ...(isStatic ? { labelTopUp, labelTopDown, widthCm, heightCm, dpi } : {}),
+    };
+    if (debouncedRequestPayload.source === "volcano_control") {
+      return buildPlotUrl(
+        `/api/plots/stats/${debouncedRequestPayload.kind}/volcano-control.${extension}`,
+        {
+          ...shared,
+          condition1Control: debouncedRequestPayload.condition1Control,
+          condition2Control: debouncedRequestPayload.condition2Control,
+        }
+      );
+    }
+    return buildPlotUrl(
+      `/api/plots/stats/${debouncedRequestPayload.kind}/volcano.${extension}`,
+      shared
+    );
+  }, [
+    debouncedRequestPayload,
+    advancedPlotSignal,
+    revision,
+    renderType,
+    labelTopUp,
+    labelTopDown,
+    widthCm,
+    heightCm,
+    dpi,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -848,7 +935,7 @@ function VolcanoPanel({
           <SelectField
             label="Data Source"
             value={dataSource}
-            onChange={(value) => setDataSource(value as "data" | "imputed")}
+            onChange={(value) => chooseDataSource(value as DataSource)}
             options={volcanoDataSourceOptions}
           />
         </div>
@@ -867,6 +954,12 @@ function VolcanoPanel({
         )}
 
         <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+          <SelectField
+            label="Type"
+            value={renderType}
+            onChange={(value) => setRenderType(value as VolcanoRenderType)}
+            options={VOLCANO_RENDER_TYPE_OPTIONS}
+          />
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
           <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
@@ -888,6 +981,39 @@ function VolcanoPanel({
             <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
           </div>
         </div>
+
+        {renderType === "Normal" ? (
+          <div className="mt-4">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <NumberField
+                label="Label top up-regulated"
+                value={labelTopUp}
+                onChange={(value) => setLabelTopUp(Math.max(0, Math.round(value)))}
+                step={1}
+              />
+              <NumberField
+                label="Label top down-regulated"
+                value={labelTopDown}
+                onChange={(value) => setLabelTopDown(Math.max(0, Math.round(value)))}
+                step={1}
+              />
+            </div>
+            <p className="mt-2 text-sm text-slate-600">
+              Ranked by significance. A label that cannot be placed without
+              covering another one is left off rather than drawn over it.
+            </p>
+            <div className="mt-4 max-w-3xl">
+              <SizeRow
+                widthCm={widthCm}
+                heightCm={heightCm}
+                dpi={dpi}
+                onWidthChange={setWidthCm}
+                onHeightChange={setHeightCm}
+                onDpiChange={setDpi}
+              />
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-4 max-w-3xl">
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
@@ -929,8 +1055,24 @@ function VolcanoPanel({
       {canRun && result ? (
         <>
           <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={removeSourceUsageWarnings(result.warnings)} />
-          <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
-          <TableSection title="Result Table" rows={result.rows} filename={`volcano_${kind}.csv`} />
+          {renderType === "Normal" ? (
+            <ImageSection
+              title="Volcano Plot"
+              url={plotUrl}
+              download={{
+                filename: volcanoExportFilename(sourceMode, kind, condition1, condition2).replace(/\.csv$/, ".png"),
+                format: downloadFormat,
+                onFormatChange: setDownloadFormat,
+              }}
+            />
+          ) : (
+            <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
+          )}
+          <TableSection
+            title="Result Table"
+            rows={result.rows}
+            filename={volcanoExportFilename(sourceMode, kind, condition1, condition2)}
+          />
         </>
       ) : null}
     </div>
@@ -953,13 +1095,63 @@ function oraExportRows(
     annotatedBackgroundSize: result.annotatedBackgroundSize,
     correctionMethod: result.correctionMethod,
     upstreamCorrectionMethod: result.upstreamCorrectionMethod,
-    databaseSha256: result.databaseSha256,
     testedTermCount: result.testedTermCount,
     ...result.termCounts[String(context.direction ?? "cluster")],
-    correctionScope: ORA_CORRECTION_SCOPE,
     ...context,
     ...term,
   }));
+}
+
+// A saved state written by an older build can hold a value of the wrong shape.
+// `Number("n/a")` is NaN, and NaN survives Math.round, so it reaches the request
+// and the backend rejects the run with a 422. Fall back, and clamp to the range
+// the schema accepts so a restored value cannot be refused either.
+function restoreNumber(
+  value: unknown,
+  fallback: number,
+  { min, max }: { min: number; max: number }
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function restoreClusterCount(value: unknown): number {
+  // Matches AnovaRequest.nClusters: ge=1, le=100.
+  return Math.round(restoreNumber(value, 4, { min: 1, max: 100 }));
+}
+
+function restorePValueThreshold(value: unknown): number {
+  // Matches the schema's gt=0.0, le=1.0.
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) return 0.05;
+  return parsed;
+}
+
+// Hierarchical linkage offered for ANOVA row clustering. Mirrors
+// AnovaClusterMethod in backend/app/schemas/stats.py; the metric is fixed at
+// euclidean backend-side, so every method here is always a valid pair.
+//
+// Average is the default and what the clustering has always used, but it chains:
+// on a typical run k=4 can return two large clusters and two of a handful of
+// features. Ward is the usual remedy.
+const ANOVA_CLUSTER_METHOD_OPTIONS: { value: AnovaClusterMethod; label: string }[] = [
+  { value: "average", label: "Average (UPGMA)" },
+  { value: "ward", label: "Ward" },
+  { value: "complete", label: "Complete" },
+  { value: "weighted", label: "Weighted (WPGMA)" },
+  { value: "single", label: "Single" },
+];
+
+const ANOVA_CLUSTER_METHOD_VALUES: string[] = ANOVA_CLUSTER_METHOD_OPTIONS.map(
+  (option) => option.value
+);
+
+function restoreClusterMethod(value: unknown): AnovaClusterMethod {
+  const text = String(value ?? "").trim();
+  return ANOVA_CLUSTER_METHOD_VALUES.includes(text)
+    ? (text as AnovaClusterMethod)
+    : "average";
 }
 
 function AnovaPanel({
@@ -988,22 +1180,42 @@ function AnovaPanel({
     const value = String(persisted.sourceMode ?? "anova").trim();
     return value === "anova_cluster" ? "anova_cluster" : "anova";
   });
-  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
-    const value = String(persisted.dataSource ?? "data").trim();
-    return value === "imputed" ? "imputed" : "data";
-  });
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [identifier, setIdentifier] = useState<StatsIdentifier>(() => {
     const value = String(persisted.identifier ?? "workflow").trim();
     return value === "genes" ? "genes" : "workflow";
   });
-  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [pValueThreshold, setPValueThreshold] = useState(() =>
+    restorePValueThreshold(persisted.pValueThreshold)
+  );
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
   const [showDendrograms, setShowDendrograms] = useState(() => Boolean(persisted.showDendrograms ?? true));
-  const [showLegend, setShowLegend] = useState(() => Boolean(persisted.showLegend ?? true));
-  const [nClusters, setNClusters] = useState(() => Number(persisted.nClusters ?? 4));
+  // Feature names beside the rows of the cluster heatmaps. Their size and
+  // colour are in the plot appearance panel, shown while this is on.
+  const [showRowLabels, setShowRowLabels] = useState(() => Boolean(persisted.showRowLabels ?? false));
+    // Shown or hidden from the advanced panel's Legend card, like every other plot.
+  const showLegend = true;
+  const [nClusters, setNClusters] = useState(() => restoreClusterCount(persisted.nClusters));
+  const [clusterMethod, setClusterMethod] = useState<AnovaClusterMethod>(() =>
+    restoreClusterMethod(persisted.clusterMethod)
+  );
   const [selectedCluster, setSelectedCluster] = useState(() => String(persisted.selectedCluster ?? "none"));
   const [postHoc, setPostHoc] = useState<AnovaPostHoc>(() =>
     String(persisted.postHoc ?? "none").trim() === "tukey" ? "tukey" : "none"
+  );
+  // Which pair the post-hoc reports. One comparison costs one studentized-range
+  // integral per significant feature, so naming the pair is the difference
+  // between ~8 s and ~25 s -- and the numbers are identical, because k and the
+  // pooled MSE come from the whole design either way.
+  const [postHocCondition1, setPostHocCondition1] = useState(() =>
+    String(persisted.postHocCondition1 ?? "")
+  );
+  const [postHocCondition2, setPostHocCondition2] = useState(() =>
+    String(persisted.postHocCondition2 ?? "")
   );
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [resultState, setResultState] = useState<{
@@ -1011,31 +1223,52 @@ function AnovaPanel({
     data: AnovaResultResponse;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const currentResultKey = JSON.stringify({
-    revision,
-    kind,
-    source: sourceMode,
-    dataSource,
-    identifier,
-    pValueThreshold,
-    useUncorrected,
-    showDendrograms,
-    showLegend,
-    nClusters: Math.max(1, Math.round(nClusters)),
-    postHoc,
-  });
-  const result = resultState?.key === currentResultKey ? resultState.data : null;
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
+  const canRun = Boolean(kindAvailable && options && options.availableConditions.length >= 2);
+  const postHocAvailable = (options?.availableConditions.length ?? 0) >= 3;
+  const postHocPairValid = Boolean(
+    postHocCondition1 && postHocCondition2 && postHocCondition1 !== postHocCondition2
+  );
+  const requestPayload = useMemo<AnovaRequest | null>(() => {
+    if (!canRun) return null;
+    return {
+      kind,
+      source: sourceMode,
+      dataSource,
+      identifier,
+      pValueThreshold,
+      useUncorrected,
+      showDendrograms,
+      showLegend,
+      nClusters: Math.max(1, Math.round(nClusters)),
+      clusterMethod,
+      postHoc,
+      ...(postHoc === "tukey" && postHocPairValid
+        ? { postHocCondition1, postHocCondition2 }
+        : {}),
+    };
+  }, [canRun, kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, nClusters, clusterMethod, postHoc, postHocPairValid, postHocCondition1, postHocCondition2]);
+
+  // Derived from `requestPayload`, never written out a second time. When these
+  // were two separate object literals the post-hoc pair was in the request and
+  // not in the key, so a Tukey result could never match the key it was stored
+  // under: `result` stayed null, `running` stayed true, and the panel showed
+  // "still working" forever over a response that had already arrived.
+  const currentResultKey = requestPayload
+    ? JSON.stringify({ revision, ...requestPayload })
+    : null;
+  const result =
+    currentResultKey !== null && resultState?.key === currentResultKey
+      ? resultState.data
+      : null;
+
   const anovaDataSourceOptions = useMemo(
-    () =>
-      options?.imputedAvailable
-        ? [
-            { value: "data", label: "Data" },
-            { value: "imputed", label: "Imputed Data" },
-          ]
-        : [{ value: "data", label: "Data" }],
-    [options?.imputedAvailable]
+    // `options`, not `options?.availableDataSources`: the React Compiler infers
+    // the whole object as the dependency and refuses to keep a narrower manual
+    // one, which fails the lint gate.
+    () => dataSourceOptions(options),
+    [options]
   );
   const clusterSizes = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1081,12 +1314,16 @@ function AnovaPanel({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        setDataSource((current) =>
-          data.imputedAvailable
-            ? (current === "imputed" ? "imputed" : "data")
-            : "data"
-        );
+        applyDataSourceChoices(data);
         setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
+        setPostHocCondition1((current) =>
+          data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""
+        );
+        setPostHocCondition2((current) =>
+          data.availableConditions.includes(current) && current !== data.availableConditions[0]
+            ? current
+            : data.availableConditions[1] ?? ""
+        );
       })
       .catch((err) => {
         if (!isAbortError(err)) {
@@ -1094,24 +1331,16 @@ function AnovaPanel({
         }
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, applyDataSourceChoices]);
 
-  const canRun = Boolean(kindAvailable && options && options.availableConditions.length >= 2);
-  const requestPayload = useMemo<AnovaRequest | null>(() => {
-    if (!canRun) return null;
-    return {
-      kind,
-      source: sourceMode,
-      dataSource,
-      identifier,
-      pValueThreshold,
-      useUncorrected,
-      showDendrograms,
-      showLegend,
-      nClusters: Math.max(1, Math.round(nClusters)),
-      postHoc,
-    };
-  }, [canRun, kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, nClusters, postHoc]);
+
+  // Changing a setting invalidates the result, so the plot and tables vanish
+  // while the new one is computed. Tukey HSD on a large matrix takes tens of
+  // seconds -- studentized_range.sf is evaluated once per comparison -- and an
+  // empty panel for that long reads as "nothing happened" rather than
+  // "working". Derived rather than stored, so it needs no setState inside an
+  // effect and it turns on the moment the settings change.
+  const running = Boolean(requestPayload) && !result && !error;
 
   useEffect(() => {
     if (!onContextModeChange) return;
@@ -1124,12 +1353,14 @@ function AnovaPanel({
       `useUncorrected=${useUncorrected ? "true" : "false"}`,
       `showDendrograms=${showDendrograms ? "true" : "false"}`,
       `showLegend=${showLegend ? "true" : "false"}`,
+      `showRowLabels=${sourceMode === "anova_cluster" && showRowLabels ? "true" : "false"}`,
       `selectedCluster=${displayedSelectedCluster}`,
       `nClusters=${Math.max(1, Math.round(nClusters))}`,
+      `clusterMethod=${clusterMethod}`,
       `postHoc=${postHoc}`,
     ];
     onContextModeChange(contextMode(parts));
-  }, [onContextModeChange, sourceMode, kind, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, displayedSelectedCluster, nClusters, postHoc]);
+  }, [onContextModeChange, sourceMode, kind, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, showRowLabels, displayedSelectedCluster, nClusters, clusterMethod, postHoc]);
 
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
 
@@ -1160,7 +1391,9 @@ function AnovaPanel({
     useUncorrected,
     showDendrograms,
     showLegend,
+    ...(sourceMode === "anova_cluster" ? { showRowLabels } : {}),
     nClusters: Math.max(1, Math.round(nClusters)),
+    clusterMethod,
   });
   const selectedClusterPlotUrl =
     sourceMode === "anova_cluster" && displayedSelectedCluster !== "none"
@@ -1172,7 +1405,9 @@ function AnovaPanel({
           useUncorrected,
           showDendrograms,
           showLegend,
+          showRowLabels,
           nClusters: Math.max(1, Math.round(nClusters)),
+          clusterMethod,
           selectedCluster: displayedSelectedCluster,
         })
       : null;
@@ -1186,12 +1421,15 @@ function AnovaPanel({
       pValueThreshold,
       useUncorrected,
       showDendrograms,
-      showLegend,
+      showRowLabels,
       selectedCluster,
       nClusters,
+      clusterMethod,
       postHoc,
+      postHocCondition1,
+      postHocCondition2,
     });
-  }, [kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showLegend, selectedCluster, nClusters, postHoc]);
+  }, [kind, sourceMode, dataSource, identifier, pValueThreshold, useUncorrected, showDendrograms, showRowLabels, showLegend, selectedCluster, nClusters, clusterMethod, postHoc, postHocCondition1, postHocCondition2]);
 
   return (
     <div className="space-y-6">
@@ -1215,7 +1453,7 @@ function AnovaPanel({
           <SelectField
             label="Data Source"
             value={dataSource}
-            onChange={(value) => setDataSource(value as "data" | "imputed")}
+            onChange={(value) => chooseDataSource(value as DataSource)}
             options={anovaDataSourceOptions}
           />
           <SelectField
@@ -1229,12 +1467,18 @@ function AnovaPanel({
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
           <CheckboxField label="Show dendrograms" checked={showDendrograms} onChange={setShowDendrograms} />
-          <CheckboxField label="Legend" checked={showLegend} onChange={setShowLegend} />
         </div>
         {sourceMode === "anova_cluster" ? (
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <NumberField label="Clusters" value={nClusters} onChange={(value) => setNClusters(Math.max(1, Math.round(value)))} />
+            <SelectField
+              label="Cluster method"
+              value={clusterMethod}
+              onChange={(value) => setClusterMethod(value as AnovaClusterMethod)}
+              options={ANOVA_CLUSTER_METHOD_OPTIONS}
+            />
             <SelectField label="Cluster" value={displayedSelectedCluster} onChange={setSelectedCluster} options={clusterOptions} />
+            <CheckboxField label="Show feature names" checked={showRowLabels} onChange={setShowRowLabels} />
           </div>
         ) : null}
         <div className="mt-4 max-w-xs">
@@ -1251,8 +1495,47 @@ function AnovaPanel({
         <Notice error={error} warnings={removeSourceUsageWarnings(options?.warnings)} />
       </SectionCard>
 
+      {postHoc === "tukey" ? (
+        <SectionCard title="Post-hoc Comparison">
+          {postHocAvailable ? (
+            <>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <SelectField
+                  label="Condition 1"
+                  value={postHocCondition1}
+                  onChange={setPostHocCondition1}
+                  options={conditionOptions(options)}
+                />
+                <SelectField
+                  label="Condition 2"
+                  value={postHocCondition2}
+                  onChange={setPostHocCondition2}
+                  options={conditionOptions(options)}
+                />
+              </div>
+              {!postHocPairValid ? (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Select two different conditions to run the post-hoc.
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <InfoSection message="A post-hoc needs at least three conditions. With two, the ANOVA and the single pairwise comparison test the same hypothesis." />
+          )}
+        </SectionCard>
+      ) : null}
+
       {advancedPlotOptions}
       {!canRun && options ? <InfoSection message="At least two conditions with replicate samples are required to run ANOVA." /> : null}
+      {running && !result ? (
+        <InfoSection
+          message={
+            postHoc === "tukey"
+              ? "Running the ANOVA and the Tukey HSD post-hoc. The post-hoc evaluates one studentized-range probability per comparison, so on a large matrix it can take a minute; the plot and tables reappear when it finishes."
+              : "Running the ANOVA..."
+          }
+        />
+      ) : null}
       {debouncedRequestPayload && result ? (
         <>
           <SummarySection
@@ -1273,18 +1556,30 @@ function AnovaPanel({
           {result.significantCount === 0 ? (
             <InfoSection message="No rows passed the selected ANOVA threshold, so no significant-row heatmap or clusters were generated." />
           ) : (
-            <ImageSection title={sourceMode === "anova_cluster" ? "ANOVA Cluster Heatmap" : "ANOVA Heatmap"} url={plotUrl} />
+            <>
+              <ImageSection title={sourceMode === "anova_cluster" ? "ANOVA Cluster Heatmap" : "ANOVA Heatmap"} url={plotUrl} />
+            </>
           )}
-          {selectedClusterPlotUrl ? <ImageSection title={`Cluster ${displayedSelectedCluster} Heatmap`} url={selectedClusterPlotUrl} /> : null}
+          {selectedClusterPlotUrl ? (
+            <>
+              <ImageSection title={`Cluster ${displayedSelectedCluster} Heatmap`} url={selectedClusterPlotUrl} />
+            </>
+          ) : null}
           <TableSection title="Result Table" rows={result.rows} filename={`anova_${sourceMode}_${kind}.csv`} />
           {selectedClusterRows.length > 0 ? (
             <TableSection title={`Cluster ${displayedSelectedCluster} Result Table`} rows={selectedClusterRows} filename={`anova_${sourceMode}_${kind}_cluster_${displayedSelectedCluster}.csv`} />
           ) : null}
           {postHoc === "tukey" && result.postHocRows.length > 0 ? (
             <TableSection
-              title={`Post-hoc: ${result.postHocMethod ?? "Tukey HSD"} (${result.postHocSignificantCount} significant of ${result.postHocRows.length} comparisons, ANOVA-significant rows only)`}
+              title={`Post-hoc: ${result.postHocMethod ?? "Tukey HSD"}${
+                result.postHocComparison ? ` — ${result.postHocComparison}` : ""
+              } (${result.postHocSignificantCount} significant of ${result.postHocRows.length} comparisons, ANOVA-significant rows only)`}
               rows={result.postHocRows}
-              filename={`anova_${sourceMode}_${kind}_tukey.csv`}
+              filename={`anova_${sourceMode}_${kind}_tukey${
+                result.postHocComparison
+                  ? `_${sanitizeFilenamePart(result.postHocComparison.replace(/\s+vs\s+/, "_vs_"))}`
+                  : ""
+              }.csv`}
             />
           ) : null}
         </>
@@ -1327,20 +1622,26 @@ function OraPanel({
     if (value === "anova") return "anova";
     return value === "volcano_control" ? "volcano_control" : "volcano";
   });
-  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
-    const value = String(persisted.dataSource ?? "data").trim();
-    return value === "imputed" ? "imputed" : "data";
-  });
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [condition1Control, setCondition1Control] = useState(() => String(persisted.condition1Control ?? ""));
   const [condition2Control, setCondition2Control] = useState(() => String(persisted.condition2Control ?? ""));
   const [selectedTestType, setTestType] = useState<StatsTestType>(() => {
     return restoreTestType(persisted.testType);
   });
   const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
-  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [pValueThreshold, setPValueThreshold] = useState(() =>
+    restorePValueThreshold(persisted.pValueThreshold)
+  );
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
-  const [nClusters, setNClusters] = useState(() => Number(persisted.nClusters ?? 4));
+  const [nClusters, setNClusters] = useState(() => restoreClusterCount(persisted.nClusters));
+  const [clusterMethod, setClusterMethod] = useState<AnovaClusterMethod>(() =>
+    restoreClusterMethod(persisted.clusterMethod)
+  );
   const [selectedCluster, setSelectedCluster] = useState(() => String(persisted.selectedCluster ?? ""));
   const [adjPValueCutoff, setAdjPValueCutoff] = useState(() => Number(persisted.adjPValueCutoff ?? 0.05));
   const [topN, setTopN] = useState(() => Number(persisted.topN ?? 10));
@@ -1348,6 +1649,24 @@ function OraPanel({
   const [maxTermSize, setMaxTermSize] = useState(() => Number(persisted.maxTermSize ?? 300));
   const [backgroundMode, setBackgroundMode] = useState<"experiment" | "global">(() =>
     String(persisted.backgroundMode ?? "experiment") === "global" ? "global" : "experiment"
+  );
+  // One organism today. It is a request parameter rather than a constant so the
+  // result says which database produced it, and so a second organism is a list
+  // entry rather than a new code path.
+  const [organism, setOrganism] = useState<EnrichmentOrganism>(() =>
+    ENRICHMENT_ORGANISM_OPTIONS.some((option) => option.value === persisted.organism)
+      ? (persisted.organism as EnrichmentOrganism)
+      : "human"
+  );
+  // The figures have their own size, because the terms decide how much room
+  // they need and a GO description is as long as it is. Width and height are a
+  // floor rather than a fixed canvas: the renderer grows past them when the
+  // labels do not fit, so a figure never comes back as an error message.
+  const [widthCm, setWidthCm] = useState(() => restorePlotDimensionCm(persisted.widthCm, 26));
+  const [heightCm, setHeightCm] = useState(() => restorePlotDimensionCm(persisted.heightCm, 12));
+  const [dpi, setDpi] = useState(() => restorePlotDpi(persisted.dpi, 300));
+  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
+    coercePlotDownloadFormat(persisted.downloadFormat)
   );
   const [anovaState, setAnovaState] = useState<{ key: string; data: AnovaResultResponse } | null>(null);
   const [resultState, setResultState] = useState<{
@@ -1370,24 +1689,23 @@ function OraPanel({
     useUncorrected,
     selectedCluster,
     nClusters: Math.max(1, Math.round(nClusters)),
+    clusterMethod,
     adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
     backgroundMode,
+    organism,
   });
   const result = resultState?.key === currentResultKey ? resultState.data : null;
 
   const kindAvailable = oraKindOptions.some((option) => option.value === kind);
   const oraDataSourceOptions = useMemo(
-    () =>
-      options?.imputedAvailable
-        ? [
-            { value: "data", label: "Data" },
-            { value: "imputed", label: "Imputed Data" },
-          ]
-        : [{ value: "data", label: "Data" }],
-    [options?.imputedAvailable]
+    // `options`, not `options?.availableDataSources`: the React Compiler infers
+    // the whole object as the dependency and refuses to keep a narrower manual
+    // one, which fails the lint gate.
+    () => dataSourceOptions(options),
+    [options]
   );
 
   useEffect(() => {
@@ -1396,11 +1714,7 @@ function OraPanel({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        setDataSource((current) =>
-          data.imputedAvailable
-            ? (current === "imputed" ? "imputed" : "data")
-            : "data"
-        );
+        applyDataSourceChoices(data);
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
@@ -1412,7 +1726,7 @@ function OraPanel({
         }
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, applyDataSourceChoices]);
 
   const geneNamesAvailable = hasGeneNameSupport(options);
   const roundedClusterCount = Math.max(1, Math.round(nClusters));
@@ -1436,6 +1750,9 @@ function OraPanel({
       showDendrograms: true,
       showLegend: true,
       nClusters: roundedClusterCount,
+      // Must match what the ANOVA page clustered with, or the cluster
+      // numbers the user picks between refer to a different partition.
+      clusterMethod,
       // ORA runs off the cluster assignments; pairwise post-hoc is not involved.
       postHoc: "none",
     };
@@ -1449,6 +1766,8 @@ function OraPanel({
     pValueThreshold,
     useUncorrected,
     roundedClusterCount,
+    // ORA must run against the partition the ANOVA page drew.
+    clusterMethod,
   ]);
   const debouncedAnovaRequest = useDebouncedValue(anovaRequest, 650);
   const anovaKey = JSON.stringify({ revision, request: anovaRequest });
@@ -1526,6 +1845,7 @@ function OraPanel({
       `useUncorrected=${useUncorrected ? "true" : "false"}`,
       `selectedCluster=${selectedCluster || "none"}`,
       `nClusters=${roundedClusterCount}`,
+      `clusterMethod=${clusterMethod}`,
       `adjPValueCutoff=${adjPValueCutoff}`,
       `topN=${topN}`,
       `minTermSize=${minTermSize}`,
@@ -1548,11 +1868,14 @@ function OraPanel({
     useUncorrected,
     selectedCluster,
     roundedClusterCount,
+    // ORA must run against the partition the ANOVA page drew.
+    clusterMethod,
     adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
     backgroundMode,
+    organism,
   ]);
 
   useEffect(() => {
@@ -1574,11 +1897,13 @@ function OraPanel({
       useUncorrected,
       selectedCluster: sourceMode === "anova" ? Number(selectedCluster) : null,
       nClusters: roundedClusterCount,
+      clusterMethod,
       adjPValueCutoff,
       topN,
       minTermSize,
       maxTermSize,
       backgroundMode,
+      organism,
     } satisfies EnrichmentRequest, { signal: controller.signal })
       .then((response) => {
         if (controller.signal.aborted) return;
@@ -1610,11 +1935,14 @@ function OraPanel({
     useUncorrected,
     selectedCluster,
     roundedClusterCount,
+    // ORA must run against the partition the ANOVA page drew.
+    clusterMethod,
     adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
     backgroundMode,
+    organism,
     currentResultKey,
   ]);
 
@@ -1630,14 +1958,25 @@ function OraPanel({
     testType,
     useUncorrected,
     nClusters: roundedClusterCount,
+    clusterMethod,
     adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
     backgroundMode,
+    widthCm,
+    heightCm,
+    dpi,
   };
   const upPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/ora/up.png`, commonPlotParams);
   const downPlotUrl = buildPlotUrl(`/api/plots/stats/${kind}/ora/down.png`, commonPlotParams);
+  // The direction belongs in the name as well as in the title: two files called
+  // ora_protein.png in a downloads folder are not worth having.
+  const plotFileSuffix = [kind, sanitizeFilenamePart(condition1), "vs", sanitizeFilenamePart(condition2)]
+    .filter(Boolean)
+    .join("_");
+  const upPlotFilename = `ora_up_${plotFileSuffix}.png`;
+  const downPlotFilename = `ora_down_${plotFileSuffix}.png`;
   const clusterPlotUrl =
     sourceMode === "anova" && selectedCluster
       ? buildPlotUrl(`/api/plots/stats/${kind}/ora/cluster.png`, {
@@ -1661,11 +2000,17 @@ function OraPanel({
       useUncorrected,
       selectedCluster,
       nClusters,
+      clusterMethod,
       adjPValueCutoff,
       topN,
       minTermSize,
       maxTermSize,
       backgroundMode,
+      organism,
+      widthCm,
+      heightCm,
+      dpi,
+      downloadFormat,
     });
   }, [
     kind,
@@ -1681,11 +2026,17 @@ function OraPanel({
     useUncorrected,
     selectedCluster,
     nClusters,
+    clusterMethod,
     adjPValueCutoff,
     topN,
     minTermSize,
     maxTermSize,
     backgroundMode,
+    organism,
+    widthCm,
+    heightCm,
+    dpi,
+    downloadFormat,
   ]);
 
   if (oraKindOptions.length === 0) {
@@ -1734,13 +2085,19 @@ function OraPanel({
                 <SelectField
                   label="Data Source"
                   value={dataSource}
-                  onChange={(value) => setDataSource(value as "data" | "imputed")}
+                  onChange={(value) => chooseDataSource(value as DataSource)}
                   options={oraDataSourceOptions}
                 />
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                 <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
                 <NumberField label="Clusters" value={nClusters} onChange={(value) => setNClusters(Math.max(1, Math.round(value)))} />
+                <SelectField
+                  label="Cluster method"
+                  value={clusterMethod}
+                  onChange={(value) => setClusterMethod(value as AnovaClusterMethod)}
+                  options={ANOVA_CLUSTER_METHOD_OPTIONS}
+                />
                 <SelectField label="Protein cluster" value={selectedCluster} onChange={setSelectedCluster} options={anovaClusterOptions} />
               </div>
               <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -1763,7 +2120,7 @@ function OraPanel({
                 <SelectField
                   label="Data Source"
                   value={dataSource}
-                  onChange={(value) => setDataSource(value as "data" | "imputed")}
+                  onChange={(value) => chooseDataSource(value as DataSource)}
                   options={oraDataSourceOptions}
                 />
               </div>
@@ -1814,6 +2171,12 @@ function OraPanel({
         <div className="mt-6 border-t border-slate-200 pt-6">
           <h4 className="text-sm font-semibold text-slate-900">ORA Options</h4>
           <div className="mt-3 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+            <SelectField
+              label="Organism"
+              value={organism}
+              onChange={(value) => setOrganism(value as EnrichmentOrganism)}
+              options={ENRICHMENT_ORGANISM_OPTIONS}
+            />
             <NumberField
               label="Adj p-value cutoff"
               value={adjPValueCutoff}
@@ -1839,6 +2202,25 @@ function OraPanel({
               : "Global background can overstate enrichment when detectability is restricted by the experiment."}
           </p>
         </div>
+        <div className="mt-6 border-t border-slate-200 pt-6">
+          <h4 className="text-sm font-semibold text-slate-900">Figure Size</h4>
+          <div className="mt-3 grid gap-4 lg:grid-cols-3">
+            <SizeRow
+              widthCm={widthCm}
+              heightCm={heightCm}
+              dpi={dpi}
+              onWidthChange={setWidthCm}
+              onHeightChange={setHeightCm}
+              onDpiChange={setDpi}
+            />
+          </div>
+          <p className="mt-3 text-xs text-slate-600">
+            Width and height are a minimum, not a fixed canvas. A Gene Ontology description can be longer
+            than any sensible figure is wide, so the plot is enlarged as far as the term labels need and the
+            labels are wrapped to the width available. The size set here applies on screen and to the
+            download alike.
+          </p>
+        </div>
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
       {advancedPlotOptions}
@@ -1860,7 +2242,6 @@ function OraPanel({
       ) : null}
       {canRun && result ? (
         <>
-          <OraProvenanceSection result={result} />
           {sourceMode === "anova" ? (
           <>
             <SummarySection
@@ -1876,7 +2257,15 @@ function OraPanel({
               warnings={result.warnings}
             />
             {result.clusterGenes.length > 0 && result.clusterTerms.length > 0 && clusterPlotUrl ? (
-              <ImageSection title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`} url={clusterPlotUrl} />
+              <ImageSection
+                title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
+                url={clusterPlotUrl}
+                download={{
+                  filename: `ora_anova_cluster_${result.selectedCluster ?? selectedCluster}_${kind}.png`,
+                  format: downloadFormat,
+                  onFormatChange: setDownloadFormat,
+                }}
+              />
             ) : (
               <InfoSection
                 message={
@@ -1906,6 +2295,7 @@ function OraPanel({
                 pValueThreshold,
                 useUncorrected,
                 nClusters: roundedClusterCount,
+                clusterMethod,
                 adjPValueCutoff,
                 minTermSize,
                 maxTermSize,
@@ -1928,9 +2318,19 @@ function OraPanel({
               ]}
               warnings={result.warnings}
             />
-            <div className="grid gap-6 xl:grid-cols-2">
+            {/* One above the other rather than side by side: a term label is a
+                sentence, and half the window is not enough width for it. */}
+            <div className="space-y-6">
               {result.upGenes.length > 0 && result.upTerms.length > 0 ? (
-                <ImageSection title="Upregulated Terms" url={upPlotUrl} />
+                <ImageSection
+                  title={condition1 ? `Upregulated Terms in ${condition1}` : "Upregulated Terms"}
+                  url={upPlotUrl}
+                  download={{
+                    filename: upPlotFilename,
+                    format: downloadFormat,
+                    onFormatChange: setDownloadFormat,
+                  }}
+                />
               ) : (
                 <InfoSection
                   message={
@@ -1941,7 +2341,15 @@ function OraPanel({
                 />
               )}
               {result.downGenes.length > 0 && result.downTerms.length > 0 ? (
-                <ImageSection title="Downregulated Terms" url={downPlotUrl} />
+                <ImageSection
+                  title={condition1 ? `Downregulated Terms in ${condition1}` : "Downregulated Terms"}
+                  url={downPlotUrl}
+                  download={{
+                    filename: downPlotFilename,
+                    format: downloadFormat,
+                    onFormatChange: setDownloadFormat,
+                  }}
+                />
               ) : (
                 <InfoSection
                   message={
@@ -2035,20 +2443,28 @@ function PathwayHeatmapPanel({
   const [valueType, setValueType] = useState<"log2" | "z">(() =>
     String(persisted.valueType ?? "z") === "log2" ? "log2" : "z"
   );
-  const [dataSource, setDataSource] = useState<"data" | "imputed">(() =>
-    String(persisted.dataSource ?? "data") === "imputed" ? "imputed" : "data"
-  );
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [includeId, setIncludeId] = useState(() => Boolean(persisted.includeId ?? false));
   const [header, setHeader] = useState(() => Boolean(persisted.header ?? true));
   const [removeEmpty, setRemoveEmpty] = useState(() => Boolean(persisted.removeEmpty ?? true));
+  // How many dataset rows collapsed onto each gene. Off by default: on a
+  // pathway of forty genes it is forty parentheticals down the side.
+  const [showSourceCount, setShowSourceCount] = useState(() =>
+    Boolean(persisted.showSourceCount ?? false)
+  );
   const [clusterRows, setClusterRows] = useState(() => Boolean(persisted.clusterRows ?? false));
   const [clusterCols, setClusterCols] = useState(() => Boolean(persisted.clusterCols ?? false));
-  const [widthCm, setWidthCm] = useState(() => Number(persisted.widthCm ?? 20));
-  const [heightCm, setHeightCm] = useState(() => Number(persisted.heightCm ?? 12));
-  const [dpi, setDpi] = useState(() => Number(persisted.dpi ?? 300));
+  const [widthCm, setWidthCm] = useState(() => restorePlotDimensionCm(persisted.widthCm, 20));
+  const [heightCm, setHeightCm] = useState(() => restorePlotDimensionCm(persisted.heightCm, 12));
+  const [dpi, setDpi] = useState(() => restorePlotDpi(persisted.dpi, 300));
   const [error, setError] = useState<string | null>(null);
   const geneNamesAvailable = hasGeneNameSupport(options);
   const kindAvailable = kindOptions.some((option) => option.value === kind);
+  const pathwayDataSourceOptions = useMemo(() => dataSourceOptions(options), [options]);
 
   useEffect(() => {
     if (!kindAvailable) return;
@@ -2056,9 +2472,10 @@ function PathwayHeatmapPanel({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        if (!data.imputedAvailable) {
-          setDataSource((current) => (current === "imputed" ? "data" : current));
-        }
+        // Unconditionally: this used to apply the choices only when imputed was
+        // *un*available, which is backwards -- the panel then never left the
+        // placeholder on exactly the projects that have an imputed matrix.
+        applyDataSourceChoices(data);
         setSelectedConditions((current) => (current.length ? current.filter((item) => data.availableConditions.includes(item)) : data.availableConditions));
       })
       .catch((err) => {
@@ -2067,7 +2484,7 @@ function PathwayHeatmapPanel({
         }
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, applyDataSourceChoices]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2094,6 +2511,7 @@ function PathwayHeatmapPanel({
       `valueType=${valueType}`,
       `dataSource=${dataSource}`,
       `removeEmpty=${removeEmpty ? "true" : "false"}`,
+      `showSourceCount=${showSourceCount ? "true" : "false"}`,
       `includeId=${includeId ? "true" : "false"}`,
       `header=${header ? "true" : "false"}`,
       `clusterRows=${clusterRows ? "true" : "false"}`,
@@ -2108,6 +2526,7 @@ function PathwayHeatmapPanel({
     valueType,
     dataSource,
     removeEmpty,
+    showSourceCount,
     includeId,
     header,
     clusterRows,
@@ -2122,6 +2541,7 @@ function PathwayHeatmapPanel({
     includeId,
     header,
     removeEmpty,
+    showSourceCount,
     clusterRows,
     clusterCols,
     widthCm,
@@ -2139,6 +2559,7 @@ function PathwayHeatmapPanel({
       includeId,
       header,
       removeEmpty,
+      showSourceCount,
       clusterRows,
       clusterCols,
       widthCm,
@@ -2154,6 +2575,7 @@ function PathwayHeatmapPanel({
     includeId,
     header,
     removeEmpty,
+    showSourceCount,
     clusterRows,
     clusterCols,
     widthCm,
@@ -2172,14 +2594,20 @@ function PathwayHeatmapPanel({
       <SectionCard title="Options">
         <div className="grid gap-4 lg:grid-cols-3">
           <SelectField label="Pathway" value={pathway} onChange={setPathway} options={(pathways?.pathways ?? []).map((item) => ({ value: item, label: item }))} />
-          <SelectField label="Value type" value={valueType} onChange={(value) => setValueType(value as "log2" | "z")} options={[{ value: "z", label: "Z-score" }, { value: "log2", label: "log2" }]} />
+          <SelectField
+            label="Value type"
+            value={valueType}
+            onChange={(value) => setValueType(value as "log2" | "z")}
+            // The wire values stay "z"/"log2"; only the wording changes. The
+            // matrix is log2 either way, so "log2" named the scale rather than
+            // what the cell shows, which is an intensity.
+            options={[{ value: "z", label: "Z-score" }, { value: "log2", label: "Intensity" }]}
+          />
           <SelectField
             label="Data source"
             value={dataSource}
-            onChange={(value) => setDataSource(value as "data" | "imputed")}
-            options={options?.imputedAvailable
-              ? [{ value: "data", label: "Data" }, { value: "imputed", label: "Imputed Data" }]
-              : [{ value: "data", label: "Data" }]}
+            onChange={(value) => chooseDataSource(value as DataSource)}
+            options={pathwayDataSourceOptions}
           />
         </div>
         <div className="mt-4">
@@ -2187,15 +2615,21 @@ function PathwayHeatmapPanel({
           <MultiSelect values={selectedConditions} onChange={setSelectedConditions} options={conditionOptions(options)} />
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <NumberField label="Width (cm)" value={widthCm} onChange={(value) => setWidthCm(clampPlotDimensionCm(value))} step={1} />
-          <NumberField label="Height (cm)" value={heightCm} onChange={(value) => setHeightCm(clampPlotDimensionCm(value))} step={1} />
-          <NumberField label="DPI" value={dpi} onChange={(value) => setDpi(clampPlotDpi(value))} />
+          <SizeRow
+            widthCm={widthCm}
+            heightCm={heightCm}
+            dpi={dpi}
+            onWidthChange={setWidthCm}
+            onHeightChange={setHeightCm}
+            onDpiChange={setDpi}
+          />
         </div>
         <div className="mt-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <CheckboxField label="Show gene labels" checked={header} onChange={setHeader} />
             <CheckboxField label="Toggle ID" checked={includeId} onChange={setIncludeId} />
             <CheckboxField label="Remove empty genes" checked={removeEmpty} onChange={setRemoveEmpty} />
+            <CheckboxField label="Show collapsed row count (n)" checked={showSourceCount} onChange={setShowSourceCount} />
             <CheckboxField label="Cluster rows" checked={clusterRows} onChange={setClusterRows} />
             <CheckboxField label="Cluster columns" checked={clusterCols} onChange={setClusterCols} />
           </div>
@@ -2236,10 +2670,11 @@ function SimulationPanel({
   const kind = (kindOptions.some((option) => option.value === preferredKind)
     ? preferredKind
     : kindOptions[0]?.value ?? preferredKind) as AnnotationKind;
-  const [dataSource, setDataSource] = useState<"data" | "imputed">(() => {
-    const value = String(persisted.dataSource ?? "data").trim();
-    return value === "imputed" ? "imputed" : "data";
-  });
+  const {
+    dataSource,
+    applyChoices: applyDataSourceChoices,
+    chooseDataSource,
+  } = useDataSourceChoice(persisted.dataSource);
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [condition1, setCondition1] = useState(() => String(persisted.condition1 ?? ""));
   const [condition2, setCondition2] = useState(() => String(persisted.condition2 ?? ""));
@@ -2250,7 +2685,9 @@ function SimulationPanel({
   const [testType, setTestType] = useState<SimulationTestType>(() => {
     return restoreSimulationTestType(persisted.testType);
   });
-  const [pValueThreshold, setPValueThreshold] = useState(() => Number(persisted.pValueThreshold ?? 0.05));
+  const [pValueThreshold, setPValueThreshold] = useState(() =>
+    restorePValueThreshold(persisted.pValueThreshold)
+  );
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
   const [varianceMultiplier, setVarianceMultiplier] = useState(() => Number(persisted.varianceMultiplier ?? 1));
@@ -2262,32 +2699,13 @@ function SimulationPanel({
     data: SimulationResultResponse;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const currentResultKey = JSON.stringify({
-    revision,
-    kind,
-    source: "volcano",
-    dataSource,
-    condition1,
-    condition2,
-    identifier,
-    pValueThreshold,
-    log2fcThreshold,
-    testType,
-    useUncorrected,
-    varianceMultiplier,
-    sampleSizeOverride,
-  });
-  const result = resultState?.key === currentResultKey ? resultState.data : null;
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   const simulationDataSourceOptions = useMemo(
-    () =>
-      options?.imputedAvailable
-        ? [
-            { value: "data", label: "Data" },
-            { value: "imputed", label: "Imputed Data" },
-          ]
-        : [{ value: "data", label: "Data" }],
-    [options?.imputedAvailable]
+    // `options`, not `options?.availableDataSources`: the React Compiler infers
+    // the whole object as the dependency and refuses to keep a narrower manual
+    // one, which fails the lint gate.
+    () => dataSourceOptions(options),
+    [options]
   );
 
   useEffect(() => {
@@ -2296,11 +2714,7 @@ function SimulationPanel({
     getStatisticalOptions(kind, { signal: controller.signal })
       .then((data) => {
         setOptions(data);
-        setDataSource((current) =>
-          data.imputedAvailable
-            ? (current === "imputed" ? "imputed" : "data")
-            : "data"
-        );
+        applyDataSourceChoices(data);
         setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
         setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
@@ -2311,7 +2725,7 @@ function SimulationPanel({
         }
       });
     return () => controller.abort();
-  }, [kind, kindAvailable]);
+  }, [kind, kindAvailable, applyDataSourceChoices]);
 
   const canRun = Boolean(
     kindAvailable &&
@@ -2352,6 +2766,15 @@ function SimulationPanel({
   useEffect(() => {
     onContextModeChange?.(JSON.stringify(requestPayload ?? { kind, status: "incomplete_parameters" }));
   }, [onContextModeChange, requestPayload, kind]);
+  // Derived from `requestPayload`: one description of the request, so a field
+  // can never be in the request and missing from the key it is stored under.
+  const currentResultKey = requestPayload
+    ? JSON.stringify({ revision, ...requestPayload })
+    : null;
+  const result =
+    currentResultKey !== null && resultState?.key === currentResultKey
+      ? resultState.data
+      : null;
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
 
   useEffect(() => {
@@ -2381,6 +2804,9 @@ function SimulationPanel({
 
   const plotUrl = useMemo(() => {
     void advancedPlotSignal;
+    // Also a recompute trigger rather than a value: buildPlotUrl reads the
+    // dataset-scope nonce, so a new revision has to rebuild this URL.
+    void revision;
     if (!debouncedRequestPayload) return "";
     return buildPlotUrl(`/api/plots/stats/${debouncedRequestPayload.kind}/simulation.html`, {
       dataSource: debouncedRequestPayload.dataSource,
@@ -2444,7 +2870,7 @@ function SimulationPanel({
           <SelectField
             label="Data Source"
             value={dataSource}
-            onChange={(value) => setDataSource(value as "data" | "imputed")}
+            onChange={(value) => chooseDataSource(value as DataSource)}
             options={simulationDataSourceOptions}
           />
         </div>
@@ -2466,16 +2892,13 @@ function SimulationPanel({
           <h4 className="text-sm font-semibold text-slate-900">Simulation Options</h4>
           <div className="mt-3 grid gap-4 lg:grid-cols-2">
             <NumberField label="Variance multiplier" value={varianceMultiplier} onChange={(value) => setVarianceMultiplier(Math.max(0.01, value))} step={0.05} />
-            <div>
-              <NumberField
-                label="Sample size override (0 = observed)"
-                value={sampleSizeOverride}
-                onChange={setSampleSizeOverride}
-                validate={validateSimulationSampleSize}
-                onValidationError={setSampleSizeInputError}
-              />
-              <p className="mt-1 text-xs text-slate-500">Use 0 for each row&apos;s observed replicate counts, or 2-100 for a fixed per-group simulation size.</p>
-            </div>
+            <NumberField
+              label="Sample size override (0 = observed, 2-100 fixed)"
+              value={sampleSizeOverride}
+              onChange={setSampleSizeOverride}
+              validate={validateSimulationSampleSize}
+              onValidationError={setSampleSizeInputError}
+            />
           </div>
         </div>
         <Notice

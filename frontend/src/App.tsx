@@ -1,4 +1,4 @@
-import { compactTextElement } from "./lib/plotSerialization";
+import { compactAdvancedPlotSettings } from "./lib/plotSerialization";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import { AssistantSurface } from "./components/AssistantFields";
@@ -6,7 +6,10 @@ import { usePlotLabels } from "./lib/usePlotLabels";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
 import ModuleLoadBoundary from "./components/ModuleLoadBoundary";
-import type { AdvancedPlotControlDefaults } from "./components/plots/AdvancedPlotOptions";
+import type {
+  AdvancedPlotControlDefaults,
+  AdvancedPlotVisibleControls,
+} from "./components/plots/AdvancedPlotOptions";
 import UploadPage from "./features/upload/UploadPage";
 import type {
   ComparisonTab,
@@ -41,6 +44,15 @@ import {
   type SaveStateFileHandle,
 } from "./lib/saveStateFile";
 import { withBasePath } from "./lib/basePath";
+import {
+  MATPLOTLIB_BOTH_GRID_CONTROLS,
+  MATPLOTLIB_CONTROLS,
+  MATPLOTLIB_LEFT_BOTTOM_CONTROLS,
+  MATPLOTLIB_LEFT_BOTTOM_Y_GRID_CONTROLS,
+  MATPLOTLIB_NO_FRAME_CONTROLS,
+  PLOTLY_DEFAULT_TEMPLATE_CONTROLS,
+  PLOTLY_WHITE_TEMPLATE_CONTROLS,
+} from "./lib/plotControlDefaults";
 import {
   getAdvancedPlotMode,
   getAdvancedPlotSettingsByKey,
@@ -140,65 +152,6 @@ const externalTabs: { key: ExternalTab; label: string }[] = [
   { key: "gonetView", label: "GONetView" },
 ];
 
-const MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  axisLineLeft: true,
-  axisLineRight: true,
-  axisLineBottom: true,
-  axisLineTop: true,
-  gridLineVisible: false,
-  gridLineAxis: "y",
-  gridLineStyle: "dashed",
-  gridLineWidth: 0.8,
-};
-
-const PLOTLY_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  axisLineLeft: false,
-  axisLineRight: false,
-  axisLineBottom: false,
-  axisLineTop: false,
-  gridLineVisible: true,
-  gridLineAxis: "both",
-  gridLineColor: "#EBF0F8",
-  gridLineStyle: "solid",
-  gridLineWidth: 1,
-};
-
-const NO_AXIS_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  axisLineLeft: false,
-  axisLineRight: false,
-  axisLineBottom: false,
-  axisLineTop: false,
-  gridLineVisible: false,
-  gridLineAxis: "y",
-  gridLineStyle: "dashed",
-  gridLineWidth: 0.8,
-};
-
-const LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  axisLineLeft: true,
-  axisLineRight: false,
-  axisLineBottom: true,
-  axisLineTop: false,
-  gridLineVisible: false,
-  gridLineAxis: "y",
-  gridLineStyle: "dashed",
-  gridLineWidth: 0.8,
-};
-
-const BOTH_GRID_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  ...MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS,
-  gridLineVisible: true,
-  gridLineAxis: "both",
-  gridLineStyle: "solid",
-};
-
-const LEFT_BOTTOM_Y_GRID_DEFAULT_ADVANCED_CONTROLS: AdvancedPlotControlDefaults = {
-  ...LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS,
-  gridLineVisible: true,
-  gridLineAxis: "y",
-  gridLineStyle: "solid",
-};
-
 const summaryTabs: { key: SummaryTab; label: string }[] = [
   { key: "tables", label: "Tables" },
   { key: "text", label: "Text" },
@@ -231,86 +184,6 @@ type SaveStateStatus = {
 };
 
 const EMPTY_ADVANCED_PLOT_SETTINGS: AdvancedPlotSettings = {};
-
-function compactAdvancedMap(value: Record<string, string> | undefined): Record<string, string> | undefined {
-  const entries = Object.entries(value ?? {})
-    .map(([key, val]) => [key.trim(), val.trim()] as const)
-    .filter(([key, val]) => key && val);
-  return entries.length ? Object.fromEntries(entries) : undefined;
-}
-
-
-function compactAdvancedPlotSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
-  const titleElement = compactTextElement(settings.titleElement);
-  const xLabelElement = compactTextElement(settings.xLabelElement);
-  const yLabelElement = compactTextElement(settings.yLabelElement);
-  const conditionLabels = compactAdvancedMap(settings.conditionLabels);
-  const sampleLabels = compactAdvancedMap(settings.sampleLabels);
-  const conditionColors = compactAdvancedMap(settings.conditionColors);
-  const referenceLineColor = settings.referenceLineColor?.trim();
-  const boxBorderColor = settings.boxBorderColor?.trim();
-  const boxMedianColor = settings.boxMedianColor?.trim();
-  const boxOutlierColor = settings.boxOutlierColor?.trim();
-  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
-  const correlationColorMap = settings.correlationColorMap?.trim();
-  const backgroundColor = settings.backgroundColor?.trim();
-  const plotTheme = settings.plotTheme?.trim();
-  const axisLineColor = settings.axisLineColor?.trim();
-  const axisLineStyle = settings.axisLineStyle?.trim();
-  const gridLineAxis = settings.gridLineAxis?.trim();
-  const gridLineColor = settings.gridLineColor?.trim();
-  const gridLineStyle = settings.gridLineStyle?.trim();
-  const next: AdvancedPlotSettings = {};
-
-  if (titleElement) {
-    next.titleElement = titleElement;
-    if (titleElement.text) next.title = titleElement.text;
-    if (titleElement.size) next.titleSize = titleElement.size;
-  }
-  if (xLabelElement) {
-    next.xLabelElement = xLabelElement;
-    if (xLabelElement.text) next.xLabel = xLabelElement.text;
-  }
-  if (yLabelElement) {
-    next.yLabelElement = yLabelElement;
-    if (yLabelElement.text) next.yLabel = yLabelElement.text;
-  }
-  if (settings.tickLabelSize && settings.tickLabelSize > 0) next.tickLabelSize = settings.tickLabelSize;
-  if (settings.xTickLabelSize && settings.xTickLabelSize > 0) next.xTickLabelSize = settings.xTickLabelSize;
-  if (settings.yTickLabelSize && settings.yTickLabelSize > 0) next.yTickLabelSize = settings.yTickLabelSize;
-  if (Number.isFinite(settings.xTickLabelRotation)) next.xTickLabelRotation = settings.xTickLabelRotation;
-  if (Number.isFinite(settings.yTickLabelRotation)) next.yTickLabelRotation = settings.yTickLabelRotation;
-  if (settings.legendFontSize && settings.legendFontSize > 0) next.legendFontSize = settings.legendFontSize;
-  if (settings.legendXOffset) next.legendXOffset = settings.legendXOffset;
-  if (settings.legendYOffset) next.legendYOffset = settings.legendYOffset;
-  if (referenceLineColor) next.referenceLineColor = referenceLineColor;
-  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
-  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
-  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
-  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
-  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) next.boxOutlierSize = settings.boxOutlierSize;
-  if (correlationColorMap) next.correlationColorMap = correlationColorMap;
-  if (backgroundColor) next.backgroundColor = backgroundColor;
-  if (typeof settings.transparentBackground === "boolean") next.transparentBackground = settings.transparentBackground;
-  if (plotTheme && plotTheme !== "default") next.plotTheme = plotTheme;
-  if (typeof settings.axisLineVisible === "boolean") next.axisLineVisible = settings.axisLineVisible;
-  if (axisLineColor) next.axisLineColor = axisLineColor;
-  if (settings.axisLineWidth && settings.axisLineWidth > 0) next.axisLineWidth = settings.axisLineWidth;
-  if (axisLineStyle && axisLineStyle !== "solid") next.axisLineStyle = axisLineStyle;
-  if (typeof settings.axisLineTop === "boolean") next.axisLineTop = settings.axisLineTop;
-  if (typeof settings.axisLineRight === "boolean") next.axisLineRight = settings.axisLineRight;
-  if (typeof settings.axisLineBottom === "boolean") next.axisLineBottom = settings.axisLineBottom;
-  if (typeof settings.axisLineLeft === "boolean") next.axisLineLeft = settings.axisLineLeft;
-  if (typeof settings.gridLineVisible === "boolean") next.gridLineVisible = settings.gridLineVisible;
-  if (gridLineAxis && gridLineAxis !== "y") next.gridLineAxis = gridLineAxis;
-  if (gridLineColor) next.gridLineColor = gridLineColor;
-  if (settings.gridLineWidth && settings.gridLineWidth > 0) next.gridLineWidth = settings.gridLineWidth;
-  if (gridLineStyle && gridLineStyle !== "solid") next.gridLineStyle = gridLineStyle;
-  if (conditionLabels) next.conditionLabels = conditionLabels;
-  if (sampleLabels) next.sampleLabels = sampleLabels;
-  if (conditionColors) next.conditionColors = conditionColors;
-  return next;
-}
 
 const manualPath = (filename: string) => withBasePath(`/manuals/${filename}`);
 
@@ -399,7 +272,11 @@ export default function App() {
     if (activeSection === "stats") {
       return activeStatsTab === "simulation" ? null : `stats:${activeStatsTab}`;
     }
-    if (activeSection === "peptide") return `peptide:${activePeptideTab}`;
+    if (activeSection === "peptide") {
+      // Sequence coverage is an HTML coverage map and a text download, not a
+      // figure, so there is nothing for the plot panel to style.
+      return activePeptideTab === "sequenceCoverage" ? null : `peptide:${activePeptideTab}`;
+    }
     if (activeSection === "singleProtein") return `singleProtein:${activeSingleProteinTab}`;
     if (activeSection === "phospho") return `phospho:${activePhosphoTab}`;
     if (activeSection === "comparison") return `comparison:${activeComparisonTab}`;
@@ -416,41 +293,41 @@ export default function App() {
   const activeAdvancedSettings = activeAdvancedPlotKey
     ? advancedByKey[activeAdvancedPlotKey] ?? EMPTY_ADVANCED_PLOT_SETTINGS
     : EMPTY_ADVANCED_PLOT_SETTINGS;
+  // What the frame and grid controls show untouched: the plot as each renderer
+  // actually draws it. See lib/plotControlDefaults.ts for where each value
+  // comes from.
   const activeAdvancedControlDefaults = useMemo<AdvancedPlotControlDefaults>(() => {
-    if (!activeAdvancedPlotKey) return MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
-    if (
-      activeAdvancedPlotKey === "stats:volcano"
-    ) {
-      return PLOTLY_DEFAULT_ADVANCED_CONTROLS;
+    if (!activeAdvancedPlotKey) return MATPLOTLIB_CONTROLS;
+    switch (activeAdvancedPlotKey) {
+      case "stats:volcano": {
+        // Two renderers, two natives: the static figure keeps only its left and
+        // bottom spines, the interactive one is Plotly's default template.
+        const isInteractive = !statsVolcanoContextMode.toLowerCase().includes("type=normal");
+        return isInteractive ? PLOTLY_DEFAULT_TEMPLATE_CONTROLS : MATPLOTLIB_LEFT_BOTTOM_CONTROLS;
+      }
+      case "peptide:rtPlot": {
+        const isInteractive = peptideContextMode.toLowerCase().includes("type=interactive");
+        return isInteractive ? PLOTLY_WHITE_TEMPLATE_CONTROLS : MATPLOTLIB_CONTROLS;
+      }
+      case "comparison:pearson": {
+        const isInteractive = comparisonPearsonContextMode.toLowerCase().includes("type=interactive");
+        return isInteractive ? PLOTLY_WHITE_TEMPLATE_CONTROLS : MATPLOTLIB_BOTH_GRID_CONTROLS;
+      }
+      case "phospho:phosprotRegulation":
+        return PLOTLY_WHITE_TEMPLATE_CONTROLS;
+      case "singleProtein:lineplot":
+        return MATPLOTLIB_BOTH_GRID_CONTROLS;
+      case "singleProtein:heatmap":
+      case "comparison:venn":
+        return MATPLOTLIB_NO_FRAME_CONTROLS;
+      case "phospho:phosphositePlot":
+        return MATPLOTLIB_LEFT_BOTTOM_CONTROLS;
+      case "phospho:sty":
+        return MATPLOTLIB_LEFT_BOTTOM_Y_GRID_CONTROLS;
+      default:
+        return MATPLOTLIB_CONTROLS;
     }
-    if (activeAdvancedPlotKey === "peptide:rtPlot") {
-      const isInteractive = peptideContextMode.toLowerCase().includes("type=interactive");
-      return isInteractive ? PLOTLY_DEFAULT_ADVANCED_CONTROLS : MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "singleProtein:lineplot") {
-      return BOTH_GRID_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "singleProtein:heatmap") {
-      return NO_AXIS_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "phospho:phosphositePlot") {
-      return LEFT_BOTTOM_AXIS_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "phospho:sty") {
-      return LEFT_BOTTOM_Y_GRID_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "phospho:phosprotRegulation") {
-      return PLOTLY_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "comparison:pearson") {
-      const isInteractive = comparisonPearsonContextMode.toLowerCase().includes("type=interactive");
-      return isInteractive ? PLOTLY_DEFAULT_ADVANCED_CONTROLS : BOTH_GRID_DEFAULT_ADVANCED_CONTROLS;
-    }
-    if (activeAdvancedPlotKey === "comparison:venn") {
-      return NO_AXIS_DEFAULT_ADVANCED_CONTROLS;
-    }
-    return MATPLOTLIB_DEFAULT_ADVANCED_CONTROLS;
-  }, [activeAdvancedPlotKey, comparisonPearsonContextMode, peptideContextMode]);
+  }, [activeAdvancedPlotKey, statsVolcanoContextMode, peptideContextMode, comparisonPearsonContextMode]);
 
   useEffect(() => {
     setAdvancedPlotSettingsByKey(advancedByKey);
@@ -466,8 +343,10 @@ export default function App() {
     };
   }, []);
 
+  // The active plot's settings apply whether the panel is open or not: the
+  // mode only decides whether the panel is shown.
   useEffect(() => {
-    if (!advancedModeEnabled || !activeAdvancedPlotKey) {
+    if (!activeAdvancedPlotKey) {
       setActiveAdvancedPlotSettings(null);
       return;
     }
@@ -475,7 +354,7 @@ export default function App() {
       setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(activeAdvancedSettings));
     }, 350);
     return () => window.clearTimeout(timeout);
-  }, [advancedModeEnabled, activeAdvancedPlotKey, activeAdvancedSettings]);
+  }, [activeAdvancedPlotKey, activeAdvancedSettings]);
 
   useEffect(() => {
     if (!annotationMode) return;
@@ -1214,9 +1093,6 @@ export default function App() {
     const restoredAdvancedSettings = getAdvancedPlotSettingsByKey();
     setAdvancedModeEnabled(restoredAdvancedMode);
     setAdvancedByKey(restoredAdvancedSettings);
-    if (!restoredAdvancedMode) {
-      setActiveAdvancedPlotSettings(null);
-    }
     if (advancedPlotState && typeof advancedPlotState === "object") {
       const advanced = advancedPlotState as Record<string, unknown>;
       const enabled = Boolean(advanced.enabled);
@@ -1228,9 +1104,6 @@ export default function App() {
       setAdvancedPlotMode(enabled);
       setAdvancedModeEnabled(enabled);
       setAdvancedByKey(settingsByKey);
-      if (!enabled) {
-        setActiveAdvancedPlotSettings(null);
-      }
     } else {
       setAdvancedPlotSettingsByKey(restoredAdvancedSettings);
       setAdvancedPlotMode(restoredAdvancedMode);
@@ -1382,11 +1255,30 @@ export default function App() {
       if (event.repeat) return;
       if (event.altKey) return;
       if (!(event.ctrlKey || event.metaKey)) return;
-      if (String(event.key || "").toLowerCase() !== "s") return;
-      event.preventDefault();
-      void handleQuickSaveRef.current(false).catch(() => {
-        // Status is already surfaced through the shared save-state banner.
-      });
+      // `event.code` is the physical key, so these fire the same on a QWERTZ or
+      // AZERTY keyboard, where `event.key` for the same key is a different
+      // letter. Shift is part of the identity of a shortcut, not a modifier to
+      // ignore: Ctrl+Shift+S is the browser's own, and taking it silently is
+      // how a user loses a screenshot they meant to take.
+      // Quick save is an analysis-mode act: it exports the whole session, which
+      // a viewer neither needs nor should be able to take. The advanced plot
+      // toggle below stays, so a collaborator can style a publication-ready
+      // figure from a published project.
+      if (event.code === "KeyS" && !event.shiftKey && !IS_VIEWER_MODE) {
+        event.preventDefault();
+        void handleQuickSaveRef.current(false).catch(() => {
+          // Status is already surfaced through the shared save-state banner.
+        });
+        return;
+      }
+      // E, not A: Ctrl/Cmd+Shift+A is Chrome's tab search, and a shortcut the
+      // browser answers first is a shortcut this app does not have.
+      if (event.code === "KeyE" && event.shiftKey) {
+        event.preventDefault();
+        // Same switch as Settings > Advanced plot options: the setter
+        // broadcasts, so every page listening picks the change up at once.
+        setAdvancedPlotMode(!getAdvancedPlotMode());
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -1585,6 +1477,176 @@ export default function App() {
     );
   }
 
+  // Which marker controls a plot gets, by what it actually draws. A plot with
+  // one class of dot gets one size; the volcano gets three, because its three
+  // classes are read differently; the single-protein boxplot gets both its
+  // jittered data points and its outlier fliers, which are separate marks that
+  // used to share no control at all.
+  const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
+    switch (activeAdvancedPlotKey) {
+      // A card is shown when the plot's renderer reads the keys it writes.
+      // `conditionLabels`, `sampleLabels`, `conditionColors`, `legendControls`,
+      // `backgroundControls` and `axisLineControls` default to shown, so a plot
+      // that does not use them has to say so -- otherwise the panel offers, for
+      // example, a legend card on a Venn diagram that draws no legend, and
+      // sample-name rows on a figure with no samples on it. Checked against the
+      // renderers in backend/app/services on 2026-09-17.
+      case "stats:volcano":
+        return {
+          volcanoMarkers: true,
+          referenceLineColor: true,
+          // Both renderers build their title and fold-change axis label
+          // through `_volcano_condition_texts`, so a rename reaches them (the
+          // sign convention is still `comparison_contrast`'s).
+          conditionLabels: true,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "singleProtein:boxplot":
+        return {
+          boxplotStyle: true,
+          boxplotOutliers: true,
+          boxplotPoints: true,
+          // The jittered points are drawn one condition at a time.
+          conditionMarkers: true,
+          sampleLabels: false,
+        };
+      case "singleProtein:lineplot":
+        // `single_protein_lineplot_plot` draws `marker="o"` on every line and
+        // reads none of the marker keys, and its x axis is the sample list from
+        // the annotation, which no condition rename passes through -- the
+        // renaming there is the boxplot's, not this plot's.
+        return { conditionLabels: false, sampleLabels: false, conditionColors: false };
+      case "comparison:pearson":
+        return {
+          markerStyle: true,
+          // The regression fit is drawn by `pearson_correlation_html` only; the
+          // static `pearson_correlation_png` plots the points and stops, so the
+          // card belongs to the interactive renderer.
+          referenceLineColor: comparisonPearsonContextMode.toLowerCase().includes("type=interactive"),
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "comparison:venn":
+        return {
+          vennColors: true,
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "data:distribution":
+      case "peptide:rtPlot":
+        return {
+          markerStyle: true,
+          // The Q-Q fit and the retention-time identity line.
+          referenceLineColor: true,
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "phospho:ksea":
+        return {
+          markerStyle: true,
+          // `ksea_plot_png` draws the two fold-change thresholds and the
+          // p-value line.
+          referenceLineColor: true,
+          // It draws one scatter per significance class, each handed its own
+          // colour, and a colour passed by the plot wins over `markerColor`.
+          markerColor: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "phospho:phosprotRegulation":
+        // The tab is `phosprotRegulation` (lib/types.ts PhosphoTab), so the old
+        // "phospho:regulation" label never matched: the phosphoprotein
+        // regulation plot showed no Points card while its renderer reads
+        // markerSize, markerAlpha and the outline keys.
+        return {
+          markerStyle: true,
+          // Both renderers colour the points from `color_val` through a colour
+          // scale and pass `use_color=False`, so a dot colour is read and
+          // thrown away. Neither draws a threshold line over the figure.
+          markerColor: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "singleProtein:heatmap":
+        return {
+          correlationGradient: true,
+          legendControls: false,
+          conditionColors: false,
+        };
+      case "stats:pathwayHeatmap":
+        return {
+          correlationGradient: true,
+          legendControls: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "phospho:coverage":
+        // `phospho_coverage_png` prints no number on any bar, in either mode.
+        return { phosphoClassColors: true, sampleLabels: false };
+      case "phospho:phosphositePlot":
+      case "phospho:distribution":
+        return {
+          barColor: true,
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+          // The phosphosite plot clears its x ticks, so tick styling has
+          // nothing to style.
+          tickControls: activeAdvancedPlotKey !== "phospho:phosphositePlot",
+        };
+      case "peptide:missedCleavage":
+        // The only one of the two that writes on its bars: the percentage of
+        // sequences with at least one missed cleavage, at `advanced_label_size`.
+        return {
+          valueLabels: true,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "peptide:modification":
+        // `peptide_modification_plot` draws its grouped bars and stops.
+        return {
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "stats:anova":
+        // The cluster heatmaps name their rows when "Show feature names" is on;
+        // the Row labels card styles them and is only there while they are.
+        return {
+          rowLabels: statsAnovaContextMode.includes('"showRowLabels":"true"'),
+        };
+      case "stats:ora":
+        return {
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      case "phospho:sty":
+        // `phospho_sty_png` draws S, T and Y each in its own fixed colour and
+        // never reads `barColor`; one bar colour would have to overwrite three.
+        return {
+          legendControls: false,
+          conditionLabels: false,
+          sampleLabels: false,
+          conditionColors: false,
+        };
+      default:
+        return {};
+    }
+  }, [activeAdvancedPlotKey, comparisonPearsonContextMode, statsAnovaContextMode]);
+
   const plotLabels = usePlotLabels(activeWorkflowScope, activeContextMode, advancedModeEnabled && Boolean(activeAdvancedPlotKey));
   const activeAdvancedPlotOptionsPanel = advancedModeEnabled && activeAdvancedPlotKey ? (
     <AdvancedPlotOptions
@@ -1594,10 +1656,9 @@ export default function App() {
       conditionOptions={plotLabels?.conditions}
       sampleOptions={plotLabels?.samples}
       sampleDisplayLabels={plotLabels?.sampleLabels}
+      visibleControls={activeAdvancedVisibleControls}
       onChange={(next) => {
-        if (advancedModeEnabled) {
-          setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(next));
-        }
+        setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(next));
         setAdvancedByKey((prev) => ({ ...prev, [activeAdvancedPlotKey]: next }));
       }}
     />

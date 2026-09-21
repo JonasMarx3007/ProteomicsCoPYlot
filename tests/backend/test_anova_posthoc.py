@@ -191,10 +191,11 @@ def test_the_condition_that_really_differs_is_the_one_found(tukey) -> None:
     assert involves_d.mean() > 0.9, "post-hoc did not localise the real effect"
 
 
-def test_reported_fold_change_is_group2_minus_group1(tukey) -> None:
+def test_reported_fold_change_is_group1_minus_group2(tukey) -> None:
     result = tukey
     post_hoc = pd.DataFrame(result.postHocRows)
     row = post_hoc[
         (post_hoc["group1"] == "A") & (post_hoc["group2"] == "D")
     ].iloc[0]
-    assert row["log2FC"] > 0, "sign convention should be group2 - group1"
+    # D carries the injected +3 shift, so A - D must be negative.
+    assert row["log2FC"] < 0, "sign convention should be group1 - group2"

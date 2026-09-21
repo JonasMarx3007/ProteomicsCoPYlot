@@ -7,6 +7,14 @@ from pydantic import BaseModel, Field
 AnnotationKind = Literal["protein", "phospho", "phosprot"]
 MetadataAnnotationKind = Literal["protein", "phospho"]
 FilterMethod = Literal["at_least_n", "percentage"]
+# The matrix an analysis runs on, in ladder order: least processed first.
+# One name, one meaning, everywhere -- the UI options, the request schemas and
+# `functions.select_matrix` all read from this.
+DataSource = Literal["data", "filtered", "imputed"]
+# What an analysis actually ran on, as reported back. Wider than `DataSource`:
+# it can name a matrix nobody can request -- "raw" and "log2" are reached only by
+# the imputation diagnostics, which follow the imputation's own input.
+ResolvedSource = Literal["data", "filtered", "log2", "raw", "imputed"]
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 NormalizationMethod = Literal["none", "median", "quantile", "vsn"]
 MetadataSource = Literal["manual", "auto", "uploaded", "shared_phospho"]
@@ -80,6 +88,10 @@ class AnnotationImputationInfo(BaseModel):
     seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
     sampleWise: bool | None = None
     sampleCount: int | None = None
+    # Rows of the matrix that was imputed. Stored so the Imputation page can
+    # state what is applied after a reload without re-running anything; `None`
+    # on a record written before this field existed.
+    rowCount: int | None = None
     missingBefore: int | None = None
     missingAfter: int | None = None
 

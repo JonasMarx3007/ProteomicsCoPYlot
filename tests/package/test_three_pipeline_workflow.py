@@ -165,8 +165,14 @@ def workflow(request, tmp_path_factory):
                 settings["filter"]["minPresent"] = 5
                 post(client, "/api/annotations/generate", json=settings)
                 api[f"{kind}_empty"] = annotation_store.get_annotation(kind).filtered_data.copy()
-                rejected = client.post("/api/stats/volcano/run", json={"kind": kind, "condition1": "A", "condition2": "B"})
+                # Asking for the filtered matrix is refused; asking for the
+                # unfiltered one is a different request and is answered, labelled.
+                rejected = client.post("/api/stats/volcano/run", json={
+                    "kind": kind, "condition1": "A", "condition2": "B", "dataSource": "filtered"})
                 assert rejected.status_code == 400 and "No features passed" in rejected.text
+                served = client.post("/api/stats/volcano/run", json={
+                    "kind": kind, "condition1": "A", "condition2": "B", "dataSource": "data"})
+                assert served.status_code == 200 and served.json()["sourceUsed"] == "data"
         yield python, r, api
     finally:
         annotation_store.reset_all_annotations()

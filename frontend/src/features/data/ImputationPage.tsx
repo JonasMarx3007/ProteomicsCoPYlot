@@ -10,7 +10,46 @@ import {
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
-import type { AnnotationKind, ImputationResultResponse } from "../../lib/types";
+import type {
+  AnnotationImputationInfo,
+  AnnotationKind,
+  ImputationResultResponse,
+} from "../../lib/types";
+
+/** The imputation this session actually holds, however it was learned. */
+type AppliedImputation = {
+  method: "quantile" | "numerical";
+  qValue: number;
+  adjustStd: number;
+  downShift: number;
+  width: number;
+  seed: number;
+  sampleWise: boolean;
+  rows: number | null;
+  sampleCount: number | null;
+  missingBefore: number | null;
+  missingAfter: number | null;
+};
+
+function appliedFromAnnotation(info: AnnotationImputationInfo): AppliedImputation {
+  const number = (value: number | null | undefined, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return {
+    method: String(info.mode).trim().toLowerCase() === "numerical" ? "numerical" : "quantile",
+    qValue: number(info.qValue, 0.01),
+    adjustStd: number(info.adjustStd, 0.3),
+    downShift: number(info.downShift, 1.8),
+    width: number(info.width, 0.3),
+    seed: Math.round(number(info.seed, 1337)),
+    sampleWise: Boolean(info.sampleWise),
+    // `rowCount` is absent on a record written before it was stored; the
+    // cards that need it are left out rather than filled with a guess.
+    rows: typeof info.rowCount === "number" ? info.rowCount : null,
+    sampleCount: typeof info.sampleCount === "number" ? info.sampleCount : null,
+    missingBefore: typeof info.missingBefore === "number" ? info.missingBefore : null,
+    missingAfter: typeof info.missingAfter === "number" ? info.missingAfter : null,
+  };
+}
 
 export default function ImputationPage() {
   const advancedPlotSignal = useAdvancedPlotSignal();
@@ -37,11 +76,22 @@ export default function ImputationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImputationResultResponse | null>(null);
+  // What is actually stored for this level, as opposed to what the controls
+  // currently say. Read back from the annotation on load, so it survives a
+  // reload, and replaced when the button runs.
+  const [applied, setApplied] = useState<AppliedImputation | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
   const [settingsReady, setSettingsReady] = useState(false);
 
-  const fetchPreview = useCallback(async (signal?: AbortSignal) => {
+  // Applying is a deliberate act. This call does not preview: it imputes and
+  // stores the result as the session's imputed matrix, which every other panel
+  // then reads. The page used to call it on every settings change, from a
+  // function called `fetchPreview`, so typing a number into Downshift and
+  // walking away replaced the matrix every volcano and PCA in the session was
+  // about to use. The plots below are the preview -- they recompute from the
+  // parameters in their own URLs and never touch what is stored.
+  const applyImputation = useCallback(async (signal?: AbortSignal) => {
     if (!availableKinds.includes(kind)) {
       setResult(null);
       setError("Please upload a protein or phosphosite dataset first.");
@@ -61,6 +111,19 @@ export default function ImputationPage() {
         sampleWise,
       }, { signal });
       setResult(response);
+      setApplied({
+        method: response.method,
+        qValue: response.qValue,
+        adjustStd: response.adjustStd,
+        downShift: response.downShift,
+        width: response.width,
+        seed: response.seed,
+        sampleWise: response.sampleWise,
+        rows: response.rows,
+        sampleCount: response.sampleColumns.length,
+        missingBefore: response.missingBefore,
+        missingAfter: response.missingAfter,
+      });
     } catch (err) {
       if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : "Imputation failed");
@@ -68,9 +131,8 @@ export default function ImputationPage() {
       if (!signal?.aborted) setLoading(false);
     }
   }, [adjustStd, availableKinds, downShift, kind, method, qValue, sampleWise, seed, width]);
-
   async function handleRun() {
-    await fetchPreview();
+    await applyImputation();
   }
 
   useEffect(() => {
@@ -79,6 +141,7 @@ export default function ImputationPage() {
     async function initializeKindSettings() {
       if (availableKinds.length === 0) {
         setResult(null);
+        setApplied(null);
         setSettingsReady(false);
         return;
       }
@@ -93,6 +156,7 @@ export default function ImputationPage() {
         const info = annotation.imputation;
         const mode = String(info?.mode ?? "").trim().toLowerCase();
         if (info && mode && mode !== "none") {
+          setApplied(appliedFromAnnotation(info));
           setMethod(mode === "numerical" ? "numerical" : "quantile");
           setQValue(typeof info.qValue === "number" && Number.isFinite(info.qValue) ? info.qValue : 0.01);
           setAdjustStd(
@@ -105,6 +169,7 @@ export default function ImputationPage() {
           setSeed(typeof info.seed === "number" && Number.isFinite(info.seed) ? Math.round(info.seed) : 1337);
           setSampleWise(Boolean(info.sampleWise));
         } else {
+          setApplied(null);
           setMethod("quantile");
           setQValue(0.01);
           setAdjustStd(0.3);
@@ -115,6 +180,7 @@ export default function ImputationPage() {
         }
       } catch (error) {
         if (isAbortError(error)) return;
+        setApplied(null);
         setMethod("quantile");
         setQValue(0.01);
         setAdjustStd(0.3);
@@ -129,28 +195,12 @@ export default function ImputationPage() {
       }
     }
 
+    setResult(null);
     void initializeKindSettings();
     return () => {
       controller.abort();
     };
   }, [kind, availableKinds, availableKindsKey]);
-
-  useEffect(() => {
-    if (!settingsReady) {
-      return;
-    }
-    if (availableKinds.length === 0) {
-      setResult(null);
-      return;
-    }
-    if (!availableKinds.includes(kind)) {
-      setKind(availableKinds[0]);
-      return;
-    }
-    const controller = new AbortController();
-    void fetchPreview(controller.signal);
-    return () => controller.abort();
-  }, [settingsReady, kind, method, qValue, adjustStd, downShift, width, seed, sampleWise, availableKinds, availableKindsKey, fetchPreview]);
 
   const plotParams = useMemo(
     () => ({
@@ -198,15 +248,19 @@ export default function ImputationPage() {
   async function handleDownloadImputedCsv() {
     try {
       setDownloadingCsv(true);
+      // The applied parameters, not the ones on screen. The draw is seeded, so
+      // the same parameters reproduce the stored matrix exactly -- and this
+      // button sits under "Imputed Data", which is what is stored.
+      const source = applied ?? { method, qValue, adjustStd, downShift, width, seed, sampleWise };
       const blob = await downloadImputationCsv({
         kind,
-        method,
-        qValue,
-        adjustStd,
-        downShift,
-        width,
-        seed,
-        sampleWise,
+        method: source.method,
+        qValue: source.qValue,
+        adjustStd: source.adjustStd,
+        downShift: source.downShift,
+        width: source.width,
+        seed: source.seed,
+        sampleWise: source.sampleWise,
       });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -223,12 +277,20 @@ export default function ImputationPage() {
     }
   }
 
-  const totalValueCount = result ? result.rows * result.sampleColumns.length : 0;
-  const imputedValueCount = result
-    ? Math.max(0, result.missingBefore - result.missingAfter)
-    : 0;
+  const totalValueCount =
+    applied && applied.rows !== null && applied.sampleCount !== null
+      ? applied.rows * applied.sampleCount
+      : null;
+  const imputedValueCount =
+    applied && applied.missingBefore !== null && applied.missingAfter !== null
+      ? Math.max(0, applied.missingBefore - applied.missingAfter)
+      : null;
   const imputedPercent =
-    totalValueCount > 0 ? `${((imputedValueCount / totalValueCount) * 100).toFixed(2)}%` : "0.00%";
+    totalValueCount !== null && totalValueCount > 0 && imputedValueCount !== null
+      ? `${((imputedValueCount / totalValueCount) * 100).toFixed(2)}%`
+      : null;
+
+  const plotsReady = settingsReady && kindOptions.length > 0 && availableKinds.includes(kind);
 
   return (
     <div className="space-y-6">
@@ -328,7 +390,7 @@ export default function ImputationPage() {
         </section>
       ) : null}
 
-      {kindOptions.length > 0 && result ? (
+      {plotsReady ? (
         <>
           <PlotSection
             alt="Before: With vs Without Missing Values"
@@ -380,14 +442,34 @@ export default function ImputationPage() {
           />
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Summary</h3>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <SummaryCard label="Rows" value={String(result.rows)} />
-              <SummaryCard label="Number of values" value={String(totalValueCount)} />
-              <SummaryCard label="Number imputed" value={String(imputedValueCount)} />
-              <SummaryCard label="Imputed %" value={imputedPercent} />
-            </div>
-            {result.warnings.length > 0 ? (
+            <h3 className="text-lg font-semibold text-slate-900">Applied imputation</h3>
+            {applied ? (
+              <>
+                <p className="mt-2 text-sm text-slate-600">
+                  The imputation this session is using: {describeSettings(applied)}. These
+                  numbers describe that run, not the preview above, and change only when
+                  you press <em>Impute Data Values</em> again.
+                </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <SummaryCard label="Rows" value={applied.rows === null ? "--" : String(applied.rows)} />
+                  <SummaryCard
+                    label="Number of values"
+                    value={totalValueCount === null ? "--" : String(totalValueCount)}
+                  />
+                  <SummaryCard
+                    label="Number imputed"
+                    value={imputedValueCount === null ? "--" : String(imputedValueCount)}
+                  />
+                  <SummaryCard label="Imputed %" value={imputedPercent ?? "--"} />
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-slate-600">
+                Nothing has been imputed for this level yet. The plots above are a preview;
+                press <em>Impute Data Values</em> to run the imputation and store it.
+              </p>
+            )}
+            {result && result.warnings.length > 0 ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 {result.warnings.join(" ")}
               </div>
@@ -401,7 +483,7 @@ export default function ImputationPage() {
                 <button
                   type="button"
                   onClick={handleDownloadImputedCsv}
-                  disabled={downloadingCsv}
+                  disabled={downloadingCsv || !applied}
                   className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {downloadingCsv ? "Downloading..." : "Download Full Imputed CSV"}
@@ -409,13 +491,39 @@ export default function ImputationPage() {
               </div>
             </div>
             <div className="mt-4">
-              <PreviewTable rows={result.preview} emptyText="No imputed rows available." />
+              {result ? (
+                <PreviewTable rows={result.preview} emptyText="No imputed rows available." />
+              ) : (
+                <p className="text-sm text-slate-600">
+                  {applied
+                    ? "An imputation is applied. Run it again to show its first rows here, or download the full matrix."
+                    : "Nothing has been imputed for this level yet."}
+                </p>
+              )}
             </div>
           </section>
         </>
       ) : null}
     </div>
   );
+}
+
+/** The parameters of a run, in one readable clause. */
+function describeSettings(settings: {
+  method: string;
+  qValue: number;
+  adjustStd: number;
+  downShift: number;
+  width: number;
+  seed: number;
+  sampleWise: boolean;
+}): string {
+  const shape =
+    settings.method === "numerical"
+      ? `downshift ${settings.downShift}, width ${settings.width}`
+      : `quantile ${settings.qValue}, adjusted sd ${settings.adjustStd}`;
+  const scope = settings.sampleWise ? "sample-wise" : "global";
+  return `${settings.method}, ${shape}, ${scope}, seed ${settings.seed}`;
 }
 
 function PlotSection({

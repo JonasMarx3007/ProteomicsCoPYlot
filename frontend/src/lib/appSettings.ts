@@ -4,8 +4,17 @@ import { IS_VIEWER_MODE } from "./appMode";
 export type AppTheme = "light" | "dark";
 
 const ADVANCED_PLOT_MODE_KEY = "copylot:advancedPlotMode";
-const ACTIVE_ADVANCED_PLOT_SETTINGS_KEY = "copylot:activeAdvancedPlotSettings";
-const ADVANCED_PLOT_SETTINGS_BY_KEY = "copylot:advancedPlotSettingsByKey";
+// Versioned. Settings stored before v2 carry every displayed frame and grid
+// default the panel used to add to the first edit of anything; applied under
+// the current rule -- a setting always applies, advanced mode only shows the
+// panel -- they would restyle plots nobody touched. Moving the key drops them
+// once, on the first load after the change.
+const ACTIVE_ADVANCED_PLOT_SETTINGS_KEY = "copylot:activeAdvancedPlotSettings.v2";
+const ADVANCED_PLOT_SETTINGS_BY_KEY = "copylot:advancedPlotSettingsByKey.v2";
+const RETIRED_ADVANCED_PLOT_KEYS = [
+  "copylot:activeAdvancedPlotSettings",
+  "copylot:advancedPlotSettingsByKey",
+];
 
 function readSessionString(key: string): string {
   if (typeof window === "undefined") return "";
@@ -56,6 +65,7 @@ export function initializeSessionTheme(): AppTheme {
 }
 
 export function initializeAdvancedPlotState() {
+  for (const key of RETIRED_ADVANCED_PLOT_KEYS) removeSessionString(key);
   if (!IS_VIEWER_MODE) {
     removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
     return;
@@ -69,9 +79,17 @@ export function getAdvancedPlotMode(): boolean {
   return readSessionString(ADVANCED_PLOT_MODE_KEY) === "1";
 }
 
+/**
+ * Advanced mode shows or hides the appearance panel, and that is all it does.
+ *
+ * It used to switch the settings off with it: turning the mode off dropped the
+ * active settings, so a plot styled in the panel went back to its native look
+ * the moment the panel closed, and came back styled when it reopened. The
+ * settings are the plot's now, whether the panel that edits them is open or
+ * not.
+ */
 export function setAdvancedPlotMode(enabled: boolean) {
   writeSessionString(ADVANCED_PLOT_MODE_KEY, enabled ? "1" : "0");
-  if (!enabled) removeSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("copylot:advancedPlotModeChanged"));
   }
@@ -108,7 +126,7 @@ export function setActiveAdvancedPlotSettings(settings: AdvancedPlotSettings | n
   }
 }
 
+/** The active plot's settings, whether or not the panel is open. */
 export function getActiveAdvancedPlotSettingsJson(): string {
-  if (!getAdvancedPlotMode()) return "";
   return readSessionString(ACTIVE_ADVANCED_PLOT_SETTINGS_KEY);
 }

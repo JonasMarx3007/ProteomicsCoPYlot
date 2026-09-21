@@ -62,7 +62,9 @@ def test_every_mode_returns_log2_not_raw_intensity(mode: str) -> None:
 @pytest.mark.parametrize("mode", MODES[:3])
 def test_fold_changes_recover_the_simulated_effect(mode: str) -> None:
     aggregated, truth = _aggregate(mode)
-    result = volcano_data_f(aggregated, _meta(), "Ctrl", "Treat", workflow="Phosphoprotein")
+    # `truth` is the treatment effect, Treat - Ctrl. log2FC is condition1 minus
+    # condition2, so Treat is selected first for the two to line up.
+    result = volcano_data_f(aggregated, _meta(), "Treat", "Ctrl", workflow="Phosphoprotein")
     key = next(c for c in ("Phosphoprotein", "ProteinNames", "Gene_group") if c in result.columns)
     expected = result[key].map(truth)
     usable = result["log2FC"].notna() & expected.notna()
