@@ -174,10 +174,6 @@ export default function SummaryPage({ activeTab }: Props) {
     });
   }, [textEntries, selectedPlot, position, editorValue, showEntries, reportTitle, reportAuthor]);
 
-  useEffect(() => {
-    loadTables();
-  }, []);
-
   async function loadTables() {
     try {
       setTablesLoading(true);
@@ -191,6 +187,10 @@ export default function SummaryPage({ activeTab }: Props) {
       setTablesLoading(false);
     }
   }
+
+  useEffect(() => {
+    loadTables();
+  }, []);
 
   function saveCurrentText() {
     const trimmed = editorValue.trim();
