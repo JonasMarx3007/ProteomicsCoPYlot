@@ -181,6 +181,16 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     coverage.chunkSize,
   ]);
 
+  async function refresh(signal?: AbortSignal) {
+    try {
+      const nextOverview = await getPeptideOverview({ signal });
+      setOverview(nextOverview);
+      setError(null);
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     refresh(controller.signal).catch((err) => {
@@ -253,7 +263,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   const hasMetadata = Boolean(overview?.metadataLoaded);
   const showMissingDatasetInfoOnly =
     !hasDataset && error?.trim() === MISSING_PEPTIDE_DATASET_MESSAGE;
-  const rtInteractiveSessionNonce = useMemo(() => Date.now(), []);
+  const [rtInteractiveSessionNonce] = useState(() => Date.now());
 
   const rtInteractive = String(rt.type).trim().toLowerCase() === "interactive";
   const rtPlotUrl = useMemo(
@@ -290,16 +300,6 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     if (!coverageResult) return null;
     return `data:text/plain;charset=utf-8,${encodeURIComponent(coverageResult.sequenceText)}`;
   }, [coverageResult]);
-
-  async function refresh(signal?: AbortSignal) {
-    try {
-      const nextOverview = await getPeptideOverview({ signal });
-      setOverview(nextOverview);
-      setError(null);
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }
 
   if (loading) {
     return (

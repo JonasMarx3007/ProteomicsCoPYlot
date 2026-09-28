@@ -1,7 +1,7 @@
 import { compactAdvancedPlotSettings } from "./lib/plotSerialization";
 import { CONTEXT_SLOTS, activeContextSlot, contextText, keepOnly, withContextMode, type ContextModes, type ContextSlot } from "./lib/contextModes";
 import type { ContextMode } from "./lib/types";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import { AssistantAppearanceMount, AssistantSurface } from "./components/AssistantFields";
 import { usePlotLabels } from "./lib/usePlotLabels";
@@ -906,7 +906,9 @@ export default function App() {
   }
 
   const uiSnapshotRef = useRef(buildUiStateSnapshot);
-  uiSnapshotRef.current = buildUiStateSnapshot;
+  useLayoutEffect(() => {
+    uiSnapshotRef.current = buildUiStateSnapshot;
+  });
   useEffect(() => {
     if (IS_VIEWER_MODE) return;
     // Capture defaults before the first user edit, not before child pages have
@@ -1079,7 +1081,9 @@ export default function App() {
     }
   }
   const handleQuickSaveRef = useRef(handleQuickSave);
-  handleQuickSaveRef.current = handleQuickSave;
+  useLayoutEffect(() => {
+    handleQuickSaveRef.current = handleQuickSave;
+  });
 
   async function handleOpenRestoreStateFile(): Promise<File | null> {
     try {
