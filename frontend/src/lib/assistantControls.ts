@@ -3,12 +3,14 @@ import { flushSync } from "react-dom";
 
 export type ControlValue = string | boolean | string[];
 export type AssistantControl = {
+  appearance?: boolean;
+  optionLabels?: Record<string, string>;
   permission: "view" | "confirm";
   id: string; label: string; type: "text" | "number" | "color" | "checkbox" | "select" | "multiple" | "button";
   value: ControlValue; options: string[]; optionCount: number; min?: number; max?: number;
   optionQuery?: string; optionMatchCount?: number;
 };
-export type AssistantAction = { type: "navigate" | "set_control" | "advanced_options" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles"; target: string; value: ControlValue };
+export type AssistantAction = { type: "navigate" | "set_control" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles"; target: string; value: ControlValue };
 type Element = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type Binding = { read: () => AssistantControl | null; apply: (value: ControlValue) => void; commit: () => void };
 const controls = new Map<string, Binding>();
@@ -23,9 +25,35 @@ export function useAssistantSurface(module: string) {
   }, [module]);
 }
 
+// The full chain of enclosing groups, outermost first: the X and Y axis cards
+// both contain an "Axis label" group, and the innermost name alone made their
+// controls indistinguishable to a model (iteration 21 planner views).
+function groupPath(element: Element): string {
+  const names: string[] = [];
+  for (let node = element.closest("[data-assistant-group]"); node; node = node.parentElement?.closest("[data-assistant-group]") ?? null) {
+    const name = node.getAttribute("data-assistant-group");
+    if (name && names[0] !== name) names.unshift(name);
+  }
+  return names.join(" / ");
+}
+
+// A control the user cannot see is not a control the assistant may read, with
+// one deliberate exception: the appearance panel that the user keeps closed is
+// still mounted offscreen so styling works without touching their advanced
+// toggle. Only that host is skipped; anything hidden inside it still counts,
+// as does anything hiding the host itself from above (a modal, for instance).
+function assistantHidden(element: HTMLElement): boolean {
+  const host = element.closest('[data-assistant-offscreen="true"]');
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    if (node === host) continue;
+    if (node.hasAttribute("inert") || node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true") return true;
+  }
+  return false;
+}
+
 function description(element: Element): string {
   const explicit = element.getAttribute("aria-label");
-  const group = element.closest("[data-assistant-group]")?.getAttribute("data-assistant-group");
+  const group = groupPath(element);
   if (explicit) return [group, explicit].filter(Boolean).join(" / ");
   const label = element.labels?.[0] ?? element.closest("label") ??
     (element.previousElementSibling?.tagName === "LABEL" ? element.previousElementSibling : null);
@@ -50,7 +78,7 @@ export function useAssistantControl<T extends Element>(onChange: ((event: Change
       },
       read() {
         const element = ref.current;
-        if (!element || element.disabled || (!(element instanceof HTMLSelectElement) && element.readOnly) || element.closest("[inert],[hidden],[aria-hidden=true]")) return null;
+        if (!element || element.disabled || (!(element instanceof HTMLSelectElement) && element.readOnly) || assistantHidden(element)) return null;
         const label = description(element);
         if (!label) return null;
         const select = element instanceof HTMLSelectElement;
@@ -61,7 +89,11 @@ export function useAssistantControl<T extends Element>(onChange: ((event: Change
           : element instanceof HTMLInputElement && type === "checkbox" ? element.checked : element.value;
         const displayControl = element.getAttribute("data-assistant-permission") === "view" ||
           /^(Protein \/ Site|Protein|Site|Protein source|Protein or gene|Proteins or genes \(comma, space, or newline\)|Conditions?|Condition [12]( Control)?|Samples?|Dataset level|Label column)$/i.test(label.replace(/^Tile \d+: [^/]+ \/ /, ""));
-        return { id, label, permission: displayControl ? "view" : "confirm", type: type as AssistantControl["type"], value, options, optionCount: options.length,
+        const appearance = element.getAttribute("data-assistant-permission") === "view" && !!element.closest('[data-assistant-appearance="true"]');
+        const optionLabels = select ? Object.fromEntries(Array.from(element.options)
+          .filter(option => !option.disabled && option.label !== option.value)
+          .slice(0, 80).map(option => [option.value, option.label])) : undefined;
+        return { id, label, appearance, optionLabels, permission: displayControl ? "view" : "confirm", type: type as AssistantControl["type"], value, options, optionCount: options.length,
           min: element instanceof HTMLInputElement && element.min ? Number(element.min) : undefined,
           max: element instanceof HTMLInputElement && element.max ? Number(element.max) : undefined };
       },
@@ -82,21 +114,31 @@ export function useAssistantControl<T extends Element>(onChange: ((event: Change
 }
 
 export function readAssistantControls(question = "", searches: Record<string, string> = {}): AssistantControl[] {
-  const words = question.toLowerCase().split(/\s+/).filter(word => word.length > 2);
+  // Identifiers are short and end sentences: "K7." must still surface K7 and
+  // K70-K79 among the 40 advertised options.
+  const words = question.toLowerCase().split(/\s+/).map(word => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(word => word.length > 2 || (word.length > 1 && /\d/.test(word)));
   return [...controls.values(), ...buttons.values()].flatMap(binding => {
     const control = binding.read();
     if (!control) return [];
     if (!["select", "multiple"].includes(control.type)) return [control];
+    const optionText = (option: string) => `${option} ${control.optionLabels?.[option] ?? ""}`.toLowerCase();
     if (searches[control.id] !== undefined) {
       const query = searches[control.id].trim().toLowerCase();
-      const matches = control.options.filter(option => option.toLowerCase().includes(query))
+      const matches = control.options.filter(option => optionText(option).includes(query))
         .sort((a, b) => Number(b.toLowerCase() === query) - Number(a.toLowerCase() === query));
       return [{ ...control, options: matches.slice(0, 40), optionQuery: searches[control.id], optionMatchCount: matches.length }];
     }
-    const relevant = control.options.filter(option => words.some(word => option.toLowerCase().includes(word)));
+    const relevant = control.options.filter(option => words.some(word => optionText(option).includes(word)));
     const selected = Array.isArray(control.value) ? control.value : [String(control.value)];
     return [{ ...control, options: Array.from(new Set([...selected, ...relevant, ...control.options])).slice(0, 40) }];
-  }).sort((a, b) => Number(searches[b.id] !== undefined) - Number(searches[a.id] !== undefined) || Number(words.some(w => b.label.toLowerCase().includes(w))) - Number(words.some(w => a.label.toLowerCase().includes(w)))).slice(0, 100);
+  }).sort((a, b) => Number(searches[b.id] !== undefined) - Number(searches[a.id] !== undefined)
+    || Number(words.some(w => b.label.toLowerCase().includes(w))) - Number(words.some(w => a.label.toLowerCase().includes(w)))
+    // The appearance panel is registered even while the user keeps it closed,
+    // so its ~100 settings could push a selection control past the transport
+    // cap. Cosmetics the question does not name yield to the analysis controls.
+    || Number(!!a.appearance) - Number(!!b.appearance)
+    || a.id.localeCompare(b.id)).slice(0, 100);
 }
 
 export function searchAssistantOptions(target: string, value: ControlValue): string {
@@ -107,13 +149,17 @@ export function searchAssistantOptions(target: string, value: ControlValue): str
   return value.trim();
 }
 
-export function assistantFeatureChoices(target: string, query: string): string {
+export function assistantFeatureChoices(target: string, query: string, message = ""): string {
   const control = controls.get(target)?.read();
   if (!control || control.type !== "select" || !/^(Protein \/ Site|Protein|Site|Protein or gene)$/.test(
     control.label.replace(/^Tile \d+: [^/]+ \/ /, ""))) return "";
   const normalized = query.trim().toLowerCase();
-  const matches = [...new Set(control.options.filter(option => option.toLowerCase().includes(normalized)))];
-  if (matches.length < 2 || matches.some(option => option.toLowerCase() === normalized)) return "";
+  // "starts with K7" asks for the prefix matches, and an exact K7 among them
+  // must not hide K70-K79 (held-out iteration 20).
+  const prefix = /\b(?:starts?|starting|begins?|beginning)\s+with\b|\bprefix\b/i.test(message);
+  const matches = [...new Set(control.options.filter(option => prefix
+    ? option.toLowerCase().startsWith(normalized) : option.toLowerCase().includes(normalized)))];
+  if (matches.length < 2 || (!prefix && matches.some(option => option.toLowerCase() === normalized))) return "";
   return `Which uploaded identifier do you mean for ${control.label}? ${matches.length} matches: ` +
     matches.slice(0, 5).map(option => JSON.stringify(option)).join(", ") +
     (matches.length > 5 ? ". Showing the first 5; provide an exact identifier or narrow the search." : ". Please provide the exact identifier.") +

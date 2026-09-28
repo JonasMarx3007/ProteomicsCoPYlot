@@ -425,20 +425,7 @@ export default function AdvancedPlotOptions({
   }
 
   function patchElement(key: ElementKey, next: Partial<AdvancedTextElementSettings>) {
-    const current = value[key] ?? {};
-    const merged = { ...current, ...next };
-    const legacy: Partial<AdvancedPlotSettings> = {};
-    if (key === "titleElement") {
-      legacy.title = merged.text ?? "";
-      legacy.titleSize = merged.size;
-    }
-    if (key === "xLabelElement") {
-      legacy.xLabel = merged.text ?? "";
-    }
-    if (key === "yLabelElement") {
-      legacy.yLabel = merged.text ?? "";
-    }
-    patch({ [key]: merged, ...legacy } as Partial<AdvancedPlotSettings>);
+    patch({ [key]: { ...(value[key] ?? {}), ...next } } as Partial<AdvancedPlotSettings>);
   }
 
   function patchMap(
@@ -457,7 +444,7 @@ export default function AdvancedPlotOptions({
   }
 
   return (
-    <section className="rounded-2xl border border-sky-200 bg-sky-50/70 p-5 shadow-sm dark:border-sky-500/30 dark:bg-sky-500/10">
+    <section data-assistant-appearance="true" className="rounded-2xl border border-sky-200 bg-sky-50/70 p-5 shadow-sm dark:border-sky-500/30 dark:bg-sky-500/10">
       <div className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700 dark:text-sky-300">
         Advanced Plot Options
       </div>
@@ -523,7 +510,7 @@ export default function AdvancedPlotOptions({
               title="Title"
               placeholder="Overwrite plot title"
               defaultSize={DEFAULT_VALUES.titleSize}
-              value={value.titleElement ?? { text: value.title, size: value.titleSize }}
+              value={value.titleElement}
               onChange={(next) => patchElement("titleElement", next)}
             />
           </Section>
@@ -537,14 +524,14 @@ export default function AdvancedPlotOptions({
                   title="Axis label"
                   placeholder="Overwrite x-axis label"
                   defaultSize={DEFAULT_VALUES.axisLabelSize}
-                  value={value.xLabelElement ?? { text: value.xLabel, size: value.axisLabelSize }}
+                  value={value.xLabelElement}
                   onChange={(next) => patchElement("xLabelElement", next)}
                 />
               ) : null}
               {showTickControls ? (
                 <TickRow
                   axis="X"
-                  size={value.xTickLabelSize ?? value.tickLabelSize}
+                  size={value.xTickLabelSize}
                   rotation={value.xTickLabelRotation}
                   color={value.xTickLabelColor}
                   defaultSize={DEFAULT_VALUES.xTickLabelSize}
@@ -565,14 +552,14 @@ export default function AdvancedPlotOptions({
                   title="Axis label"
                   placeholder="Overwrite y-axis label"
                   defaultSize={DEFAULT_VALUES.axisLabelSize}
-                  value={value.yLabelElement ?? { text: value.yLabel, size: value.axisLabelSize }}
+                  value={value.yLabelElement}
                   onChange={(next) => patchElement("yLabelElement", next)}
                 />
               ) : null}
               {showTickControls ? (
                 <TickRow
                   axis="Y"
-                  size={value.yTickLabelSize ?? value.tickLabelSize}
+                  size={value.yTickLabelSize}
                   rotation={value.yTickLabelRotation}
                   color={value.yTickLabelColor}
                   defaultSize={DEFAULT_VALUES.yTickLabelSize}
@@ -661,7 +648,7 @@ export default function AdvancedPlotOptions({
         {showAxisLineControls ? (
           <Section title="Frame and grid" summary="Which sides are drawn, and the grid behind the data">
             <div className="space-y-4">
-            <div>
+            <div data-assistant-group="Axis frame">
             <div className="text-sm font-bold text-slate-900 dark:text-slate-100">Axis frame</div>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <div>
@@ -740,7 +727,7 @@ export default function AdvancedPlotOptions({
               </label>
             </div>
           </div>
-          <div>
+          <div data-assistant-group="Grid lines">
           <div className="text-sm font-bold text-slate-900 dark:text-slate-100">Grid lines</div>
           <div className="mt-3 grid gap-3 sm:grid-cols-5">
             <label className="mt-6 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
@@ -1538,13 +1525,15 @@ function TextElementCard({
   title,
   placeholder,
   defaultSize,
-  value,
+  // Absent until the user types into the card: the panel stores only what was
+  // changed, so an untouched title has no element object at all.
+  value = {},
   onChange,
 }: {
   title: string;
   placeholder: string;
   defaultSize: number;
-  value: AdvancedTextElementSettings;
+  value?: AdvancedTextElementSettings;
   onChange: (next: Partial<AdvancedTextElementSettings>) => void;
 }) {
   return (

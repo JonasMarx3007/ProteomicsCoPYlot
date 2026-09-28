@@ -422,7 +422,7 @@ def reset_all_annotations(*, all_sessions: bool = False) -> None:
         _ANNOTATIONS_BY_SESSION.clear()
     else:
         _ANNOTATIONS_BY_SESSION.pop(get_session_id(), None)
-    invalidate_runtime_cache("annotation:reset-all")
+    invalidate_runtime_cache("annotation:reset-all", all_sessions=all_sessions)
 
 
 def snapshot_annotation_session_state():

@@ -155,12 +155,16 @@ def test_report_mentions_annotation_filtering() -> None:
     assert report_html.count("<strong>Filtering:</strong>") == 4
     assert (
         "Rows with at least 70% completeness across all annotated samples, "
-        "independent of condition groups were retained."
+        "independent of condition groups were retained ("
     ) in report_html
     assert (
-        "Rows with at least 3 valid values in at least one condition group were retained."
+        "Rows with at least 3 valid values in at least one condition group were retained ("
     ) in report_html
-    assert report_html.count("Filtered data contains ") == 4
+    # Row counts appear with every filtering line: "(kept of source rows)" where
+    # the filter was applied, "uses all N rows ... keeps M rows" where it was not.
+    # The example project applies no normalization, so no normalization lines.
+    assert report_html.count("<strong>Normalization:</strong>") == 0
+    assert report_html.count(" of ") >= 2 and report_html.count("it uses all ") >= 1
     assert "<strong>Data source:</strong> Imputed Data" in report_html
     assert "<strong>Data source:</strong> Data" in report_html
     imputation_text = (

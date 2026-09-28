@@ -6,7 +6,7 @@ import ts from 'typescript';
 const source = await readFile(new URL('../src/lib/assistantConversation.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022 } }).outputText;
 const { AssistantConversation } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
-const view = { module: 'singleProtein.boxplot', workflow: 'protein', mode: '', destinations: {}, controls: [
+const view = { module: 'singleProtein.boxplot', workflow: 'protein', mode: {}, destinations: {}, controls: [
   { label: 'Protein / Site', value: 'P53' }, { label: 'Condition 1', value: 'A' },
   { label: 'API key', value: 'do-not-retain' }, { label: 'Invented result', value: 'do-not-retain' },
 ] };

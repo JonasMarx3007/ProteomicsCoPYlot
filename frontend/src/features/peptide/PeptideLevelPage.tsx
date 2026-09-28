@@ -25,10 +25,14 @@ import type {
   PeptideSpecies,
   PeptideTab,
 } from "../../lib/types";
+import SelectField from "../../components/SelectField";
+import SectionCard from "../../components/SectionCard";
+import CheckboxField from "../../components/CheckboxField";
+import type { ContextMode } from "../../lib/types";
 
 type Props = {
   activeTab: PeptideTab;
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
   advancedPlotOptions?: ReactNode;
 };
 
@@ -97,54 +101,54 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     if (!onContextModeChange) return;
     if (activeTab === "rtPlot") {
       onContextModeChange(
-        [
-          `type=${rt.type}`,
-          `method=${rt.method}`,
-          `addLine=${String(rt.addLine)}`,
-          `header=${String(rt.header)}`,
-          `bins=${String(rt.bins)}`,
-          `randomSeed=${String(rt.randomSeed)}`,
-          `widthCm=${String(rt.widthCm)}`,
-          `heightCm=${String(rt.heightCm)}`,
-          `dpi=${String(rt.dpi)}`,
-        ].join("|")
+        {
+          type: rt.type,
+          method: rt.method,
+          addLine: rt.addLine,
+          header: rt.header,
+          bins: rt.bins,
+          randomSeed: rt.randomSeed,
+          widthCm: rt.widthCm,
+          heightCm: rt.heightCm,
+          dpi: rt.dpi,
+        }
       );
       return;
     }
     if (activeTab === "modification") {
       onContextModeChange(
-        [
-          `includeId=${String(modification.includeId)}`,
-          `header=${String(modification.header)}`,
-          `legend=${String(modification.legend)}`,
-          `widthCm=${String(modification.widthCm)}`,
-          `heightCm=${String(modification.heightCm)}`,
-          `dpi=${String(modification.dpi)}`,
-        ].join("|")
+        {
+          includeId: modification.includeId,
+          header: modification.header,
+          legend: modification.legend,
+          widthCm: modification.widthCm,
+          heightCm: modification.heightCm,
+          dpi: modification.dpi,
+        }
       );
       return;
     }
     if (activeTab === "missedCleavage") {
       onContextModeChange(
-        [
-          `includeId=${String(missedCleavage.includeId)}`,
-          `text=${String(missedCleavage.text)}`,
-          `textSize=${String(missedCleavage.textSize)}`,
-          `header=${String(missedCleavage.header)}`,
-          `protease=${missedCleavage.protease}`,
-          `widthCm=${String(missedCleavage.widthCm)}`,
-          `heightCm=${String(missedCleavage.heightCm)}`,
-          `dpi=${String(missedCleavage.dpi)}`,
-        ].join("|")
+        {
+          includeId: missedCleavage.includeId,
+          text: missedCleavage.text,
+          textSize: missedCleavage.textSize,
+          header: missedCleavage.header,
+          protease: missedCleavage.protease,
+          widthCm: missedCleavage.widthCm,
+          heightCm: missedCleavage.heightCm,
+          dpi: missedCleavage.dpi,
+        }
       );
       return;
     }
     onContextModeChange(
-      [
-        `species=${coverage.species}`,
-        `protein=${coverage.protein}`,
-        `chunkSize=${String(coverage.chunkSize)}`,
-      ].join("|")
+      {
+        species: coverage.species,
+        protein: coverage.protein,
+        chunkSize: coverage.chunkSize,
+      }
     );
   }, [
     onContextModeChange,
@@ -308,7 +312,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   if (!hasDataset || !overview) {
     return (
       <div className="space-y-6">
-        <SectionCard title="Peptide Level">
+        <SectionCard as="h2" title="Peptide Level">
           <InfoBanner message="Load a peptide dataset path in the Upload section before using the peptide pipeline." />
         </SectionCard>
         {error && !showMissingDatasetInfoOnly ? <ErrorBanner message={error} /> : null}
@@ -327,7 +331,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
 
       {activeTab === "rtPlot" ? (
         <>
-          <SectionCard title="RT Plot Options">
+          <SectionCard as="h2" title="RT Plot Options">
             <OptionsLayout
               controls={[
                 // `peptide_rt_interactive_html` always draws a scatter and
@@ -392,7 +396,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
 
       {activeTab === "modification" ? (
         <>
-          <SectionCard title="Modification Plot Options">
+          <SectionCard as="h2" title="Modification Plot Options">
             <OptionsLayout
               controls={[]}
               size={
@@ -421,7 +425,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
 
       {activeTab === "missedCleavage" ? (
         <>
-          <SectionCard title="Missed Cleavage Plot Options">
+          <SectionCard as="h2" title="Missed Cleavage Plot Options">
             <OptionsLayout
               controls={[
                 <SelectField
@@ -460,7 +464,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
 
       {activeTab === "sequenceCoverage" ? (
         <>
-          <SectionCard title="Sequence Coverage Options">
+          <SectionCard as="h2" title="Sequence Coverage Options">
             <OptionsLayout
               controls={[
                 <SelectField
@@ -490,22 +494,30 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           {advancedPlotOptions}
 
           {coverageLoading ? (
-            <SectionCard title="Sequence Coverage">
+            <SectionCard as="h2" title="Sequence Coverage">
               <div className="text-sm text-slate-500">Calculating sequence coverage...</div>
             </SectionCard>
           ) : coverageError ? (
             <ErrorBanner message={coverageError} />
           ) : coverageResult ? (
             <>
-              <SectionCard title="Sequence Coverage Summary">
+              <SectionCard as="h2" title="Sequence Coverage Summary">
                 <div className="grid gap-4 lg:grid-cols-3">
                   <SummaryCard label="Protein" value={coverageResult.protein} title={coverageResult.protein} />
                   <SummaryCard label="Coverage" value={`${coverageResult.coveragePercent}%`} />
-                  <SummaryCard label="Peptides" value={String(coverageResult.matchingPeptideCount)} />
+                  <SummaryCard
+                    label="Peptides mapped"
+                    value={`${coverageResult.matchingPeptideCount} of ${coverageResult.assignedPeptideCount}`}
+                  />
                 </div>
+                {coverageResult.warnings.length > 0 ? (
+                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    {coverageResult.warnings.join(" ")}
+                  </div>
+                ) : null}
               </SectionCard>
 
-              <SectionCard title="Sequence Coverage">
+              <SectionCard as="h2" title="Sequence Coverage">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm text-slate-600">Coverage map for the selected protein.</div>
                   {coverageDownloadUrl ? (
@@ -532,14 +544,6 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   );
 }
 
-function SectionCard({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-      <div className="mt-4">{children}</div>
-    </section>
-  );
-}
 
 function SummaryCard({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -568,69 +572,7 @@ function InfoBanner({ message }: { message: string }) {
   );
 }
 
-function CheckboxField({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-      <AssistantInput type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      {label}
-    </label>
-  );
-}
 
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-  labels,
-  disabled = false,
-  disabledHint,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: string[];
-  labels?: Record<string, string>;
-  /** Greyed out where the active renderer does not read this setting. */
-  disabled?: boolean;
-  disabledHint?: string;
-}) {
-  const fieldId = useId();
-  return (
-    <div>
-      <label
-        htmlFor={fieldId}
-        className={`mb-2 block text-sm font-medium ${disabled ? "text-slate-400" : "text-slate-700"}`}
-      >
-        {label}
-      </label>
-      <AssistantSelect id={fieldId}
-        value={value}
-        disabled={disabled}
-        title={disabled ? disabledHint : undefined}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {labels?.[option] ?? option}
-          </option>
-        ))}
-      </AssistantSelect>
-      {disabled && disabledHint ? (
-        <p className="mt-1 text-xs text-slate-400">{disabledHint}</p>
-      ) : null}
-    </div>
-  );
-}
 
 function formatNumberValue(value: number) {
   return Number.isFinite(value) ? String(value) : "";
@@ -743,7 +685,7 @@ function ImagePlotCard({
 
 
   return (
-    <SectionCard title={title}>
+    <SectionCard as="h2" title={title}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         {renderMode === "image" ? (
           <div className="flex flex-wrap items-center gap-2">

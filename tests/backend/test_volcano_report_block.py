@@ -86,10 +86,13 @@ def counted(monkeypatch):
 
 def test_block_states_filtering_for_the_comparison(counted) -> None:
     text = _text(counted())
-    assert "Filtering:" in text
-    assert "at least 3 valid values in at least one condition group" in text
-    assert "7450 out of 9002 source rows" in text
-    assert "No normalization was applied." in text
+    # The fixture applies no normalization, so no normalization line is printed.
+    assert "Normalization:" not in text
+    # The default entry runs on the unfiltered Data source, so the block says
+    # so with the row counts instead of restating the filter recipe.
+    assert "Filtering: Not applied to this plot; it uses all 9002 rows." in " ".join(text.split())
+    assert "keeps 7450 rows" in text
+    assert "at least 3 valid values" not in text
 
 
 def test_filtering_matches_the_level_preamble_word_for_word() -> None:

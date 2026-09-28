@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from app.services.html_security import GENERATED_HTML_META
-from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -20,16 +18,17 @@ from app.services.functions import (
     condition_mean,
     qc_matrix,
 )
-from app.services.plot_images import (
-    _advanced_label,
-    _advanced_plotly_layout,
-    _apply_advanced_axes,
+from app.services.plot_styling import (
+    advanced_label,
+    advanced_plotly_layout,
+    apply_advanced_axes,
     advanced_color,
     marker_style,
     plotly_marker,
     resolve_reference_line,
 )
 from app.services.runtime_cache import apply_cached_wrappers
+from app.services.plotting_common import get_plt as _get_plt, get_plotly_go as _get_plotly, plotly_html as _plotly_html, truncate_hover_text as _truncate_hover_text
 
 
 def _rename_if_condition(label: str, mode: str, advanced: dict | None) -> str:
@@ -41,7 +40,7 @@ def _rename_if_condition(label: str, mode: str, advanced: dict | None) -> str:
     """
     if str(mode).strip().lower() in {"single", "sample"}:
         return str(label)
-    return _advanced_label(str(label), advanced, "conditionLabels")
+    return advanced_label(str(label), advanced, "conditionLabels")
 
 
 def _legacy_area_as_diameter(dot_size: float) -> float:
@@ -54,20 +53,6 @@ def _wrap_label(label: str, width_cm: float) -> str:
                 expand_tabs=False, replace_whitespace=False, drop_whitespace=False, break_on_hyphens=False)
 
 
-def _get_plt():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        return plt
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "matplotlib is required for comparison plot rendering. Install it with: pip install matplotlib"
-        ) from exc
-
-
 def _get_venn():
     try:
         from matplotlib_venn import venn2, venn3
@@ -77,87 +62,6 @@ def _get_venn():
         raise ModuleNotFoundError(
             "matplotlib-venn is required for Venn diagrams. Install it with: pip install matplotlib-venn"
         ) from exc
-
-
-def _get_plotly():
-    try:
-        import plotly.graph_objects as go
-
-        return go
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "plotly is required for interactive comparison plots. Install it with: pip install plotly"
-        ) from exc
-
-
-def _plotly_html(fig) -> str:
-    fig = force_svg_rendering(fig)
-    background = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff")
-    body = fig.to_html(
-        full_html=False,
-        include_plotlyjs=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{GENERATED_HTML_META}"
-        "<style>"
-        f"html,body{{margin:0;padding:0;background:{background};width:100%;height:100%;}}"
-        "#plot-root{width:100%;height:100%;}"
-        ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
-        "</style>"
-        "</head><body>"
-        "<div id='plot-root'>"
-        f"{body}"
-        "</div>"
-        "<script>"
-        "(function(){"
-        "function firstPlot(){return document.querySelector('.js-plotly-plot,.plotly-graph-div');}"
-        "function resolveLayoutHeight(el){"
-        "if(!el){return 0;}"
-        "var value=0;"
-        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
-        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
-        "return Math.max(0,value);"
-        "}"
-        "function resizePlot(){"
-        "var el=firstPlot();"
-        "if(!(el && window.Plotly)){return;}"
-        "var root=document.getElementById('plot-root');"
-        "var rootWidth=(root && Number(root.clientWidth))||0;"
-        "var rootHeight=(root && Number(root.clientHeight))||0;"
-        "var viewportWidth=Math.max(360,rootWidth,(window.innerWidth||0)-8);"
-        "var viewportHeight=Math.max(420,rootHeight,(window.innerHeight||0)-8);"
-        "var layoutHeight=resolveLayoutHeight(el);"
-        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
-        "window.Plotly.relayout(el,{width:viewportWidth,height:nextHeight,autosize:true}).catch(function(){});"
-        "window.Plotly.Plots.resize(el);"
-        "}"
-        "window.addEventListener('load', resizePlot);"
-        "window.addEventListener('resize', resizePlot);"
-        "if(window.ResizeObserver){"
-        "var rootEl=document.getElementById('plot-root');"
-        "if(rootEl){(new ResizeObserver(function(){resizePlot();})).observe(rootEl);}"
-        "}"
-        "setTimeout(resizePlot, 80);"
-        "setTimeout(resizePlot, 260);"
-        "setTimeout(resizePlot, 800);"
-        "setTimeout(resizePlot, 1500);"
-        "})();"
-        "</script>"
-        "</body></html>"
-    )
-
-
-def _truncate_hover_text(value: object, max_len: int) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return "n/a"
-    if len(text) <= max_len:
-        return text
-    if max_len <= 1:
-        return text[:1]
-    return f"{text[: max_len - 1]}..."
 
 
 def _analysis_context(
@@ -414,6 +318,14 @@ def pearson_correlation_png(
             color_default=color,
         ),
     )
+    # The same least-squares line the interactive twin, the pip package and the
+    # R script draw, under the same reference-line setting, so the report's
+    # figure is the figure on screen.
+    fit_line = resolve_reference_line(advanced, color="#475569", style="solid", width=2.0)
+    if len(pairs) > 1 and fit_line.visible:
+        slope, intercept = np.polyfit(pairs["x"].to_numpy(dtype=float), pairs["y"].to_numpy(dtype=float), 1)
+        line_x = np.array([float(pairs["x"].min()), float(pairs["x"].max())], dtype=float)
+        ax.plot(line_x, slope * line_x + intercept, zorder=3, **fit_line.matplotlib())
     ax.set_xlabel(_wrap_label(left, width_cm))
     ax.set_ylabel(_wrap_label(right, height_cm))
     if header:
@@ -429,7 +341,7 @@ def pearson_correlation_png(
         bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
     )
     ax.grid(True, alpha=0.2)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -546,7 +458,7 @@ def pearson_correlation_html(
         margin=dict(l=50, r=24, t=(70 if header else 20), b=50),
     )
     fig.update_layout(
-        **_advanced_plotly_layout(
+        **advanced_plotly_layout(
             advanced,
             width_px=_cm_to_px(width_cm),
             height_px=_cm_to_px(height_cm),
@@ -719,7 +631,7 @@ def venn_png(
     if header:
         mode_label = "samples" if str(mode).strip().lower() in {"single", "sample"} else "conditions"
         ax.set_title(f"Venn Diagram ({mode_label})")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 

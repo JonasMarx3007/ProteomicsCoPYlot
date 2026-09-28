@@ -43,23 +43,56 @@ def _preview(df: pd.DataFrame, rows: int = 20) -> list[dict[str, object]]:
     return df.head(rows).where(pd.notna(df.head(rows)), None).to_dict(orient="records")
 
 
-def original_intensity_frame(raw: pd.DataFrame, annotation) -> pd.DataFrame:
-    """Uploaded intensities, without normalization, filtering or imputation."""
-    if annotation is None:
-        return raw.copy()
-    source = annotation.source_data.copy()
-    if annotation.is_log2_transformed:
-        columns = [c for c in annotation.metadata["sample"] if c in source.columns]
-        if columns:
-            return inverse_log2_transform_data(source, columns).reindex(columns=source.columns)
-    return source
-
-
 def _get_current_frame(kind: AnnotationKind) -> pd.DataFrame:
     current = get_current_dataset(kind)
     if current is None or not hasattr(current, "frame"):
         raise ValueError(f"No {kind} dataset is currently loaded.")
     return current.frame.copy()
+
+
+
+def log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
+    """The QC matrix: normalized, unfiltered, non-imputed log2 values.
+
+    Every QC figure and table reads this one frame -- coverage, distribution,
+    boxplot, histogram and the rest -- so the report's normalization sentence
+    holds for all of them.
+    """
+    return qc_matrix(kind)[0]
+
+
+def linear_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
+    """The normalized, unfiltered, non-imputed QC matrix back-transformed to linear.
+
+    CV and abundance use the same processed values as the other QC plots.
+    This does not reconstruct instrument-raw intensities after normalization.
+    """
+    frame, meta = qc_matrix(kind)
+    columns = [column for column in meta["sample"].astype(str).tolist() if column in frame.columns]
+    if not columns:
+        return frame.copy()
+    return inverse_log2_transform_data(frame, columns).reindex(columns=frame.columns)
+
+
+def metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
+    """The annotation metadata for these sample columns, in their order.
+
+    Samples the annotation does not know get condition "sample". Without an
+    annotation every sample is its own condition. One definition, where four
+    identical copies used to live.
+    """
+    annotation = get_annotation(kind)
+    if annotation is not None and not annotation.metadata.empty:
+        meta = annotation.metadata.copy()
+        meta = meta[meta["sample"].isin(sample_columns)]
+        if not meta.empty:
+            meta = meta.drop_duplicates(subset=["sample"])
+            meta = meta.set_index("sample").reindex(sample_columns).reset_index()
+            meta["condition"] = meta["condition"].fillna("sample").astype(str)
+            return meta
+
+    return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)}).copy()
+
 
 
 def _get_sample_columns(kind: AnnotationKind, frame: pd.DataFrame) -> list[str]:

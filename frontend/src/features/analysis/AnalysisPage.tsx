@@ -1,6 +1,6 @@
-﻿
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AssistantInput, AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
+import { AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
 import AdvancedPlotOptions from "../../components/plots/AdvancedPlotOptions";
@@ -23,6 +23,10 @@ import type {
 import { DATA_SOURCE_LABELS, dataSourceOptions } from "../../lib/types";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { useCanvasFocus } from "../../lib/canvasFocus";
+import SelectField from "../../components/SelectField";
+import NumberField from "../../components/NumberField";
+import TextField from "../../components/TextField";
+import type { ContextMode } from "../../lib/types";
 
 type TileType = "volcano" | "volcanoControl" | "proteinBoxplot" | "proteinLineplot" | "oraList";
 type BoxplotSourceMode = "active" | "manual";
@@ -322,7 +326,7 @@ function isCompletedOra(value: unknown): value is CompletedOra {
       record(counts) && numbers(counts, ["searchSpace", "overlapTested", "passingCutoff", "displayed"])) &&
     Array.isArray(result.terms) && result.terms.every(term => record(term) &&
       ["source", "termId", "name"].every(key => typeof term[key] === "string") &&
-      numbers(term, ["termSize", "intersectionSize", "hitPercent", "pValue", "adjPValue"]) && strings(term.intersectingGenes));
+      numbers(term, ["termSize", "intersectionSize", "querySize", "geneRatio", "hitPercent", "pValue", "adjPValue"]) && strings(term.intersectingGenes));
 }
 
 function uid() {
@@ -445,7 +449,7 @@ export default function AnalysisPage({
   rightPanel?: "none" | "list" | "chat";
   onRightPanelChange?: (panel: "none" | "list" | "chat") => void;
   aiEnabled?: boolean;
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
 }) {
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>(ANALYSIS_UI_STATE_KEY, {}),
@@ -896,7 +900,7 @@ export default function AnalysisPage({
         ? { id: tile.id, type: tile.type, settings: { ...settings, protein: tile.sourceMode === "active" ? activeBoxplotTarget.protein || activeProtein : tile.protein.trim() } }
         : { id: tile.id, type: tile.type, settings: { ...settings, proteins: resolveLineplotProteins(tile, activeBoxplotTarget.protein || activeProtein, selectedProteins, lists) } };
     });
-    onContextModeChange?.(JSON.stringify({ kind, identifier, linkedVolcanoId: sourceTile?.id ?? "", tiles: tiles.map(tile => tile.type), tileEvidence }));
+    onContextModeChange?.({ kind, identifier, linkedVolcanoId: sourceTile?.id ?? "", tiles: tiles.map(tile => tile.type), tileEvidence });
   }, [onContextModeChange, kind, identifier, tiles, sourceTile?.id,
     activeBoxplotTarget, activeProtein, conditionsCsv, selectedProteins, lists]);
 
@@ -911,12 +915,14 @@ export default function AnalysisPage({
         <h3 className="text-lg font-semibold text-slate-900">Global Controls</h3>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <SelectField
+            emptyLabel="No options"
             label="Dataset level"
             value={kind}
             options={kindOptions}
             onChange={(value) => setKind(value as AnnotationKind)}
           />
           <SelectField
+            emptyLabel="No options"
             label="Identifier"
             value={identifier}
             options={(options?.availableIdentifiers ?? []).map((entry) => ({
@@ -926,6 +932,7 @@ export default function AnalysisPage({
             onChange={(value) => setIdentifier(value as StatsIdentifier)}
           />
           <SelectField
+            emptyLabel="No options"
             label="Linked plot source"
             value={sourceTile?.id ?? ""}
             options={tiles.flatMap((tile, index) => "settings" in tile ? [{
@@ -1120,9 +1127,10 @@ export default function AnalysisPage({
                     <div>
 
                       <div className="grid gap-3 lg:grid-cols-2">
-                        <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
+                        <SelectField emptyLabel="No options" label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
                           onChange={value => updateTile(tile.id, { ...tile, dataSource: value as DataSource })} />
                         <SelectField
+                          emptyLabel="No options"
                           label="Protein source"
                           value={tile.sourceMode}
                           options={[
@@ -1187,9 +1195,10 @@ export default function AnalysisPage({
                     <div>
 
                       <div className="grid gap-3 lg:grid-cols-2">
-                        <SelectField label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
+                        <SelectField emptyLabel="No options" label="Data source" value={tile.dataSource} options={plotSourceOptions(tile.dataSource)}
                           onChange={value => updateTile(tile.id, { ...tile, dataSource: value as DataSource })} />
                         <SelectField
+                          emptyLabel="No options"
                           label="Protein source"
                           value={tile.sourceMode}
                           options={[
@@ -1208,6 +1217,7 @@ export default function AnalysisPage({
 
                         {tile.sourceMode === "list" ? (
                           <SelectField
+                            emptyLabel="No options"
                             label="List"
                             value={tile.listName}
                             options={listNames.map((name) => ({ value: name, label: name }))}
@@ -1331,6 +1341,7 @@ export default function AnalysisPage({
             </div>
 
             <SelectField
+              emptyLabel="No options"
               label="Active list"
               value={activeList}
               options={listNames.map((name) => ({ value: name, label: name }))}
@@ -1364,12 +1375,14 @@ export default function AnalysisPage({
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div className="grid gap-3">
                 <SelectField
+                  emptyLabel="No options"
                   label="List A"
                   value={opA}
                   options={listNames.map((name) => ({ value: name, label: name }))}
                   onChange={setOpA}
                 />
                 <SelectField
+                  emptyLabel="No options"
                   label="Operation"
                   value={opMode}
                   options={[
@@ -1381,6 +1394,7 @@ export default function AnalysisPage({
                   onChange={(value) => setOpMode(value as "intersection" | "union" | "a_minus_b" | "b_minus_a")}
                 />
                 <SelectField
+                  emptyLabel="No options"
                   label="List B"
                   value={opB}
                   options={listNames.map((name) => ({ value: name, label: name }))}
@@ -1551,7 +1565,8 @@ function OraListTile({
         organism: result.organism,
         inputSource: completed.inputSource,
         namedList: completed.namedList,
-        querySize: result.genes.length,
+        // Genes submitted; `term.querySize` below is those found in the background.
+        submittedGeneCount: result.genes.length,
         backgroundMode: result.backgroundMode,
         backgroundSize: result.backgroundSize,
         annotatedBackgroundSize: result.annotatedBackgroundSize,
@@ -1571,6 +1586,7 @@ function OraListTile({
     <div>
       <div className="grid gap-3 lg:grid-cols-2">
         <SelectField
+          emptyLabel="No options"
           label="Input source"
           value={sourceMode}
           options={[
@@ -1581,6 +1597,7 @@ function OraListTile({
         />
         {sourceMode === "list" ? (
           <SelectField
+            emptyLabel="No options"
             label="Named list"
             value={selectedListName}
             options={listNames.map((name) => ({ value: name, label: name }))}
@@ -1621,6 +1638,7 @@ function OraListTile({
 
       <div className="mt-3">
         <SelectField
+          emptyLabel="No options"
           label="Background"
           value={backgroundMode}
           options={[
@@ -1730,8 +1748,9 @@ function OraListTile({
                     <th className="px-3 py-2 text-left font-semibold text-slate-700">Term</th>
                     <th className="px-3 py-2 text-left font-semibold text-slate-700">Source</th>
                     <th className="px-3 py-2 text-right font-semibold text-slate-700">Adj. p-value</th>
-                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hits</th>
-                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hit %</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Overlap / term</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">GeneRatio</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Term coverage %</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1742,6 +1761,9 @@ function OraListTile({
                       <td className="px-3 py-2 text-right text-slate-700">{term.adjPValue.toExponential(3)}</td>
                       <td className="px-3 py-2 text-right text-slate-700">
                         {term.intersectionSize}/{term.termSize}
+                      </td>
+                      <td className="px-3 py-2 text-right text-slate-700">
+                        {term.intersectionSize}/{term.querySize} ({term.geneRatio.toFixed(3)})
                       </td>
                       <td className="px-3 py-2 text-right text-slate-700">{term.hitPercent.toFixed(2)}</td>
                     </tr>
@@ -1779,7 +1801,7 @@ function VolcanoBundleControls({
 
   return (
     <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3">
-      <SelectField label="Data source" value={settings.dataSource}
+      <SelectField emptyLabel="No options" label="Data source" value={settings.dataSource}
         options={
           dataSourceOptions(options).some(option => option.value === settings.dataSource)
             ? dataSourceOptions(options)
@@ -1792,24 +1814,28 @@ function VolcanoBundleControls({
       {isControl ? (
         <div className="grid gap-3 lg:grid-cols-4">
           <SelectField
+            emptyLabel="No options"
             label="Condition 1"
             value={settings.condition1}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
             onChange={(value) => onChange({ condition1: value })}
           />
           <SelectField
+            emptyLabel="No options"
             label="Condition 1 Control"
             value={(settings as VolcanoControlSettings).condition1Control}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
             onChange={(value) => onChange({ condition1Control: value })}
           />
           <SelectField
+            emptyLabel="No options"
             label="Condition 2"
             value={settings.condition2}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
             onChange={(value) => onChange({ condition2: value })}
           />
           <SelectField
+            emptyLabel="No options"
             label="Condition 2 Control"
             value={(settings as VolcanoControlSettings).condition2Control}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
@@ -1819,12 +1845,14 @@ function VolcanoBundleControls({
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
           <SelectField
+            emptyLabel="No options"
             label="Condition 1"
             value={settings.condition1}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
             onChange={(value) => onChange({ condition1: value })}
           />
           <SelectField
+            emptyLabel="No options"
             label="Condition 2"
             value={settings.condition2}
             options={(options?.availableConditions ?? []).map((value) => ({ value, label: value }))}
@@ -1835,12 +1863,14 @@ function VolcanoBundleControls({
 
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <SelectField
+          emptyLabel="No options"
           label="Test type"
           value={settings.testType}
           options={isControl ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS}
           onChange={(value) => onChange({ testType: value as StatsTestType })}
         />
         <SelectField
+          emptyLabel="No options"
           label="P-value mode"
           value={settings.pValueMode}
           options={[
@@ -2485,83 +2515,4 @@ function CanvasPlotOptions({ advanced, onChange, conditions, url, filename, boxp
       </div>
     </details>
   </div>;
-}
-
-function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <AssistantSelect
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      >
-        {options.length === 0 ? <option value="">No options</option> : null}
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </AssistantSelect>
-    </label>
-  );
-}
-
-function TextField({
-  label,
-  value,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-1 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        type="text" inputMode="decimal"
-        value={String(value)}
-        onChange={(event) => {
-          const parsed = Number(event.target.value.replace(",", "."));
-          if (Number.isFinite(parsed)) onChange(parsed);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
 }

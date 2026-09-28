@@ -38,7 +38,7 @@ def test_abundance_ranks_each_condition_independently(monkeypatch,kind,workflow,
     samples = ["a1","a2","b1","b2","c1","c2"]
     meta = pd.DataFrame({"sample":samples,"condition":["A","A","B","B","C","C"]})
     original = frame.copy(deep=True)
-    monkeypatch.setattr(plots,"_original_scale_frame",lambda kind: frame.copy())
+    monkeypatch.setattr(plots,"linear_qc_frame",lambda kind: frame.copy())
     monkeypatch.setattr(plots,"_get_sample_columns",lambda kind,data:samples)
     monkeypatch.setattr(plots,"_metadata_for_kind",lambda *args:meta.copy())
     monkeypatch.setattr(plots,"_phosprot_values_are_centred",lambda kind:False)
@@ -71,7 +71,10 @@ def test_abundance_ranks_each_condition_independently(monkeypatch,kind,workflow,
     monkeypatch.setattr(plots,"_to_png_bytes",capture)
     for selection, visible in [("All Conditions",["A","B","C"]),("A",["A"]),("B",["B"]),("C",["C"])]:
         assert plots.qc_abundance_plot(kind,condition=selection,legend=False) == b"checked"
-        fig = plots.qc_abundance_interactive_html(kind,condition=selection)
+        # The renderer itself, not the copy the result cache hands out: copying a
+        # plotly figure re-encodes its arrays into plotly's binary form, which is
+        # equivalent in the HTML the route serves but is not a sequence to read here.
+        fig = plots.qc_abundance_interactive_html.__wrapped__(kind,condition=selection)
         for trace in fig.data:
             np.testing.assert_allclose(sorted(trace.y,reverse=True),expected[trace.name])
         assert sum(len(trace.y) for trace in fig.data) == sum(len(expected[c]) for c in visible)
@@ -170,7 +173,7 @@ def test_correlation_plots_preserve_undefined_values(monkeypatch, method, full_r
             pytest.fail('Undefined correlations must not be converted into clustering distances')
         monkeypatch.setattr(hierarchy, 'linkage', no_clustering)
         monkeypatch.setattr(nb, 'linkage', no_clustering)
-    monkeypatch.setattr(plot_images, '_log2_qc_frame', lambda _: frame)
+    monkeypatch.setattr(plot_images, 'log2_qc_frame', lambda _: frame)
     monkeypatch.setattr(plot_images, '_get_sample_columns', lambda *a: ['a', 'b'])
     monkeypatch.setattr(plot_images, '_metadata_for_kind', lambda *a: meta)
     def check(fig):

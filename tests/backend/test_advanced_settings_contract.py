@@ -18,10 +18,34 @@ import matplotlib.pyplot as plt  # noqa: E402
 import pytest  # noqa: E402
 from matplotlib.colors import to_hex  # noqa: E402
 
-from app.services.plot_images import (  # noqa: E402
-    _advanced_plotly_layout,
-    _apply_advanced_matplotlib_style,
+from app.services.plot_styling import (
+    advanced_plotly_layout,
+    apply_advanced_matplotlib_style,
 )
+
+
+@pytest.mark.parametrize("route_name,renderer,settings", [
+    ("qc_boxplot_route", "qc_boxplot_plot", {
+        "boxBorderColor": "#123456", "boxMedianColor": "#654321",
+        "boxOutlierColor": "#abcdef", "boxOutlierEdgeColor": "#fedcba", "boxOutlierSize": 7,
+    }),
+    ("qc_correlation_route", "qc_correlation_plot", {"correlationColorMap": "viridis"}),
+])
+def test_qc_styles_have_one_authoritative_transport(monkeypatch, route_name, renderer, settings):
+    import inspect
+    import json
+    from app.api import routes_plots
+
+    received = {}
+    def render(**kwargs):
+        received.update(kwargs)
+        return b"image"
+    monkeypatch.setattr(routes_plots, renderer, render)
+    route = getattr(routes_plots, route_name)
+    assert not set(settings).intersection(inspect.signature(route).parameters)
+    response = route(kind="protein", advanced=json.dumps(settings))
+    assert response.body == b"image"
+    assert received["advanced"] == settings
 
 
 def _figure(*, grid: str | None):
@@ -51,7 +75,7 @@ def _frame_state(ax):
 def test_a_grid_colour_recolours_and_does_not_switch_the_grid(grid):
     fig, ax = _figure(grid=grid)
     before = _grid_state(ax)
-    _apply_advanced_matplotlib_style(ax, {"gridLineColor": "#ff0000"})
+    apply_advanced_matplotlib_style(ax, {"gridLineColor": "#ff0000"})
     after = _grid_state(ax)
     for (was_on, _), (now_on, colour) in zip(before, after):
         assert now_on == was_on, "a colour must not switch a grid on or off"
@@ -62,7 +86,7 @@ def test_a_grid_colour_recolours_and_does_not_switch_the_grid(grid):
 
 def test_grid_placement_switches_on_and_uses_what_is_named():
     fig, ax = _figure(grid=None)
-    _apply_advanced_matplotlib_style(
+    apply_advanced_matplotlib_style(
         ax, {"gridLineVisible": True, "gridLineAxis": "x", "gridLineColor": "#00ff00"}
     )
     (x_on, x_colour), (y_on, _) = _grid_state(ax)
@@ -76,7 +100,7 @@ def test_hiding_one_side_leaves_the_others_as_they_were():
     for spine in ax.spines.values():
         spine.set_color("#333333")
     before = _frame_state(ax)
-    _apply_advanced_matplotlib_style(
+    apply_advanced_matplotlib_style(
         ax,
         {"axisLineTop": False, "axisLineRight": True, "axisLineBottom": True, "axisLineLeft": True},
     )
@@ -91,7 +115,7 @@ def test_a_frame_colour_recolours_and_does_not_show_or_hide_a_side():
     fig, ax = _figure(grid=None)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    _apply_advanced_matplotlib_style(ax, {"axisLineColor": "#ff0000"})
+    apply_advanced_matplotlib_style(ax, {"axisLineColor": "#ff0000"})
     after = _frame_state(ax)
     assert after["top"][0] is False and after["right"][0] is False
     assert after["left"] == (True, "#ff0000")
@@ -100,12 +124,12 @@ def test_a_frame_colour_recolours_and_does_not_show_or_hide_a_side():
 
 
 def test_empty_settings_write_nothing_into_a_plotly_layout():
-    assert _advanced_plotly_layout({}) == {}
-    assert _advanced_plotly_layout(None) == {}
+    assert advanced_plotly_layout({}) == {}
+    assert advanced_plotly_layout(None) == {}
 
 
 def test_a_title_edit_writes_no_grid_or_frame_into_a_plotly_layout():
-    layout = _advanced_plotly_layout({"title": "Edited", "titleElement": {"text": "Edited"}})
+    layout = advanced_plotly_layout({"titleElement": {"text": "Edited"}})
     for axis in ("xaxis", "yaxis"):
         written = set(layout.get(axis, {}))
         assert not written & {
@@ -115,13 +139,13 @@ def test_a_title_edit_writes_no_grid_or_frame_into_a_plotly_layout():
 
 
 def test_a_plotly_grid_colour_does_not_switch_the_grid_or_restyle_it():
-    layout = _advanced_plotly_layout({"gridLineColor": "#ff0000"})
+    layout = advanced_plotly_layout({"gridLineColor": "#ff0000"})
     for axis in ("xaxis", "yaxis"):
         assert layout[axis] == {"gridcolor": "#ff0000"}
 
 
 def test_a_plotly_frame_colour_does_not_draw_a_frame():
-    layout = _advanced_plotly_layout({"axisLineColor": "#ff0000"})
+    layout = advanced_plotly_layout({"axisLineColor": "#ff0000"})
     for axis in ("xaxis", "yaxis"):
         assert "showline" not in layout[axis]
         assert "ticks" not in layout[axis]
@@ -129,7 +153,7 @@ def test_a_plotly_frame_colour_does_not_draw_a_frame():
 
 
 def test_plotly_sides_decide_lines_and_ticks_and_nothing_about_colour():
-    layout = _advanced_plotly_layout(
+    layout = advanced_plotly_layout(
         {"axisLineTop": False, "axisLineRight": False, "axisLineBottom": True, "axisLineLeft": True}
     )
     assert layout["xaxis"]["showline"] is True and layout["xaxis"]["mirror"] is False

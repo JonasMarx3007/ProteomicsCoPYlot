@@ -118,7 +118,7 @@ def reset_condition_palettes(*, all_sessions: bool = False) -> None:
         _PALETTE_SESSIONS.clear()
     else:
         _PALETTE_SESSIONS.pop(get_session_id(), None)
-    invalidate_runtime_cache("palette:reset-all")
+    invalidate_runtime_cache("palette:reset-all", all_sessions=all_sessions)
 
 
 def snapshot_condition_palette_session_state():

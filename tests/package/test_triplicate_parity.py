@@ -32,8 +32,10 @@ def _r_functions(path: Path) -> set[str]:
 _WEB_APP_RENDERING = re.compile(r"(_png|_html|_plot|_heatmap)$|^qc_")
 
 BACKEND_ONLY_ANALYSIS = frozenset({
+    "multipletests",  # statsmodels-shaped adapter over stats_core.bh_adjust; pip/R keep p.adjust / their own fallback.
     "comparison_contrast",  # UI contrast label, not a separate statistical method.
     "sample_label_frame",  # Plot/report display labels, not a statistical method.
+    "condition_sample_labels",  # The "condition_N" axis label rule behind sample_label_frame.
     "entity_labels_for_kind",  # Entity nouns for report/UI prose, not a method.
     "intensity_unit_label",  # UI units for stored phosphoprotein provenance.
     "parse_selection_list",  # JSON/legacy HTTP selection transport.
@@ -56,9 +58,6 @@ BACKEND_ONLY_ANALYSIS = frozenset({
     "histogram",
     "normal_fit_curve",
     "qqnorm_plot_data",
-    "completeness_tables",
-    "completeness_missing_value_plot_peptide",
-    "completeness_missing_value_plot_precursor",
 })
 
 PIP_ONLY = frozenset({
@@ -71,24 +70,17 @@ PIP_ONLY = frozenset({
 })
 
 R_ONLY = frozenset({
-    "missing_bar",
     "numeric_matrix",
     "pivot_wide",
     "plot_colors",
     "plot_heatmap",
     "plot_result",
     "raw_zero_to_na",
-    "rename_samples",
     "require_pkg",
     "restore_layout",
-    "row_zscore",
-    "sample_meta",
     "set_notebook_plot_size",
     "set_plot_margins",
     "venn_base",
-    "volcano_hover_text",
-    "volcano_label_col",
-    "volcano_plot_base",
     "volcano_stats",
     "with_local_seed",
     "workflow_col",

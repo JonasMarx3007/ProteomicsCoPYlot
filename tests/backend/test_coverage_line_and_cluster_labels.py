@@ -31,12 +31,12 @@ def coverage_figures(monkeypatch):
     )
     samples = ["a1", "a2", "b1", "b2"]
     meta = pd.DataFrame({"sample": samples, "condition": ["A", "A", "B", "B"]})
-    monkeypatch.setattr(plot_images, "_coverage_frame", lambda kind: frame)
+    monkeypatch.setattr(plot_images, "log2_qc_frame", lambda kind: frame)
     monkeypatch.setattr(plot_images, "_get_sample_columns", lambda kind, df: samples)
     monkeypatch.setattr(plot_images, "_metadata_for_kind", lambda kind, df, cols: meta.copy())
     monkeypatch.setattr(
         plot_images,
-        "_advanced_condition_colors",
+        "advanced_condition_colors",
         lambda kind, plt, conditions, advanced: {c: "#1f77b4" for c in conditions},
     )
     captured = []
@@ -108,7 +108,7 @@ def _heatmap(**kwargs):
 
 def test_cluster_heatmap_has_no_row_labels_unless_asked(monkeypatch):
     monkeypatch.setattr(
-        stats_tools, "_advanced_condition_colors", lambda kind, plt, conditions, advanced: {}
+        stats_tools, "advanced_condition_colors", lambda kind, plt, conditions, advanced: {}
     )
     figure, plt, heatmap = _heatmap(advanced=None)
     assert [t.get_text() for t in heatmap.get_yticklabels()] == []
@@ -117,7 +117,7 @@ def test_cluster_heatmap_has_no_row_labels_unless_asked(monkeypatch):
 
 def test_cluster_heatmap_names_its_rows_clear_of_the_colour_bar(monkeypatch):
     monkeypatch.setattr(
-        stats_tools, "_advanced_condition_colors", lambda kind, plt, conditions, advanced: {}
+        stats_tools, "advanced_condition_colors", lambda kind, plt, conditions, advanced: {}
     )
     figure, plt, heatmap = _heatmap(
         advanced={"rowLabelColor": "#ff0000", "rowLabelSize": 6}, row_labels=True

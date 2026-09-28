@@ -12,6 +12,9 @@ class CompletenessTablesResponse(BaseModel):
     overallMissingPercent: float
     outlierThreshold: float
     outliers: list[str]
+    # Features with no value in any selected sample; excluded from the plot,
+    # the heatmap and both tables.
+    excludedAllMissingCount: int = 0
     sampleSummary: list[dict[str, Any]]
     featureSummary: list[dict[str, Any]]
 

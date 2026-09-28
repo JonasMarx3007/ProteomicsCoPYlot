@@ -79,8 +79,8 @@ test('the shared panel keeps the dot colour behind its own flag', async () => {
 });
 
 test('App shows a card only where the renderer behind that plot key reads it', async () => {
-  const controls = await visibleControlsFunction('App.tsx', 'activeAdvancedPlotKey, comparisonPearsonContextMode');
-  const at = (key, mode = '') => controls(key, mode);
+  const controls = await visibleControlsFunction('App.tsx', 'activeAdvancedPlotKey, contextModes = {}');
+  const at = (key, modes = {}) => controls(key, modes);
 
   // phospho_coverage_png prints no number on any bar, in either mode.
   assert.notEqual(at('phospho:coverage').valueLabels, true);
@@ -107,12 +107,21 @@ test('App shows a card only where the renderer behind that plot key reads it', a
   assert.equal(at('phospho:ksea').referenceLineColor, true);
   assert.equal(at('phospho:ksea').markerColor, false);
 
-  // Only pearson_correlation_html fits and draws the regression line.
-  assert.notEqual(at('comparison:pearson', 'kind=protein|type=Normal').referenceLineColor, true);
-  assert.equal(at('comparison:pearson', 'kind=protein|type=Interactive').referenceLineColor, true);
+  // Both Pearson renderers draw the fit line (the PNG since 2026-09-25), so
+  // the card shows for either type.
+  const pearson = (type) => ({ comparison: { kind: 'protein', type } });
+  assert.equal(at('comparison:pearson', pearson('Normal')).referenceLineColor, true);
+  assert.equal(at('comparison:pearson', pearson('Interactive')).referenceLineColor, true);
   // Its points are drawn without a plot-chosen colour, so the dot colour stays.
-  assert.equal(at('comparison:pearson', 'type=Interactive').markerStyle, true);
-  assert.notEqual(at('comparison:pearson', 'type=Interactive').markerColor, false);
+  assert.equal(at('comparison:pearson', pearson('Interactive')).markerStyle, true);
+  assert.notEqual(at('comparison:pearson', pearson('Interactive')).markerColor, false);
+
+  // The cluster heatmaps label their rows only while "Show feature names" is on,
+  // and the Row labels card follows it. This read the context mode as a
+  // substring of its JSON before; it is a boolean now.
+  assert.equal(at('stats:anova', { 'stats:anova': { showRowLabels: true } }).rowLabels, true);
+  assert.equal(at('stats:anova', { 'stats:anova': { showRowLabels: false } }).rowLabels, false);
+  assert.equal(at('stats:anova').rowLabels, false);
 
   // single_protein_lineplot_plot draws a fixed circle marker and labels its x
   // axis from the annotation.

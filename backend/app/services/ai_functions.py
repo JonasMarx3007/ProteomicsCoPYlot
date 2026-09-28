@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any, cast, get_args
 import json
-from urllib.parse import unquote
 
 import pandas as pd
 
+from app.schemas.assistant import ContextMode
 from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import AnovaRequest, SimulationRequest, EnrichmentRequest, StatsTestType
 from app.services.annotation_store import get_annotation
@@ -19,6 +19,7 @@ from app.services import comparison_tools as _comparison_tools
 from app.services import phospho_tools as _phospho_tools
 from app.services import table_functions as _table_functions
 from app.services.functions import (
+    condition_sample_labels,
     parse_selection_list,
     DATA_SOURCES,
     comparison_contrast,
@@ -187,7 +188,9 @@ def _coverage_rows_from_wide(kind: AnnotationKind) -> tuple[pd.DataFrame, int | 
     if frame.empty:
         return pd.DataFrame(columns=["Sample", "Condition", "Count"]), total_features
 
-    frame["Condition"] = frame["Sample"].map(_extract_condition_from_sample)
+    # Coverage labels are generated as <complete condition>_<replicate number>.
+    # Splitting at the first underscore merges conditions such as Ctx_DMSO/Ctx_RAPA.
+    frame["Condition"] = frame["Sample"].str.rsplit("_", n=1).str[0]
     return frame[["Sample", "Condition", "Count"]].reset_index(drop=True), total_features
 
 
@@ -290,28 +293,20 @@ def _preview_items(values: list[str], limit: int) -> tuple[list[str], bool]:
     return trimmed, len(cleaned) > len(trimmed)
 
 
-def _parse_mode_pairs(mode: str | None) -> dict[str, str]:
-    text = str(mode or "").strip()
-    if not text:
-        return {}
-    if text.startswith("{"):
-        values = json.loads(text)
-        if not isinstance(values, dict):
-            raise ValueError("Context selections must be an object.")
-        return {str(key).lower(): json.dumps(value, ensure_ascii=False) if isinstance(value, list)
-                else str(value) for key, value in values.items()}
-    parsed: dict[str, str] = {}
-    for part in text.split("|"):
-        token = str(part or "").strip()
-        if not token or "=" not in token:
+def _mode_fields(mode: ContextMode | None) -> dict[str, str]:
+    """The view's selections as the text the evidence builders compare.
+
+    Keys are lower-cased. Strings stay as written; booleans, numbers, lists and
+    objects are written as JSON, so a switch reads "true"/"false" and a condition
+    list reads as the JSON array it is -- the same text the pages used to send.
+    An empty selection is no selection.
+    """
+    fields: dict[str, str] = {}
+    for key, value in (mode or {}).items():
+        if value is None or value == "":
             continue
-        key, value = token.split("=", 1)
-        key_norm = str(key or "").strip().lower()
-        value_norm = str(value or "").strip()
-        if not key_norm or not value_norm:
-            continue
-        parsed[key_norm] = value_norm
-    return parsed
+        fields[str(key).lower()] = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return fields
 
 
 def _normalize_stats_test_type(value: object) -> StatsTestType:
@@ -334,8 +329,8 @@ def _stats_test_description(test_type: StatsTestType, *, control: bool = False) 
     return _STATS_TEST_DESCRIPTIONS[test_type]
 
 
-def _normalize_completeness_kind(workflow: str, mode: str | None = None) -> str:
-    mode_pairs = _parse_mode_pairs(mode)
+def _normalize_completeness_kind(workflow: str, mode: ContextMode | None = None) -> str:
+    mode_pairs = _mode_fields(mode)
     requested = str(
         mode_pairs.get("kind")
         or mode_pairs.get("level")
@@ -389,7 +384,7 @@ def _float_from_mode(
 
 
 def _split_mode_list(value: str) -> list[str]:
-    return parse_selection_list(value, legacy_semicolons=True)
+    return parse_selection_list(value, accept_semicolons=True)
 
 
 def _completeness_feature_rows(
@@ -424,6 +419,16 @@ def _completeness_feature_rows(
     return overall_missing, sample_count, rows, None
 
 
+def _excluded_all_missing_count(kind: str, *, include_id: bool) -> int | str:
+    """Features with no value in any selected sample, or 'unknown'."""
+    try:
+        from app.services.completeness_tools import completeness_excluded_feature_count
+
+        return int(completeness_excluded_feature_count(kind, include_id=bool(include_id)))
+    except Exception:
+        return "unknown"
+
+
 def _completeness_tables_payload(
     kind: str,
     *,
@@ -449,8 +454,8 @@ def _completeness_tables_payload(
     return overall_missing, sample_count, sample_rows, feature_rows, outliers, None
 
 
-def _normalize_stats_kind(workflow: str, mode: str | None = None) -> str:
-    mode_pairs = _parse_mode_pairs(mode)
+def _normalize_stats_kind(workflow: str, mode: ContextMode | None = None) -> str:
+    mode_pairs = _mode_fields(mode)
     requested = str(
         mode_pairs.get("kind")
         or mode_pairs.get("dataset")
@@ -526,31 +531,14 @@ def _volcano_ranked_rows(
     return trimmed, total > int(trimmed.shape[0])
 
 
-def _parse_pca_mode(mode: str | None) -> tuple[str, str, str]:
-    method = "PCA"
-    plot_dim = "2D"
-    data_source = "data"
-    raw = str(mode or "").strip()
-    if not raw:
-        return method, plot_dim, data_source
-    for part in raw.split("|"):
-        token = str(part or "").strip()
-        if "=" not in token:
-            continue
-        key, value = token.split("=", 1)
-        key_norm = str(key or "").strip().lower()
-        value_norm = str(value or "").strip()
-        if not value_norm:
-            continue
-        if key_norm in {"method"}:
-            method = value_norm
-        if key_norm in {"plotdim", "plot_dim"}:
-            value_up = value_norm.upper()
-            if value_up in {"2D", "3D"}:
-                plot_dim = value_up
-        if key_norm in {"datasource", "data_source"}:
-            data_source = "imputed" if value_norm.lower() == "imputed" else "data"
-    return method, plot_dim, data_source
+def _parse_pca_mode(mode: ContextMode | None) -> tuple[str, str, str]:
+    fields = _mode_fields(mode)
+    method = fields.get("method", "PCA").strip() or "PCA"
+    plot_dim = str(fields.get("plotdim", fields.get("plot_dim", "2D"))).strip().upper()
+    if plot_dim not in {"2D", "3D"}:
+        plot_dim = "2D"
+    data_source = str(fields.get("datasource", fields.get("data_source", "data"))).strip().lower()
+    return method, plot_dim, "imputed" if data_source == "imputed" else "data"
 
 
 def _pca_variance_lines(
@@ -631,9 +619,7 @@ def _pca_variance_lines(
     if len(component_columns) >= 2 and "condition" in pca_scores.columns:
         scores = pca_scores.copy()
         scores["condition"] = scores["condition"].astype(str)
-        scores["display_sample"] = (
-            scores["condition"] + "_" + (scores.groupby("condition").cumcount() + 1).astype(str)
-        )
+        scores["display_sample"] = condition_sample_labels(scores)
         for _, row in scores.iterrows():
             coordinates = "|".join(
                 f"{column}={_fmt_value(float(row[column]))}" for column in component_columns
@@ -687,7 +673,7 @@ def _pca_variance_lines(
 def _histogram_data_lines(workflow: str) -> list[str]:
     kind = _workflow_kind(workflow)
     try:
-        frame = _plot_images._log2_qc_frame(kind)
+        frame = _plot_images.log2_qc_frame(kind)
         sample_columns = _plot_images._get_sample_columns(kind, frame)
         meta = _plot_images._metadata_for_kind(kind, frame, sample_columns).copy()
     except Exception as exc:
@@ -773,7 +759,7 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5, condition: str = "Al
     value_label = (
         "log10_of_mean_ratio_to_site_median_plus_1"
         if centred
-        else "log10_of_mean_original_scale_intensity_plus_1"
+        else "log10_of_mean_linear_intensity"
     )
     measure_key = "log10_mean_ratio_to_site_median" if centred else "log10_mean_intensity"
     lines = [
@@ -798,7 +784,7 @@ def _correlation_data_lines(workflow: str, *, limit: int = 6) -> list[str]:
         # Reconstructed linear intensities give a different r for the same samples
         # (mean 0.87 vs 0.94 on replicate data), so the chat answer would contradict
         # the figure the user is looking at.
-        frame = _plot_images._log2_qc_frame(kind)
+        frame = _plot_images.log2_qc_frame(kind)
         sample_columns = _plot_images._get_sample_columns(kind, frame)
         meta = _plot_images._metadata_for_kind(kind, frame, sample_columns).copy()
     except Exception as exc:
@@ -808,9 +794,7 @@ def _correlation_data_lines(workflow: str, *, limit: int = 6) -> list[str]:
 
     meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
-    meta["display_sample"] = (
-        meta["condition"] + "_" + (meta.groupby("condition").cumcount() + 1).astype(str)
-    )
+    meta["display_sample"] = condition_sample_labels(meta)
     rename_map = dict(zip(meta["sample"], meta["display_sample"]))
     condition_by_display = dict(zip(meta["display_sample"], meta["condition"]))
     numeric = frame[sample_columns].rename(columns=rename_map).apply(pd.to_numeric, errors="coerce")
@@ -1010,6 +994,11 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
                 f"applied={str(bool(imputation.applied)).lower()}:"
                 f"missing_before={imputation.missingBefore}:missing_after={imputation.missingAfter}"
             )
+            if imputation_mode not in {"numerical", "quantile"}:
+                imputation_text = (
+                    "restored:unknown:parameters=unknown:"
+                    f"applied={str(bool(imputation.applied)).lower()}"
+                )
         lines.append(
             f"project_dataset|kind={kind}|status=loaded|filename={filename}|{dataset_details}|annotation=available|"
             f"filtered_rows={int(annotation.filtered_data.shape[0])}|samples={sample_count}|conditions={condition_count}|"
@@ -1019,14 +1008,14 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("general_proteomics_context", "\n".join(lines))
 
 
-def qc_coverage_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def qc_coverage_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    parameters = _parse_mode_pairs(mode)
+    parameters = _mode_fields(mode)
     level = parameters.get("level", "peptide")
     try:
         if workflow_key == "peptide":
             rows, total_features = _coverage_rows_from_peptide(
-                quantity_column=unquote(parameters.get("quantitycolumn", "")) or None, level=level)
+                quantity_column=parameters.get("quantitycolumn") or None, level=level)
         else:
             rows, total_features = _coverage_rows_from_wide(_workflow_kind(workflow_key))
         conditions = rows["Condition"].astype(str).tolist() if "Condition" in rows.columns else []
@@ -1064,9 +1053,9 @@ def qc_histogram_intensity(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("qc_histogram_intensity", text)
 
 
-def qc_boxplot_intensity(workflow: str = "protein", mode: str = "Mean") -> dict[str, Any]:
+def qc_boxplot_intensity(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_key = _normalize_boxplot_mode(mode)
+    mode_key = _normalize_boxplot_mode(_mode_fields(mode).get("mode", "Mean"))
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
 
     try:
@@ -1236,7 +1225,7 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     )
     lines.append(
         "cov_formula|CV=(SD/mean)*100|SD=sample_standard_deviation_ddof_1|"
-        "scale=linear_intensity|source=uploaded_intensities_before_normalization_and_imputation|"
+        "scale=linear_intensity|source=normalized_unfiltered_non_imputed_data_back_transformed_to_linear|"
         "log2_uploads=back_transformed_to_linear|missing=excluded_not_zero_filled|nonfinite_CV=excluded"
     )
     lines.append(
@@ -1302,11 +1291,11 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("qc_cov_plot", "\n".join(lines))
 
 
-def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def qc_pca_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
     method, plot_dim, data_source = _parse_pca_mode(mode)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     random_state = int(
         _float_from_mode(mode_pairs, "randomstate", "random_state", default=42.0, minimum=0.0)
     )
@@ -1377,7 +1366,7 @@ def qc_pca_plot(workflow: str = "protein", mode: str | None = None) -> dict[str,
 
 def qc_abundance_plot(
     workflow: str = "protein",
-    mode: str | None = None,
+    mode: ContextMode | None = None,
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     entity_singular, entity_plural = _workflow_entity_labels(workflow_key)
@@ -1437,7 +1426,7 @@ def qc_abundance_plot(
     lines.extend(
         _abundance_data_lines(
             workflow_key,
-            condition=unquote(_parse_mode_pairs(mode).get("condition", "All Conditions")),
+            condition=_mode_fields(mode).get("condition", "All Conditions"),
             limit=6,
         )
     )
@@ -1527,9 +1516,9 @@ def qc_correlation_plot(
     return _text_payload("qc_correlation_plot", "\n".join(lines))
 
 
-def peptide_rt_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+def peptide_rt_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
 
     method = str(mode_pairs.get("method", "Hexbin Plot")).strip() or "Hexbin Plot"
     add_line = _bool_from_mode(mode_pairs, "addline", "add_line", default=False)
@@ -1625,9 +1614,9 @@ def peptide_rt_plot(workflow: str = "peptide", mode: str | None = None) -> dict[
     return _text_payload("peptide_rt_plot", "\n".join(lines))
 
 
-def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
 
     include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
     header = _bool_from_mode(mode_pairs, "header", default=True)
@@ -1787,9 +1776,9 @@ def peptide_modification_plot(workflow: str = "peptide", mode: str | None = None
     return _text_payload("peptide_modification_plot", "\n".join(lines))
 
 
-def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
 
     include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
     show_text = _bool_from_mode(mode_pairs, "text", default=True)
@@ -1957,9 +1946,9 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: str | None = N
     return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
 
 
-def peptide_sequence_coverage(workflow: str = "peptide", mode: str | None = None) -> dict[str, Any]:
+def peptide_sequence_coverage(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
 
     species = str(mode_pairs.get("species", "human")).strip().lower()
     if species not in {"human", "mouse"}:
@@ -2026,6 +2015,8 @@ def peptide_sequence_coverage(workflow: str = "peptide", mode: str | None = None
 
     coverage_percent = float(payload.get("coveragePercent", 0.0))
     matching_peptide_count = int(payload.get("matchingPeptideCount", 0) or 0)
+    assigned_peptide_count = int(payload.get("assignedPeptideCount", matching_peptide_count) or 0)
+    unmapped_peptides = [str(value) for value in list(payload.get("unmappedPeptides") or [])]
     sequence_text = str(payload.get("sequenceText", "") or "")
     sequence_lines = [line for line in sequence_text.splitlines() if line.strip()]
     sequence_preview, sequence_preview_truncated = _preview_items(sequence_lines, 12)
@@ -2033,8 +2024,15 @@ def peptide_sequence_coverage(workflow: str = "peptide", mode: str | None = None
     lines.append(
         "peptide_sequence_coverage_result|"
         f"protein={_safe_context_text(str(payload.get('protein') or protein))}|species={_safe_context_text(str(payload.get('species') or species))}|"
-        f"coverage_percent={_fmt_value(coverage_percent)}|matching_peptide_count={matching_peptide_count}|sequence_text_lines={len(sequence_lines)}"
+        f"coverage_percent={_fmt_value(coverage_percent)}|matching_peptide_count={matching_peptide_count}|"
+        f"assigned_peptide_count={assigned_peptide_count}|unmapped_peptide_count={len(unmapped_peptides)}|sequence_text_lines={len(sequence_lines)}"
     )
+    if unmapped_peptides:
+        lines.append(
+            "peptide_sequence_coverage_warning|"
+            f"unmapped_peptides={_safe_context_text(';'.join(unmapped_peptides[:10]))}|"
+            "note=assigned_to_the_protein_group_but_absent_from_the_selected_sequence_not_counted_in_coverage_check_isoform_or_database_variant"
+        )
     lines.append(
         f"peptide_sequence_coverage_sequence_preview|line_count={len(sequence_preview)}|preview_truncated={'true' if sequence_preview_truncated else 'false'}|lines={_safe_context_text(' || '.join(sequence_preview))}"
     )
@@ -2047,7 +2045,7 @@ def peptide_sequence_coverage(workflow: str = "peptide", mode: str | None = None
     return _text_payload("peptide_sequence_coverage", "\n".join(lines))
 
 
-def completeness_missing_value_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def completeness_missing_value_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     kind = _normalize_completeness_kind(workflow_key, mode)
     entity_singular, entity_plural = _COMPLETENESS_KIND_LABELS.get(kind, _COMPLETENESS_KIND_LABELS["protein"])
@@ -2091,6 +2089,11 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: str | None 
         lines.append(
             f"missing_tables_overall|overall_missing_values_percent={_fmt_value(overall_missing if overall_missing is not None else 0.0)}"
         )
+        lines.append(
+            "missing_excluded_features|"
+            f"no_value_in_any_selected_sample={_excluded_all_missing_count(kind, include_id=True)}|"
+            "excluded_from=plot,heatmap,tables"
+        )
         lines.append(f"missing_tables_samples|count={sample_count}")
         lines.append(f"missing_tables_feature_distribution|rows={len(feature_rows)}")
         for missing_count, feature_count, percent_value in feature_rows:
@@ -2124,7 +2127,7 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: str | None 
     return _text_payload("completeness_missing_value_plot", "\n".join(lines))
 
 
-def completeness_missing_value_heatmap(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def completeness_missing_value_heatmap(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     kind = _normalize_completeness_kind(workflow_key, mode)
     _, entity_plural = _COMPLETENESS_KIND_LABELS.get(kind, _COMPLETENESS_KIND_LABELS["protein"])
@@ -2206,9 +2209,9 @@ def completeness_missing_value_heatmap(workflow: str = "protein", mode: str | No
     return _text_payload("completeness_missing_value_heatmap", "\n".join(lines))
 
 
-def completeness_missing_value_tables(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def completeness_missing_value_tables(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_completeness_kind(workflow_key, mode)
     _, entity_plural = _COMPLETENESS_KIND_LABELS.get(kind, _COMPLETENESS_KIND_LABELS["protein"])
     outlier_threshold = _float_from_mode(
@@ -2244,6 +2247,11 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
     else:
         lines.append(
             f"missing_tables_overall|overall_missing_values_percent={_fmt_value(overall_missing if overall_missing is not None else 0.0)}"
+        )
+        lines.append(
+            "missing_tables_excluded_features|"
+            f"no_value_in_any_selected_sample={_excluded_all_missing_count(kind, include_id=include_id)}|"
+            "excluded_from=plot,heatmap,tables"
         )
         lines.append(f"missing_tables_samples|count={sample_count}|rows={len(sample_rows)}")
         for row in sample_rows:
@@ -2309,7 +2317,7 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: str | Non
     return _text_payload("completeness_missing_value_tables", "\n".join(lines))
 
 
-def data_distribution_summary(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def data_distribution_summary(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     from app.services.data_tools import distribution_summary
     if workflow == "peptide":
         raise ValueError("Distribution summary requires protein or phosphorylation data.")
@@ -2322,10 +2330,10 @@ def data_distribution_summary(workflow: str = "protein", mode: str | None = None
     return _text_payload("data_distribution_summary", "\n".join(lines))
 
 
-def stats_simulation_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_simulation_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     if workflow == "peptide":
         raise ValueError("Simulation does not support peptide-level data.")
-    pairs = _parse_mode_pairs(mode)
+    pairs = _mode_fields(mode)
     settings = {name: pairs[name.lower()] for name in SimulationRequest.model_fields
                 if name != "kind" and name.lower() in pairs}
     payload = SimulationRequest(kind=_workflow_kind(workflow), **settings)
@@ -2346,10 +2354,10 @@ def stats_simulation_plot(workflow: str = "protein", mode: str | None = None) ->
     return _text_payload("stats_simulation_plot", "\n".join(lines))
 
 
-def phospho_ksea_export(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def phospho_ksea_export(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     if workflow != "phosphosite":
         raise ValueError("KSEA export requires phosphosite data.")
-    pairs = _parse_mode_pairs(mode)
+    pairs = _mode_fields(mode)
     names = {"condition1": "condition1", "condition2": "condition2", "source": "source",
              "dataSource": "data_source", "condition1Control": "condition1_control", "condition2Control": "condition2_control",
              "pValueThreshold": "p_value_threshold", "log2fcThreshold": "log2fc_threshold", "testType": "test_type", "useUncorrected": "use_uncorrected"}
@@ -2376,8 +2384,8 @@ def phospho_ksea_export(workflow: str = "phosphosite", mode: str | None = None) 
     return _text_payload("phospho_ksea_export", "\n".join(lines))
 
 
-def analysis_canvas_context(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
-    pairs = _parse_mode_pairs(mode)
+def analysis_canvas_context(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
+    pairs = _mode_fields(mode)
     if "tiles" not in pairs:
         raise ValueError("Open the canvas to inspect its current composition.")
     tiles = json.loads(pairs.get("tiles", "[]"))
@@ -2390,11 +2398,11 @@ def analysis_canvas_context(workflow: str = "protein", mode: str | None = None) 
     ]))
 
 
-def stats_anova_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_anova_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     if workflow_key == "peptide":
         raise ValueError("ANOVA evidence does not support peptide-level data.")
-    pairs = _parse_mode_pairs(mode)
+    pairs = _mode_fields(mode)
     settings = {name: pairs[name.lower()] for name in AnovaRequest.model_fields
                 if name != "kind" and name.lower() in pairs}
     payload = AnovaRequest(kind=_workflow_kind(workflow_key), **settings)
@@ -2444,10 +2452,10 @@ def stats_anova_plot(workflow: str = "protein", mode: str | None = None) -> dict
 
 def stats_volcano_plot(
     workflow: str = "protein",
-    mode: str | None = None,
+    mode: ContextMode | None = None,
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     entity_singular, entity_plural = _entity_labels_from_stats_kind(kind)
 
@@ -2707,9 +2715,9 @@ def stats_volcano_plot(
     return _text_payload("stats_volcano_plot", "\n".join(lines))
 
 
-def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
 
@@ -2939,7 +2947,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
                 "ora_term|"
                 f"cluster={result.selectedCluster}|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
                 f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
-                f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
+                f"gene_ratio={_fmt_value(term.geneRatio)}|hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
                 f"intersection_genes_count={len(term.intersectingGenes)}|intersection_genes_preview={_safe_context_text(';'.join(genes_preview))}|"
                 f"intersection_preview_truncated={'true' if preview_truncated else 'false'}"
             )
@@ -2992,7 +3000,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
             "ora_term|"
             f"cluster=upregulated|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
             f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
-            f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
+            f"gene_ratio={_fmt_value(term.geneRatio)}|hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
             f"intersection_genes_count={len(term.intersectingGenes)}|intersection_genes_preview={_safe_context_text(';'.join(genes_preview))}|"
             f"intersection_preview_truncated={'true' if preview_truncated else 'false'}"
         )
@@ -3003,7 +3011,7 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
             "ora_term|"
             f"cluster=downregulated|rank={index}|source={_safe_context_text(term.source)}|term_id={_safe_context_text(term.termId)}|"
             f"name={_safe_context_text(term.name)}|term_size={term.termSize}|intersection_size={term.intersectionSize}|"
-            f"hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
+            f"gene_ratio={_fmt_value(term.geneRatio)}|hit_percent={_fmt_value(term.hitPercent)}|p_value={_fmt_value(term.pValue)}|adj_p_value={_fmt_value(term.adjPValue)}|"
             f"intersection_genes_count={len(term.intersectingGenes)}|intersection_genes_preview={_safe_context_text(';'.join(genes_preview))}|"
             f"intersection_preview_truncated={'true' if preview_truncated else 'false'}"
         )
@@ -3023,9 +3031,9 @@ def stats_ora_plot(workflow: str = "protein", mode: str | None = None) -> dict[s
     return _text_payload("stats_ora_plot", "\n".join(lines))
 
 
-def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def stats_pathway_heatmap_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
 
@@ -3191,9 +3199,9 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: str | None = Non
     return _text_payload("stats_pathway_heatmap_plot", "\n".join(lines))
 
 
-def comparison_pearson_correlation(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def comparison_pearson_correlation(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
@@ -3338,9 +3346,9 @@ def comparison_pearson_correlation(workflow: str = "protein", mode: str | None =
     return _text_payload("comparison_pearson_correlation", "\n".join(lines))
 
 
-def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def comparison_venn_diagram(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     _, entity_plural = _entity_labels_from_stats_kind(kind)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
@@ -3491,9 +3499,9 @@ def comparison_venn_diagram(workflow: str = "protein", mode: str | None = None) 
     return _text_payload("comparison_venn_diagram", "\n".join(lines))
 
 
-def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     cutoff = _float_from_mode(
         mode_pairs,
         "cutoff",
@@ -3580,9 +3588,9 @@ def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: str | None = N
     return _text_payload("phospho_phosphosite_plot", "\n".join(lines))
 
 
-def phospho_phosphosite_coverage_plot(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def phospho_phosphosite_coverage_plot(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     mode_raw = str(mode_pairs.get("mode", "Normal")).strip().lower()
     plot_mode = "Summary" if mode_raw == "summary" else "Normal"
     include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
@@ -3752,9 +3760,9 @@ def phospho_phosphosite_coverage_plot(workflow: str = "phosphosite", mode: str |
     return _text_payload("phospho_phosphosite_coverage_plot", "\n".join(lines))
 
 
-def phospho_phosphosite_distribution_plot(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def phospho_phosphosite_distribution_plot(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     cutoff = _float_from_mode(
         mode_pairs,
         "cutoff",
@@ -3847,7 +3855,7 @@ def phospho_phosphosite_distribution_plot(workflow: str = "phosphosite", mode: s
     return _text_payload("phospho_phosphosite_distribution_plot", "\n".join(lines))
 
 
-def phospho_sty_plot(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def phospho_sty_plot(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
 
     lines: list[str] = []
@@ -3919,9 +3927,9 @@ def phospho_sty_plot(workflow: str = "phosphosite", mode: str | None = None) -> 
     return _text_payload("phospho_sty_plot", "\n".join(lines))
 
 
-def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str | None = None) -> dict[str, Any]:
+def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
 
     condition1 = str(mode_pairs.get("condition1", "")).strip()
     condition2 = str(mode_pairs.get("condition2", "")).strip()
@@ -3952,10 +3960,13 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
         )
     )
     show_phosphosites = _bool_from_mode(mode_pairs, "showphosphosites", "show_phosphosites", default=True)
+    data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
+    if data_source not in {"data", "filtered", "imputed"}:
+        data_source = "data"
 
     lines: list[str] = []
     lines.append(
-        f"phosprot_regulation_overview|workflow={workflow_key}|dataset_level=phospho|entity=phosphoproteins"
+        f"phosprot_regulation_overview|workflow={workflow_key}|dataset_level=phospho|entity=phosphoproteins|data_source={data_source}"
     )
     lines.append(
         "phosprot_regulation_scope|purpose=descriptive_protein_level_view_of_cumulative_significant_phosphosite_log2_fold_change_contributions"
@@ -3964,7 +3975,7 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
         "phosprot_regulation_function|plot_function=phosprot_regulation"
     )
     lines.append(
-        f"phosprot_regulation_parameters|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|test_type={test_type}|use_uncorrected={'true' if use_uncorrected else 'false'}|max_hover_sites={max_hover_sites}|show_phosphosites={'true' if show_phosphosites else 'false'}"
+        f"phosprot_regulation_parameters|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|test_type={test_type}|use_uncorrected={'true' if use_uncorrected else 'false'}|max_hover_sites={max_hover_sites}|show_phosphosites={'true' if show_phosphosites else 'false'}|data_source={data_source}"
     )
     lines.append(
         f"phosprot_regulation_testing|selected_test={test_type}|"
@@ -3998,9 +4009,9 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: str
     return _text_payload("phospho_phosprot_regulation_plot", "\n".join(lines))
 
 
-def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def single_protein_boxplot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     entity_singular, entity_plural = _entity_labels_from_stats_kind(kind)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
@@ -4139,9 +4150,9 @@ def single_protein_boxplot(workflow: str = "protein", mode: str | None = None) -
     return _text_payload("single_protein_boxplot", "\n".join(lines))
 
 
-def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) -> dict[str, Any]:
+def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     kind = _normalize_stats_kind(workflow_key, mode)
     entity_singular, entity_plural = _entity_labels_from_stats_kind(kind)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
@@ -4302,9 +4313,9 @@ def single_protein_lineplot(workflow: str = "protein", mode: str | None = None) 
     return _text_payload("single_protein_lineplot", "\n".join(lines))
 
 
-def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: str | None = None) -> dict[str, Any]:
+def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _parse_mode_pairs(mode)
+    mode_pairs = _mode_fields(mode)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
     if data_source not in {"data", "filtered", "imputed"}:
         data_source = "data"

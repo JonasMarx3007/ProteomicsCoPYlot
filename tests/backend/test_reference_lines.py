@@ -15,12 +15,16 @@ from pathlib import Path
 
 import pytest
 
-from app.services.plot_images import ReferenceLine, resolve_reference_line
+from app.services.plot_styling import (
+    ReferenceLine,
+    resolve_reference_line,
+)
 
 SERVICES = Path(__file__).resolve().parents[2] / "backend" / "app" / "services"
 
 # Every module that draws a line over its data.
 LINE_MODULES = [
+    "plot_styling.py",
     "plot_images.py",
     "stats_tools.py",
     "phospho_tools.py",
@@ -81,20 +85,20 @@ def test_both_renderers_are_given_the_same_colour_and_width() -> None:
 
 
 def test_no_renderer_reads_the_colour_behind_the_resolver_s_back() -> None:
-    """The old spelling, `_advanced_text(advanced, "referenceLineColor")`, read
+    """The old spelling, `advanced_text(advanced, "referenceLineColor")`, read
     the colour and nothing else -- which is how a line ended up honouring a
     colour setting while ignoring the switch beside it."""
     for name in LINE_MODULES:
         source = (SERVICES / name).read_text(encoding="utf-8")
-        # `plot_images.py` is where the resolver lives, so it reads the key
+        # `plot_styling.py` is where the resolver lives, so it reads the key
         # exactly once, inside it.
-        expected = 1 if name == "plot_images.py" else 0
+        expected = 1 if name == "plot_styling.py" else 0
         assert source.count('"referenceLineColor"') == expected, (
             f"{name} reads referenceLineColor directly; it should call "
             "resolve_reference_line so the visibility, style and width settings "
             "reach it too"
         )
-    resolver = (SERVICES / "plot_images.py").read_text(encoding="utf-8")
+    resolver = (SERVICES / "plot_styling.py").read_text(encoding="utf-8")
     body = resolver[resolver.index("def resolve_reference_line") :]
     assert '"referenceLineColor"' in body[: body.index("\ndef ", 1)]
 

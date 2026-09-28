@@ -89,11 +89,13 @@ test('rtInteractive is exactly "Type is Interactive"', async () => {
 });
 
 test('both fields can actually be disabled', async () => {
-  const text = await sourceOf(PAGE);
   // A `disabled` prop that the component ignores would leave the control live.
-  for (const component of ['SelectField', 'CommittedNumberField']) {
-    const start = text.indexOf(`function ${component}(`);
-    assert.ok(start > 0, `${component} is no longer declared in the page`);
+  // The dropdown is the shared component now; the number field is still local.
+  for (const [component, path] of [['SelectField', 'components/SelectField.tsx'],
+                                   ['CommittedNumberField', PAGE]]) {
+    const text = await sourceOf(path);
+    const start = text.search(new RegExp(`(?:export default )?function ${component}\\(`));
+    assert.ok(start > 0, `${component} is no longer declared in ${path}`);
     const body = text.slice(start, text.indexOf('\n}\n', start));
     assert.match(body, /disabled = false,/, `${component} does not accept a disabled prop`);
     assert.match(body, /disabled=\{disabled\}/, `${component} never passes disabled to its input`);
@@ -103,6 +105,6 @@ test('both fields can actually be disabled', async () => {
 test('neither renderer was changed to honour the greyed-out controls', async () => {
   // The gate is a UI change only: Mode and Bins still reach the static plot.
   const text = await sourceOf(PAGE);
-  assert.match(text, /`method=\$\{rt\.method\}`/);
-  assert.match(text, /`bins=\$\{String\(rt\.bins\)\}`/);
+  assert.match(text, /method: rt\.method,/);
+  assert.match(text, /bins: rt\.bins,/);
 });

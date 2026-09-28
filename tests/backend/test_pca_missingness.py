@@ -46,6 +46,7 @@ def test_pca_feature_summary_reports_complete_variable_features(monkeypatch) -> 
     summary = plot_images.qc_pca_feature_summary("protein")
 
     assert summary == {
+        "dbscan": None,
         "ellipseSkippedGroups": [],
         "featuresTotal": 4,
         "featuresComplete": 2,

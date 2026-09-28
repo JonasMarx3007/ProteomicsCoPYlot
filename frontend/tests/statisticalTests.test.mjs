@@ -30,7 +30,7 @@ test("labels distinguish variance assumptions and matched samples", () => {
   assert.match(TEST_TYPE_OPTIONS[1].label, /Welch.*unequal variance/);
   assert.match(TEST_TYPE_OPTIONS[2].label, /Paired.*matched samples/);
 });
-for (const name of ["analysis/AnalysisPage", "stats/StatisticalAnalysisPage", "phospho/KseaPage", "phospho/PhosphoSpecificPage"]) {
+for (const name of ["analysis/AnalysisPage", "stats/VolcanoPanel", "stats/OraPanel", "stats/SimulationPanel", "phospho/KseaPage", "phospho/PhosphoSpecificPage"]) {
   test(`${name} uses the shared options rather than a two-test subset`, async () => {
     const page = await readFile(new URL(`../src/features/${name}.tsx`, import.meta.url), "utf8");
     assert.match(page, /from "\.\.\/\.\.\/lib\/statisticalTests"/);

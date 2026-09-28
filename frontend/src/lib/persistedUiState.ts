@@ -38,13 +38,3 @@ export function writePersistedUiState(key: string, value: unknown): void {
 
 export const readPersistedSessionUiState = readPersistedUiState;
 export const writePersistedSessionUiState = writePersistedUiState;
-
-export function clearPersistedUiState(key: string): void {
-  if (!storageAvailable()) return;
-  const storageKey = fullKey(key);
-  try {
-    globalThis.sessionStorage.removeItem(storageKey);
-  } catch {
-    // ignore sessionStorage failures
-  }
-}

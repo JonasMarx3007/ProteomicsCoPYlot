@@ -254,7 +254,16 @@ def test_the_ui_restores_a_saved_choice_rather_than_upgrading_it() -> None:
 def test_the_ui_offers_what_the_backend_says_exists() -> None:
     helper = (FRONTEND / "lib" / "types.ts").read_text(encoding="utf-8")
     assert "export function dataSourceOptions(" in helper
-    for page in ("stats/StatisticalAnalysisPage.tsx", "qc/QCPipelinePage.tsx",
+    stats_panels = [
+        path for path in sorted((FRONTEND / "features" / "stats").glob("*.tsx"))
+        if "chooseDataSource(" in path.read_text(encoding="utf-8")
+    ]
+    assert len(stats_panels) >= 5, "the statistics panels no longer offer a data source"
+    for path in stats_panels:
+        assert "dataSourceOptions(" in path.read_text(encoding="utf-8"), (
+            f"stats/{path.name} builds its own option list"
+        )
+    for page in ("qc/QCPipelinePage.tsx",
                  "single-protein/SingleProteinPage.tsx", "phospho/KseaPage.tsx"):
         text = (FRONTEND / "features" / page).read_text(encoding="utf-8")
         assert "dataSourceOptions(" in text, f"{page} builds its own option list"

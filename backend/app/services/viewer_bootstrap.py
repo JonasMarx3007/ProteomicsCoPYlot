@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -136,6 +137,9 @@ def load_viewer_state(config_path: Path) -> ViewerBootstrapResult:
     package_configs = _extract_named_dataset_packages(config)
     if not package_configs:
         raise ValueError("viewer_config.json must define at least one named dataset package under 'datasets'.")
+    _validate_log2_flags(package_configs)
+    _validate_metadata_requirements(package_configs, base_dir)
+    _validate_processing_settings(package_configs)
 
     first_package_name = next(iter(package_configs.keys()))
 
@@ -830,15 +834,286 @@ def _extract_metadata_profile_configs(
     return profiles
 
 
-def _log2_flag(config: dict[str, Any], suffix: str) -> bool:
-    raw = config.get(f"log2_transform_{suffix}", True)
+FALSY_VALUES = {"0", "false", "no", "off"}
+
+
+_LOG2_FLAG_KEYS: tuple[tuple[str, str], ...] = (
+    ("protein_file", "protein"),
+    ("phospho_file", "phospho"),
+    ("phosprot_file", "phosphoprotein"),
+)
+
+
+def _parse_log2_flag(raw: Any) -> bool | None:
+    """true/false in any of the spellings the config files use, else None."""
     if isinstance(raw, bool):
         return raw
-    if isinstance(raw, (int, float)):
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw in (0, 1):
         return bool(raw)
     if isinstance(raw, str):
-        return raw.strip().lower() in TRUTHY_VALUES
-    return True
+        text = raw.strip().lower()
+        if text in TRUTHY_VALUES:
+            return True
+        if text in FALSY_VALUES:
+            return False
+    return None
+
+
+def _validate_log2_flags(package_configs: dict[str, dict[str, Any]]) -> None:
+    """Every level with a file must say whether that file is already log2 transformed.
+
+    The viewer never auto-detects the scale and does not fall back: a linear
+    matrix loaded as log2 gives fold changes, CVs and tests that are
+    numerically valid and wrong everywhere, so a config that leaves the
+    question open is refused as a whole, before any file is read.
+    """
+    problems: list[str] = []
+    for package_name, package_config in package_configs.items():
+        for file_key, suffix in _LOG2_FLAG_KEYS:
+            file_value = str(package_config.get(file_key, "") or "").strip()
+            if file_value.lower() in NOT_PROVIDED_VALUES:
+                continue
+            key = f"log2_transform_{suffix}"
+            if key not in package_config:
+                problems.append(f"'{package_name}' has '{file_key}' but no '{key}'")
+            elif _parse_log2_flag(package_config.get(key)) is None:
+                problems.append(
+                    f"'{package_name}' has an unreadable '{key}': {package_config.get(key)!r}"
+                )
+    if problems:
+        raise ValueError(
+            "viewer_config.json must state for every dataset file whether it is already log2 "
+            "transformed (log2_transform_protein / log2_transform_phospho / "
+            "log2_transform_phosphoprotein: true or false). " + "; ".join(problems) + "."
+        )
+
+
+_METADATA_REQUIREMENTS: tuple[tuple[str, str], ...] = (
+    ("protein_file", "meta_file"),
+    ("phospho_file", "meta_phospho_file"),
+    ("phosprot_file", "meta_phospho_file"),
+)
+
+
+def _configured_file(config: dict[str, Any], key: str) -> str | None:
+    """The configured path text, or None when the key is absent or a placeholder."""
+    value = str(config.get(key, "") or "").strip()
+    if not value or value.lower() in NOT_PROVIDED_VALUES or value.lower() in {"null", "na", "n/a", "-"}:
+        return None
+    return value
+
+
+def _validate_metadata_requirements(
+    package_configs: dict[str, dict[str, Any]], base_dir: Path
+) -> None:
+    """Every dataset file needs its metadata in every profile, and the file must exist.
+
+    A dataset without sample metadata is not a pipeline: nothing can be
+    annotated, filtered or tested, and the level would sit in the viewer as an
+    unusable table. Like the log2 flag, this is refused as a whole before any
+    file is read, listing every gap.
+    """
+    problems: list[str] = []
+    for package_name, package_config in package_configs.items():
+        levels = [
+            (file_key, meta_key)
+            for file_key, meta_key in _METADATA_REQUIREMENTS
+            if _configured_file(package_config, file_key) is not None
+        ]
+        if not levels:
+            continue
+        profiles = _extract_metadata_profile_configs(package_config, warnings=[], package_name=package_name)
+        if not profiles:
+            problems.append(f"'{package_name}' has dataset files but no metadata (meta_file / metadata_profiles)")
+            continue
+        for profile_name, profile_config in profiles.items():
+            for file_key, meta_key in levels:
+                raw = _configured_file(profile_config, meta_key)
+                if raw is None:
+                    problems.append(f"'{package_name}' profile '{profile_name}' has '{file_key}' but no '{meta_key}'")
+                    continue
+                path = _resolve_data_path(raw, base_dir)
+                if not path.is_file():
+                    problems.append(
+                        f"'{package_name}' profile '{profile_name}': '{meta_key}' does not exist ({raw})"
+                    )
+    if problems:
+        raise ValueError(
+            "viewer_config.json must provide sample metadata for every dataset file "
+            "(meta_file for protein_file; meta_phospho_file for phospho_file and phosprot_file). "
+            + "; ".join(dict.fromkeys(problems)) + "."
+        )
+
+
+_FILTER_LEVELS: tuple[tuple[str, str], ...] = (
+    ("protein_file", "protein"),
+    ("phospho_file", "phospho"),
+    ("phosprot_file", "phosphoprotein"),
+)
+_FILTER_MODES = {"per_group", "in_at_least_one_group", "inatleastonegroup", "overall"}
+
+
+def _is_absent_setting(value: Any) -> bool:
+    """A missing key, or the "none" placeholder the shipped configs use for it."""
+    if value is None:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"", "none"}
+
+
+def _validate_filter_settings(package_configs: dict[str, dict[str, Any]]) -> list[str]:
+    """Filtering is off unless configured; once configured, nothing is defaulted.
+
+    A level with no `filter_*_<level>` key is unfiltered. As soon as one of
+    them is present the filter is "on", and then the method, the mode and the
+    method's threshold must all be stated and recognised -- a config that says
+    `filter_min_protein: 3` and nothing else would otherwise run with a mode
+    and a method it never chose. Normalization likewise: absent means none, a
+    value must be one the tool knows.
+    """
+    problems: list[str] = []
+    for package_name, package_config in package_configs.items():
+        for file_key, suffix in _FILTER_LEVELS:
+            if _configured_file(package_config, file_key) is None:
+                continue
+            keys = {name: f"{name}_{suffix}" for name in ("filter_min", "filter_percentage", "filter_method", "filter_mode")}
+            present = {name: key for name, key in keys.items() if key in package_config}
+            where = f"'{package_name}' level '{suffix}'"
+            if present:
+                method = package_config.get(keys["filter_method"])
+                if "filter_method" not in present:
+                    problems.append(f"{where}: filtering is configured but '{keys['filter_method']}' is missing (at_least_n or percentage)")
+                    method = None
+                else:
+                    method = str(method or "").strip().lower()
+                    if method not in {"at_least_n", "percentage"}:
+                        problems.append(f"{where}: '{keys['filter_method']}' must be at_least_n or percentage, got {package_config.get(keys['filter_method'])!r}")
+                        method = None
+                if "filter_mode" not in present:
+                    problems.append(f"{where}: filtering is configured but '{keys['filter_mode']}' is missing (per_group, in_at_least_one_group or overall)")
+                else:
+                    mode_text = str(package_config.get(keys["filter_mode"]) or "").strip().lower().replace("-", "_").replace(" ", "_")
+                    if mode_text not in _FILTER_MODES:
+                        problems.append(f"{where}: '{keys['filter_mode']}' must be per_group, in_at_least_one_group or overall, got {package_config.get(keys['filter_mode'])!r}")
+                if method == "at_least_n":
+                    value = package_config.get(keys["filter_min"])
+                    if "filter_min" not in present or _is_absent_setting(value):
+                        problems.append(f"{where}: method at_least_n needs '{keys['filter_min']}'")
+                    elif _int_from_any(value, default=-1) < 0:
+                        problems.append(f"{where}: '{keys['filter_min']}' must be a whole number >= 0, got {value!r}")
+                elif method == "percentage":
+                    value = package_config.get(keys["filter_percentage"])
+                    if "filter_percentage" not in present or _is_absent_setting(value):
+                        problems.append(f"{where}: method percentage needs '{keys['filter_percentage']}'")
+                    else:
+                        number = _float_from_any(value, default=-1.0)
+                        if not 0.0 <= number <= 100.0:
+                            problems.append(f"{where}: '{keys['filter_percentage']}' must be between 0 and 100, got {value!r}")
+            if suffix != "phosphoprotein":
+                for key in (f"normalization_{suffix}", "normalization"):
+                    if key not in package_config:
+                        continue
+                    raw = package_config.get(key)
+                    if _is_absent_setting(raw) or str(raw).strip().lower() in NOT_PROVIDED_VALUES:
+                        continue
+                    if _normalize_normalization(str(raw)) == "none":
+                        problems.append(f"{where}: '{key}' {raw!r} is not a normalization the tool knows")
+                    break
+    return problems
+
+
+_IMPUTATION_PARAMETERS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "numerical": (
+        ("down_shift", ("down_shift", "downShift")),
+        ("width", ("width",)),
+        ("seed", ("seed",)),
+        ("sample_wise", ("sample_wise", "sampleWise")),
+    ),
+    "quantile": (
+        ("q_value", ("q_value", "qValue", "q", "shift")),
+        ("adjust_std", ("adjust_std", "adjustStd", "adj_std", "variance_modification", "varianceModification")),
+        ("seed", ("seed",)),
+        ("sample_wise", ("sample_wise", "sampleWise")),
+    ),
+}
+
+
+def _validate_imputation_settings(package_configs: dict[str, dict[str, Any]]) -> list[str]:
+    """Imputation is off unless configured; once a mode is on, every parameter is stated.
+
+    `imputation` absent, or its mode "none", means no imputation. A mode that
+    is on (numerical or quantile, in any spelling the tool accepts) must come
+    with all of that mode's parameters; a parameter written as "none" counts
+    as missing. An unknown mode is refused rather than quietly meaning none.
+    """
+    problems: list[str] = []
+    for package_name, package_config in package_configs.items():
+        raw = package_config.get("imputation")
+        if raw is None:
+            continue
+        levels = [suffix for file_key, suffix in _FILTER_LEVELS if _configured_file(package_config, file_key) is not None]
+        for suffix in levels:
+            kind = "phosprot" if suffix == "phosphoprotein" else suffix
+            entry: Any = raw
+            if isinstance(raw, dict):
+                for key in (kind, *(("phosphoprotein",) if kind == "phosprot" else ())):
+                    if raw.get(key) is not None:
+                        entry = raw.get(key)
+                        break
+            where = f"'{package_name}' level '{suffix}': imputation"
+            if isinstance(entry, str):
+                mode_raw, params = entry, {}
+            elif isinstance(entry, dict):
+                params = entry
+                mode_raw = next((entry[k] for k in ("method", "mode") if not _is_absent_setting(entry.get(k))), "none")
+            else:
+                problems.append(f"{where} must be a mode name or an object, got {type(entry).__name__}")
+                continue
+            if _is_absent_setting(mode_raw):
+                continue
+            mode = _normalize_imputation_mode(str(mode_raw))
+            if mode == "none":
+                if str(mode_raw).strip().lower() not in NOT_PROVIDED_VALUES:
+                    problems.append(f"{where} mode {mode_raw!r} is not one the tool knows ({', '.join(sorted(imputation_methods()))})")
+                continue
+            for name, spellings in _IMPUTATION_PARAMETERS[mode]:
+                if all(_is_absent_setting(params.get(spelling)) for spelling in spellings):
+                    problems.append(f"{where} mode {mode} is on but '{name}' is not set")
+                    continue
+                value = next(params[s] for s in spellings if not _is_absent_setting(params.get(s)))
+                field_name = {"down_shift": "downShift", "sample_wise": "sampleWise", "q_value": "qValue", "adjust_std": "adjustStd"}.get(name, name)
+                if name == "sample_wise":
+                    parsed = _parse_log2_flag(value)
+                elif name == "seed":
+                    parsed = _int_from_any(value, default=-1)
+                else:
+                    parsed = _float_from_any(value, default=float("nan"))
+                    if isinstance(value, bool) or not math.isfinite(parsed):
+                        parsed = None
+                try:
+                    ImputationRunRequest(kind=kind, method=mode, **{field_name: parsed})
+                except PydanticValidationError:
+                    problems.append(f"{where}: '{name}' has an invalid value {value!r}")
+    return problems
+
+
+def _validate_processing_settings(package_configs: dict[str, dict[str, Any]]) -> None:
+    problems = _validate_filter_settings(package_configs) + _validate_imputation_settings(package_configs)
+    if problems:
+        raise ValueError(
+            "viewer_config.json turns on filtering or imputation without stating its settings "
+            "(absent keys mean off; once on, every setting of the chosen method must be given). "
+            + "; ".join(dict.fromkeys(problems)) + "."
+        )
+
+
+def _log2_flag(config: dict[str, Any], suffix: str) -> bool:
+    """The validated `log2_transform_<suffix>` flag (see `_validate_log2_flags`)."""
+    value = _parse_log2_flag(config.get(f"log2_transform_{suffix}"))
+    if value is None:
+        raise ValueError(
+            f"'log2_transform_{suffix}' is missing or unreadable in the viewer config."
+        )
+    return value
 
 
 def _normalize_filter_mode(raw: str) -> FilterMode:
@@ -1146,13 +1421,14 @@ def _int_from_any(value: Any, default: int) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        return int(value) if math.isfinite(value) and value.is_integer() else default
     if isinstance(value, str):
         text = value.strip().replace(",", ".")
         if not text:
             return default
         try:
-            return int(float(text))
+            number = float(text)
+            return int(number) if math.isfinite(number) and number.is_integer() else default
         except ValueError:
             return default
     return default

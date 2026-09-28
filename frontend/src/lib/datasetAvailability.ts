@@ -60,14 +60,6 @@ export const initializeBrowserSession = onceAsync(async () => {
   if (BROWSER_SESSION_RESET_ENABLED && !skip) await resetBrowserSessionState();
 });
 
-export function markSkipBrowserSessionResetOnce(): void {
-  try {
-    globalThis.sessionStorage?.setItem(SKIP_BROWSER_SESSION_RESET_ONCE_KEY, "1");
-  } catch {
-    // Ignore sessionStorage access failures.
-  }
-}
-
 export type AnnotationKindOption = {
   value: AnnotationKind;
   label: string;

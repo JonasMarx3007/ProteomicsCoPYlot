@@ -1,9 +1,7 @@
 import PlotImage from "../../components/PlotImage";
 import { AssistantSelect } from "../../components/AssistantFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { contextMode } from "../../lib/plotSerialization";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
-import PreviewTable from "../../components/PreviewTable";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -29,10 +27,13 @@ import {
   dataSourceOptions,
 } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
+import PreviewTable from "../../components/PreviewTable";
+import SelectField from "../../components/SelectField";
+import type { ContextMode } from "../../lib/types";
 
 type Props = {
   activeTab: SingleProteinTab;
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
   advancedPlotOptions?: ReactNode;
 };
 
@@ -399,53 +400,52 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   useEffect(() => {
     if (!onContextModeChange) return;
     if (activeTab !== "boxplot" && activeTab !== "lineplot" && activeTab !== "heatmap") {
-      onContextModeChange("");
+      onContextModeChange(null);
       return;
     }
-    const sanitize = (value: string) => String(value ?? "");
-    const parts =
+    const mode: ContextMode =
       activeTab === "boxplot"
-        ? [
-            `kind=${effectiveKind}`,
-            `dataSource=${dataSource}`,
-            `tab=boxplot`,
-            `identifier=${box.identifier}`,
-            `protein=${sanitize(box.protein)}`,
-            `conditions=${JSON.stringify(box.conditions)}`,
-            `outliers=${box.outliers ? "true" : "false"}`,
-            `dots=${box.dots ? "true" : "false"}`,
-            `sampleN=${box.sampleN ? "true" : "false"}`,
-            `randomSeed=${box.randomSeed}`,
-            `header=${box.header ? "true" : "false"}`,
-            `legend=${box.legend ? "true" : "false"}`,
-          ]
+        ? {
+            kind: effectiveKind,
+            dataSource: dataSource,
+            tab: "boxplot",
+            identifier: box.identifier,
+            protein: box.protein,
+            conditions: box.conditions,
+            outliers: box.outliers,
+            dots: box.dots,
+            sampleN: box.sampleN,
+            randomSeed: box.randomSeed,
+            header: box.header,
+            legend: box.legend,
+          }
         : activeTab === "lineplot"
-        ? [
-            `kind=${effectiveKind}`,
-            `dataSource=${dataSource}`,
-            `tab=lineplot`,
-            `identifier=${line.identifier}`,
-            `proteins=${JSON.stringify(line.proteins)}`,
-            `conditions=${JSON.stringify(line.conditions)}`,
-            `includeId=${line.includeId ? "true" : "false"}`,
-            `header=${line.header ? "true" : "false"}`,
-            `legend=${line.legend ? "true" : "false"}`,
-          ]
-        : [
-            `kind=phospho`,
-            `dataSource=${dataSource}`,
-            `tab=heatmap`,
-            `identifier=${heatmap.identifier}`,
-            `protein=${sanitize(heatmap.protein)}`,
-            `conditions=${JSON.stringify(heatmap.conditions)}`,
-            `includeId=${heatmap.includeId ? "true" : "false"}`,
-            `header=${heatmap.header ? "true" : "false"}`,
-            `filterM1=${heatmap.filterM1 ? "true" : "false"}`,
-            `clusterRows=${heatmap.clusterRows ? "true" : "false"}`,
-            `clusterCols=${heatmap.clusterCols ? "true" : "false"}`,
-            `valueType=${heatmap.valueType}`,
-          ];
-    onContextModeChange(contextMode(parts));
+        ? {
+            kind: effectiveKind,
+            dataSource: dataSource,
+            tab: "lineplot",
+            identifier: line.identifier,
+            proteins: line.proteins,
+            conditions: line.conditions,
+            includeId: line.includeId,
+            header: line.header,
+            legend: line.legend,
+          }
+        : {
+            kind: "phospho",
+            dataSource: dataSource,
+            tab: "heatmap",
+            identifier: heatmap.identifier,
+            protein: heatmap.protein,
+            conditions: heatmap.conditions,
+            includeId: heatmap.includeId,
+            header: heatmap.header,
+            filterM1: heatmap.filterM1,
+            clusterRows: heatmap.clusterRows,
+            clusterCols: heatmap.clusterCols,
+            valueType: heatmap.valueType,
+          };
+    onContextModeChange(mode);
   }, [
     onContextModeChange,
     activeTab,
@@ -857,36 +857,5 @@ function OptionsLayout({
       <div className="flex flex-wrap gap-3">{toggles}</div>
       <div>{sizeRow}</div>
     </div>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  options,
-  labels,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  labels?: Record<string, string>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantSelect
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {labels?.[option] ?? option}
-          </option>
-        ))}
-      </AssistantSelect>
-    </label>
   );
 }

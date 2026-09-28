@@ -3,7 +3,7 @@ import { Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
-import type { StatsTestType, DataSource } from "../../lib/types";
+import type { ContextMode, StatsTestType, DataSource } from "../../lib/types";
 import {
   dataSourceOptions,
 } from "../../lib/types";
@@ -21,13 +21,14 @@ import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { PhosphoOptionsResponse } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
+import SelectField from "../../components/SelectField";
 
 const NO_TABLE_ROWS: Record<string, unknown>[] = [];
 
 type KseaSourceMode = "volcano" | "volcano_control";
 
 type Props = {
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
   advancedPlotOptions?: ReactNode;
 };
 
@@ -78,9 +79,9 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   const [volcanoLoading, setVolcanoLoading] = useState(false);
   const [volcanoError, setVolcanoError] = useState<string | null>(null);
   useEffect(() => {
-    onContextModeChange?.(JSON.stringify({ kind: "phospho", source: sourceMode, dataSource,
+    onContextModeChange?.({ kind: "phospho", source: sourceMode, dataSource,
       condition1, condition2, condition1Control, condition2Control, pValueThreshold,
-      log2fcThreshold, testType, useUncorrected, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken }));
+      log2fcThreshold, testType, useUncorrected, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken });
   }, [onContextModeChange, sourceMode, dataSource, condition1, condition2, condition1Control,
     condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, volcanoHtml, externalEvidenceToken]);
 
@@ -404,7 +405,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                 label="Test Type"
                 value={testType}
                 options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS.map(({ value }) => value) : TEST_TYPE_VALUES}
-                optionLabels={sourceMode === "volcano_control" ? Object.fromEntries(CONTROL_TEST_TYPE_OPTIONS.map(({ value, label }) => [value, label])) : TEST_TYPE_LABELS}
+                labels={sourceMode === "volcano_control" ? Object.fromEntries(CONTROL_TEST_TYPE_OPTIONS.map(({ value, label }) => [value, label])) : TEST_TYPE_LABELS}
                 onChange={(value) => setTestType(value as StatsTestType)}
               />
             </div>
@@ -544,36 +545,6 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   );
 }
 
-function SelectField({
-  label,
-  value,
-  options,
-  optionLabels = {},
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  optionLabels?: Record<string, string>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantSelect
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {optionLabels[option] ?? option}
-          </option>
-        ))}
-      </AssistantSelect>
-    </label>
-  );
-}
 
 function NumericField({
   label,

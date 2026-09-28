@@ -697,7 +697,7 @@ def test_enrichment_tables_agree(results) -> None:
 
     for column in ("source", "term_id", "term_name"):
         assert list(python_table[column].astype(str)) == list(r_table[column].astype(str)), column
-    for column in ("term_size", "intersection_size", "p_value", "adj_p_value"):
+    for column in ("term_size", "intersection_size", "query_size", "gene_ratio", "p_value", "adj_p_value"):
         left = python_table[column].to_numpy(dtype=float)
         right = r_table[column].to_numpy(dtype=float)
         assert np.allclose(left, right, rtol=1e-10, atol=1e-12), column

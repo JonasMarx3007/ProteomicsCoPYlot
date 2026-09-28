@@ -11,7 +11,7 @@ import ts from 'typescript';
 // These tests read the pages' own JSX, so dropping a gate fails here.
 
 const PAIRS = [
-  { page: 'features/stats/StatisticalAnalysisPage.tsx', name: 'volcano', width: 'widthCm', within: 'VolcanoPanel' },
+  { page: 'features/stats/VolcanoPanel.tsx', name: 'volcano', width: 'widthCm', within: 'VolcanoPanel' },
   { page: 'features/qc/QCPipelinePage.tsx', name: 'QC PCA', width: 'pca.widthCm' },
   { page: 'features/qc/QCPipelinePage.tsx', name: 'QC abundance', width: 'abundance.widthCm' },
   { page: 'features/comparison/ComparisonPipelinePage.tsx', name: 'Pearson', width: 'pearson.widthCm' },
@@ -80,12 +80,12 @@ test('the interactive plots are not sent the static figure size', async () => {
     assert.match(text, /withoutStaticSize\(/, `${page} sends the static size to its interactive plot`);
   }
   // The volcano adds the size only inside its static branch.
-  const { text } = await parsed('features/stats/StatisticalAnalysisPage.tsx');
+  const { text } = await parsed('features/stats/VolcanoPanel.tsx');
   assert.match(text, /isStatic \? \{ labelTopUp, labelTopDown, widthCm, heightCm, dpi \}/);
 });
 
 test('the static volcano has an export control', async () => {
-  const { file } = await parsed('features/stats/StatisticalAnalysisPage.tsx');
+  const { file } = await parsed('features/stats/VolcanoPanel.tsx');
   let ok = false;
   const visit = (node) => {
     if (ts.isJsxSelfClosingElement(node) && node.tagName.getText() === 'ImageSection') {

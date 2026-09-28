@@ -37,6 +37,7 @@ if __name__ == "__main__":
             config.write_text(json.dumps({"datasets": {"Synthetic": {
                 "protein_file": str(table), "meta_file": str(meta),
                 "log2_transform_protein": True, "filter_min_protein": 3,
+                "filter_method_protein": "at_least_n", "filter_mode_protein": "per_group",
                 "imputation": {"mode": "none"},
             }}}), encoding="utf-8")
             access = root / "viewer_access.json"
@@ -81,7 +82,7 @@ if __name__ == "__main__":
                         reply = {"task": "canvas_focus", "focus": {"kind": "protein", "query": "P0", "conditions": ["A", "B"]}}
                     elif request.message == "Focus canvas on all phosphosites on protein P0":
                         reply = {"task": "canvas_focus", "focus": {"kind": "phospho", "query": "P0", "allSites": True, "conditions": ["A", "B"]}}
-                    if request.view.module == "analysis.canvas" and '"oraList"' in request.view.mode:
+                    if request.view.module == "analysis.canvas" and "oraList" in request.view.mode.get("tiles", []):
                         reply["module"] = "stats.ora"
                 elif "source" in kwargs["schema"]["properties"]:
                     reply = {"source": "current_result", "query": ""}

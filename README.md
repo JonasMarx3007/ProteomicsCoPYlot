@@ -154,8 +154,8 @@ Viewer portal credential template:
   "credentials": [
     {
       "password_pbkdf2_sha256": "GENERATED_VALUE",
-      "project": "GRK_project",
-      "label": "GRK Project"
+      "project": "example_project",
+      "label": "Example Project"
     }
   ]
 }
@@ -177,8 +177,6 @@ strings are deliberately ignored because proxies and referrers can log them.
 docker compose up -d --build
 docker compose -f docker-compose.viewer.yml up -d --build
 ```
-
-The nginx routing example is `deploy/nginx/proteomics-data.de.conf.example`.
 
 ## Development
 

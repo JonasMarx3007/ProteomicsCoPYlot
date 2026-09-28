@@ -33,6 +33,13 @@ test('empty filtering preserves the source and an options error does not hide it
   assert.ok(dataSourceOptions(null, 'filtered').some(option => option.value === 'filtered'));
 });
 const { compactMap, compactTextElement } = await loadModule('plotSerialization');
+test('QC box and correlation styles survive the shared serialization intact', async () => {
+  const { compactAdvancedPlotSettings } = await loadModule('plotSerialization');
+  const styles = { boxBorderColor: '#123456', boxMedianColor: '#654321',
+    boxOutlierColor: '#abcdef', boxOutlierEdgeColor: '#fedcba', boxOutlierSize: 7,
+    correlationColorMap: 'viridis' };
+  assert.deepEqual(compactAdvancedPlotSettings(styles), styles);
+});
 const { resolveSelectedLocalPath } = await loadModule('localFilePath');
 const { PLOT_DOWNLOAD_FORMAT_OPTIONS, coercePlotDownloadFormat, withPlotDownloadFilename, withPlotDownloadFormat } = await loadModule('plotDownload');
 
@@ -48,7 +55,7 @@ test('ORA restoration separates editable inputs from completed results and rejec
     result: { genes: ['G1'], backgroundGenes: [], backgroundMode: 'global', warnings: [], organism: 'human', correctionMethod: 'BH', databaseSha256: 'synthetic',
       backgroundSize: 100, annotatedBackgroundSize: 100, testedTermCount: 1, evidenceToken: 'saved-token',
       termCounts: { query: { searchSpace: 1, overlapTested: 1, passingCutoff: 1, displayed: 1 } },
-      terms: [{ source: 'GO', termId: 'T', name: 'term', termSize: 20, intersectionSize: 1, hitPercent: 5, pValue: .01, adjPValue: .01, intersectingGenes: ['G1'] }] },
+      terms: [{ source: 'GO', termId: 'T', name: 'term', termSize: 20, intersectionSize: 1, querySize: 1, geneRatio: 1, hitPercent: 5, pValue: .01, adjPValue: .01, intersectingGenes: ['G1'] }] },
   };
   const restored = restore({ sourceMode: 'manual', genesText: 'G2', adjPValueCutoff: .5, completed });
   assert.equal(restored.genesText, 'G2');
@@ -108,12 +115,11 @@ test('assistant passes cancellation through to fetch', async () => {
   } finally { globalThis.fetch = previous; }
 });
 
-test('selection context preserves delimiters, arrays and Unicode', async () => {
-  const { contextMode } = await loadModule('plotSerialization');
+test('a context mode carries names with delimiters and arrays as they are', async () => {
+  // The string grammars had to escape `|`, `=` and `,`; an object has nothing to escape.
   const names = ['P1;P2', 'Drug, high', 'A|B=δ', '100% ready', 'quote"name'];
-  const mode = contextMode([`protein=${names[2]}`, `proteins=${JSON.stringify(names)}`,
-    `conditions=${JSON.stringify(names)}`, 'header=false']);
-  assert.deepEqual(JSON.parse(mode), { protein: names[2], proteins: names, conditions: names, header: 'false' });
+  const mode = { protein: names[2], proteins: names, conditions: names, header: false };
+  assert.deepEqual(JSON.parse(JSON.stringify(mode)), mode);
   const query = new URLSearchParams({ proteins: JSON.stringify(names) });
   assert.deepEqual(JSON.parse(new URLSearchParams(query.toString()).get('proteins')), names);
 });
@@ -303,4 +309,46 @@ test('the download formats a page offers, remembers and names are one list', () 
   assert.equal(coercePlotDownloadFormat(' SVG '), 'svg');
   // An .svg name is replaced, not appended to.
   assert.equal(withPlotDownloadFilename('plot.svg', 'pdf'), 'plot.pdf');
+});
+
+test('the view on screen decides which context mode is read', async () => {
+  const { activeContextSlot, CONTEXT_SLOTS } = await loadModule('contextModes');
+  const nav = { section: '', dataTab: '', qcTab: '', statsTab: '', completenessTab: '', peptideTab: '',
+    singleProteinTab: '', comparisonTab: '', phosphoTab: '' };
+  const at = (overrides) => activeContextSlot({ ...nav, ...overrides });
+  assert.equal(at({ section: 'stats', statsTab: 'anova' }), 'stats:anova');
+  assert.equal(at({ section: 'qc', qcTab: 'pca' }), 'qc:pca');
+  assert.equal(at({ section: 'qc', qcTab: 'histogram' }), null);
+  assert.equal(at({ section: 'phospho', phosphoTab: 'ksea' }), 'phospho:ksea');
+  assert.equal(at({ section: 'phospho', phosphoTab: 'sty' }), 'phospho');
+  assert.equal(at({ section: 'singleProtein', singleProteinTab: 'heatmap' }), 'singleProtein');
+  assert.equal(at({ section: 'peptide', peptideTab: 'unknown' }), null);
+  assert.equal(at({ section: 'data', dataTab: 'upload' }), null);
+  assert.equal(at({ section: 'analysis' }), 'analysis');
+  // Every slot a view can resolve to is one App hands a reporter for.
+  for (const tab of ['volcano', 'anova', 'ora', 'pathwayHeatmap', 'simulation']) {
+    assert.ok(CONTEXT_SLOTS.includes(at({ section: 'stats', statsTab: tab })), tab);
+  }
+});
+
+test('the context store changes only when a view reports something new', async () => {
+  const { withContextMode, keepOnly, contextText } = await loadModule('contextModes');
+  const empty = {};
+  const one = withContextMode(empty, 'stats:volcano', { type: 'Normal', kind: 'protein' });
+  assert.deepEqual(one, { 'stats:volcano': { type: 'Normal', kind: 'protein' } });
+  // The same selections again, as a new object: no new store, so no re-render.
+  assert.equal(withContextMode(one, 'stats:volcano', { type: 'Normal', kind: 'protein' }), one);
+  assert.notEqual(withContextMode(one, 'stats:volcano', { type: 'Interactive', kind: 'protein' }), one);
+  // null withdraws the view's entry; withdrawing nothing is no change.
+  assert.deepEqual(withContextMode(one, 'stats:volcano', null), {});
+  assert.equal(withContextMode(empty, 'qc:pca', null), empty);
+  // Leaving a view drops every other view's selections.
+  const two = withContextMode(one, 'qc:pca', { method: 'PCA' });
+  assert.deepEqual(keepOnly(two, 'qc:pca'), { 'qc:pca': { method: 'PCA' } });
+  assert.deepEqual(keepOnly(two, null), {});
+  assert.equal(keepOnly(one, 'stats:volcano'), one);
+  // Values are read as typed; text comparisons are case-insensitive.
+  assert.equal(contextText({ type: 'Normal' }, 'type'), 'normal');
+  assert.equal(contextText({ type: true }, 'type'), '');
+  assert.equal(contextText(null, 'type'), '');
 });

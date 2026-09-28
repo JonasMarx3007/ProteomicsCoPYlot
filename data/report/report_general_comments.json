@@ -108,14 +108,14 @@
     "Low correlation between samples may indicate many missing phosphosite values in a given sample, low enrichment efficiency, or true biological differences between experimental conditions or groups. Low correlation can also be related to normalization issues, unequal peptide amount loading during LC-MS/MS, or the presence of major contaminants in the samples (please, compare with plots 2.3 Histogram Intensity and 2.4 Boxplot Intensity)."
   ],
   "VolcanoProt": [
-    "The occurrence of differential abundant proteins was tested by comparisons between two conditions (t-test). Multiple hypothesis testing was done by Benjamini-Hochberg adjustment of p-values and the false discovery rate was set to 0.05 (q-value < 0.05).",
-    "Significant differentially abundant proteins are defined as proteins demonstrating a fold change of > 2 and an adjusted p-value < 0.05.",
-    "The results are illustrated as volcano plots (the y-axis indicates the negative logarithm (-log10) of the adjusted p-value and the x-axis indicates the log(2) fold change; dotted lines indicate the thresholds for significance: q-value < 0.05 and FC > 2."
+    "Differential abundance of proteins between two conditions was assessed with a t-test on log2 intensities (Student's pooled-variance, Welch, or paired on within-pair differences, as selected per comparison), followed by Benjamini-Hochberg adjustment of the p-values unless uncorrected p-values were explicitly requested.",
+    "Commonly used settings are an adjusted p-value < 0.05 and an absolute log2 fold change > 1 (two-fold). The test type, thresholds and p-value correction actually applied are stated in the Statistics line of each comparison below; they may differ from these defaults.",
+    "Results are shown as volcano plots: the x-axis is the log2 fold change (first condition minus second), the y-axis is -log10 of the adjusted p-value (or of the raw p-value when uncorrected); reference lines mark the thresholds used for that comparison."
   ],
   "VolcanoPhos": [
-    "The occurrence of differentially abundant phosphosites was tested by comparisons between two conditions (t-test). Multiple hypothesis testing was done by Benjamini-Hochberg adjustment of p-values and the false discovery rate was set to 0.05 (q-value < 0.05).",
-    "Significant differentially abundant phosphosites are defined as sites demonstrating a fold change of > 2 and an adjusted p-value < 0.05.",
-    "The results are illustrated as volcano plots (the y-axis indicates the negative logarithm (-log10) of the adjusted p-value and the x-axis indicates the log2 fold change; dotted lines indicate the thresholds for significance: q-value < 0.05 and FC > 2)."
+    "Differential abundance of phosphosites between two conditions was assessed with a t-test on log2 intensities (Student's pooled-variance, Welch, or paired on within-pair differences, as selected per comparison), followed by Benjamini-Hochberg adjustment of the p-values unless uncorrected p-values were explicitly requested.",
+    "Commonly used settings are an adjusted p-value < 0.05 and an absolute log2 fold change > 1 (two-fold). The test type, thresholds and p-value correction actually applied are stated in the Statistics line of each comparison below; they may differ from these defaults.",
+    "Results are shown as volcano plots: the x-axis is the log2 fold change (first condition minus second), the y-axis is -log10 of the adjusted p-value (or of the raw p-value when uncorrected); reference lines mark the thresholds used for that comparison."
   ],
   "Imputation": [
     "For analyses based on imputed data, missing values were sampled from a shifted normal distribution, with q = {qValue} and an adjusted standard deviation = {adjustStd}."

@@ -92,7 +92,12 @@ def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in df.columns:
         if not pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = df[col].astype(str)
+            # Keep missing cells missing. On pandas < 3, `astype(str)` writes
+            # the words "nan"/"None" into them, and those then pass as gene or
+            # protein names -- so the same file carried a gene called "nan" on
+            # one pandas and no gene on another.
+            column = df[col]
+            df[col] = column.astype(str).where(column.notna(), None)
 
     return df
 

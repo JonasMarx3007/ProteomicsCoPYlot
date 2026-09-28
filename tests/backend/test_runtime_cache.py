@@ -18,14 +18,102 @@ from app.services.runtime_cache import (
     _freeze,
     cached_call,
     invalidate_runtime_cache,
+    runtime_cache_version,
 )
+from app.services.session_context import set_session_id, reset_session_id
 
 
 @pytest.fixture(autouse=True)
 def _clean_cache():
-    invalidate_runtime_cache("test")
+    invalidate_runtime_cache("test", all_sessions=True)
     yield
-    invalidate_runtime_cache("test")
+    invalidate_runtime_cache("test", all_sessions=True)
+
+
+def test_session_edits_preserve_other_sessions_cache_and_evidence(monkeypatch):
+    monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
+    from app.services.assistant_snapshots import store_snapshot, read_snapshot
+
+    token_a = set_session_id("cache-session-a")
+    try:
+        revision_a = runtime_cache_version()
+        calls = []
+        def compute():
+            calls.append(1)
+            return "A"
+        assert cached_call("sessions", {}, compute) == "A"
+        snapshot = store_snapshot({"answer": "A"})
+        token_b = set_session_id("cache-session-b")
+        try:
+            invalidate_runtime_cache("B changed")
+            assert cached_call("sessions", {}, lambda: "B") == "B"
+            with pytest.raises(ValueError, match="expired"):
+                read_snapshot(snapshot)
+        finally:
+            reset_session_id(token_b)
+        assert runtime_cache_version() == revision_a
+        assert cached_call("sessions", {}, compute) == "A"
+        assert len(calls) == 1
+        assert read_snapshot(snapshot) == {"answer": "A"}
+        invalidate_runtime_cache("A changed")
+        with pytest.raises(ValueError, match="expired"):
+            read_snapshot(snapshot)
+        cached_call("sessions", {}, compute)
+        assert len(calls) == 2
+    finally:
+        reset_session_id(token_a)
+
+
+@pytest.mark.parametrize("all_sessions", [False, True])
+def test_invalidation_during_computation_does_not_cache_stale_results(all_sessions):
+    def obsolete():
+        invalidate_runtime_cache("changed during calculation", all_sessions=all_sessions)
+        return "old"
+    assert cached_call("in-flight", {}, obsolete) == "old"
+    assert cached_call("in-flight", {}, lambda: "new") == "new"
+
+
+@pytest.mark.parametrize("module,function", [
+    ("runtime_cache", "invalidate_runtime_cache"),
+    ("dataset_store", "reset_all_datasets"),
+    ("annotation_store", "reset_all_annotations"),
+    ("metadata_upload_store", "reset_all_uploaded_metadata"),
+    ("condition_palette_store", "reset_condition_palettes"),
+    ("peptide_metadata_store", "clear_peptide_metadata"),
+])
+def test_global_reset_invalidates_other_sessions(monkeypatch, module, function):
+    from importlib import import_module
+    monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
+    token = set_session_id("cache-session-a")
+    try:
+        revision = runtime_cache_version()
+        cached_call("global-reset", {}, lambda: "old")
+    finally:
+        reset_session_id(token)
+    reset = getattr(import_module(f"app.services.{module}"), function)
+    reset(all_sessions=True)
+    token = set_session_id("cache-session-a")
+    try:
+        assert runtime_cache_version() != revision
+        assert cached_call("global-reset", {}, lambda: "new") == "new"
+    finally:
+        reset_session_id(token)
+
+
+def test_other_session_invalidation_does_not_discard_in_flight_result(monkeypatch):
+    monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
+    calls = []
+    def compute():
+        calls.append(1)
+        token = set_session_id("other-session")
+        try:
+            invalidate_runtime_cache("other user edited")
+        finally:
+            reset_session_id(token)
+        return "result"
+    assert cached_call("in-flight-other", {}, compute) == "result"
+    assert cached_call("in-flight-other", {}, compute) == "result"
+    assert len(calls) == 1
 
 
 def _response(rows: int = 50) -> VolcanoResultResponse:
@@ -164,7 +252,7 @@ def test_values_python_calls_equal_are_still_different_keys(left, right) -> None
 
     The `advanced` plot settings arrive as untyped JSON straight off the query
     string, so `{"headerText": true}` and `{"headerText": 1}` are two different
-    instructions -- `_advanced_text` renders one as "True" and the other as
+    instructions -- `advanced_text` renders one as "True" and the other as
     "1" -- that Python considers the same key. Without tagging the type the
     second request would be served the first one's rendered figure.
     """
