@@ -102,7 +102,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     heightCm: restorePlotDimensionCm(persistedVenn.heightCm, 12),
     dpi: restorePlotDpi(persistedVenn.dpi, 300),
   });
-  const pearsonInteractiveSessionNonce = useMemo(() => Date.now(), []);
+  const [pearsonInteractiveSessionNonce] = useState(() => Date.now());
 
   useEffect(() => {
     writePersistedUiState("comparison.pipeline.v1", {

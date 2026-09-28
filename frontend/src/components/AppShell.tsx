@@ -175,7 +175,7 @@ export default function AppShell({
     const preferred = preferredModel.trim();
     setChatModels(available);
     setChatModel((current) => {
-      let next = "";
+      let next: string;
       if (preferred && available.includes(preferred)) {
         next = preferred;
       } else if (current && available.includes(current)) {
