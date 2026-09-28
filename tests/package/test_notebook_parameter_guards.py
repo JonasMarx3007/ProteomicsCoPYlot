@@ -430,6 +430,54 @@ def test_r_correlation_unavailable_cells_and_order():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("include_id", [False, True])
+def test_missed_cleavage_keeps_runs_with_the_same_number_distinct(notebook, monkeypatch, include_id):
+    runs = ["ctrl_01.raw", "ctrl_02.raw", "treat_01.raw", "treat_02.raw"]
+    data = pd.DataFrame({"File.Name": runs, "Stripped.Sequence": ["AAAA", "AKAA", "AAAA", "AKAA"],
+                         "Precursor.Quantity": [1.0] * 4})
+    meta = pd.DataFrame({"sample": runs, "condition": ["ctrl", "ctrl", "treat", "treat"]})
+    original = meta.copy(deep=True)
+    monkeypatch.setattr(notebook, "read_data", lambda _: data.copy())
+    fig = notebook.missed_cleavage_plot("unused", meta, id=include_id, text=False)
+    try:
+        bars = fig.axes[0].containers
+        np.testing.assert_allclose(bars[0].datavalues, [100, 0, 100, 0])
+        np.testing.assert_allclose(bars[1].datavalues, [0, 100, 0, 100])
+        pd.testing.assert_frame_equal(meta, original)
+    finally:
+        notebook.plt.close(fig)
+
+
+def test_r_missed_cleavage_keeps_runs_with_the_same_number_distinct():
+    import subprocess
+    from app.services.r_runtime import detect_r_runtime
+    runtime = detect_r_runtime()
+    if not runtime.get("available"):
+        pytest.skip("Rscript unavailable")
+    script = r'''
+      source("proteomicscopylot/notebook_functions.R")
+      runs <- c("ctrl_01.raw", "ctrl_02.raw", "treat_01.raw", "treat_02.raw")
+      data <- data.frame(File.Name=runs, Stripped.Sequence=c("AAAA","AKAA","AAAA","AKAA"),
+                         Precursor.Quantity=rep(1,4))
+      meta <- data.frame(sample=runs, condition=c("ctrl","ctrl","treat","treat"))
+      read_data <- function(...) data
+      seen <- 0L
+      barplot <- function(height, ...) {
+        stopifnot(isTRUE(all.equal(unname(height), rbind(c(100,0,100,0), c(0,100,0,100)))))
+        seen <<- seen + 1L
+        graphics::barplot(height, ...)
+      }
+      grDevices::pdf(NULL)
+      missed_cleavage_plot("unused", meta, id=FALSE, text=FALSE)
+      missed_cleavage_plot("unused", meta, id=TRUE, text=FALSE)
+      stopifnot(seen==2L, identical(meta$sample, runs), ncol(meta)==2L)
+      grDevices::dev.off()
+    '''
+    result = subprocess.run([runtime["executable"], "-e", script], cwd=ROOT,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_r_notebook_sparse_and_pathway_edges():
     import subprocess
     from app.services.r_runtime import detect_r_runtime

@@ -4,11 +4,14 @@ import json
 
 from matplotlib import pyplot as plt
 
-from app.services.plot_images import _apply_advanced_axes, parse_advanced_plot_settings
+from app.services.plot_styling import (
+    apply_advanced_axes,
+    parse_advanced_plot_settings,
+)
 
 
 def test_parse_advanced_plot_settings() -> None:
-    settings = {"title": "Custom", "axisLineWidth": 2.5, "gridLineVisible": False}
+    settings = {"titleElement": {"text": "Custom"}, "axisLineWidth": 2.5, "gridLineVisible": False}
     assert parse_advanced_plot_settings(json.dumps(settings)) == settings
 
 
@@ -22,11 +25,11 @@ def test_advanced_axes_apply_labels_background_and_visibility() -> None:
     try:
         axes.set_title("Original")
         axes.set_xlabel("Original X")
-        _apply_advanced_axes(
+        apply_advanced_axes(
             axes,
             {
-                "title": "Custom title",
-                "xLabel": "Custom X",
+                "titleElement": {"text": "Custom title"},
+                "xLabelElement": {"text": "Custom X"},
                 "backgroundColor": "#abcdef",
                 "axisLineVisible": False,
                 "gridLineVisible": False,

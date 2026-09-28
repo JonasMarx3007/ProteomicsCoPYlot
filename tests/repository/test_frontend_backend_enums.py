@@ -11,9 +11,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 STATS_PAGE = ROOT / "frontend" / "src" / "features" / "stats" / "StatisticalAnalysisPage.tsx"
+STATS_HELPERS = ROOT / "frontend" / "src" / "features" / "stats" / "statsHelpers.ts"
 TEST_OPTIONS = ROOT / "frontend" / "src" / "lib" / "statisticalTests.ts"
 TYPES_FILE = ROOT / "frontend" / "src" / "lib" / "types.ts"
 ANNOTATION_PAGE = ROOT / "frontend" / "src" / "features" / "metadata" / "AnnotationPage.tsx"
+
+
+def _stats_source() -> str:
+    """The statistics section: the page, its panels and their shared helpers."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in sorted(STATS_PAGE.parent.glob("*.ts*")))
 
 
 def _block(text: str, start_marker: str, end_marker: str) -> str:
@@ -35,7 +41,7 @@ def test_ui_test_type_options_match_the_backend() -> None:
 
 
 def test_persisted_test_type_is_validated_against_the_option_list() -> None:
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     assert 'from "../../lib/statisticalTests"' in source
     assert "TEST_TYPE_VALUES.includes(" in TEST_OPTIONS.read_text(encoding="utf-8"), (
         "restoreTestType must validate against TEST_TYPE_OPTIONS"
@@ -64,7 +70,7 @@ def test_ui_cluster_method_options_match_the_backend() -> None:
     from app.schemas.stats import AnovaClusterMethod
 
     supported = set(typing.get_args(AnovaClusterMethod))
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     block = _block(source, "const ANOVA_CLUSTER_METHOD_OPTIONS", "];")
     offered = set(re.findall(r'value:\s*"([a-z]+)"', block))
     assert offered == supported, (
@@ -86,7 +92,7 @@ def test_typescript_cluster_method_union_matches_the_backend() -> None:
 
 def test_persisted_cluster_method_is_validated_against_the_option_list() -> None:
     """A stored value from an older build must not reach scipy unchecked."""
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     assert "ANOVA_CLUSTER_METHOD_VALUES.includes(" in source
     assert source.count("restoreClusterMethod(persisted.clusterMethod)") == 2, (
         "both the ANOVA and the ORA panel must restore the method through the "
@@ -101,7 +107,7 @@ def test_ora_sends_the_same_cluster_method_it_displays() -> None:
     clustered with, the gene list belongs to a different partition than the one
     the user chose from -- and nothing in the output says so.
     """
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     anova_requests = source.count('postHoc: "none",')
     assert anova_requests >= 1
     block = _block(source, 'source: "anova_cluster"', 'postHoc: "none",')
@@ -131,7 +137,7 @@ def test_typescript_normalization_union_matches_the_backend() -> None:
     assert declared == supported
 
 
-@pytest.mark.parametrize("path", [STATS_PAGE, TEST_OPTIONS, TYPES_FILE, ANNOTATION_PAGE])
+@pytest.mark.parametrize("path", [STATS_PAGE, STATS_HELPERS, TEST_OPTIONS, TYPES_FILE, ANNOTATION_PAGE])
 def test_referenced_frontend_files_exist(path: Path) -> None:
     assert path.is_file(), f"{path} is missing; update this test if the layout changed"
 

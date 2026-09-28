@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import ipaddress
 import http.client
 import os
@@ -141,6 +142,10 @@ def _open_provider_request(request, *, timeout, provider="Ollama"):
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+_OLLAMA_DEFAULT_PORT = 11434
+# Names Ollama itself accepts: registry/repo:tag, letters, digits, . _ - / :
+_OLLAMA_MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+
 _GPU_STATUS_CACHE_TTL_SECONDS = 60.0
 _GPU_STATUS_CACHE: dict[str, tuple[float, OllamaGpuStatusResponse]] = {}
 _MODELS_CACHE_TTL_SECONDS = 30.0
@@ -289,11 +294,23 @@ def _normalize_ollama_endpoint(value: str | None) -> str:
             )
 
     requested_origin = (parsed.scheme.lower(), normalized_host, parsed.port)
-    if normalized_host not in allowed_hosts and requested_origin not in allowed_origins:
-        raise ValueError(
-            "Ollama endpoint override is not allowed. Configure it with "
-            "COPYLOT_OLLAMA_URL or COPYLOT_OLLAMA_ALLOWED_ENDPOINTS."
-        )
+    if requested_origin not in allowed_origins:
+        if normalized_host not in allowed_hosts:
+            raise ValueError(
+                "Ollama endpoint override is not allowed. Configure it with "
+                "COPYLOT_OLLAMA_URL or COPYLOT_OLLAMA_ALLOWED_ENDPOINTS."
+            )
+        # Loopback is allowed implicitly, but only Ollama's own port: the
+        # server makes requests to this address on the client's behalf, and
+        # "any port on localhost" would reach every other local service.
+        if parsed.port != _OLLAMA_DEFAULT_PORT:
+            raise ValueError(
+                f"A local Ollama endpoint must use port {_OLLAMA_DEFAULT_PORT}. Other ports need "
+                "COPYLOT_OLLAMA_ALLOWED_ENDPOINTS."
+            )
+    path = parsed.path.rstrip("/")
+    if path and not path.startswith("/api/"):
+        raise ValueError("Ollama endpoint path must be empty or start with /api/.")
     return urllib.parse.urlunsplit(parsed)
 
 
@@ -667,10 +684,21 @@ def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: s
     return payload
 
 
-def ollama_install_model(model_name: str, endpoint_override: str | None = None) -> OllamaModelManageResponse:
+def _validated_model_name(model_name: str) -> str:
+    """A model name Ollama would accept, and nothing the CLI could read as an option."""
     model = str(model_name or "").strip()
     if not model:
         raise ValueError("Model name cannot be empty.")
+    if len(model) > 200 or not _OLLAMA_MODEL_NAME.match(model):
+        raise ValueError(
+            "Model name may contain letters, digits, '.', '_', '-', '/' and one ':tag' "
+            "(for example llama3.1:8b)."
+        )
+    return model
+
+
+def ollama_install_model(model_name: str, endpoint_override: str | None = None) -> OllamaModelManageResponse:
+    model = _validated_model_name(model_name)
     output = (
         _ollama_http_manage_model("install", model, endpoint_override)
         if endpoint_override
@@ -693,9 +721,7 @@ def ollama_install_model(model_name: str, endpoint_override: str | None = None) 
 
 
 def ollama_remove_model(model_name: str, endpoint_override: str | None = None) -> OllamaModelManageResponse:
-    model = str(model_name or "").strip()
-    if not model:
-        raise ValueError("Model name cannot be empty.")
+    model = _validated_model_name(model_name)
     output = (
         _ollama_http_manage_model("remove", model, endpoint_override)
         if endpoint_override
@@ -828,6 +854,7 @@ def _open_ollama_request(
     *,
     messages: list[dict[str, str]],
     output_schema: dict | None = None,
+    num_ctx: int | None = None,
 ):
     endpoint_override = payload.ollamaUrl
     model = _resolve_model(payload.model, endpoint_override)
@@ -854,7 +881,7 @@ def _open_ollama_request(
         "temperature": 0,
         "top_p": _env_float("COPYLOT_OLLAMA_TOP_P", 0.9),
         "num_predict": 1024,
-        "num_ctx": 8192,
+        "num_ctx": int(num_ctx or _ollama_context_floor()),
         "repeat_penalty": _env_float("COPYLOT_OLLAMA_REPEAT_PENALTY", 1.1),
     }
     if num_gpu is not None:
@@ -1086,6 +1113,104 @@ def _gemini_chat_text(
     return merged
 
 
+# --- Context budget -------------------------------------------------------
+# Iteration 21 (2026-09-21): with a fixed num_ctx of 8192, styling/compound
+# planner prompts reached 7.2k-8.2k tokens and three replies stopped exactly at
+# the window (8163+29, 8164+28, 8145+47 tokens): truncated JSON, reported as an
+# "invalid plan". The window is now sized per request from a conservative
+# estimate, between a floor (unchanged 8192 default, so ordinary requests do
+# not reload the model) and a ceiling that the owner sets for their hardware
+# and that never exceeds the model's own trained window. The planner trims
+# irrelevant controls to fit the floor first (see scientific_assistant), so
+# the ceiling is headroom, not the normal case.
+# JSON-dense prompts (control ids, enums) measured 3.8-4.7 characters per
+# token in the iteration-21 logs across all eight models; 3.3 over-estimates on
+# purpose; actual token counts are still checked because this is only an estimate.
+_CHARS_PER_TOKEN = 3.3
+# Reserve the full generation limit plus framing headroom; token sizing is an estimate.
+ASSISTANT_OUTPUT_RESERVE = 1024 + 128
+_CLOUD_PROMPT_TOKENS = 100_000
+_NUM_CTX_IN_USE: dict[str, int] = {}
+_NUM_CTX_LOCK = Lock()
+
+
+class AssistantContextExhausted(ValueError):
+    """The request and reply do not fit the model's context window."""
+
+
+def estimate_tokens(*texts: str) -> int:
+    return math.ceil(sum(len(text or "") for text in texts) / _CHARS_PER_TOKEN)
+
+
+def _ollama_context_floor() -> int:
+    return max(2048, _env_int("COPYLOT_OLLAMA_NUM_CTX", 8192))
+
+
+def _ollama_context_limits(model: str, endpoint_override: str | None = None) -> tuple[int, int]:
+    """(floor, ceiling) num_ctx for this Ollama model."""
+    floor = _ollama_context_floor()
+    ceiling = max(floor, _env_int("COPYLOT_OLLAMA_MAX_CTX", 16384))
+    if not model:
+        return floor, ceiling
+    try:
+        capability = model_capability("ollama", model, endpoint_override)
+        window = capability.contextWindow
+        tier, size = getattr(capability, "contextTier", "compact"), getattr(capability, "parameterCountB", None)
+    except Exception:  # metadata is an optimisation; the env bounds still apply
+        window, tier, size = None, "compact", None
+    # Iteration 22: qwen3-coder (30B) and qwen3.6:35b loaded at 8192, then
+    # reloaded at 12288 (21 s / 29 s) as soon as their full-panel styling prompt
+    # arrived; every other model stayed at 8192 for the whole run. Large models
+    # that also see the full panel start at the larger window. The 12B models
+    # did not need it and keep 8192, so their VRAM use is unchanged.
+    if tier != "compact" and size is not None and size >= _env_float("COPYLOT_OLLAMA_LARGE_MODEL_B", 20.0):
+        floor = max(floor, _env_int("COPYLOT_OLLAMA_LARGE_NUM_CTX", 12288))
+    if window:
+        ceiling = min(ceiling, int(window))
+    floor = min(floor, ceiling)
+    return floor, ceiling
+
+
+def assistant_prompt_budget(payload: ChatRequest) -> tuple[int, int]:
+    """(preferred, maximum) prompt tokens for this provider/model, reply reserve excluded.
+
+    The planner fits the preferred budget by leaving out controls unrelated to
+    the question; the maximum is what a larger window can absorb when the
+    relevant controls alone do not fit. Cloud models have large windows; their
+    size is still bounded by ASSISTANT_INPUT_MAX_CHARS.
+    """
+    provider = _resolve_provider(payload.provider)
+    if provider != "ollama":
+        return _CLOUD_PROMPT_TOKENS, _CLOUD_PROMPT_TOKENS
+    try:
+        model = _resolve_model(payload.model, payload.ollamaUrl)
+    except ValueError:
+        model = ""
+    floor, ceiling = _ollama_context_limits(model, payload.ollamaUrl)
+    return floor - ASSISTANT_OUTPUT_RESERVE, ceiling - ASSISTANT_OUTPUT_RESERVE
+
+
+def _ollama_num_ctx(model: str, endpoint_override: str | None, prompt_tokens: int) -> int:
+    floor, ceiling = _ollama_context_limits(model, endpoint_override)
+    needed = prompt_tokens + ASSISTANT_OUTPUT_RESERVE
+    key = f"{_resolve_ollama_base_url(endpoint_override)}|{model}"
+    if needed <= floor:
+        with _NUM_CTX_LOCK:
+            return max(floor, min(ceiling, _NUM_CTX_IN_USE.get(key, 0)))
+    if needed > ceiling:
+        raise AssistantContextExhausted(
+            f"This request needs about {needed} tokens but the selected model's context is limited to {ceiling}. "
+            "Nothing was changed. Ask a narrower question, collapse the advanced plot options, or raise "
+            "COPYLOT_OLLAMA_MAX_CTX if the model and hardware allow it.")
+    # Whole 4096-token steps, and never shrinking below the window a model
+    # already runs with, keep reloads rare: Ollama reloads a model for every new
+    # num_ctx, which costs seconds on large models.
+    with _NUM_CTX_LOCK:
+        chosen = max(min(ceiling, -(-needed // 4096) * 4096), min(ceiling, _NUM_CTX_IN_USE.get(key, 0)))
+        _NUM_CTX_IN_USE[key] = chosen
+    return chosen
+
+
 def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, schema=None) -> tuple[str, str]:
     """Bounded completion for the assistant's planner or evidence explanation."""
     provider = _resolve_provider(payload.provider)
@@ -1096,13 +1221,27 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
         _validate_cloud_analysis_context(data)
     messages = [{"role": "system", "content": instruction}, {"role": "user", "content": data}]
     if provider == "ollama":
+        try:
+            model_name = _resolve_model(payload.model, payload.ollamaUrl)
+        except ValueError:
+            model_name = ""  # _open_ollama_request reports the missing model
+        num_ctx = _ollama_num_ctx(model_name, payload.ollamaUrl,
+                                  estimate_tokens(instruction, data))
         model, response = _open_ollama_request(
-            payload, messages=messages, output_schema=schema,
+            payload, messages=messages, output_schema=schema, num_ctx=num_ctx,
         )
         parsed = _read_json_response(response, "Ollama returned invalid JSON.")
         # Reasoning text is not an answer or an executable plan.
         message = parsed.get("message", {})
         text = message.get("content", "") if isinstance(message, dict) else ""
+        used = sum(value for value in (parsed.get("prompt_eval_count"), parsed.get("eval_count"))
+                   if isinstance(value, int) and not isinstance(value, bool))
+        if used >= num_ctx:
+            # Named separately from an incomplete answer: a model that runs into
+            # the window was never given room to answer (iteration 21).
+            raise AssistantContextExhausted(
+                f"The request filled the model's {num_ctx}-token context window before the reply was complete. "
+                "Nothing was changed. Ask a narrower question or collapse the advanced plot options.")
         if parsed.get("done_reason") == "length":
             raise ValueError("The assistant response was incomplete. Ask for a smaller step.")
     else:

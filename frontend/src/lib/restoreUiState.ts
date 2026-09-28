@@ -6,7 +6,6 @@ export type AppUiStateSnapshot = {
   advancedPlot?: Record<string, unknown>;
   localStorageState?: Record<string, string | null>;
   sessionStorageState?: Record<string, string | null>;
-  reportLocalStorage?: Record<string, string | null>;
 };
 
 function removeCopylotKeys(storage: Storage): void {

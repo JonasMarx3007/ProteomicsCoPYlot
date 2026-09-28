@@ -109,3 +109,19 @@ def drop_incomplete_features(
     return numeric[complete], CompletenessReport(
         kept=complete, dropped=rows - kept_count, total=rows
     )
+
+
+def row_zscore(matrix):
+    """Row-wise z-scores with the sample standard deviation (ddof=1).
+
+    One definition for every heatmap: the ANOVA heatmaps used the population
+    SD (ddof=0) while the pathway and phosphosite heatmaps used ddof=1, and all
+    three said "z-score". ddof=1 is the convention of the tool's other
+    statistics and of the R package. A row with no spread (or a non-finite SD)
+    is centred and left at zero rather than made undefined, as R does.
+    """
+    values = np.asarray(matrix, dtype=float)
+    row_mean = np.nanmean(values, axis=1, keepdims=True)
+    row_sd = np.nanstd(values, axis=1, ddof=1, keepdims=True)
+    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1.0
+    return (values - row_mean) / row_sd

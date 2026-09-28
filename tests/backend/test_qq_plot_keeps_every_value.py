@@ -57,6 +57,29 @@ def test_values_at_or_below_zero_are_plotted() -> None:
     assert sorted(plotted) == sorted(values.tolist())
 
 
+def test_reference_illustration_matches_its_distribution_labels() -> None:
+    from matplotlib import pyplot as plt
+    from tools.generate_qq_reference import create_figure
+
+    figure = create_figure()
+    try:
+        assert len(figure.axes) == 3
+        for axis in figure.axes:
+            points = np.asarray(axis.collections[0].get_offsets())
+            assert points.shape == (300, 2)
+            assert np.isfinite(points).all()
+            assert (np.diff(points, axis=0) > 0).all()
+        normal = np.asarray(figure.axes[0].collections[0].get_offsets())
+        assert np.corrcoef(normal.T)[0, 1] > 0.999
+        heavy = figure.axes[2]
+        points = np.asarray(heavy.collections[0].get_offsets())
+        line = heavy.lines[0]
+        residual = points[:, 1] - np.interp(points[:, 0], line.get_xdata(), line.get_ydata())
+        assert residual[0] < 0 < residual[-1]
+    finally:
+        plt.close(figure)
+
+
 def test_a_distribution_centred_on_zero_keeps_both_halves() -> None:
     """Half a normal sample is not a normal sample, and would still look like one."""
     rng = np.random.default_rng(20260916)
@@ -179,10 +202,10 @@ def test_the_distribution_summary_has_one_source(project) -> None:
 
 def test_the_summary_and_the_image_describe_the_same_matrix(project) -> None:
     """They used to be free to differ: one read qc_matrix, the other did not."""
-    from app.services.plot_images import _distribution_frame
+    from app.services.plot_images import log2_qc_frame
 
     summary = data_tools.distribution_summary("phospho")
-    image_frame = _distribution_frame("phospho")
+    image_frame = log2_qc_frame("phospho")
     qc_frame, _ = qc_matrix("phospho")
     assert image_frame.equals(qc_frame)
     assert summary.stats.count == int(

@@ -74,6 +74,7 @@ proteomicscopylot = [
 ]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 pythonpath = [".", "backend"]
 addopts = "-ra"
 markers = [

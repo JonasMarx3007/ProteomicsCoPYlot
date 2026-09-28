@@ -49,6 +49,18 @@ def test_all_supported_test_types_have_a_label() -> None:
     assert set(_TEST_TYPES) == set(_TEST_TYPE_REPORT_LABELS)
 
 
+def test_unknown_restored_imputation_is_not_reported_as_quantile_imputation(monkeypatch):
+    from types import SimpleNamespace
+    from app.schemas.annotation import AnnotationImputationInfo
+    from app.services import report_function
+
+    monkeypatch.setattr(report_function, "get_annotation", lambda kind: SimpleNamespace(
+        imputation=AnnotationImputationInfo(mode="unknown", applied=True)))
+    text = " ".join(report_function._imputation_paragraphs("protein"))
+    assert "method and parameters are unknown" in text
+    assert "sampled from" not in text and "seed 1337" not in text and "q =" not in text
+
+
 def test_thresholds_are_stated() -> None:
     text = _text(_volcano_statistics_html(_entry(pValueThreshold=0.01, log2fcThreshold=1.5)))
     assert "0.01" in text and "1.5" in text
@@ -73,8 +85,9 @@ def test_all_normalization_methods_have_report_text() -> None:
 
 
 def test_normalization_labels_distinguish_none_from_applied() -> None:
-    assert "No normalization" in _NORMALIZATION_REPORT_LABELS["none"]
+    assert _NORMALIZATION_REPORT_LABELS["none"].startswith("None;")
     for method in ("median", "quantile", "vsn"):
         label = _NORMALIZATION_REPORT_LABELS[method]
-        assert "No normalization" not in label
+        assert not label.startswith("None")
+        assert "applied globally, before filtering" in label
         assert label.strip().endswith(".")

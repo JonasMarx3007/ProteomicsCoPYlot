@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from app.services.html_security import GENERATED_HTML_META
-from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -27,14 +25,16 @@ from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import sample_id_map
 from app.services.peptide_metadata_store import get_peptide_metadata
-from app.services.plot_images import (
-    _advanced_plotly_layout,
-    _apply_advanced_axes,
+from app.services.plot_styling import (
+    advanced_plotly_layout,
+    apply_advanced_axes,
     advanced_label_size,
     marker_style,
     plotly_marker,
     resolve_reference_line,
 )
+from app.services.reference_db import resolve_reference_db
+from app.services.plotting_common import get_plt as _get_plt, get_plotly_go as _get_plotly, plotly_html as _plotly_html, truncate_hover_text as _truncate_hover_text
 
 
 LOGGER = logging.getLogger(__name__)
@@ -53,26 +53,6 @@ PEPTIDE_MODIFICATION_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
 }
-
-
-def _get_plt():
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    return plt
-
-
-def _get_plotly():
-    try:
-        import plotly.graph_objects as go
-
-        return go
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "plotly is required for interactive peptide plots. Install it with: pip install plotly"
-        ) from exc
 
 
 def peptide_modification_counts(
@@ -130,75 +110,6 @@ def peptide_modification_counts(
 
 
 
-
-
-def _plotly_html(fig) -> str:
-    fig = force_svg_rendering(fig)
-    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
-    body = fig.to_html(
-        full_html=False,
-        include_plotlyjs=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{GENERATED_HTML_META}"
-        "<style>"
-        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
-        "#plot-root{width:100%;height:100%;}"
-        ".js-plotly-plot,.plotly-graph-div,.plot-container,.svg-container{width:100%!important;height:100%!important;min-height:420px;}"
-        "</style>"
-        "</head><body>"
-        "<div id='plot-root'>"
-        f"{body}"
-        "</div>"
-        "<script>"
-        "(function(){"
-        "function firstPlot(){"
-        "return document.querySelector('.js-plotly-plot,.plotly-graph-div');"
-        "}"
-        "function resolveLayoutHeight(el){"
-        "if(!el){return 0;}"
-        "var value=0;"
-        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
-        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
-        "return Math.max(0,value);"
-        "}"
-        "function resizePlot(){"
-        "var el=firstPlot();"
-        "if(!(el && window.Plotly)){return;}"
-        "var root=document.getElementById('plot-root');"
-        "var rootWidth=(root && Number(root.clientWidth))||0;"
-        "var rootHeight=(root && Number(root.clientHeight))||0;"
-        "var viewportWidth=Math.max(360,rootWidth,(window.innerWidth||0)-8);"
-        "var viewportHeight=Math.max(420,rootHeight,(window.innerHeight||0)-8);"
-        "var layoutHeight=resolveLayoutHeight(el);"
-        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
-        "window.Plotly.relayout(el,{width:viewportWidth,height:nextHeight,autosize:true}).catch(function(){});"
-        "window.Plotly.Plots.resize(el);"
-        "}"
-        "window.addEventListener('load', resizePlot);"
-        "window.addEventListener('resize', resizePlot);"
-        "if(window.ResizeObserver){"
-        "var rootEl=document.getElementById('plot-root');"
-        "if(rootEl){(new ResizeObserver(function(){resizePlot();})).observe(rootEl);}"
-        "}"
-        "setTimeout(resizePlot, 80);"
-        "setTimeout(resizePlot, 260);"
-        "setTimeout(resizePlot, 800);"
-        "setTimeout(resizePlot, 1500);"
-        "})();"
-        "</script>"
-        "</body></html>"
-    )
-
-
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def _legacy_root() -> Path:
-    return _project_root().parent / "Proteomics-CoPYlot"
 
 
 def _peptide_dataset_path() -> Path:
@@ -273,17 +184,6 @@ def _peptide_feature_column(frame: pd.DataFrame) -> str | None:
         if "sequence" in normalized:
             return str(column)
     return None
-
-
-def _truncate_hover_text(value: object, max_len: int) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return "n/a"
-    if len(text) <= max_len:
-        return text
-    if max_len <= 1:
-        return text[:1]
-    return f"{text[: max_len - 1]}..."
 
 
 def _short_sample_label(value: object, max_len: int = 14) -> str:
@@ -433,11 +333,6 @@ def _prepare_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
         raise ValueError(
             "Annotation metadata does not contain any usable sample/condition rows."
         )
-
-    file_col = _file_name_column(frame)
-    file_names = frame[file_col].dropna().astype(str).unique().tolist()
-    for name in file_names:
-        meta["sample"] = np.where(meta["sample"] == name, name, meta["sample"])
 
     meta["id"] = meta["sample"].apply(_extract_id_or_number)
     meta["sample_index"] = meta.groupby("condition").cumcount() + 1
@@ -608,7 +503,7 @@ def peptide_rt_plot(
     ax.set_xlabel("Predicted RT")
     ax.set_ylabel("Actual RT")
     ax.set_title("Retention Time Plot" if header else "")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -717,7 +612,7 @@ def peptide_rt_interactive_html(
     )
     fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)")
-    fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=_cm_to_px(height_cm)))
+    fig.update_layout(**advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=_cm_to_px(height_cm)))
     return _plotly_html(fig)
 
 
@@ -814,7 +709,7 @@ def peptide_modification_plot(
     if legend and found_mods:
         ax.legend(title="Modification", bbox_to_anchor=(1.05, 1), loc="upper left")
 
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -883,7 +778,7 @@ def peptide_missed_cleavage_plot(
         ax.bar(range(len(sample_order)), subset, bottom=bottom, label=str(count))
         bottom += subset.to_numpy(dtype=float)
 
-    ax.set_ylabel("Percentage of peptides with missed cleavage (%)")
+    ax.set_ylabel("Peptides with missed cleavage (%)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
     # Name the rule on the plot: the same peptides give different counts under
     # trypsin and trypsin/Lys-C, so the figure is ambiguous without it.
@@ -910,7 +805,7 @@ def peptide_missed_cleavage_plot(
             ax.text(index, base_y, f"{value:.1f}%", ha="center", va="bottom", fontsize=advanced_label_size(advanced, text_size))
 
     ax.legend(title="Number", bbox_to_anchor=(1.05, 1), loc="upper left")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -950,19 +845,7 @@ def _load_fasta_dataframe_cached(path_str: str, modified_ns: int) -> pd.DataFram
 
 def _fasta_path(species: PeptideSpecies) -> Path:
     filename = "UP000005640_9606.fasta" if species == "human" else "UP000000589_10090.fasta"
-    candidates = [
-        _project_root() / "data" / "db" / filename,
-        _legacy_root() / "data" / "db" / filename,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    searched = ", ".join(str(candidate) for candidate in candidates)
-    LOGGER.error("FASTA database for %s not found. Searched: %s", species, searched)
-    raise ValueError(
-        f"Could not find the bundled FASTA database for {species}. "
-        "The searched locations are recorded in the server log."
-    )
+    return resolve_reference_db(filename, f"FASTA database for {species}")
 
 
 def _load_fasta_dataframe(species: PeptideSpecies) -> pd.DataFrame:
@@ -1088,20 +971,44 @@ def peptide_sequence_coverage(
     if sequence is None:
         raise ValueError(f"The selected protein variant '{protein}' does not exist in the loaded database.")
 
+    # Only peptides that occur in the selected sequence cover positions. A
+    # peptide assigned to the protein group that does not occur (another
+    # isoform or database entry, a sequence variant, I/L ambiguity) is reported
+    # rather than silently counted as "matching".
     coverage_mask = [0] * len(sequence)
+    mapped: list[str] = []
+    unmapped: list[str] = []
     for peptide in peptides:
-        for start in _peptide_starts(sequence, peptide):
+        starts = list(_peptide_starts(sequence, peptide))
+        if not starts:
+            unmapped.append(peptide)
+            continue
+        mapped.append(peptide)
+        for start in starts:
             for index in range(start, start + len(peptide)):
                 coverage_mask[index] = 1
 
     coverage_percent = round((sum(coverage_mask) / len(sequence)) * 100.0, 2)
     coverage_text = _coverage_visualization(frame, db, protein, chunk_size=chunk_size)
 
+    unmapped = sorted(unmapped)
+    warnings: list[str] = []
+    if unmapped:
+        examples = ", ".join(unmapped[:3])
+        warnings.append(
+            f"{len(unmapped)} of {len(peptides)} peptides assigned to this protein group do not "
+            f"occur in the selected sequence (e.g. {examples}); they are not counted in the "
+            "coverage. Check whether the report's protein group maps to another isoform or "
+            "database entry than the selected variant."
+        )
+
     return {
         "protein": protein,
         "species": species,
         "coveragePercent": coverage_percent,
-        "matchingPeptideCount": len(peptides),
+        "matchingPeptideCount": len(mapped),
+        "assignedPeptideCount": len(peptides),
+        "unmappedPeptides": unmapped[:20],
         "sequenceText": coverage_text,
-        "warnings": [],
+        "warnings": warnings,
     }

@@ -353,8 +353,10 @@ without placing the password directly in shell history:
 python -c "import getpass,sys; sys.path.insert(0,'backend'); from app.services.password_hashing import hash_password; print(hash_password(getpass.getpass()))"
 ```
 
-Store the result as `password_pbkdf2_sha256`. Existing `password` and `password_sha256`
-entries remain compatible, but PBKDF2 is recommended for published deployments.
+Store the result as `password_pbkdf2_sha256`. This is the only accepted form: access files
+that still carry a plaintext `password`, an unsalted `password_sha256`, or the old
+`passwords` object are refused at startup with a message naming the entry, so every
+deployment re-hashes once and the weak forms are gone.
 
 Access-link and QR secrets are reusable bearer credentials. Put them only in named URL
 fragments such as `#tool=SECRET` or `#qr=SECRET`; query-string credentials are ignored.
@@ -373,7 +375,10 @@ Viewer portals:
 docker compose -f docker-compose.viewer.yml up -d --build
 ```
 
-The nginx example is `deploy/nginx/proteomics-data.de.conf.example`.
+The nginx example is `deploy/nginx/copylot.conf.example`. Replace its example
+hostnames and certificate paths with your own. Set `COPYLOT_ALLOWED_HOSTS` in
+your deployment environment or `.env` to your public hostname(s), comma separated;
+the Compose defaults allow only localhost and 127.0.0.1.
 
 The Compose services use a read-only root filesystem, a writable temporary filesystem, and
 generous CPU/memory limits. Override them in `.env` for unusually large projects without
@@ -408,9 +413,13 @@ peak DataFrame and plot memory. A full or timed-out queue returns HTTP 503 with 
 than allowing unbounded requests to exhaust the service.
 
 The login limiter ignores forwarded client addresses unless the direct reverse-proxy peer is
-listed in `COPYLOT_TRUSTED_PROXY_IPS`. Set that variable in the Compose `.env` file to the
-exact peer address seen by the container. The nginx example replaces client-supplied
-`X-Forwarded-For` values before proxying.
+listed in `COPYLOT_TRUSTED_PROXY_IPS` (single addresses or CIDR ranges, comma-separated). The
+Compose files default it to the Docker bridge range `172.16.0.0/12`, which is where a reverse
+proxy on the host appears from inside the container; without a trusted proxy every client
+shares the proxy's address and twelve failed logins from anyone lock everyone out. Override it
+in the Compose `.env` file when the proxy runs elsewhere. The nginx example replaces
+client-supplied `X-Forwarded-For` values before proxying. A successful login clears that
+client's failed-attempt count.
 
 Authentication and analysis state are held in process memory. Run one application worker and
 one replica per deployed service unless session and dataset stores are replaced with shared

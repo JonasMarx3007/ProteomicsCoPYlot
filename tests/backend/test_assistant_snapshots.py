@@ -1,5 +1,4 @@
 from collections import OrderedDict
-import json
 
 import pandas as pd
 import pytest
@@ -16,7 +15,7 @@ def test_collapsed_canvas_tiles_do_not_compute_or_publish_hidden_results(monkeyp
 
     monkeypatch.setattr(analysis_functions, "analysis_volcano_data", unexpected)
     specs = [{"type": "volcano", "collapsed": True}, {"type": "oraList", "collapsed": True}]
-    evidence = _canvas_tile_evidence(json.dumps({"tileEvidence": specs}), "compact")
+    evidence = _canvas_tile_evidence({"tileEvidence": specs}, "compact")
     assert [entry.tool for entry in evidence] == ["canvas tile 1: volcano", "canvas tile 2: oraList"]
     assert all(entry.status == "unavailable" and "collapsed" in entry.text for entry in evidence)
 
@@ -75,7 +74,7 @@ def test_canvas_reads_each_tile_service_and_isolates_failure(monkeypatch):
     monkeypatch.setattr(analysis_functions, "analysis_boxplot_table", table)
     specs = [{"type": "proteinBoxplot", "settings": {"kind": "protein", "protein": "P1", "conditions": ["A"], "identifier": "workflow"}},
              {"type": "invented", "settings": {}}]
-    evidence = _canvas_tile_evidence(json.dumps({"tileEvidence": specs}), "compact")
+    evidence = _canvas_tile_evidence({"tileEvidence": specs}, "compact")
     assert calls[0]["protein"] == "P1" and calls[0]["conditions"] == ["A"]
     assert "mean=0" in evidence[0].text and evidence[1].status == "unavailable"
 
@@ -84,7 +83,7 @@ def test_canvas_reads_completed_ora_snapshot_without_running_it(state, monkeypat
     from app.services import stats_tools
     monkeypatch.setattr(stats_tools, "run_enrichment_from_list", lambda *args: pytest.fail("Must not rerun ORA"))
     token = snapshots.store_snapshot({"type": "canvas_ora", "querySize": 3, "terms": [{"term": "T", "adjPValue": .01}]})
-    evidence = _canvas_tile_evidence(json.dumps({"tileEvidence": [{"type": "oraList", "token": token}]}), "compact")
+    evidence = _canvas_tile_evidence({"tileEvidence": [{"type": "oraList", "token": token}]}, "compact")
     assert evidence[0].status == "available" and "adjPValue=0.01" in evidence[0].text
 
 
@@ -109,8 +108,8 @@ def test_ora_planner_module_reads_visible_tile_not_standalone(state, monkeypatch
     if snapshot_state == "expired":
         state["time"] = 3601
     request = AssistantRequest(message="Explain this completed ORA result, including its query, background and adjusted p-values. Do not run ORA again.",
-        view={"module": "analysis.canvas", "workflow": "protein", "mode": json.dumps({"tiles": ["oraList"], "tileEvidence": [
-            {"type": "oraList", "token": "" if snapshot_state == "unrun" else token}]})})
+        view={"module": "analysis.canvas", "workflow": "protein", "mode": {"tiles": ["oraList"], "tileEvidence": [
+            {"type": "oraList", "token": "" if snapshot_state == "unrun" else token}]}})
     plan = AssistantPlan(task="current_plot", module="stats.ora")
     evidence = assistant.scientific_evidence(request, plan)[-1]
     assert evidence.tool.startswith("canvas tile")
@@ -136,7 +135,7 @@ def test_visible_ora_routing_preserves_other_modules(question, task, module, til
     from app.schemas.assistant import AssistantPlan, AssistantRequest
     from app.services.scientific_assistant import _evidence_module
     request = AssistantRequest(message=question, view={"module": "analysis.canvas",
-        "mode": json.dumps({"tileEvidence": [{"type": kind} for kind in tiles]})})
+        "mode": {"tileEvidence": [{"type": kind} for kind in tiles]}})
     assert _evidence_module(request, AssistantPlan(task=task, module=module)) == expected
 
 
@@ -152,7 +151,7 @@ def test_ora_route_to_assistant_retains_completed_result_and_invalidates_revisio
     from app.schemas.assistant import AssistantRequest, AssistantPlan
     from app.services.scientific_assistant import scientific_evidence
     term = EnrichmentTerm(source="GO", termId="T", name="Synthetic", termSize=20,
-                          intersectionSize=2, hitPercent=10, pValue=.001, adjPValue=.02,
+                          intersectionSize=2, querySize=20, geneRatio=0.1, hitPercent=10, pValue=.001, adjPValue=.02,
                           intersectingGenes=["G1", "G2"])
     result = ListEnrichmentResultResponse(genes=["G1", "G2"], terms=[term] * 11,
         backgroundMode="experiment", backgroundSize=100, annotatedBackgroundSize=80,
@@ -161,8 +160,8 @@ def test_ora_route_to_assistant_retains_completed_result_and_invalidates_revisio
     completed = routes_stats.ora_list_route(ListEnrichmentRequest(genes=["G1", "G2"]))
     monkeypatch.setattr(routes_stats, "run_enrichment_from_list", lambda payload: pytest.fail("Must not rerun"))
     request = AssistantRequest(message="Explain the current plot", view={"module": "analysis.canvas",
-        "workflow": "protein", "mode": json.dumps({"tiles": ["oraList"], "tileEvidence": [
-            {"type": "oraList", "token": completed.evidenceToken}]})})
+        "workflow": "protein", "mode": {"tiles": ["oraList"], "tileEvidence": [
+            {"type": "oraList", "token": completed.evidenceToken}]}})
     evidence = scientific_evidence(request, AssistantPlan(task="current_plot"), "extended")[-1]
     assert evidence.status == "partial" and "adjPValue=0.02" in evidence.text
     assert "totalRows=11" in evidence.text
@@ -183,8 +182,8 @@ def test_canvas_volcano_contract_keeps_contrast_and_p_metric(monkeypatch, source
     monkeypatch.setattr(analysis_functions, "analysis_volcano_data", calculate)
     settings = dict(kind="protein", source=source, condition1="A", condition2="B",
                     condition1Control="C", condition2Control="D", useUncorrected=raw, testType="unpaired_welch")
-    evidence = _canvas_tile_evidence(json.dumps({"tileEvidence": [
-        {"type": "volcano" if source == "volcano" else "volcanoControl", "settings": settings}]}), "extended")[0]
+    evidence = _canvas_tile_evidence({"tileEvidence": [
+        {"type": "volcano" if source == "volcano" else "volcanoControl", "settings": settings}]}, "extended")[0]
     assert calls[0].items() >= settings.items()
     assert f"p_metric={'raw' if raw else 'BH-adjusted'}" in evidence.text
     assert "negLog10P=3" in evidence.text and "log2FC=2" in evidence.text
@@ -202,8 +201,8 @@ def test_canvas_lineplot_preserves_entity_list_and_condition_order(monkeypatch, 
         assert received == {**{key: value for key, value in settings.items() if key != "dataSource"}, "data_source": source}
         return pd.DataFrame({"protein": ["G2", "G1"], "mean": [0, 2]})
     monkeypatch.setattr(analysis_functions, "analysis_lineplot_table", table)
-    evidence = _canvas_tile_evidence(json.dumps({"tileEvidence": [
-        {"type": "proteinLineplot", "settings": settings}]}), "extended")[0]
+    evidence = _canvas_tile_evidence({"tileEvidence": [
+        {"type": "proteinLineplot", "settings": settings}]}, "extended")[0]
     assert evidence.status == "available" and "protein=G2|mean=0" in evidence.text
 
 
@@ -217,8 +216,8 @@ def test_ksea_browser_boolean_routes_only_to_uploaded_evidence(state, monkeypatc
     if token_kind == "stale":
         state["revision"] += 1
     request = AssistantRequest(message="Explain the current plot", view={"module": "phospho.ksea",
-        "workflow": "phosphosite", "mode": json.dumps({"externalPlotPresent": True,
-        "externalEvidenceToken": token if token_kind != "missing" else ""})})
+        "workflow": "phosphosite", "mode": {"externalPlotPresent": True,
+        "externalEvidenceToken": token if token_kind != "missing" else ""}})
     evidence = assistant.scientific_evidence(request, AssistantPlan(task="current_plot", module=module))
     assert len(evidence) == 1
     assert evidence[0].status == ("available" if token_kind == "valid" else "unavailable")

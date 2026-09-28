@@ -44,6 +44,12 @@ class PeptideCoverageResponse(BaseModel):
     protein: str
     species: PeptideSpecies
     coveragePercent: float
+    # Peptides of the protein group that occur in the selected sequence; the
+    # coverage percentage is built from these.
     matchingPeptideCount: int
+    # All peptides the report assigns to the protein group.
+    assignedPeptideCount: int
+    # Assigned peptides that do not occur in the selected sequence (first 20).
+    unmappedPeptides: list[str] = Field(default_factory=list)
     sequenceText: str
     warnings: list[str] = Field(default_factory=list)

@@ -17,6 +17,8 @@ LOGGER = logging.getLogger(__name__)
 
 _LOCK = RLock()
 _CACHE_VERSION = 0
+_GLOBAL_VERSION = 0
+_SESSION_VERSIONS: dict[str, int] = {}
 _CACHE: "OrderedDict[tuple[Any, ...], Any]" = OrderedDict()
 _MAX_ENTRIES = 128
 _MAX_ENTRY_BYTES = 12 * 1024 * 1024
@@ -118,18 +120,29 @@ def _estimate_size_bytes(value: Any) -> int:
         return 0
 
 
-def invalidate_runtime_cache(reason: str = "") -> int:
+def invalidate_runtime_cache(reason: str = "", *, all_sessions: bool = False) -> int:
+    """Invalidate this session's results; global resets must opt in explicitly."""
     del reason
-    global _CACHE_VERSION
+    global _CACHE_VERSION, _GLOBAL_VERSION
     with _LOCK:
         _CACHE_VERSION += 1
-        _CACHE.clear()
+        if all_sessions:
+            _GLOBAL_VERSION = _CACHE_VERSION
+            _SESSION_VERSIONS.clear()
+            _CACHE.clear()
+        else:
+            session_id = get_session_id()
+            _SESSION_VERSIONS[session_id] = _CACHE_VERSION
+            for key in list(_CACHE):
+                if key[2] == session_id:
+                    del _CACHE[key]
         return _CACHE_VERSION
 
 
 def runtime_cache_version() -> int:
+    """Current session revision, also used to validate saved AI evidence."""
     with _LOCK:
-        return _CACHE_VERSION
+        return _SESSION_VERSIONS.get(get_session_id(), _GLOBAL_VERSION)
 
 
 def cached_call(
@@ -146,9 +159,10 @@ def cached_call(
     Pass False only for values that are never mutated downstream, and accept
     that the caller then shares the cached object.
     """
+    session_id = get_session_id()
     version = runtime_cache_version()
     try:
-        key = (namespace, version, get_session_id(), plot_output_format.get(), _freeze(key_data))
+        key = (namespace, version, session_id, plot_output_format.get(), _freeze(key_data))
     except UnfreezableArgument:
         # No exact key is possible, so a cache hit could serve the wrong result.
         # Recomputing is slower and correct; guessing is faster and wrong.
@@ -167,7 +181,7 @@ def cached_call(
         return result
 
     with _LOCK:
-        if _CACHE_VERSION == version:
+        if _SESSION_VERSIONS.get(session_id, _GLOBAL_VERSION) == version:
             _CACHE[key] = result
             _CACHE.move_to_end(key)
             while len(_CACHE) > _MAX_ENTRIES:

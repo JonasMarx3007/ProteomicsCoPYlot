@@ -4,6 +4,10 @@ import os
 import re
 import uuid
 from contextvars import ContextVar, Token
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; keeps this module import-light
+    from starlette.responses import Response
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
@@ -106,6 +110,23 @@ def rotate_session_id() -> str:
     replacement = new_session_id()
     _SESSION_ID_CTX.set(replacement)
     return replacement
+
+
+def set_session_cookie(response: "Response", session_id: str) -> None:
+    """Hand the client the post-login session id.
+
+    Authentication mints a new id and binds the grant to it, so the browser has
+    to be told; otherwise it keeps sending the pre-login id and every later
+    request reads as unauthenticated. Both login realms set the same cookie.
+    """
+    response.set_cookie(
+        key=session_cookie_name(),
+        value=session_id,
+        httponly=True,
+        secure=session_cookie_secure(),
+        samesite="lax",
+        path=session_cookie_path(),
+    )
 
 
 def set_session_id(session_id: str) -> Token[str]:

@@ -12,11 +12,11 @@ from __future__ import annotations
 import pytest
 from matplotlib import pyplot as plt
 
-from app.services.plot_images import (
+from app.services.plot_styling import (
     FONT_ELEMENT_KEYS,
     PLOT_FONTS,
-    _advanced_plotly_layout,
-    _apply_advanced_axes,
+    advanced_plotly_layout,
+    apply_advanced_axes,
     installed_family,
     mpl_font_family,
     plotly_font_family,
@@ -108,7 +108,7 @@ def test_the_face_reaches_the_title_labels_ticks_and_annotations() -> None:
         axes.plot([0, 1], [0, 1], label="series")
         axes.legend()
         axes.text(0.5, 0.5, "42")
-        _apply_advanced_axes(axes, {"fontFamily": "times"})
+        apply_advanced_axes(axes, {"fontFamily": "times"})
 
         wanted = installed_family(PLOT_FONTS["times"][0])
         assert axes.title.get_fontfamily() == [wanted]
@@ -126,7 +126,7 @@ def test_one_element_can_be_drawn_in_another_face() -> None:
     try:
         axes.set_title("Title")
         axes.set_xlabel("X")
-        _apply_advanced_axes(axes, {"fontFamily": "times", "titleFontFamily": "courier"})
+        apply_advanced_axes(axes, {"fontFamily": "times", "titleFontFamily": "courier"})
         assert axes.title.get_fontfamily() == [installed_family(PLOT_FONTS["courier"][0])]
         assert axes.xaxis.label.get_fontfamily() == [installed_family(PLOT_FONTS["times"][0])]
     finally:
@@ -147,7 +147,7 @@ def test_the_face_actually_changes_what_is_drawn() -> None:
             axes.set_title("Coverage")
             axes.set_xticks([])
             axes.set_yticks([])
-            _apply_advanced_axes(axes, {"fontFamily": font})
+            apply_advanced_axes(axes, {"fontFamily": font})
             figure.canvas.draw()
             return figure.canvas.tostring_argb()
         finally:
@@ -157,7 +157,7 @@ def test_the_face_actually_changes_what_is_drawn() -> None:
 
 
 def test_the_plotly_layout_carries_the_family_and_its_overrides() -> None:
-    layout = _advanced_plotly_layout(
+    layout = advanced_plotly_layout(
         {"fontFamily": "helvetica", "legendFontFamily": "courier"}
     )
     assert layout["font"]["family"] == PLOT_FONTS["helvetica"][1]
@@ -168,7 +168,7 @@ def test_bold_no_longer_changes_the_typeface() -> None:
     """Bold used to be faked by swapping the family to Arial Black, which meant
     asking for a bold title silently restyled it -- and would now fight the font
     the user chose."""
-    layout = _advanced_plotly_layout(
+    layout = advanced_plotly_layout(
         {"fontFamily": "times", "titleElement": {"bold": True, "italic": True}}
     )
     assert layout["title_font"]["weight"] == "bold"
@@ -179,5 +179,5 @@ def test_bold_no_longer_changes_the_typeface() -> None:
 
 def test_a_legend_size_no_longer_drops_the_legend_colour() -> None:
     """Setting both used to replace the font dict and lose the colour."""
-    layout = _advanced_plotly_layout({"legendFontSize": 14, "legendTextColor": "#ff00ff"})
+    layout = advanced_plotly_layout({"legendFontSize": 14, "legendTextColor": "#ff00ff"})
     assert layout["legend"]["font"] == {"color": "#ff00ff", "size": 14}

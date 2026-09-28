@@ -1,4 +1,5 @@
 import type {
+  ContextMode,
   ChatProvider,
   ChatMessage,
   CloudAiConsentStatus,
@@ -17,7 +18,6 @@ import type {
   ConditionPaletteResponse,
   DistributionSummaryResponse,
   CurrentDatasetsResponse,
-  DatasetPackagesResponse,
   DatasetPreviewResponse,
   DatasetKind,
   EnrichmentRequest,
@@ -33,7 +33,6 @@ import type {
   PairingUpdateRequest,
   PathwayOptionsResponse,
   PeptideCollapseRequest,
-  PeptideCollapseResponse,
   PhosphoOptionsResponse,
   PhosphoTableResponse,
   PeptideCoverageResponse,
@@ -43,7 +42,6 @@ import type {
   PeptideQuantityOptionsResponse,
   PeptidePathResponse,
   PeptideSpecies,
-  QcSummaryResponse,
   PhosprotAggregationMode,
   PhosprotAggregationSource,
   NormalizationCapabilityResponse,
@@ -98,10 +96,35 @@ async function fetch(input: string, init?: RequestInit): Promise<Response> {
   }
 }
 
+/**
+ * The message in an error response body, whatever shape FastAPI gave it.
+ *
+ * A handler's own error is `{"detail": "…"}`. A validation failure (422) is
+ * `{"detail": [{"loc": …, "msg": "…"}, …]}`, and `String()` of that array is
+ * "[object Object]" -- which is what every page showed for a p-value of 0.
+ */
+export function apiErrorMessage(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object" || !("detail" in data)) return fallback;
+  const detail = (data as { detail: unknown }).detail;
+  if (typeof detail === "string") return detail.trim() || fallback;
+  const items = Array.isArray(detail) ? detail : [detail];
+  const messages = items
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : item && typeof item === "object" && "msg" in item && typeof (item as { msg: unknown }).msg === "string"
+          ? (item as { msg: string }).msg
+          : ""
+    )
+    .map((message) => message.trim())
+    .filter(Boolean);
+  return [...new Set(messages)].slice(0, 3).join("; ") || fallback;
+}
+
 const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? ""}${TAB_API_PREFIX}`;
 
 export type AssistantView = {
-  module: string; workflow: string; mode: string;
+  module: string; workflow: string; mode: ContextMode;
   advancedOptions?: boolean;
   controls: import("./assistantControls").AssistantControl[];
   destinations: Record<string, string>;
@@ -109,6 +132,7 @@ export type AssistantView = {
 
 export type AssistantResult = {
   usedEvidenceFallback?: boolean;
+  stoppedEarly?: boolean;
   explainAfterChanges?: boolean;
   needsClarification?: boolean;
   model: string; answer: string; revision: number;
@@ -117,7 +141,7 @@ export type AssistantResult = {
 };
 
 export async function assistantStep(
-  payload: { message: string; messages?: ChatMessage[]; provider?: ChatProvider; model?: string; gpuEnabled?: boolean; apiKey?: string; ollamaUrl?: string; view: AssistantView; receipts: string[]; answerOnly?: boolean; conversationState?: import("./assistantConversation").ConversationState | null },
+  payload: { message: string; messages?: ChatMessage[]; provider?: ChatProvider; model?: string; gpuEnabled?: boolean; apiKey?: string; ollamaUrl?: string; view: AssistantView; receipts: string[]; notes?: string[]; answerOnly?: boolean; conversationState?: import("./assistantConversation").ConversationState | null },
   signal: AbortSignal,
 ): Promise<AssistantResult> {
   const response = await fetch(`${API_BASE}/api/chat/assistant`, {
@@ -167,15 +191,48 @@ async function parseJson(response: Response) {
   }
 }
 
+type RequestOptions = Omit<RequestInit, "body"> & {
+  /** Sent as the JSON body; the content type is set here, not at the call site. */
+  json?: unknown;
+  body?: BodyInit | null;
+  /** What to raise when the error body carries no usable `detail`. */
+  fallback: string;
+};
+
+/**
+ * One request, one error path.
+ *
+ * Every client below used to spell out the same four steps -- fetch, parse the
+ * body, test `response.ok`, throw `apiErrorMessage(...)`. That is why the 422
+ * fix (a validation body is a list of objects, not a string) had to be applied
+ * in every one of them, and why "[object Object]" survived for so long. The
+ * steps live here now; a client keeps only its URL, its payload and the shape
+ * of its result.
+ */
+async function requestResponse(url: string, { json, body, headers, fallback, ...init }: RequestOptions) {
+  const response = await fetch(url, {
+    ...init,
+    headers: json === undefined ? headers : { "Content-Type": "application/json", ...headers },
+    body: json === undefined ? body : JSON.stringify(json),
+  });
+  // The body is read here only to explain a failure; a caller that wants the
+  // bytes (a download) gets the response with its body still unread.
+  if (!response.ok) throw new Error(apiErrorMessage(await parseJson(response), fallback));
+  return response;
+}
+
+/** The same request, with the JSON body parsed. */
+async function requestUrl(url: string, options: RequestOptions) {
+  return parseJson(await requestResponse(url, options));
+}
+
+/** The same request against an API path; `buildPlotUrl` callers use `requestUrl`. */
+async function request(path: string, options: RequestOptions) {
+  return requestUrl(`${API_BASE}${path}`, options);
+}
+
 export async function getViewerAuthStatus(): Promise<ViewerAuthStatusResponse> {
-  const response = await fetch(`${API_BASE}/api/viewer/auth/status`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load viewer auth status"
-    );
-  }
+  const data = await request(`/api/viewer/auth/status`, { fallback: "Failed to load viewer auth status" });
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     enabled: Boolean(raw.enabled),
@@ -186,20 +243,11 @@ export async function getViewerAuthStatus(): Promise<ViewerAuthStatusResponse> {
 }
 
 export async function loginViewer(password: string): Promise<ViewerAuthLoginResponse> {
-  const response = await fetch(`${API_BASE}/api/viewer/auth/login`, {
+  const data = await request(`/api/viewer/auth/login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ password }),
+    json: { password },
+    fallback: "Viewer login failed",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Viewer login failed"
-    );
-  }
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     ok: Boolean(raw.ok),
@@ -210,16 +258,10 @@ export async function loginViewer(password: string): Promise<ViewerAuthLoginResp
 
 export async function getRRuntimeStatus(refresh = false): Promise<RRuntimeStatusResponse> {
   const suffix = refresh ? "?refresh=1" : "";
-  const response = await fetch(`${API_BASE}/api/runtime/r${suffix}`, {
+  const data = await request(`/api/runtime/r${suffix}`, {
     cache: refresh ? "no-store" : "default",
+    fallback: "Failed to detect R runtime",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to detect R runtime"
-    );
-  }
   return data as RRuntimeStatusResponse;
 }
 
@@ -227,16 +269,10 @@ export async function getNormalizationCapability(
   refresh = false
 ): Promise<NormalizationCapabilityResponse> {
   const suffix = refresh ? "?refresh=1" : "";
-  const response = await fetch(`${API_BASE}/api/runtime/normalization${suffix}`, {
+  const data = await request(`/api/runtime/normalization${suffix}`, {
     cache: refresh ? "no-store" : "default",
+    fallback: "Failed to detect normalization capabilities",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to detect normalization capabilities"
-    );
-  }
   const payload = data as Partial<NormalizationCapabilityResponse>;
   return {
     methods: Array.isArray(payload.methods)
@@ -249,20 +285,11 @@ export async function getNormalizationCapability(
 }
 
 export async function loginViewerQr(token: string): Promise<ViewerAuthLoginResponse> {
-  const response = await fetch(`${API_BASE}/api/viewer/auth/qr-login`, {
+  const data = await request(`/api/viewer/auth/qr-login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ token }),
+    json: { token },
+    fallback: "Viewer QR login failed",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Viewer QR login failed"
-    );
-  }
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     ok: Boolean(raw.ok),
@@ -272,27 +299,11 @@ export async function loginViewerQr(token: string): Promise<ViewerAuthLoginRespo
 }
 
 export async function logoutViewer(): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/viewer/auth/logout`, {
-    method: "POST",
-  });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Viewer logout failed"
-    );
-  }
+  await request(`/api/viewer/auth/logout`, { method: "POST", fallback: "Viewer logout failed" });
 }
 
 export async function getToolAuthStatus(): Promise<ToolAuthStatusResponse> {
-  const response = await fetch(`${API_BASE}/api/tool/auth/status`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load tool auth status"
-    );
-  }
+  const data = await request(`/api/tool/auth/status`, { fallback: "Failed to load tool auth status" });
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     enabled: Boolean(raw.enabled),
@@ -301,52 +312,25 @@ export async function getToolAuthStatus(): Promise<ToolAuthStatusResponse> {
 }
 
 export async function loginTool(password: string): Promise<ToolAuthLoginResponse> {
-  const response = await fetch(`${API_BASE}/api/tool/auth/login`, {
+  const data = await request(`/api/tool/auth/login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ password }),
+    json: { password },
+    fallback: "Tool login failed",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Tool login failed"
-    );
-  }
   return { ok: Boolean((data as Record<string, unknown> | null)?.ok) };
 }
 
 export async function loginToolLink(token: string): Promise<ToolAuthLoginResponse> {
-  const response = await fetch(`${API_BASE}/api/tool/auth/link-login`, {
+  const data = await request(`/api/tool/auth/link-login`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ token }),
+    json: { token },
+    fallback: "Tool access link failed",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Tool access link failed"
-    );
-  }
   return { ok: Boolean((data as Record<string, unknown> | null)?.ok) };
 }
 
 export async function logoutTool(): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/tool/auth/logout`, {
-    method: "POST",
-  });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Tool logout failed"
-    );
-  }
+  await request(`/api/tool/auth/logout`, { method: "POST", fallback: "Tool logout failed" });
 }
 
 export async function uploadDataset(
@@ -365,19 +349,7 @@ export async function uploadDataset(
     form.append("sourcePath", sourcePath.trim());
   }
 
-  const response = await fetch(`${API_BASE}/api/datasets/upload`, {
-    method: "POST",
-    body: form,
-  });
-
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Upload failed"
-    );
-  }
+  const data = await request(`/api/datasets/upload`, { method: "POST", body: form, fallback: "Upload failed" });
 
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
@@ -389,26 +361,11 @@ export async function saveTableDatasetPath(
   kind: Extract<DatasetKind, "protein" | "phospho" | "phosprot">,
   packageName?: string
 ): Promise<DatasetPreviewResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/table-path`, {
+  const data = await request(`/api/datasets/table-path`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      path,
-      kind,
-      packageName: packageName?.trim() || null,
-    }),
+    json: { path, kind, packageName: packageName?.trim() || null },
+    fallback: "Saving dataset path failed",
   });
-
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Saving dataset path failed"
-    );
-  }
 
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
@@ -426,20 +383,11 @@ export async function downloadRestoreState(
   uiState: Record<string, unknown>,
   options: { portable?: boolean } = {}
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`${API_BASE}/api/restore/export`, {
+  const response = await requestResponse(`${API_BASE}/api/restore/export`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ uiState, portable: options.portable ?? false }),
+    json: { uiState, portable: options.portable ?? false },
+    fallback: "Failed to export restore state",
   });
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to export restore state"
-    );
-  }
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, "copylot_state.copylotstate");
   return { blob, filename };
@@ -487,8 +435,7 @@ export async function importRestoreState(
 
   if (!response.ok) {
     throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to import restore state"
+      apiErrorMessage(data, "Failed to import restore state")
     );
   }
 
@@ -498,38 +445,18 @@ export async function importRestoreState(
 }
 
 export async function resetBrowserSessionState(): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/restore/browser-session-reset`, {
+  await request(`/api/restore/browser-session-reset`, {
     method: "POST",
+    fallback: "Failed to reset browser session state",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to reset browser session state"
-    );
-  }
 }
 
 export async function savePeptidePath(path: string, packageName?: string): Promise<PeptidePathResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/peptide-path`, {
+  const data = await request(`/api/datasets/peptide-path`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      path,
-      packageName: packageName?.trim() || null,
-    }),
+    json: { path, packageName: packageName?.trim() || null },
+    fallback: "Saving peptide path failed",
   });
-
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Saving peptide path failed"
-    );
-  }
 
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
@@ -543,19 +470,11 @@ export async function uploadPeptideFile(file: File, packageName?: string): Promi
     form.append("packageName", packageName.trim());
   }
 
-  const response = await fetch(`${API_BASE}/api/datasets/peptide-file`, {
+  const data = await request(`/api/datasets/peptide-file`, {
     method: "POST",
     body: form,
+    fallback: "Saving peptide file failed",
   });
-
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Saving peptide file failed"
-    );
-  }
 
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
@@ -565,15 +484,10 @@ export async function uploadPeptideFile(file: File, packageName?: string): Promi
 export async function getCurrentDatasets(
   requestOptions: ApiRequestOptions = {}
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/current`, { signal: requestOptions.signal });
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load current datasets"
-    );
-  }
+  const data = await request(`/api/datasets/current`, {
+    signal: requestOptions.signal,
+    fallback: "Failed to load current datasets",
+  });
 
   const payloadRaw = data as CurrentDatasetsResponse;
   const payload: CurrentDatasetsResponse = {
@@ -595,35 +509,12 @@ export async function getCurrentDatasets(
   return payload;
 }
 
-export async function getDatasetPackages(): Promise<DatasetPackagesResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/packages`);
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load dataset packages"
-    );
-  }
-
-  return data as DatasetPackagesResponse;
-}
-
 export async function createDatasetPackage(packageName: string): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/packages/create`, {
+  const data = await request(`/api/datasets/packages/create`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ packageName }),
+    json: { packageName },
+    fallback: "Failed to create dataset package",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to create dataset package"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -635,20 +526,11 @@ export async function renameDatasetPackage(
   oldName: string,
   newName: string
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/packages/rename`, {
+  const data = await request(`/api/datasets/packages/rename`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ oldName, newName }),
+    json: { oldName, newName },
+    fallback: "Failed to rename dataset package",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to rename dataset package"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -657,20 +539,11 @@ export async function renameDatasetPackage(
 }
 
 export async function setActiveDatasetPackage(packageName: string): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/active`, {
+  const data = await request(`/api/datasets/active`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ packageName }),
+    json: { packageName },
+    fallback: "Failed to switch dataset package",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to switch dataset package"
-    );
-  }
 
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
@@ -682,20 +555,11 @@ export async function setActiveDatasetPackage(packageName: string): Promise<Curr
 export async function createMetadataProfile(
   profileName: string
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/metadata/profiles/create`, {
+  const data = await request(`/api/datasets/metadata/profiles/create`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ profileName }),
+    json: { profileName },
+    fallback: "Failed to create metadata profile",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to create metadata profile"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -706,20 +570,11 @@ export async function createMetadataProfile(
 export async function deleteMetadataProfile(
   profileName: string
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/metadata/profiles/delete`, {
+  const data = await request(`/api/datasets/metadata/profiles/delete`, {
     method: "DELETE",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ profileName }),
+    json: { profileName },
+    fallback: "Failed to delete metadata profile",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to delete metadata profile"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -731,20 +586,11 @@ export async function renameMetadataProfile(
   oldName: string,
   newName: string
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/metadata/profiles/rename`, {
+  const data = await request(`/api/datasets/metadata/profiles/rename`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ oldName, newName }),
+    json: { oldName, newName },
+    fallback: "Failed to rename metadata profile",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to rename metadata profile"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -755,20 +601,11 @@ export async function renameMetadataProfile(
 export async function setActiveMetadataProfile(
   profileName: string
 ): Promise<CurrentDatasetsResponse> {
-  const response = await fetch(`${API_BASE}/api/datasets/metadata/profiles/active`, {
+  const data = await request(`/api/datasets/metadata/profiles/active`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ profileName }),
+    json: { profileName },
+    fallback: "Failed to switch metadata profile",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to switch metadata profile"
-    );
-  }
   const payload = data as CurrentDatasetsResponse;
   syncSummaryReportStateWithDatasets(payload);
   bumpDatasetScopeNonce();
@@ -779,40 +616,12 @@ export async function setActiveMetadataProfile(
 export async function getPeptideOverview(
   requestOptions: ApiRequestOptions = {}
 ): Promise<PeptideOverviewResponse> {
-  const response = await fetch(`${API_BASE}/api/peptide/overview`, { signal: requestOptions.signal });
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load peptide overview"
-    );
-  }
-
-  return data as PeptideOverviewResponse;
-}
-
-export async function uploadPeptideMetadata(file: File): Promise<PeptideMetadataResponse> {
-  const form = new FormData();
-  form.append("file", file);
-
-  const response = await fetch(`${API_BASE}/api/peptide/metadata/upload`, {
-    method: "POST",
-    body: form,
+  const data = await request(`/api/peptide/overview`, {
+    signal: requestOptions.signal,
+    fallback: "Failed to load peptide overview",
   });
 
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to upload peptide metadata"
-    );
-  }
-
-  // Every matrix downstream of this call is different now, so the plot and
-  // table URLs must be different too: `_dsn` is what makes them so.
-  bumpDatasetScopeNonce();
-  return data as PeptideMetadataResponse;
+  return data as PeptideOverviewResponse;
 }
 
 export async function getCurrentPeptideMetadata(): Promise<PeptideMetadataResponse | null> {
@@ -825,26 +634,11 @@ export async function getCurrentPeptideMetadata(): Promise<PeptideMetadataRespon
 
   if (!response.ok) {
     throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load peptide metadata"
+      apiErrorMessage(data, "Failed to load peptide metadata")
     );
   }
 
   return data as PeptideMetadataResponse;
-}
-
-export async function clearCurrentPeptideMetadata(): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/peptide/metadata/current`, {
-    method: "DELETE",
-  });
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to clear peptide metadata"
-    );
-  }
 }
 
 export async function getPeptideSequenceCoverage(
@@ -853,18 +647,10 @@ export async function getPeptideSequenceCoverage(
   chunkSize: number,
   requestOptions: ApiRequestOptions = {}
 ): Promise<PeptideCoverageResponse> {
-  const response = await fetch(
-    buildPlotUrl("/api/peptide/sequence-coverage", { species, protein, chunkSize }),
-    { signal: requestOptions.signal }
-  );
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to calculate peptide sequence coverage"
-    );
-  }
+  const data = await requestUrl(buildPlotUrl("/api/peptide/sequence-coverage", { species, protein, chunkSize }), {
+    signal: requestOptions.signal,
+    fallback: "Failed to calculate peptide sequence coverage",
+  });
 
   return data as PeptideCoverageResponse;
 }
@@ -872,21 +658,11 @@ export async function getPeptideSequenceCoverage(
 export async function generateAnnotation(
   payload: AnnotationGenerateRequest
 ): Promise<AnnotationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/generate`, {
+  const data = await request(`/api/annotations/generate`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to generate annotation",
   });
-
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to generate annotation"
-    );
-  }
 
   // Every matrix downstream of this call is different now, so the plot and
   // table URLs must be different too: `_dsn` is what makes them so.
@@ -897,19 +673,11 @@ export async function generateAnnotation(
 export async function generatePeptideMetadata(
   payload: PeptideMetadataGenerateRequest
 ): Promise<PeptideMetadataResponse> {
-  const response = await fetch(`${API_BASE}/api/peptide/metadata/generate`, {
+  const data = await request(`/api/peptide/metadata/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to generate peptide metadata",
   });
-
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to generate peptide metadata"
-    );
-  }
 
   // Every matrix downstream of this call is different now, so the plot and
   // table URLs must be different too: `_dsn` is what makes them so.
@@ -920,20 +688,11 @@ export async function generatePeptideMetadata(
 export async function detectAnnotationLog2Scale(
   payload: Log2DetectionRequest
 ): Promise<Log2DetectionResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/log2-detect`, {
+  const data = await request(`/api/annotations/log2-detect`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to detect intensity scale",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to detect intensity scale"
-    );
-  }
   return data as Log2DetectionResponse;
 }
 
@@ -941,17 +700,10 @@ export async function getCurrentAnnotation(
   kind: AnnotationKind,
   requestOptions: ApiRequestOptions = {}
 ): Promise<AnnotationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}`, {
+  const data = await request(`/api/annotations/current/${kind}`, {
     signal: requestOptions.signal,
+    fallback: "Failed to fetch current annotation",
   });
-  const data = await parseJson(response);
-
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to fetch current annotation"
-    );
-  }
 
   return data as AnnotationResultResponse;
 }
@@ -959,14 +711,9 @@ export async function getCurrentAnnotation(
 export async function downloadCurrentAnnotationFilteredData(
   kind: AnnotationKind
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/filtered/download`);
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to download filtered annotation data"
-    );
-  }
+  const response = await requestResponse(`${API_BASE}/api/annotations/current/${kind}/filtered/download`, {
+    fallback: "Failed to download filtered annotation data",
+  });
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, `${kind}_filtered_data_full.csv`);
   return { blob, filename };
@@ -975,14 +722,9 @@ export async function downloadCurrentAnnotationFilteredData(
 export async function downloadCurrentAnnotationSourceData(
   kind: AnnotationKind
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/source/download`);
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to download non-filtered annotation data"
-    );
-  }
+  const response = await requestResponse(`${API_BASE}/api/annotations/current/${kind}/source/download`, {
+    fallback: "Failed to download non-filtered annotation data",
+  });
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, `${kind}_data_full.csv`);
   return { blob, filename };
@@ -991,14 +733,9 @@ export async function downloadCurrentAnnotationSourceData(
 export async function downloadCurrentAnnotationMetadataData(
   kind: AnnotationKind
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`${API_BASE}/api/annotations/current/${kind}/metadata/download`);
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to download metadata annotation data"
-    );
-  }
+  const response = await requestResponse(`${API_BASE}/api/annotations/current/${kind}/metadata/download`, {
+    fallback: "Failed to download metadata annotation data",
+  });
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, `${kind}_metadata_full.csv`);
   return { blob, filename };
@@ -1007,18 +744,11 @@ export async function downloadCurrentAnnotationMetadataData(
 export async function updateAnnotationPairing(
   payload: PairingUpdateRequest
 ): Promise<AnnotationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/pairing`, {
+  const data = await request(`/api/annotations/pairing`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to save sample pairing",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to save sample pairing"
-    );
-  }
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
   return data as AnnotationResultResponse;
@@ -1050,18 +780,11 @@ export async function uploadAnnotationMetadata(
   form.append("file", file);
   form.append("kind", kind);
 
-  const response = await fetch(`${API_BASE}/api/annotations/metadata/upload`, {
+  const data = await request(`/api/annotations/metadata/upload`, {
     method: "POST",
     body: form,
+    fallback: "Failed to upload metadata",
   });
-
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to upload metadata"
-    );
-  }
 
   bumpDatasetScopeNonce();
   emitDatasetStateChanged();
@@ -1080,50 +803,23 @@ export async function getUploadedAnnotationMetadata(
 
   if (!response.ok) {
     throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load uploaded metadata"
+      apiErrorMessage(data, "Failed to load uploaded metadata")
     );
   }
 
   return data as MetadataUploadResponse;
 }
 
-export async function clearUploadedAnnotationMetadata(
-  kind: MetadataAnnotationKind
-): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/annotations/metadata/current/${kind}`, {
-    method: "DELETE",
-  });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to clear uploaded metadata"
-    );
-  }
-  bumpDatasetScopeNonce();
-  emitDatasetStateChanged();
-}
-
 export async function runImputation(
   payload: ImputationRunRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<ImputationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/imputation/run`, {
+  const data = await request(`/api/data-tools/imputation/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run imputation",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run imputation"
-    );
-  }
   // Every matrix downstream of this call is different now, so the plot and
   // table URLs must be different too: `_dsn` is what makes them so.
   bumpDatasetScopeNonce();
@@ -1133,21 +829,11 @@ export async function runImputation(
 export async function downloadImputationCsv(
   payload: ImputationRunRequest
 ): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/data-tools/imputation/download`, {
+  const response = await requestResponse(`${API_BASE}/api/data-tools/imputation/download`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to download imputed CSV",
   });
-
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to download imputed CSV"
-    );
-  }
 
   return response.blob();
 }
@@ -1156,57 +842,32 @@ export async function getDistributionSummary(
   kind: AnnotationKind,
   requestOptions: ApiRequestOptions = {}
 ): Promise<DistributionSummaryResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/distribution/${kind}`, {
+  const data = await request(`/api/data-tools/distribution/${kind}`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load distribution summary",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load distribution summary"
-    );
-  }
   return data as DistributionSummaryResponse;
 }
 
 export async function runIdTranslation(
   payload: IdTranslationRequest
 ): Promise<IdTranslationResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/id-translation/run`, {
+  const data = await request(`/api/data-tools/id-translation/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to translate IDs",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to translate IDs"
-    );
-  }
   return data as IdTranslationResponse;
 }
 
 export async function downloadIdTranslation(
   payload: IdTranslationRequest
 ): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/data-tools/id-translation/download`, {
+  const response = await requestResponse(`${API_BASE}/api/data-tools/id-translation/download`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to download translated table",
   });
-
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to download translated table"
-    );
-  }
 
   return response.blob();
 }
@@ -1215,48 +876,11 @@ export async function aggregatePhosprot(
   mode: PhosprotAggregationMode,
   source: PhosprotAggregationSource
 ): Promise<AnnotationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/annotations/phosprot/aggregate`, {
+  const data = await request(`/api/annotations/phosprot/aggregate`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ mode, source }),
+    json: { mode, source },
+    fallback: "Failed to aggregate phosphoprotein dataset",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to aggregate phosphoprotein dataset"
-    );
-  }
-  // Every matrix downstream of this call is different now, so the plot and
-  // table URLs must be different too: `_dsn` is what makes them so.
-  bumpDatasetScopeNonce();
-  return data as AnnotationResultResponse;
-}
-
-export async function uploadPhosprot(
-  file: File,
-  isLog2Transformed?: boolean
-): Promise<AnnotationResultResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  if (typeof isLog2Transformed === "boolean") {
-    form.append("isLog2Transformed", String(isLog2Transformed));
-  }
-
-  const response = await fetch(`${API_BASE}/api/annotations/phosprot/upload`, {
-    method: "POST",
-    body: form,
-  });
-
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to upload phosphoprotein dataset"
-    );
-  }
   // Every matrix downstream of this call is different now, so the plot and
   // table URLs must be different too: `_dsn` is what makes them so.
   bumpDatasetScopeNonce();
@@ -1267,16 +891,10 @@ export async function getConditionPalette(
   kind: AnnotationKind,
   requestOptions: ApiRequestOptions = {}
 ): Promise<ConditionPaletteResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`, {
+  const data = await request(`/api/data-tools/condition-colors/${kind}`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load condition colors",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load condition colors"
-    );
-  }
   return data as ConditionPaletteResponse;
 }
 
@@ -1284,20 +902,11 @@ export async function setConditionPalette(
   kind: AnnotationKind,
   palette: Record<string, string>
 ): Promise<ConditionPaletteResponse> {
-  const response = await fetch(`${API_BASE}/api/data-tools/condition-colors/${kind}`, {
+  const data = await request(`/api/data-tools/condition-colors/${kind}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ palette }),
+    json: { palette },
+    fallback: "Failed to save condition colors",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to save condition colors"
-    );
-  }
   // Every matrix downstream of this call is different now, so the plot and
   // table URLs must be different too: `_dsn` is what makes them so.
   bumpDatasetScopeNonce();
@@ -1309,45 +918,21 @@ export async function getCompletenessTables(
   params?: Record<string, string | number | boolean>,
   requestOptions: ApiRequestOptions = {}
 ): Promise<CompletenessTablesResponse> {
-  const response = await fetch(buildPlotUrl(`/api/data-tools/completeness/${kind}/tables`, params), {
+  const data = await requestUrl(buildPlotUrl(`/api/data-tools/completeness/${kind}/tables`, params), {
     signal: requestOptions.signal,
+    fallback: "Failed to load completeness tables",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load completeness tables"
-    );
-  }
   return data as CompletenessTablesResponse;
-}
-
-export async function getQcSummary(kind: AnnotationKind): Promise<QcSummaryResponse> {
-  const response = await fetch(`${API_BASE}/api/qc/summary/${kind}`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load QC summary"
-    );
-  }
-  return data as QcSummaryResponse;
 }
 
 export async function getQcPlotOptions(
   kind: AnnotationKind,
   requestOptions: ApiRequestOptions = {}
 ): Promise<QcPlotOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/options`, {
+  const data = await request(`/api/plots/qc/${kind}/options`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load QC plot options",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load QC plot options"
-    );
-  }
   const payload = data as Partial<QcPlotOptionsResponse>;
   return {
     conditions: Array.isArray(payload.conditions) ? payload.conditions : [],
@@ -1366,16 +951,10 @@ export async function getQcPlotOptions(
 export async function getPeptideQuantityOptions(
   requestOptions: ApiRequestOptions = {}
 ): Promise<PeptideQuantityOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/peptide/quantity-options`, {
+  const data = await request(`/api/peptide/quantity-options`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load peptide abundance columns",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load peptide abundance columns"
-    );
-  }
   const payload = data as Partial<PeptideQuantityOptionsResponse>;
   return {
     columns: Array.isArray(payload.columns) ? payload.columns : [],
@@ -1399,7 +978,7 @@ export type QcPcaFeatureQuery = {
   colorBy: string;
   clusterMethod: string;
   clusterCount: number;
-  dbscanEps: number;
+  dbscanEpsFactor: number;
   dbscanMinSamples: number;
   umapNNeighbors: number;
   umapMinDist: number;
@@ -1422,7 +1001,7 @@ export async function getQcPcaFeatures(
     colorBy: params.colorBy,
     clusterMethod: params.clusterMethod,
     clusterCount: String(params.clusterCount),
-    dbscanEps: String(params.dbscanEps),
+    dbscanEpsFactor: String(params.dbscanEpsFactor),
     dbscanMinSamples: String(params.dbscanMinSamples),
     umapNNeighbors: String(params.umapNNeighbors),
     umapMinDist: String(params.umapMinDist),
@@ -1430,16 +1009,10 @@ export async function getQcPcaFeatures(
     tsneLearningRate: String(params.tsneLearningRate),
     randomState: String(params.randomState),
   });
-  const response = await fetch(`${API_BASE}/api/plots/qc/${kind}/pca-features?${query.toString()}`, {
+  const data = await request(`/api/plots/qc/${kind}/pca-features?${query.toString()}`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load PCA feature summary",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load PCA feature summary"
-    );
-  }
   const payload = data as Partial<QcPcaFeatureSummary>;
   return {
     featuresTotal: Number(payload.featuresTotal ?? 0),
@@ -1449,6 +1022,14 @@ export async function getQcPcaFeatures(
     ellipseSkippedGroups: Array.isArray(payload.ellipseSkippedGroups)
       ? payload.ellipseSkippedGroups.map((group) => String(group))
       : [],
+    dbscan:
+      payload.dbscan && typeof payload.dbscan === "object"
+        ? {
+            epsFactor: Number(payload.dbscan.epsFactor ?? 0),
+            medianSampleDistance: Number(payload.dbscan.medianSampleDistance ?? 0),
+            epsEffective: Number(payload.dbscan.epsEffective ?? 0),
+          }
+        : null,
   };
 }
 
@@ -1463,14 +1044,10 @@ export async function getQcTable(
   if (tab === "boxplot") path = `/api/plots/qc/${kind}/boxplot-table`;
   if (tab === "cv") path = `/api/plots/qc/${kind}/cv-table`;
 
-  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load QC table"
-    );
-  }
+  const data = await requestUrl(buildPlotUrl(path, params), {
+    signal: requestOptions.signal,
+    fallback: "Failed to load QC table",
+  });
   return data as QcTableResponse;
 }
 
@@ -1478,16 +1055,10 @@ export async function getStatisticalOptions(
   kind: AnnotationKind,
   requestOptions: ApiRequestOptions = {}
 ): Promise<StatisticalOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/options/${kind}`, {
+  const data = await request(`/api/stats/options/${kind}`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load statistical options",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load statistical options"
-    );
-  }
   const payloadRaw = data as Partial<StatisticalOptionsResponse>;
   return {
     kind: (payloadRaw.kind as AnnotationKind) ?? kind,
@@ -1519,21 +1090,12 @@ export async function runVolcanoAnalysis(
   payload: VolcanoRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<VolcanoResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/volcano/run`, {
+  const data = await request(`/api/stats/volcano/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run volcano analysis",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run volcano analysis"
-    );
-  }
   return data as VolcanoResultResponse;
 }
 
@@ -1541,21 +1103,12 @@ export async function runVolcanoControlAnalysis(
   payload: VolcanoControlRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<VolcanoResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/volcano-control/run`, {
+  const data = await request(`/api/stats/volcano-control/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run control volcano analysis",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run control volcano analysis"
-    );
-  }
   return data as VolcanoResultResponse;
 }
 
@@ -1563,21 +1116,12 @@ export async function runAnovaAnalysis(
   payload: AnovaRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<AnovaResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/anova/run`, {
+  const data = await request(`/api/stats/anova/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run ANOVA analysis",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run ANOVA analysis"
-    );
-  }
   return data as AnovaResultResponse;
 }
 
@@ -1585,21 +1129,12 @@ export async function runEnrichmentAnalysis(
   payload: EnrichmentRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<EnrichmentResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/ora/run`, {
+  const data = await request(`/api/stats/ora/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run enrichment analysis",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run enrichment analysis"
-    );
-  }
   return data as EnrichmentResultResponse;
 }
 
@@ -1607,21 +1142,12 @@ export async function runListEnrichmentAnalysis(
   payload: ListEnrichmentRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<ListEnrichmentResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/ora/list/run`, {
+  const data = await request(`/api/stats/ora/list/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run list enrichment analysis",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run list enrichment analysis"
-    );
-  }
   return data as ListEnrichmentResultResponse;
 }
 
@@ -1629,21 +1155,12 @@ export async function runAnalysisVolcanoData(
   payload: AnalysisVolcanoRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<AnalysisVolcanoResponse> {
-  const response = await fetch(`${API_BASE}/api/analysis/volcano/data`, {
+  const data = await request(`/api/analysis/volcano/data`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to load analysis volcano data",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load analysis volcano data"
-    );
-  }
   return data as AnalysisVolcanoResponse;
 }
 
@@ -1666,14 +1183,9 @@ function normalizeCloudAiConsentStatus(value: unknown): CloudAiConsentStatus {
 }
 
 export async function getCloudAiConsentStatus(provider: ChatProvider): Promise<CloudAiConsentStatus> {
-  const response = await fetch(`${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load cloud AI consent status"
-    );
-  }
+  const data = await request(`/api/chat/cloud-consent/${encodeURIComponent(provider)}`, {
+    fallback: "Failed to load cloud AI consent status",
+  });
   return normalizeCloudAiConsentStatus(data);
 }
 
@@ -1681,36 +1193,19 @@ export async function grantCloudAiConsent(
   provider: ChatProvider,
   disclosureVersion: string
 ): Promise<CloudAiConsentStatus> {
-  const response = await fetch(
-    `${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}/grant`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ disclosureVersion }),
-    }
-  );
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to confirm cloud AI consent"
-    );
-  }
+  const data = await request(`/api/chat/cloud-consent/${encodeURIComponent(provider)}/grant`, {
+    method: "POST",
+    json: { disclosureVersion },
+    fallback: "Failed to confirm cloud AI consent",
+  });
   return normalizeCloudAiConsentStatus(data);
 }
 
 export async function revokeCloudAiConsent(provider: ChatProvider): Promise<CloudAiConsentStatus> {
-  const response = await fetch(
-    `${API_BASE}/api/chat/cloud-consent/${encodeURIComponent(provider)}/revoke`,
-    { method: "POST" }
-  );
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to revoke cloud AI consent"
-    );
-  }
+  const data = await request(`/api/chat/cloud-consent/${encodeURIComponent(provider)}/revoke`, {
+    method: "POST",
+    fallback: "Failed to revoke cloud AI consent",
+  });
   return normalizeCloudAiConsentStatus(data);
 }
 
@@ -1718,14 +1213,7 @@ export async function getOllamaGpuStatus(endpoint?: string): Promise<OllamaGpuSt
   const url = endpoint?.trim()
     ? `${API_BASE}/api/chat/gpu-status?endpoint=${encodeURIComponent(endpoint.trim())}`
     : `${API_BASE}/api/chat/gpu-status`;
-  const response = await fetch(url);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load Ollama GPU status"
-    );
-  }
+  const data = await requestUrl(url, { fallback: "Failed to load Ollama GPU status" });
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     gpuEligible: Boolean(raw.gpuEligible),
@@ -1747,14 +1235,7 @@ export async function getOllamaModels(endpoint?: string): Promise<OllamaModelsRe
   const url = endpoint?.trim()
     ? `${API_BASE}/api/chat/models?endpoint=${encodeURIComponent(endpoint.trim())}`
     : `${API_BASE}/api/chat/models`;
-  const response = await fetch(url);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load Ollama models"
-    );
-  }
+  const data = await requestUrl(url, { fallback: "Failed to load Ollama models" });
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
@@ -1764,20 +1245,11 @@ export async function getOllamaModels(endpoint?: string): Promise<OllamaModelsRe
 }
 
 export async function installOllamaModel(model: string, endpoint?: string): Promise<OllamaModelManageResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/models/install`, {
+  const data = await request(`/api/chat/models/install`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, endpoint: endpoint?.trim() || null }),
+    json: { model, endpoint: endpoint?.trim() || null },
+    fallback: "Failed to install Ollama model",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to install Ollama model"
-    );
-  }
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     ok: Boolean(raw.ok),
@@ -1791,20 +1263,11 @@ export async function installOllamaModel(model: string, endpoint?: string): Prom
 }
 
 export async function removeOllamaModel(model: string, endpoint?: string): Promise<OllamaModelManageResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/models/remove`, {
+  const data = await request(`/api/chat/models/remove`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, endpoint: endpoint?.trim() || null }),
+    json: { model, endpoint: endpoint?.trim() || null },
+    fallback: "Failed to remove Ollama model",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to remove Ollama model"
-    );
-  }
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   return {
     ok: Boolean(raw.ok),
@@ -1820,16 +1283,10 @@ export async function removeOllamaModel(model: string, endpoint?: string): Promi
 export async function getPathwayOptions(
   requestOptions: ApiRequestOptions = {}
 ): Promise<PathwayOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/pathways`, {
+  const data = await request(`/api/stats/pathways`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load pathway options",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load pathway options"
-    );
-  }
   return data as PathwayOptionsResponse;
 }
 
@@ -1837,21 +1294,12 @@ export async function runSimulationAnalysis(
   payload: SimulationRequest,
   requestOptions: ApiRequestOptions = {}
 ): Promise<SimulationResultResponse> {
-  const response = await fetch(`${API_BASE}/api/stats/simulation/run`, {
+  const data = await request(`/api/stats/simulation/run`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
     signal: requestOptions.signal,
+    fallback: "Failed to run simulation",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run simulation"
-    );
-  }
   return data as SimulationResultResponse;
 }
 
@@ -1862,17 +1310,10 @@ export async function getSingleProteinOptions(
   dataSource: DataSource = "data",
   requestOptions: ApiRequestOptions = {}
 ): Promise<SingleProteinOptionsResponse> {
-  const response = await fetch(
-    buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab, identifier, dataSource }),
-    { signal: requestOptions.signal }
-  );
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load single-protein options"
-    );
-  }
+  const data = await requestUrl(buildPlotUrl(`/api/plots/single-protein/${kind}/options`, { tab, identifier, dataSource }), {
+    signal: requestOptions.signal,
+    fallback: "Failed to load single-protein options",
+  });
   return data as SingleProteinOptionsResponse;
 }
 
@@ -1882,33 +1323,20 @@ export async function getSingleProteinTable(
   params?: Record<string, string | number | boolean>,
   requestOptions: ApiRequestOptions = {}
 ): Promise<SingleProteinTableResponse> {
-  const response = await fetch(
-    buildPlotUrl(`/api/plots/single-protein/${kind}/${tab}-table`, params),
-    { signal: requestOptions.signal }
-  );
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load single-protein table"
-    );
-  }
+  const data = await requestUrl(buildPlotUrl(`/api/plots/single-protein/${kind}/${tab}-table`, params), {
+    signal: requestOptions.signal,
+    fallback: "Failed to load single-protein table",
+  });
   return data as SingleProteinTableResponse;
 }
 
 export async function getPhosphoOptions(
   requestOptions: ApiRequestOptions = {}
 ): Promise<PhosphoOptionsResponse> {
-  const response = await fetch(`${API_BASE}/api/plots/phospho/options`, {
+  const data = await request(`/api/plots/phospho/options`, {
     signal: requestOptions.signal,
+    fallback: "Failed to load phospho options",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load phospho options"
-    );
-  }
   const payloadRaw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   const available = payloadRaw.availableDataSources;
   const defaultSource = payloadRaw.defaultDataSource;
@@ -1952,14 +1380,10 @@ export async function getPhosphoTable(
   if (tab === "sty") path = "/api/plots/phospho/sty-table";
   if (tab === "phosprotRegulation") path = "/api/plots/phospho/phosprot-regulation-table";
 
-  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load phospho table"
-    );
-  }
+  const data = await requestUrl(buildPlotUrl(path, params), {
+    signal: requestOptions.signal,
+    fallback: "Failed to load phospho table",
+  });
   return data as PhosphoTableResponse;
 }
 
@@ -1992,8 +1416,8 @@ export async function renderKseaVolcanoFromFiles(payload: {
   const text = await response.text();
   if (!response.ok) {
     try {
-      const parsed = JSON.parse(text) as { detail?: string };
-      throw new Error(parsed?.detail || "Failed to generate KSEA volcano");
+      const parsed = JSON.parse(text) as unknown;
+      throw new Error(apiErrorMessage(parsed, "Failed to generate KSEA volcano"));
     } catch {
       throw new Error(text || "Failed to generate KSEA volcano");
     }
@@ -2006,16 +1430,10 @@ export async function getComparisonOptions(
   requestOptions: ApiRequestOptions = {}
 ): Promise<ComparisonOptionsResponse> {
   // Comparison is QC: it reads the data as loaded and takes no source.
-  const response = await fetch(buildPlotUrl(`/api/plots/comparison/${kind}/options`, {}), {
+  const data = await requestUrl(buildPlotUrl(`/api/plots/comparison/${kind}/options`, {}), {
     signal: requestOptions.signal,
+    fallback: "Failed to load comparison options",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load comparison options"
-    );
-  }
   return data as ComparisonOptionsResponse;
 }
 
@@ -2030,37 +1448,11 @@ export async function getComparisonTable(
       ? `/api/plots/comparison/${kind}/pearson-table`
       : `/api/plots/comparison/${kind}/venn-table`;
 
-  const response = await fetch(buildPlotUrl(path, params), { signal: requestOptions.signal });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load comparison table"
-    );
-  }
-  return data as ComparisonTableResponse;
-}
-
-export async function runPeptideCollapse(
-  payload: PeptideCollapseRequest
-): Promise<PeptideCollapseResponse> {
-  const response = await fetch(`${API_BASE}/api/external/peptide-collapse/run`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+  const data = await requestUrl(buildPlotUrl(path, params), {
+    signal: requestOptions.signal,
+    fallback: "Failed to load comparison table",
   });
-
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run peptide collapse"
-    );
-  }
-
-  return data as PeptideCollapseResponse;
+  return data as ComparisonTableResponse;
 }
 
 export async function getModelCapability(
@@ -2072,14 +1464,9 @@ export async function getModelCapability(
   if (provider === "ollama" && endpoint?.trim()) {
     params.set("endpoint", endpoint.trim());
   }
-  const response = await fetch(`${API_BASE}/api/chat/model-capability?${params.toString()}`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to inspect model capabilities"
-    );
-  }
+  const data = await request(`/api/chat/model-capability?${params.toString()}`, {
+    fallback: "Failed to inspect model capabilities",
+  });
   const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   const level = Number(raw.level);
   return {
@@ -2118,17 +1505,11 @@ export async function runPeptideCollapseFile(
   form.append("file", file);
   form.append("cutoff", String(options.cutoff));
 
-  const response = await fetch(`${API_BASE}/api/external/peptide-collapse/upload`, {
+  const response = await requestResponse(`${API_BASE}/api/external/peptide-collapse/upload`, {
     method: "POST",
     body: form,
+    fallback: "Failed to run peptide collapse",
   });
-  if (!response.ok) {
-    const data = await parseJson(response);
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to run peptide collapse"
-    );
-  }
 
   const blob = await response.blob();
   const filename = resolveDownloadFilename(response, "peptide_collapsed.tsv");
@@ -2136,34 +1517,18 @@ export async function runPeptideCollapseFile(
 }
 
 export async function getSummaryTables(): Promise<SummaryTablesResponse> {
-  const response = await fetch(`${API_BASE}/api/summary/tables`);
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to load summary tables"
-    );
-  }
+  const data = await request(`/api/summary/tables`, { fallback: "Failed to load summary tables" });
   return data as SummaryTablesResponse;
 }
 
 export async function generateSummaryReport(
   payload: SummaryReportRequest
 ): Promise<SummaryReportResponse> {
-  const response = await fetch(`${API_BASE}/api/summary/report`, {
+  const data = await request(`/api/summary/report`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    json: payload,
+    fallback: "Failed to generate summary report",
   });
-  const data = await parseJson(response);
-  if (!response.ok) {
-    throw new Error(
-      (data && typeof data === "object" && "detail" in data && String(data.detail)) ||
-        "Failed to generate summary report"
-    );
-  }
   return data as SummaryReportResponse;
 }
 

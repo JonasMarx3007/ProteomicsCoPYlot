@@ -1,6 +1,5 @@
-import SelectField from "../../components/SelectField";
 import SummaryCard from "../../components/SummaryCard";
-import { useId, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, isAbortError, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -15,6 +14,9 @@ import type {
   AnnotationKind,
   ImputationResultResponse,
 } from "../../lib/types";
+import SelectField from "../../components/SelectField";
+import PreviewTable from "../../components/PreviewTable";
+import NumberField from "../../components/NumberField";
 
 /** The imputation this session actually holds, however it was learned. */
 type AppliedImputation = {
@@ -335,8 +337,8 @@ export default function ImputationPage() {
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           {method === "quantile" ? (
             <>
-              <NumberField label="Quantile" value={qValue} onChange={setQValue} step={0.001} />
-              <NumberField
+              <NumberField assistant={false} label="Quantile" value={qValue} onChange={setQValue} step={0.001} />
+              <NumberField assistant={false}
                 label="Adjust standard deviation"
                 value={adjustStd}
                 onChange={setAdjustStd}
@@ -345,13 +347,13 @@ export default function ImputationPage() {
             </>
           ) : (
             <>
-              <NumberField
+              <NumberField assistant={false}
                 label="Downshift"
                 value={downShift}
                 onChange={setDownShift}
                 step={0.1}
               />
-              <NumberField
+              <NumberField assistant={false}
                 label="Adjust standard deviation"
                 value={width}
                 onChange={setWidth}
@@ -359,7 +361,7 @@ export default function ImputationPage() {
               />
             </>
           )}
-          <NumberField
+          <NumberField assistant={false}
             label="Random seed"
             value={seed}
             onChange={(value) => setSeed(Math.round(value))}
@@ -572,122 +574,5 @@ function PlotSection({
         <img key={imageUrl} src={imageUrl} alt={alt} className="w-full rounded-xl border border-slate-200" />
       </div>
     </section>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  onChange,
-  step = 1,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-  step?: number;
-}) {
-  const fieldId = useId();
-  const [draft, setDraft] = useState<string | null>(null);
-  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
-
-  const commit = () => {
-    const normalized = displayedValue.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(null);
-      return;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed)) {
-      setDraft(null);
-      return;
-    }
-    onChange(parsed);
-    setDraft(null);
-  };
-
-  return (
-    <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <input id={fieldId}
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        value={displayedValue}
-        step={step}
-        onChange={(e) => setDraft(e.target.value.replace(",", "."))}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-      />
-    </div>
-  );
-}
-
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  const columns = useMemo(() => {
-    const seen = new Set<string>();
-    rows.forEach((row) => {
-      Object.keys(row).forEach((key) => seen.add(key));
-    });
-    return Array.from(seen);
-  }, [rows]);
-
-  if (rows.length === 0 || columns.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full table-fixed border-collapse text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-              {columns.map((column) => {
-                const value = row[column];
-                const text = value == null ? "" : String(value);
-                return (
-                  <td
-                    key={`${rowIndex}-${column}`}
-                    className="border-b border-slate-100 px-3 py-2 text-slate-600"
-                    title={text}
-                  >
-                    <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {text}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }

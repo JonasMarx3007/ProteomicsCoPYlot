@@ -404,6 +404,30 @@ def extract_id_or_number(x):
     return extract_sample_id(x)
 
 
+def _sample_meta(meta, id=True, newline=False, zero_based=False):
+    """Sample labels `Condition_n`, with the sample's id appended when `id` is set.
+
+    `n` counts each condition's samples in metadata order, from 1 (from 0 with
+    `zero_based`). The id follows on its own line with `newline` -- for tick
+    labels -- or after a space. Returns a copy with `sample` as text and `id` and
+    `new_sample` added. The R package's `.sample_meta` is the same rule.
+    """
+    meta = meta.copy()
+    meta["sample"] = meta["sample"].astype(str)
+    meta["id"] = meta["sample"].apply(extract_id_or_number)
+    number = meta.groupby("condition").cumcount() + (0 if zero_based else 1)
+    labels = meta["condition"].astype(str) + "_" + number.astype(str)
+    if id:
+        labels = labels + ("\n(" if newline else " (") + meta["id"].astype(str) + ")"
+    meta["new_sample"] = labels
+    return meta
+
+
+def _rename_samples(data, meta):
+    """`data` with its sample columns renamed to the labels `_sample_meta` built."""
+    return data.rename(columns=dict(zip(meta["sample"], meta["new_sample"])))
+
+
 def _raw_zero_to_nan(data: pd.DataFrame, sample_columns) -> pd.DataFrame:
     """Convert raw non-detections without touching transformed/annotation zeros."""
     output = data.copy()
@@ -1014,22 +1038,10 @@ def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=Non
                   data_scale="log2"):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     conditions = meta['condition'].unique()
-    meta['sample'] = meta['sample'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}\n({row['id']})", axis=1
-        )
-    else:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
-
-    rename_dict = dict(zip(meta['sample'], meta['new_sample']))
-    data_filtered = data.rename(columns=rename_dict)
+    # `_sample_meta` works on a copy: this used to write `id` and
+    # `new_sample` into the caller's own meta.
+    meta = _sample_meta(meta, id=id, newline=True)
+    data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
 
     if not annotated_columns:
@@ -1074,7 +1086,7 @@ def coverage_plot(data, meta, id=True, header=True, legend=True, plot_colors=Non
                         color="black", rotation=90
                     )
 
-    ax.set_xlabel('Condition')
+    ax.set_xlabel('Sample')
 
     redline = None
 
@@ -1264,15 +1276,8 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
         data = sanitize_dataframe(read_data(data2_path)).copy()
 
     meta = meta.copy()
-    meta['sample'] = meta['sample'].astype(str)
     meta['condition'] = meta['condition'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number).astype(str)
-    meta = meta.reset_index(drop=True)
-    cnt = meta.groupby('condition').cumcount() + 1
-    if id:
-        meta['new_sample'] = meta['condition'] + "_" + cnt.astype(str) + "\n(" + meta['id'].astype(str) + ")"
-    else:
-        meta['new_sample'] = meta['condition'] + "_" + cnt.astype(str)
+    meta = _sample_meta(meta.reset_index(drop=True), id=id, newline=True)
 
     ordered_new_samples = list(meta['new_sample'])
     sample_to_new = dict(zip(meta['sample'], meta['new_sample']))
@@ -1281,17 +1286,12 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
     if "File.Name" in data.columns:
         pivot = data.pivot_table(index=feature_column, columns='File.Name',
                                  values=quantity_column, aggfunc='max')
-        peptides_count = pivot.shape[0]
         rename_map = {column: sample_to_new[sample] for column, sample in
                       _peptide_sample_map(pivot.columns, meta['sample']).items()}
         pivot = pivot.rename(columns=rename_map)
         annotated_cols = [c for c in ordered_new_samples if c in pivot.columns]
         data_filtered = pivot[annotated_cols].reset_index()
     else:
-        if feature_column in data.columns:
-            peptides_count = data[feature_column].nunique()
-        else:
-            peptides_count = data.shape[0]
         rename_map = {column: sample_to_new[sample] for column, sample in
                       _peptide_sample_map(data.columns.drop(feature_column, errors='ignore'), meta['sample']).items()}
         d2 = data.rename(columns=rename_map)
@@ -1307,6 +1307,10 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
         if c != feature_column:
             data_filtered[c] = pd.to_numeric(data_filtered[c], errors='coerce')
             data_filtered[c] = np.where(data_filtered[c].notna() & (data_filtered[c] != 0), 1, 0)
+
+    # Reference line: features quantified in at least one annotated sample (the
+    # union of the bars), as on coverage_plot; not the number of sequences in the file.
+    peptides_count = int((data_filtered.drop(columns=[feature_column]).sum(axis=1) > 0).sum())
 
     plot_data = data_filtered.melt(id_vars=feature_column, var_name='Sample', value_name='Value')
     summary = plot_data.groupby('Sample')['Value'].sum().reset_index()
@@ -1329,6 +1333,7 @@ def coverage_plot_pep(data2_path, meta, id=True, header=True, legend=True,
     if header:
         ax.set_title(f"{level.capitalize()}s per sample")
     ax.set_ylabel(f"Number of {level}s")
+    ax.set_xlabel("Sample")
     ax.set_xticks(range(len(summary)))
     ax.set_xticklabels([str(s) for s in summary['Sample'].astype(str)], rotation=90)
 
@@ -1379,7 +1384,7 @@ def histo_int(data, meta, plot_colors=None, header=True, legend=True,
     ax.set_ylabel('Density')
 
     if header:
-        ax.set_title('Distribution of measured intensity (log2)')
+        ax.set_title('Distribution of mean intensity per condition (log2)')
 
     if legend:
         ax.legend(title='Condition', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -1451,7 +1456,9 @@ def boxplot_int(data, meta, outliers=False, header=True, plot_colors=None,
         for pos, med in zip(positions, medians):
             if not np.isnan(med):
                 ax.text(
-                    pos, med * 1.02,  # slightly above the median line
+                    # A fixed step above the line: a multiplicative offset sat on
+                    # the line for medians near zero and below it for negative ones.
+                    pos, med + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]),
                     f"{med:.2f}",
                     ha='center', va='bottom', fontsize=text_size,
                     color='black', rotation=0, fontweight='bold'
@@ -1463,7 +1470,7 @@ def boxplot_int(data, meta, outliers=False, header=True, plot_colors=None,
     ax.set_ylabel("log2 Intensity")
 
     if header:
-        ax.set_title("Measured intensity values (log2)")
+        ax.set_title("Mean intensity per condition (log2)")
 
     if ax.get_legend() is not None:
         ax.get_legend().remove()
@@ -1477,21 +1484,8 @@ def boxplot_int_single(
     width_cm=20, height_cm=10, dpi=100, text=False, text_size=9
 ):
     meta = meta.copy()
-    meta["id"] = meta["sample"].apply(extract_id_or_number)
-
-    if id:
-        meta["new_sample"] = meta.groupby("condition").cumcount() + 1
-        meta["new_sample"] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})", axis=1
-        )
-    else:
-        meta["new_sample"] = meta.groupby("condition").cumcount() + 1
-        meta["new_sample"] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
-
-    rename_dict = dict(zip(meta["sample"], meta["new_sample"]))
-    data = data.rename(columns=rename_dict)
+    meta = _sample_meta(meta, id=id)
+    data = _rename_samples(data, meta)
 
     intensities = data.melt(var_name="sample", value_name="intensity")
     intensities = intensities.merge(
@@ -1527,7 +1521,7 @@ def boxplot_int_single(
         for i, median in enumerate(medians):
             if not np.isnan(median):
                 ax.text(
-                    i + 1, median * 1.02,
+                    i + 1, median + 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]),
                     f"{median:.2f}",
                     ha="center", va="bottom",
                     fontsize=text_size, rotation=0, color="black", fontweight="bold"
@@ -2112,18 +2106,8 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
               data_scale="log2"):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
-    meta['sample'] = meta['sample'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})", axis=1)
-    else:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(lambda row: f"{row['condition']}_{row['new_sample']}", axis=1)
-
-    rename_map = dict(zip(meta['sample'], meta['new_sample']))
-    data = data.rename(columns=rename_map)
+    meta = _sample_meta(meta, id=id)
+    data = _rename_samples(data, meta)
 
     annotated_columns = meta['new_sample'].tolist()
     data_filtered = data[annotated_columns].dropna(axis=1, how='all')
@@ -2509,69 +2493,38 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     return pd.DataFrame(result)
 
 
-def volcano_plot(volcano_df, condition1, condition2, in_pval=0.05, in_log2fc=1, uncorrected=False, max_chars=100):
-    color_mapping = {'Downregulated': 'blue', 'Not significant': 'gray', 'Upregulated': 'red'}
-    y_hline = -np.log10(in_pval)
-    max_y = max(y_hline, volcano_df['neg_log10_adj_pval'].max())
-
-    shapes = [
-        dict(type="line", x0=in_log2fc, x1=in_log2fc, y0=0, y1=max_y, line=dict(color="black", dash="dash")),
-        dict(type="line", x0=-in_log2fc, x1=-in_log2fc, y0=0, y1=max_y, line=dict(color="black", dash="dash")),
-        dict(type="line", x0=volcano_df['log2FC'].min(), x1=volcano_df['log2FC'].max(),
-             y0=y_hline, y1=y_hline, line=dict(color="black", dash="dash"))
-    ]
-
+def _volcano_label_col(volcano_df):
+    """The column that names a volcano's features."""
     if 'Phosphoprotein' in volcano_df.columns:
-        label_col = 'Phosphoprotein'
-        site_col = 'site_num' if 'site_num' in volcano_df.columns else None
-        ptm_col = 'PTM_Collapse_keys' if 'PTM_Collapse_keys' in volcano_df.columns else None
-    elif 'ProteinNames' in volcano_df.columns:
-        label_col = 'ProteinNames'
-        site_col = ptm_col = None
-    else:
-        label_col = 'PTM_Collapse_key'
-        site_col = ptm_col = None
-
-    fig = go.Figure()
-    for sig, color in color_mapping.items():
-        subset = volcano_df[volcano_df['significance'] == sig]
-
-        if label_col == 'Phosphoprotein':
-            hover_text = subset[label_col].astype(str)
-            if site_col is not None:
-                hover_text += " (" + subset[site_col].astype(str) + " sites)"
-            if ptm_col is not None:
-                truncated_ptm = subset[ptm_col].astype(str).apply(
-                    lambda x: x if len(x) <= max_chars else x[:max_chars] + " ..."
-                )
-                hover_text += "<br>" + truncated_ptm
-        else:
-            hover_text = subset[label_col].astype(str)
-
-        fig.add_trace(go.Scatter(
-            x=subset['log2FC'],
-            y=subset['neg_log10_adj_pval'],
-            mode='markers',
-            marker=dict(color=color, size=5),
-            text=hover_text,
-            name=sig,
-            hoverinfo='text'
-        ))
-
-    fig.update_layout(
-        title=f"{condition1} vs {condition2}",
-        xaxis_title=f"log2 fold change ({condition1} - {condition2})",
-        yaxis_title='-log10 adj. p-value' if not uncorrected else '-log10 p-value',
-        shapes=shapes,
-        hovermode='closest'
-    )
-    return fig
+        return 'Phosphoprotein'
+    if 'ProteinNames' in volcano_df.columns:
+        return 'ProteinNames'
+    return 'PTM_Collapse_key'
 
 
-def volcano_plot_h(volcano_df, condition1, condition2,
-                   in_pval=0.05, in_log2fc=1, uncorrected=False,
-                   highlight_terms=None, max_chars=100):
+def _volcano_hover_text(volcano_df, label_col, max_chars=100):
+    """Hover text: the feature name; for a phosphoprotein also its site count and
+    its sites, the list cut at `max_chars`."""
+    hover_text = volcano_df[label_col].astype(str)
+    if label_col == 'Phosphoprotein':
+        if 'site_num' in volcano_df.columns:
+            hover_text += " (" + volcano_df['site_num'].astype(str) + " sites)"
+        if 'PTM_Collapse_keys' in volcano_df.columns:
+            hover_text += "<br>" + volcano_df['PTM_Collapse_keys'].astype(str).apply(
+                lambda x: x if len(x) <= max_chars else x[:max_chars] + " ..."
+            )
+    return hover_text
 
+
+def _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, uncorrected,
+                       highlight_terms=None, max_chars=100):
+    """The interactive volcano `volcano_plot` and `volcano_plot_h` both draw.
+
+    One trace per significance class, and a second, ringed one for the features
+    named in `highlight_terms` (matched on the part of a name before `_`, case
+    ignored). A class with no points gets no trace. The R package's
+    `.volcano_plot_base` draws the same figure.
+    """
     if highlight_terms is not None and not isinstance(highlight_terms, list):
         highlight_terms = [highlight_terms]
 
@@ -2579,6 +2532,7 @@ def volcano_plot_h(volcano_df, condition1, condition2,
         return str(name).split('_')[0].lower()
 
     highlight_terms_norm = [normalize_name(t) for t in highlight_terms] if highlight_terms else []
+    label_col = _volcano_label_col(volcano_df)
 
     color_mapping = {'Downregulated': 'blue', 'Not significant': 'gray', 'Upregulated': 'red'}
     y_hline = -np.log10(in_pval)
@@ -2591,65 +2545,27 @@ def volcano_plot_h(volcano_df, condition1, condition2,
              y0=y_hline, y1=y_hline, line=dict(color="black", dash="dash"))
     ]
 
-    if 'Phosphoprotein' in volcano_df.columns:
-        label_col = 'Phosphoprotein'
-        site_col = 'site_num' if 'site_num' in volcano_df.columns else None
-        ptm_col = 'PTM_Collapse_keys' if 'PTM_Collapse_keys' in volcano_df.columns else None
-    elif 'ProteinNames' in volcano_df.columns:
-        label_col = 'ProteinNames'
-        site_col = ptm_col = None
-    else:
-        label_col = 'PTM_Collapse_key'
-        site_col = ptm_col = None
-
-    def build_hover(df_subset):
-        hover = df_subset[label_col].astype(str)
-
-        if label_col == 'Phosphoprotein':
-            if site_col:
-                hover += " (" + df_subset[site_col].astype(str) + " sites)"
-            if ptm_col:
-                trunc = df_subset[ptm_col].astype(str).apply(
-                    lambda x: x if len(x) <= max_chars else x[:max_chars] + " ..."
-                )
-                hover += "<br>" + trunc
-
-        return hover
-
     fig = go.Figure()
-
     for sig, color in color_mapping.items():
-        subset = volcano_df[volcano_df['significance'] == sig].copy()
-
+        subset = volcano_df[volcano_df['significance'] == sig]
         if highlight_terms_norm:
-            subset['highlight'] = subset[label_col].apply(
+            highlighted = subset[label_col].apply(
                 lambda x: any(n in highlight_terms_norm for n in [normalize_name(y) for y in str(x).split(';')])
-            )
-            subset_high = subset[subset['highlight']]
-            subset_norm = subset[~subset['highlight']]
+            ).astype(bool)
         else:
-            subset_high = pd.DataFrame(columns=subset.columns)
-            subset_norm = subset
+            highlighted = pd.Series(False, index=subset.index)
 
-        if len(subset_norm) > 0:
+        for ringed in (False, True):
+            points = subset[highlighted == ringed]
+            if len(points) == 0:
+                continue
             fig.add_trace(go.Scatter(
-                x=subset_norm['log2FC'],
-                y=subset_norm['neg_log10_adj_pval'],
+                x=points['log2FC'],
+                y=points['neg_log10_adj_pval'],
                 mode='markers',
-                marker=dict(color=color, size=5),
-                text=build_hover(subset_norm),
-                name=sig,
-                hoverinfo='text'
-            ))
-
-        if len(subset_high) > 0:
-            fig.add_trace(go.Scatter(
-                x=subset_high['log2FC'],
-                y=subset_high['neg_log10_adj_pval'],
-                mode='markers',
-                marker=dict(color=color, size=8, line=dict(color='lime', width=3)),
-                text=build_hover(subset_high),
-                name=f"{sig} (highlighted)",
+                marker=dict(color=color, size=8, line=dict(color='lime', width=3)) if ringed else dict(color=color, size=5),
+                text=_volcano_hover_text(points, label_col, max_chars),
+                name=f"{sig} (highlighted)" if ringed else sig,
                 hoverinfo='text'
             ))
 
@@ -2660,8 +2576,19 @@ def volcano_plot_h(volcano_df, condition1, condition2,
         shapes=shapes,
         hovermode='closest'
     )
-
     return fig
+
+
+def volcano_plot(volcano_df, condition1, condition2, in_pval=0.05, in_log2fc=1, uncorrected=False, max_chars=100):
+    return _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, uncorrected,
+                              max_chars=max_chars)
+
+
+def volcano_plot_h(volcano_df, condition1, condition2,
+                   in_pval=0.05, in_log2fc=1, uncorrected=False,
+                   highlight_terms=None, max_chars=100):
+    return _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, uncorrected,
+                              highlight_terms=highlight_terms, max_chars=max_chars)
 
 
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
@@ -2760,6 +2687,20 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     return out.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
 
 
+def row_zscore(matrix):
+    """Row-wise z-scores with the sample standard deviation (ddof=1).
+
+    The one definition every heatmap in the package uses, and the same one
+    the web application and the R package use: ddof=1, a row with no spread
+    (or a non-finite SD) centred and left at zero rather than made undefined.
+    """
+    values = np.asarray(matrix, dtype=float)
+    row_mean = np.nanmean(values, axis=1, keepdims=True)
+    row_sd = np.nanstd(values, axis=1, ddof=1, keepdims=True)
+    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1.0
+    return (values - row_mean) / row_sd
+
+
 def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster"):
     from scipy.cluster.hierarchy import fcluster
 
@@ -2787,10 +2728,7 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
         cluster_df = cluster_df.loc[kept]
         _warn_dropped_features(dropped, total)
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
 
     if matrix.shape[0] <= 1:
         cluster_df[cluster_col] = 1
@@ -3198,7 +3136,7 @@ def anova_plot(
     if "new_sample" in meta_plot.columns:
         meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
     else:
-        meta_plot["plot_sample"] = meta_plot["condition"] + "_" + (meta_plot.groupby("condition").cumcount() + 1).astype(str)
+        meta_plot["plot_sample"] = _sample_meta(meta_plot, id=False)["new_sample"]
 
     sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_df.columns]
     if not sample_cols:
@@ -3225,10 +3163,7 @@ def anova_plot(
     labels = plot_df[label_col].astype(str).tolist()
 
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
         cmap = "RdBu_r"
         color_label = "row z-score"
         vmin, vmax = -2.5, 2.5
@@ -3288,6 +3223,9 @@ def anova_plot(
 
     if show_dendrograms and row_linkage is not None:
         dendrogram(row_linkage, ax=ax_row_dendrogram, orientation="left", no_labels=True, color_threshold=0, above_threshold_color="black", link_color_func=lambda _: "black")
+        # scipy draws leaf 0 at the bottom of a left-oriented dendrogram while
+        # imshow draws row 0 at the top; flip the axis so branches meet their rows.
+        ax_row_dendrogram.invert_yaxis()
     ax_row_dendrogram.set_axis_off()
 
     ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
@@ -3354,7 +3292,7 @@ def anova_plot_cluster(
     if "new_sample" in meta_plot.columns:
         meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
     else:
-        meta_plot["plot_sample"] = meta_plot["condition"] + "_" + (meta_plot.groupby("condition").cumcount() + 1).astype(str)
+        meta_plot["plot_sample"] = _sample_meta(meta_plot, id=False)["new_sample"]
 
     sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_cluster_df.columns]
     if not sample_cols:
@@ -3374,10 +3312,7 @@ def anova_plot_cluster(
     labels = plot_df[label_col].astype(str).tolist()
 
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
         cmap = "RdBu_r"
         color_label = "row z-score"
         vmin, vmax = -2.5, 2.5
@@ -3571,6 +3506,8 @@ ENRICHMENT_COLUMNS = [
     "term_name",
     "term_size",
     "intersection_size",
+    "query_size",
+    "gene_ratio",
     "p_value",
     "adj_p_value",
 ]
@@ -3662,6 +3599,8 @@ def enrichment_data(
                 "term_name": str(row.get("description", "")),
                 "term_size": term_size,
                 "intersection_size": len(overlap),
+                "query_size": sample_size,
+                "gene_ratio": len(overlap) / sample_size,
             }
         )
     if not rows:
@@ -3716,15 +3655,16 @@ def enrichment_analysis(
     )
 
     fig, ax = plt.subplots(figsize=(8, 6))
+    # GeneRatio (overlap / query genes), as in clusterProfiler's dot plot.
     scatter = ax.scatter(
-        x=res['intersection_size'] / res['term_size'] * 100,
+        x=res['gene_ratio'],
         y=res['term_name'],
         s=res['intersection_size']*10,
         c=-np.log10(res['adj_p_value'].clip(lower=np.finfo(float).tiny)),
         cmap='RdBu_r'
     )
 
-    ax.set_xlabel('Hits (%)')
+    ax.set_xlabel('GeneRatio (overlap / query genes)')
     ax.set_ylabel('GO Term')
     background_label = (
         "tested-gene background"
@@ -3843,21 +3783,7 @@ def proteins_in_pathway(
     else:
         meta_filtered = meta.copy()
 
-    meta_filtered['sample'] = meta_filtered['sample'].astype(str)
-    if 'id' not in meta_filtered.columns:
-        meta_filtered['id'] = meta_filtered['sample'].str.extract(r'(\d+)$')
-    meta_filtered['index'] = meta_filtered.groupby('condition').cumcount() + 1
-
-    if id:
-        meta_filtered['new_sample'] = meta_filtered.apply(
-            lambda row: f"{row['condition']}_{row['index']}\n({row['id']})",
-            axis=1
-        )
-    else:
-        meta_filtered['new_sample'] = meta_filtered.apply(
-            lambda row: f"{row['condition']}_{row['index']}",
-            axis=1
-        )
+    meta_filtered = _sample_meta(meta_filtered, id=id, newline=True)
 
     rename_dict = dict(zip(meta_filtered['sample'], meta_filtered['new_sample']))
     sample_cols = list(meta_filtered['sample'])
@@ -3879,13 +3805,7 @@ def proteins_in_pathway(
     value_type = value_type.lower()
 
     if value_type == "z":
-        def z_transform(row):
-            mean = row.mean(skipna=True)
-            std = row.std(skipna=True)
-            if std == 0 or np.isnan(std):
-                return row * np.nan
-            return (row - mean) / std
-        heatmap_data = heatmap_data.apply(z_transform, axis=1)
+        heatmap_data = pd.DataFrame(row_zscore(heatmap_data), index=heatmap_data.index, columns=heatmap_data.columns)
         cbar_label = "Z-score"
     elif value_type == "log2":
         cbar_label = "log2 Intensity"
@@ -3931,9 +3851,13 @@ def proteins_in_pathway(
         heatmap_data = heatmap_data.iloc[:, col_order]
 
     fig, ax = plt.subplots(figsize=figsize)
+    # A z-score is diverging: the default map becomes RdBu_r with symmetric
+    # limits in z mode, as on the ANOVA heatmaps; an explicit cmap_name is kept.
+    z_mode = value_type == "z"
     sns.heatmap(
         heatmap_data,
-        cmap=plt.get_cmap(cmap_name),
+        cmap=plt.get_cmap("RdBu_r" if z_mode and cmap_name == "plasma" else cmap_name),
+        **({"vmin": -2.5, "vmax": 2.5} if z_mode else {}),
         cbar_kws={'label': cbar_label},
         linewidths=0.5,
         linecolor='gray',
@@ -4306,15 +4230,8 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
 
     data2_wide.columns = [extract_id_or_number(c) if c != "Modified.Sequence" else c for c in data2_wide.columns]
 
-    meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
-    meta["id"] = meta["sample"].apply(extract_id_or_number).astype(str)
-    cnt = meta.groupby("condition").cumcount() + 1
-
-    if id:
-        meta["new_sample"] = meta["condition"] + "_" + cnt.astype(str) + "\n(" + meta["id"] + ")"
-    else:
-        meta["new_sample"] = meta["condition"] + "_" + cnt.astype(str)
+    meta = _sample_meta(meta, id=id, newline=True)
 
     rename_dict = dict(zip(meta["id"], meta["new_sample"]))
     data2_wide = data2_wide.rename(columns=rename_dict)
@@ -4405,10 +4322,6 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     file_col = [c for c in data2.columns if 'file' in c.lower()][0]
     seq_col = [c for c in data2.columns if 'stripped' in c.lower() and 'sequence' in c.lower()][0]
 
-    data2_names = data2[file_col].unique()
-    for name in data2_names:
-        meta['sample'] = np.where(meta['sample'] == name, name, meta['sample'])
-
     df_wide = data2.pivot_table(
         index=file_col,
         columns=seq_col,
@@ -4417,27 +4330,14 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
     ).T.reset_index()
 
     df_wide.rename(columns={"index": seq_col}, inplace=True)
-    df_wide.columns = [extract_id_or_number(c) if c != seq_col else c for c in df_wide.columns]
-
-    meta["sample"] = meta["sample"].astype(str)
-    meta["id"] = meta["sample"].apply(extract_id_or_number)
-
-    if id:
-        meta["new_sample"] = meta.groupby("condition").cumcount() + 1
-        meta["new_sample"] = (
-            meta["condition"].astype(str) + "_" +
-            meta["new_sample"].astype(str) + "\n(" +
-            meta["id"].astype(str) + ")"
-        )
-    else:
-        meta["new_sample"] = meta.groupby("condition").cumcount() + 1
-        meta["new_sample"] = meta["condition"].astype(str) + "_" + meta["new_sample"].astype(str)
-
-    rename_dict = dict(zip(meta["id"], meta["new_sample"]))
+    sample_map = _peptide_sample_map(df_wide.columns.drop(seq_col), meta['sample'])
+    meta = _sample_meta(meta, id=id, newline=True)
+    labels = dict(zip(meta["sample"], meta["new_sample"]))
+    rename_dict = {run: labels[sample] for run, sample in sample_map.items()}
     df_wide = df_wide.rename(columns=rename_dict)
 
     annotated_cols = [c for c in meta["new_sample"] if c in df_wide.columns]
-    data_filtered = df_wide[[seq_col] + annotated_cols]
+    data_filtered = df_wide[[seq_col] + annotated_cols].copy()
 
     resolved_protease = normalize_protease(protease)
     rk_counts = [count_missed_cleavages(seq, resolved_protease) for seq in data_filtered[seq_col]]
@@ -4467,7 +4367,7 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
         ax.bar(range(len(samples_order)), subset, bottom=bottom, label=str(c))
         bottom += subset
 
-    ax.set_ylabel("Percentage of peptides with missed cleavage (%)")
+    ax.set_ylabel("Peptides with missed cleavage (%)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
 
     if header:
@@ -4619,20 +4519,7 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
                       workflow="Protein", plot_colors=None, width=10, height=6, dpi=100):
     meta = meta.copy()
     data = data.copy()
-    meta["sample"] = meta["sample"].astype(str)
-
-    sample_index = meta.groupby("condition").cumcount() + 1
-    if id:
-        meta["new_sample"] = (
-            meta["condition"].astype(str)
-            + "_"
-            + sample_index.astype(str)
-            + "\n("
-            + meta["sample"].astype(str)
-            + ")"
-        )
-    else:
-        meta["new_sample"] = meta["condition"].astype(str) + "_" + sample_index.astype(str)
+    meta = _sample_meta(meta, id=id, newline=True)
 
     relevant_samples = meta["new_sample"].tolist()
     rename_vector = dict(zip(meta["sample"], meta["new_sample"]))
@@ -4714,11 +4601,8 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
     if data.empty:
         raise ValueError(f"No data found for protein: {protein}")
 
-    sample_index = meta.groupby("condition").cumcount() + 1
-    meta["new_sample"] = meta["condition"].astype(str) + "_" + sample_index.astype(str)
-
-    rename_vector = dict(zip(meta["sample"], meta["new_sample"]))
-    data.rename(columns=rename_vector, inplace=True)
+    meta = _sample_meta(meta, id=False)
+    data = _rename_samples(data, meta)
     annotated_columns = meta["new_sample"].tolist()
     data_filtered = data.loc[:, annotated_columns]
 
@@ -4813,19 +4697,7 @@ def phossite_on_prot_regulation(
     else:
         meta_filtered = meta.copy()
 
-    meta_filtered['sample'] = meta_filtered['sample'].astype(str)
-    meta_filtered['id'] = meta_filtered['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta_filtered['new_sample'] = meta_filtered.groupby('condition').cumcount() + 1
-        meta_filtered['new_sample'] = meta_filtered.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}\n({row['id']})", axis=1
-        )
-    else:
-        meta_filtered['new_sample'] = meta_filtered.groupby('condition').cumcount() + 1
-        meta_filtered['new_sample'] = meta_filtered.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
+    meta_filtered = _sample_meta(meta_filtered, id=id, newline=True)
 
     sample_cols = [s for s in meta_filtered['sample'] if s in protein_data.columns]
     rename_dict = dict(zip(meta_filtered['sample'], meta_filtered['new_sample']))
@@ -4849,13 +4721,7 @@ def phossite_on_prot_regulation(
 
     value_type = value_type.lower()
     if value_type == "z":
-        def z_transform(row):
-            mean = row.mean(skipna=True)
-            std = row.std(skipna=True)
-            if std == 0 or np.isnan(std):
-                return row * np.nan
-            return (row - mean) / std
-        heatmap_data = heatmap_data.apply(z_transform, axis=1)
+        heatmap_data = pd.DataFrame(row_zscore(heatmap_data), index=heatmap_data.index, columns=heatmap_data.columns)
         cbar_label = "Z-score"
     elif value_type == "log2":
         cbar_label = "log2 Intensity"
@@ -4889,6 +4755,8 @@ def phossite_on_prot_regulation(
     sns.heatmap(
         heatmap_data,
         cmap=plt.get_cmap(cmap_name),
+        # Symmetric limits in z mode, so equal colours mean equal z.
+        **({"vmin": -2.5, "vmax": 2.5} if value_type == "z" else {}),
         cbar_kws={'label': cbar_label},
         linewidths=0.5,
         linecolor='gray',
@@ -4986,7 +4854,7 @@ def sty_plot(data):
             "right", functions=(lambda count: count * 100 / total_count,
                                 lambda percent: percent * total_count / 100),
         )
-        ax2.set_ylabel("Percentage (%)")
+        ax2.set_ylabel("Share of sites (%)")
         ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
 
     y_max = max(counts.values) if len(counts.values) else 0
@@ -5365,6 +5233,38 @@ def missing_value_plot(data, meta, bin=0, header=True, text=True, text_size=3.88
     return fig
 
 
+def _missing_bar(counts, bin, title, header, text, text_size, color, width=10, height=6, dpi=100):
+    """Bar chart of how many features miss how many samples.
+
+    `counts` holds one missing-value count per feature. With `bin` > 0 every
+    count above it is pooled into one `>bin` bar. The R package's `.missing_bar`
+    draws the same chart.
+    """
+    if bin > 0:
+        labels = counts.apply(lambda x: f">{bin}" if x > bin else str(x))
+        levels_vec = [str(i) for i in range(bin + 1)] + [f">{bin}"]
+    else:
+        labels = counts.astype(str)
+        levels_vec = None
+    miss_vals = labels.value_counts().sort_index()
+    if levels_vec is None:
+        levels_vec = sorted(miss_vals.index, key=lambda x: int(x))
+    miss_vals = miss_vals.reindex(levels_vec, fill_value=0)
+
+    fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
+    ax.bar(miss_vals.index, miss_vals.values, color=color)
+    if header:
+        ax.set_title(title)
+    ax.set_xlabel("Number of Missing Values")
+    ax.set_ylabel("Frequency")
+    if text:
+        for i, val in enumerate(miss_vals.values):
+            if val > 0:
+                ax.text(i, val + 0.5, str(val), ha='center', va='bottom', fontsize=text_size)
+    plt.tight_layout()
+    return fig
+
+
 def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
                             text_size=8, width=10, height=6, dpi=100, color='blue', quantity_column='Precursor.Quantity'):
     data = sanitize_dataframe(read_data(data_path)).copy()
@@ -5386,36 +5286,8 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
     data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
-
-    if bin > 0:
-        na_count = na_count.apply(lambda x: f">{bin}" if x > bin else str(x))
-    else:
-        na_count = na_count.astype(str)
-
-    miss_vals = na_count.value_counts().sort_index()
-
-    if bin > 0:
-        levels_vec = [str(i) for i in range(bin + 1)] + [f">{bin}"]
-    else:
-        levels_vec = sorted(miss_vals.index, key=lambda x: int(x))
-
-    miss_vals = miss_vals.reindex(levels_vec, fill_value=0)
-
-    fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-    ax.bar(miss_vals.index, miss_vals.values, color=color)
-
-    if header:
-        ax.set_title("Missing Value Plot - Precursor Level")
-    ax.set_xlabel("Number of Missing Values")
-    ax.set_ylabel("Frequency")
-
-    if text:
-        for i, val in enumerate(miss_vals.values):
-            if val > 0:
-                ax.text(i, val + 0.5, str(val), ha='center', va='bottom', fontsize=text_size)
-
-    plt.tight_layout()
-    return fig
+    return _missing_bar(na_count, bin, "Missing Value Plot - Precursor Level", header, text, text_size, color,
+                        width=width, height=height, dpi=dpi)
 
 
 def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
@@ -5439,36 +5311,20 @@ def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
     data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
+    return _missing_bar(na_count, bin, "Missing Value Plot - Peptide Level", header, text, text_size, color,
+                        width=width, height=height, dpi=dpi)
 
-    if bin > 0:
-        na_count = na_count.apply(lambda x: f">{bin}" if x > bin else str(x))
-    else:
-        na_count = na_count.astype(str)
 
-    miss_vals = na_count.value_counts().sort_index()
-
-    if bin > 0:
-        levels_vec = [str(i) for i in range(bin + 1)] + [f">{bin}"]
-    else:
-        levels_vec = sorted(miss_vals.index, key=lambda x: int(x))
-
-    miss_vals = miss_vals.reindex(levels_vec, fill_value=0)
-
-    fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-    ax.bar(miss_vals.index, miss_vals.values, color=color)
-
-    if header:
-        ax.set_title("Missing Value Plot - Peptide Level")
-    ax.set_xlabel("Number of Missing Values")
-    ax.set_ylabel("Frequency")
-
-    if text:
-        for i, val in enumerate(miss_vals.values):
-            if val > 0:
-                ax.text(i, val + 0.5, str(val), ha='center', va='bottom', fontsize=text_size)
-
-    plt.tight_layout()
-    return fig
+def _feature_axis_label(data):
+    """What one row of the matrix is, for an axis label: Proteins / Phosphosites / Phosphoproteins."""
+    columns = set(data.columns)
+    if "Phosphoprotein" in columns:
+        return "Phosphoproteins"
+    if "PTM_Collapse_key" in columns:
+        return "Phosphosites"
+    if "ProteinNames" in columns:
+        return "Proteins"
+    return "Features"
 
 
 def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10, dpi=300,
@@ -5476,22 +5332,8 @@ def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10,
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
 
     meta = meta.copy()
-    meta['sample'] = meta['sample'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})", axis=1
-        )
-    else:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
-
-    rename_dict = dict(zip(meta['sample'], meta['new_sample']))
-    data_filtered = data.rename(columns=rename_dict)
+    meta = _sample_meta(meta, id=id)
+    data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
     data_filtered = data_filtered[annotated_columns]
 
@@ -5500,7 +5342,7 @@ def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10,
     if header:
         plt.title("Missing Values Heatmap")
     plt.xlabel("Sample")
-    plt.ylabel("Protein Numbers")
+    plt.ylabel(_feature_axis_label(data))
     plt.tight_layout()
     fig = plt.gcf()
     return fig
@@ -5509,22 +5351,8 @@ def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10,
 def missing_protein_table(data, meta, id=True, data_scale="log2"):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
-    meta['sample'] = meta['sample'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})", axis=1
-        )
-    else:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
-
-    rename_dict = dict(zip(meta['sample'], meta['new_sample']))
-    data_filtered = data.rename(columns=rename_dict)
+    meta = _sample_meta(meta, id=id)
+    data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
     data_filtered = data_filtered[annotated_columns]
 
@@ -5539,22 +5367,8 @@ def missing_protein_table(data, meta, id=True, data_scale="log2"):
 def missing_sample_table(data, meta, id=True, data_scale="log2"):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
     meta = meta.copy()
-    meta['sample'] = meta['sample'].astype(str)
-    meta['id'] = meta['sample'].apply(extract_id_or_number)
-
-    if id:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']} ({row['id']})", axis=1
-        )
-    else:
-        meta['new_sample'] = meta.groupby('condition').cumcount() + 1
-        meta['new_sample'] = meta.apply(
-            lambda row: f"{row['condition']}_{row['new_sample']}", axis=1
-        )
-
-    rename_dict = dict(zip(meta['sample'], meta['new_sample']))
-    data_filtered = data.rename(columns=rename_dict)
+    meta = _sample_meta(meta, id=id)
+    data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
     data_filtered = data_filtered[annotated_columns]
 

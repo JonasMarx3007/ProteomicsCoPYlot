@@ -1,14 +1,5 @@
 import type { AdvancedPlotSettings } from "./types";
 
-export function contextMode(parts: string[]): string {
-  return JSON.stringify(Object.fromEntries(parts.map((part) => {
-    const separator = part.indexOf("=");
-    const key = part.slice(0, separator);
-    const value = part.slice(separator + 1);
-    return [key, (key === "conditions" || key === "proteins") ? JSON.parse(value) : value];
-  })));
-}
-
 export function compactTextElement(value: AdvancedPlotSettings["titleElement"]) {
   if (!value) return undefined;
   const text = value.text?.trim();
@@ -159,10 +150,8 @@ export function compactElementSettings(
  * The one compaction of an advanced-settings object into what the URL carries.
  *
  * There used to be three near-copies of this -- in `App.tsx`, the QC page and
- * the Completeness page -- and they had drifted. `App.tsx` dropped the bare
- * `title`, `xLabel`, `yLabel`, `titleSize` and `axisLabelSize` keys that a save
- * file or the assistant can still carry; the Completeness page dropped the
- * legend, box, colour-scale, condition-label and condition-colour keys; and
+ * the Completeness page -- and they had drifted. The Completeness page dropped
+ * the legend, box, colour-scale, condition-label and condition-colour keys, and
  * `textXOffset`/`textYOffset` were forwarded only by the page whose plots do
  * not read them. Each omission is silent in exactly the same way: the panel
  * stores the setting, the URL never carries it, and the plot comes back looking
@@ -182,37 +171,15 @@ export function compactAdvancedPlotSettings(
   const next: AdvancedPlotSettings = {};
   const trimmed = (value: string | undefined) => value?.trim();
 
-  // Legacy flat text keys. The panel writes the `*Element` objects now, but a
-  // restored save file or an assistant instruction can still carry these.
-  const title = trimmed(settings.title);
-  const xLabel = trimmed(settings.xLabel);
-  const yLabel = trimmed(settings.yLabel);
-  if (title) next.title = title;
-  if (xLabel) next.xLabel = xLabel;
-  if (yLabel) next.yLabel = yLabel;
-
   const titleElement = compactTextElement(settings.titleElement);
   const xLabelElement = compactTextElement(settings.xLabelElement);
   const yLabelElement = compactTextElement(settings.yLabelElement);
-  if (titleElement) {
-    next.titleElement = titleElement;
-    if (titleElement.text) next.title = titleElement.text;
-    if (titleElement.size) next.titleSize = titleElement.size;
-  }
-  if (xLabelElement) {
-    next.xLabelElement = xLabelElement;
-    if (xLabelElement.text) next.xLabel = xLabelElement.text;
-  }
-  if (yLabelElement) {
-    next.yLabelElement = yLabelElement;
-    if (yLabelElement.text) next.yLabel = yLabelElement.text;
-  }
+  if (titleElement) next.titleElement = titleElement;
+  if (xLabelElement) next.xLabelElement = xLabelElement;
+  if (yLabelElement) next.yLabelElement = yLabelElement;
 
   const positive = (value: number | undefined) =>
     typeof value === "number" && Number.isFinite(value) && value > 0;
-  if (positive(settings.titleSize)) next.titleSize = settings.titleSize;
-  if (positive(settings.axisLabelSize)) next.axisLabelSize = settings.axisLabelSize;
-  if (positive(settings.tickLabelSize)) next.tickLabelSize = settings.tickLabelSize;
   if (positive(settings.xTickLabelSize)) next.xTickLabelSize = settings.xTickLabelSize;
   if (positive(settings.yTickLabelSize)) next.yTickLabelSize = settings.yTickLabelSize;
   if (Number.isFinite(settings.xTickLabelRotation)) {

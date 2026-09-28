@@ -3,9 +3,7 @@ from __future__ import annotations
 import logging
 
 import io
-import os
 import re
-import sys
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +13,7 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import IdTranslationRequest, IdTranslationResponse
 from app.services.dataset_store import get_current_dataset
+from app.services.reference_db import resolve_reference_db
 from app.services.dataset_store import save_table_dataset
 
 LOGGER = logging.getLogger(__name__)
@@ -84,48 +83,8 @@ def _get_current_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, str]:
     return current.frame.copy(), current.filename
 
 
-def _db_candidates(filename: str) -> list[Path]:
-    here = Path(__file__).resolve()
-    project_root = here.parents[3]
-    sibling_root = project_root.parent / "proteomics-copylot"
-    local_appdata = os.getenv("LOCALAPPDATA", "").strip()
-
-    roots: list[Path] = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        roots.append(Path(meipass))
-    if getattr(sys, "frozen", False):
-        roots.append(Path(sys.executable).resolve().parent)
-    if local_appdata:
-        roots.append(Path(local_appdata) / "proteomics-copylot")
-    roots.extend([project_root, sibling_root])
-
-    candidates = [root / "data" / "db" / filename for root in roots]
-    unique_candidates: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_candidates.append(candidate)
-    return unique_candidates
-
-
-def _bionamesdb_candidates() -> list[Path]:
-    return _db_candidates("BioNamesDB.txt")
-
-
 def resolve_bionamesdb_path() -> Path:
-    for candidate in _bionamesdb_candidates():
-        if candidate.exists():
-            return candidate
-    searched = ", ".join(str(path) for path in _bionamesdb_candidates())
-    LOGGER.error("BioNamesDB.txt not found. Searched: %s", searched)
-    raise ValueError(
-        "Could not find the bundled identifier database (BioNamesDB.txt). "
-        "The searched locations are recorded in the server log."
-    )
+    return resolve_reference_db("BioNamesDB.txt", "identifier database (BioNamesDB.txt)")
 
 
 @lru_cache(maxsize=1)

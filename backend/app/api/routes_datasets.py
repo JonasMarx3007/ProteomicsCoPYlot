@@ -4,7 +4,6 @@ import logging
 
 import os
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -28,6 +27,7 @@ from app.schemas.dataset import (
     PeptidePathResponse,
     TableDatasetPathRequest,
 )
+from app.services.managed_temp import open_private, private_temp_dir
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.dataset_store import (
@@ -86,15 +86,11 @@ def _include_empty_packages() -> bool:
 
 
 def _peptide_upload_dir() -> Path:
-    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "peptide_uploads"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return private_temp_dir("peptide_uploads")
 
 
 def _table_upload_dir() -> Path:
-    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "table_uploads"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return private_temp_dir("table_uploads")
 
 
 def _table_preview_response(stored) -> DatasetPreviewResponse:
@@ -297,7 +293,7 @@ def upload_dataset(
             df = read_dataframe(file.filename, file.file)
         else:
             target = _table_upload_dir() / f"{uuid4().hex}_{safe_name}"
-            with target.open("wb") as handle:
+            with open_private(target, "wb") as handle:
                 shutil.copyfileobj(file.file, handle)
             with target.open("rb") as handle:
                 df = read_dataframe(safe_name, handle)
@@ -382,7 +378,7 @@ def upload_peptide_file(
     target = _peptide_upload_dir() / f"{uuid4().hex}_{safe_name}"
 
     try:
-        with target.open("wb") as handle:
+        with open_private(target, "wb") as handle:
             shutil.copyfileobj(file.file, handle)
     except Exception as e:
         LOGGER.exception("Failed to store peptide file")

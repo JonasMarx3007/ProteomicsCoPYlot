@@ -80,17 +80,23 @@ def _load_access(project_root: Path | None = None) -> dict[str, object]:
     return data
 
 
-def _password_hash(data: dict[str, object]) -> str:
-    raw = data.get("password_sha256")
-    if raw is None:
-        raise ValueError("Tool access file must define password_sha256.")
-    return _normalize_sha256(str(raw))
-
-
 def _password_pbkdf2_hash(data: dict[str, object]) -> str:
+    """The PBKDF2 hash the tool password is checked against; the only form accepted.
+
+    An unsalted `password_sha256` was accepted with a warning until 2026-09. A
+    digest of a human-chosen password without salt or stretching falls to a
+    precomputed table if the file is ever read, so a file that still carries
+    one now fails validation and is told what to store instead.
+    """
+    if str(data.get("password_sha256", "")).strip() and not str(data.get("password_pbkdf2_sha256", "")).strip():
+        raise ValueError(
+            "Tool access file uses an unsalted password_sha256 hash, which is no longer accepted. "
+            "Store a PBKDF2 hash as password_pbkdf2_sha256 instead (see docs/INSTALLATION.md)."
+        )
     raw = str(data.get("password_pbkdf2_sha256", "")).strip()
-    if raw:
-        validate_password_hash(raw)
+    if not raw:
+        raise ValueError("Tool access file must define password_pbkdf2_sha256.")
+    validate_password_hash(raw)
     return raw
 
 
@@ -116,36 +122,9 @@ def tool_session_authenticated() -> bool:
         return get_session_id() in _SESSION_AUTH
 
 
-def _warn_about_legacy_credential(data: dict[str, object]) -> None:
-    """Make a weak credential form visible rather than silently accepted.
-
-    `password_sha256` stays supported for compatibility, so this only reports.
-    It has no salt and no key stretching, so a human-chosen password falls to a
-    precomputed table if the access file is ever read. The viewer portal already
-    warns about exactly this; tool access accepted it silently, so the same
-    deployment was told about one weak credential and not the other.
-
-    The credential is never logged.
-    """
-    if str(data.get("password_pbkdf2_sha256", "")).strip():
-        return
-    if not str(data.get("password_sha256", "")).strip():
-        return
-    LOGGER.warning(
-        "Tool access authenticates with an unsalted SHA-256 hash; it has no salt and no "
-        "key stretching. Prefer password_pbkdf2_sha256 for published deployments "
-        "(see docs/INSTALLATION.md for how to generate one)."
-    )
-
-
 def validate_tool_access_configuration() -> None:
     data = _load_access()
-    pbkdf2_hash = _password_pbkdf2_hash(data)
-    _warn_about_legacy_credential(data)
-    if not pbkdf2_hash:
-        legacy_hash = _password_hash(data)
-        if not any(character != "0" for character in legacy_hash):
-            raise ValueError("Tool password hash still contains the example placeholder.")
+    _password_pbkdf2_hash(data)
     for token_hash in _token_hashes(data):
         if not any(character != "0" for character in token_hash):
             raise ValueError("Tool access token still contains the example placeholder.")
@@ -168,12 +147,7 @@ def _grant_authenticated_session() -> str:
 def authenticate_tool_password(password: str, *, project_root: Path | None = None) -> str:
     data = _load_access(project_root)
     candidate = str(password or "")
-    pbkdf2_hash = _password_pbkdf2_hash(data)
-    matches = verify_password(candidate, pbkdf2_hash) if pbkdf2_hash else secrets.compare_digest(
-        _sha256(candidate),
-        _password_hash(data),
-    )
-    if not matches:
+    if not verify_password(candidate, _password_pbkdf2_hash(data)):
         raise ValueError("Invalid tool password.")
     return _grant_authenticated_session()
 

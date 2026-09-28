@@ -19,8 +19,11 @@
         "sample_wise": "none"
       },
       "collapse_mode": "sum_ignore_na",
+      "filter_method_protein": "at_least_n",
       "filter_min_protein": 3,
+      "filter_method_phospho": "at_least_n",
       "filter_min_phospho": 3,
+      "filter_method_phosphoprotein": "at_least_n",
       "filter_min_phosphoprotein": 3,
       "filter_mode_protein": "in at least one group",
       "filter_mode_phospho": "in at least one group",

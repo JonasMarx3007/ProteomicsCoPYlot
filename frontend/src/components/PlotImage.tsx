@@ -1,72 +1,50 @@
-import { useState } from "react";
-import HeatmapImage from "./HeatmapImage";
+import { useEffect, useState } from "react";
 import { plotErrorMessage, PLOT_ERROR_FALLBACK } from "../lib/plotError";
 
-/**
- * A rendered plot, or the reason there is none — never both.
- *
- * Every plot page carried its own copy of this, and every copy had the same
- * flaw: the `<img>` stayed on the page after the request failed, so the
- * browser's broken-image icon sat above the explanation. A refusal like "no
- * matching pathway genes were found in the current dataset" is an answer, not a
- * failure to render, and it reads as one only when it replaces the figure
- * instead of accompanying a broken one.
- *
- * An `<img>` cannot see the body of a 400, so the failure handler asks for the
- * same URL again and reads `detail` out of it. The state is keyed by URL, which
- * is what makes the next attempt happen: change any control and the URL changes
- * with it, so the image is tried again rather than staying suppressed.
- */
-export default function PlotImage({
-  url,
-  alt,
-  className = "w-full rounded-xl border border-slate-200",
-}: {
-  url: string;
-  alt: string;
-  className?: string;
-}) {
-  const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
+type Props = { url: string; alt: string; className?: string };
 
-  async function explainFailure(target: string) {
-    try {
-      const response = await fetch(target);
-      if (!response.ok) {
-        const payload: unknown = await response.json().catch(() => null);
-        setFailure({ url: target, message: plotErrorMessage(payload) });
-        return;
+export default function PlotImage(props: Props) {
+  return <LoadedPlotImage key={props.url} {...props} />;
+}
+
+function LoadedPlotImage({ url, alt, className = "w-full rounded-xl border border-slate-200" }: Props) {
+  const [result, setResult] = useState<{ image: string; notice: string } | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let image = "";
+    async function load() {
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) {
+          const payload: unknown = await response.json().catch(() => null);
+          throw new Error(plotErrorMessage(payload));
+        }
+        const blob = await response.blob();
+        if (controller.signal.aborted) return;
+        const header = response.headers.get("X-CoPYlot-Notice") ?? "";
+        let notice = header;
+        try { notice = decodeURIComponent(header); } catch { /* A malformed notice must not hide the plot. */ }
+        image = URL.createObjectURL(blob);
+        setResult({ image, notice });
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof Error ? cause.message : PLOT_ERROR_FALLBACK);
+        }
       }
-    } catch {
-      // The second request failed too; the generic message is all there is.
     }
-    setFailure({
-      url: target,
-      message: PLOT_ERROR_FALLBACK,
-    });
-  }
+    void load();
+    return () => {
+      controller.abort();
+      if (image) URL.revokeObjectURL(image);
+    };
+  }, [url]);
 
-  if (failure?.url === url) {
-    return (
-      <div
-        role="status"
-        className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
-      >
-        {failure.message}
-      </div>
-    );
-  }
-
-  if (/\/(?:anova|pathway-heatmap|heatmap)\.png(?:\?|$)/.test(url)) {
-    return <HeatmapImage key={url} url={url} alt={alt} className={className} />;
-  }
-
-  return (
-    <img
-      key={url}
-      src={url}
-      alt={alt}
-      className={className}
-      onError={() => void explainFailure(url)}
-    />
-  );
+  if (error) return <div role="status" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>;
+  if (!result) return <div role="status" className="text-sm text-slate-600">Loading plot…</div>;
+  return <>
+    <img src={result.image} alt={alt} className={className} onError={() => setError(PLOT_ERROR_FALLBACK)} />
+    {result.notice ? <div role="status" className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">{result.notice}</div> : null}
+  </>;
 }

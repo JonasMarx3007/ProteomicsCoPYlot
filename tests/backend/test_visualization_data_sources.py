@@ -42,7 +42,8 @@ def source_annotation(monkeypatch: pytest.MonkeyPatch):
         imputation=SimpleNamespace(mode="quantile", applied=True),
     )
     monkeypatch.setattr(annotation_store, "get_annotation", lambda kind: annotation)
-    monkeypatch.setattr(single_protein_tools, "get_annotation", lambda kind: annotation)
+    # metadata_for_kind lives in data_tools since 2026-09-25 and reads its store.
+    monkeypatch.setattr(data_tools, "get_annotation", lambda kind: annotation)
     monkeypatch.setattr(data_tools, "_get_current_frame", lambda kind: _frame("UPLOADED", 100.0))
     yield annotation
     invalidate_runtime_cache("visualization-source-test-end")

@@ -705,7 +705,7 @@ def test_paired_phospho_paths_use_the_same_identity(
     monkeypatch.setattr(
         phospho_tools,
         "_phospho_regulation_context",
-        lambda: (
+        lambda data_source="data": (
             regulation_frame.copy(),
             metadata.copy(),
             metadata["sample"].tolist(),
@@ -758,7 +758,7 @@ def test_phosprot_regulation_uses_only_significant_site_log2fc(
     monkeypatch.setattr(
         phospho_tools,
         "_phospho_regulation_context",
-        lambda: (frame.copy(), metadata.copy(), metadata["sample"].tolist()),
+        lambda data_source="data": (frame.copy(), metadata.copy(), metadata["sample"].tolist()),
     )
 
     result = phospho_tools.phosprot_regulation_table(

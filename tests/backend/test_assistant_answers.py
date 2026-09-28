@@ -1,11 +1,40 @@
 import json
 
+import pandas as pd
 import pytest
+from app.schemas.assistant import AssistantRequest, Evidence, ScientificAnswer
+from app.services import scientific_assistant as assistant
+from app.services.assistant_answers import _comparison, answer_facts, render_hypotheses
+from app.services.assistant_narrative import answer_catalogue, assemble_answer, catalogue_fallback
 from pydantic import ValidationError
 
-from app.schemas.assistant import Evidence, ScientificAnswer
-from app.services.assistant_answers import answer_facts, _comparison, render_hypotheses
-from app.services.assistant_narrative import answer_catalogue, assemble_answer, catalogue_fallback
+
+VOLCANO = "\n".join([
+    "volcano_contrast|B - A",
+    "volcano_comparison|condition1=B|condition2=A",
+    "volcano_answer_summary|comparison=B_minus_A|significance_metric=adjusted_p_value|p_value_threshold=0.05|"
+    "absolute_log2fc_threshold=1|upregulated=0|downregulated=80|not_significant=0",
+])
+
+
+def _canvas_evidence():
+    vol = {"totalRows": 80, "upregulatedCount": 0, "downregulatedCount": 80, "notSignificantCount": 0, "warnings": [],
+           "settings": {"kind": "phospho", "condition1": "A", "condition2": "B"}, "highlightedFeatures": ["K9"],
+           "points": [{"label": "K9", "workflowLabel": "K9", "significance": "Downregulated", "log2FC": -1.679999999999998,
+                       "negLog10P": 5.2039499525168464, "highlighted": True},
+                      {"label": "K1", "workflowLabel": "K1", "significance": "Downregulated", "log2FC": -1.2, "negLog10P": 3.1,
+                       "highlighted": False}]}
+    volcano = assistant._result_evidence("canvas tile 1: volcano", vol, "compact")
+    volcano.text = ("volcano_contrast|A - B\nvolcano_selected_p_metric|for_significance=adj_pval\n"
+                    "volcano_comparison|condition1=A|condition2=B\nvolcano_answer_summary|upregulated=0|downregulated=80"
+                    "|not_significant=0|p_value_threshold=0.05|absolute_log2fc_threshold=1|significance_metric=adjusted_p_value\n"
+                    + volcano.text)
+    box = {"settings": {"kind": "phospho", "identifier": "workflow", "conditions": ["A", "B"], "dataSource": "filtered", "protein": "K9"},
+           "totalRows": 2, "rows": [{"Condition": "A", "Median": 14.88, "SampleCount": 4}, {"Condition": "B", "Median": 16.56, "SampleCount": 4}]}
+    line = {"settings": {"kind": "phospho", "identifier": "workflow", "conditions": ["A", "B"], "dataSource": "filtered", "proteins": ["K9"]},
+            "totalRows": 8, "rows": [{"Feature": "K9", "Sample": f"A{i}", "Condition": "A", "Value": 14.8} for i in range(4)]}
+    return [volcano, assistant._result_evidence("canvas tile 2: proteinBoxplot", box, "compact"),
+            assistant._result_evidence("canvas tile 3: proteinLineplot", line, "compact")]
 
 
 def cv_evidence(status="available"):
@@ -15,6 +44,193 @@ def cv_evidence(status="available"):
         "cov_answer_summary|lowest_median_cv_condition=A, B|lowest_median_cv=10.72|"
         "highest_median_cv_condition=A, B|highest_median_cv=10.72|all_medians_equal_at_reported_precision=true\n"
         "cov_formula|CV=(SD/mean)*100|scale=linear_intensity"))]
+
+
+def test_canvas_enrichment_keeps_its_results_in_the_catalogue():
+    evidence = assistant._result_evidence("canvas tile 1: oraList", {
+        "type": "canvas_ora", "testedCount": 12,
+        "terms": [{"term": "Synthetic pathway", "adjusted_p_value": 0.025}],
+    }, "compact")
+    catalogue, _ = answer_catalogue([evidence], "analysis.canvas", "Explain this enrichment result.")
+    text = " ".join(item["text"] for item in catalogue["observations"])
+    assert "Synthetic pathway" in text
+    assert "0.025" in text
+    assert "not a new statistical test" not in text
+
+
+def test_canvas_imputed_values_are_not_described_as_measurements():
+    evidence = assistant._result_evidence("canvas tile 1: proteinBoxplot", {
+        "settings": {"protein": "K9", "kind": "phospho", "dataSource": "imputed"}, "rows": [],
+    }, "compact")
+    catalogue, _ = answer_catalogue([evidence], "analysis.canvas", "Explain this plot.")
+    text = " ".join(item["text"] for item in catalogue["observations"])
+    assert "imputed" in text and "selected values" in text
+    assert "measured values" not in text
+
+
+def test_canvas_answers_are_sentences_not_raw_fields():
+    evidence = _canvas_evidence()
+    question = "Please build the canvas around phosphosite K9. Once its charts have loaded, explain the displayed comparison."
+    catalogue, values = answer_catalogue(evidence, "analysis.canvas", question)
+    texts = [item["text"] for item in catalogue["observations"]]
+    assert all("{'" not in text and "999999" not in text for text in texts)
+    assert "Tile 1 (volcano): K9: log2 fold change -1.68, -log10 p 5.204, classified as downregulated." in texts
+    assert "Tile 2 (boxplot): Medians by condition: A: median 14.88 from 4 samples; B: median 16.56 from 4 samples." in texts
+    assert not any("K1:" in text for text in texts)  # unhighlighted points stay in the evidence panel
+    answer = assemble_answer(ScientificAnswer(observations=[catalogue["observations"][0]["id"]]), catalogue, values, evidence)
+    assert "does not resolve the requested method" not in answer
+    assert "Tile 3 (line plot)" in answer
+
+
+def test_a_method_question_on_the_canvas_gets_each_tiles_reviewed_description():
+    evidence = _canvas_evidence()
+    catalogue, values = answer_catalogue(evidence, "analysis.canvas", "How is each canvas plot calculated?")
+    answer = assemble_answer(ScientificAnswer(observations=[catalogue["observations"][0]["id"]]), catalogue, values, evidence)
+    tiles = {paragraph.split(": ", 1)[0]: paragraph for paragraph in answer.split("\n\n") if paragraph.startswith("Tile ")}
+    assert "Displays a selected protein or site's values by condition." in tiles["Tile 2 (boxplot)"]
+    assert "does not resolve the requested method" not in answer
+
+
+def test_one_sided_volcano_direction_reads_naturally():
+    evidence = _canvas_evidence()
+    catalogue, _ = answer_catalogue(evidence, "analysis.canvas", "Explain the displayed comparison.")
+    direction = next(row["text"] for row in catalogue["observations"] if row["id"].endswith("d"))
+    assert "All 80 significant features have negative log2FC, i.e. are higher in B." in direction
+    assert "the 0 upregulated" not in direction
+
+
+def test_tile_method_text_is_not_offered_for_a_plain_comparison_question():
+    catalogue, _ = answer_catalogue(_canvas_evidence(), "analysis.canvas", "Explain the displayed comparison.")
+    assert not [row for row in catalogue["methods"] if row.get("kind") == "tile_method"]
+
+
+def test_coverage_keeps_complete_condition_names(monkeypatch):
+    from app.services import ai_functions
+    labels = ["Ctx_DMSO_1", "Ctx_RAPA_1", "Hy_DMSO_1", "Hy_RAPA_1", "All Samples"]
+    monkeypatch.setattr(ai_functions._table_functions, "qc_coverage_table", lambda *a, **k:
+                        pd.DataFrame({"Sample":labels, "Number":[10, 9, 8, 7, 10]}))
+    rows, total = ai_functions._coverage_rows_from_wide("protein")
+    assert rows.Condition.tolist() == ["Ctx_DMSO", "Ctx_RAPA", "Hy_DMSO", "Hy_RAPA"]
+    assert total == 10
+
+
+def test_coverage_catalogue_uses_readable_grounded_sentences():
+    evidence = [Evidence(tool="qc_coverage_plot", status="available", text=(
+        "coverage_overview|workflow=protein|entity=proteins|samples=12|conditions=2|total_features=7855\n"
+        "coverage_visual|bars=detected_features_per_sample|bar_color=condition\n"
+        "coverage_answer_summary|lowest_count=7719|lowest_sample=Ctx_RAPA_2|highest_count=7795|highest_sample=Ctx_DMSO_1"))]
+    catalogue, _ = answer_catalogue(evidence, "qc.coverage", "what can i see?")
+    text = " ".join(item["text"] for item in catalogue["observations"])
+    assert "12 samples" in text and "2 groups" in text and "7719" in text
+    assert "detected_features_per_sample" not in text and "workflow:" not in text
+
+
+def test_requested_group_medians_are_not_dropped_from_the_answer():
+    evidence = [Evidence(tool="single_protein_boxplot", status="available", text="\n".join([
+        "single_protein_boxplot_selection|selected_input=K9|conditions=A,B",
+        "single_protein_boxplot_table_row|Condition=A|Median=14.88|SampleCount=4",
+        "single_protein_boxplot_table_row|Condition=B|Median=16.56|SampleCount=4",
+    ]))]
+    catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "Report the group medians.")
+    answer = assemble_answer(ScientificAnswer(observations=["e0r0"]), catalogue, values, evidence)
+    assert "14.88" in answer and "16.56" in answer
+
+
+def test_direction_is_stated_by_the_application():
+    """held-out 'contrast': counts were given but the higher group was left to the reader."""
+    evidence = [Evidence(tool="stats_volcano_plot", status="available", text=VOLCANO)]
+    catalogue, _ = answer_catalogue(evidence, "stats.volcano", "Which group is higher for most sites?")
+    direction = [fact for fact in catalogue["observations"] if "direction" in fact["topics"]]
+    assert direction and "significant features have negative log2FC, i.e. are higher in A" in direction[0]["text"]
+    assert "direction" in catalogue["requiredTopics"]
+
+
+def test_direction_is_not_required_where_no_direction_exists():
+    evidence = [Evidence(tool="qc_cv", status="available", text="cov_answer_summary|lowest_median_cv=1")]
+    catalogue, _ = answer_catalogue(evidence, "qc.cv", "Which condition is higher?")
+    assert "direction" not in catalogue["requiredTopics"]
+
+
+@pytest.mark.parametrize("question", ["Is the shorter bar a bad sample?", "Is that slightly shorter bar a problem?"])
+def test_quality_concern_requires_a_limit_not_just_counts(question):
+    evidence = [Evidence(tool="qc_coverage_plot", status="available", text=
+        "coverage_overview|entity=proteins|samples=8|conditions=2")]
+    catalogue, values = answer_catalogue(evidence, "qc.coverage", question)
+    answer = assemble_answer(ScientificAnswer(observations=["e0r0"]), catalogue, values, evidence)
+    assert "not automatically a bad sample" in answer
+    assert "before excluding" in answer
+
+
+def test_qc_limit_is_available_without_forcing_it_into_every_answer():
+    catalogue, _ = answer_catalogue(cv_evidence(), "qc.cv", "What do you make of this?")
+    assert any(item["id"] == "quality_scope" for item in catalogue["methods"])
+    assert "quality_scope" not in catalogue["requiredTopics"]
+
+
+def test_clarification_i_mean_does_not_request_all_statistics():
+    evidence = [Evidence(tool="single_protein_boxplot", status="available", text=
+        "single_protein_boxplot_table_row|Condition=A|Mean=12.4|Median=12.2|SampleCount=4")]
+    catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "I mean MAPK1. Tell me the difference.")
+    text = catalogue_fallback(catalogue, values, evidence)
+    assert "median is 12.2" in text and "12.4" not in text
+
+
+def test_simple_activity_answer_retains_explicitly_requested_values():
+    evidence = [Evidence(tool="single_protein_boxplot", status="available", text=
+        "single_protein_boxplot_table_row|Condition=A|Median=12.2|SampleCount=4")]
+    catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "Is it more active? Explain simply and give the medians.")
+    text = catalogue_fallback(catalogue, values, evidence)
+    assert "12.2" in text and "not biological activity" in text
+
+
+def test_abundance_answer_cannot_omit_requested_activity_limitation():
+    evidence = [Evidence(tool="single_protein_boxplot", status="available", text="single_protein_boxplot_selection|selected_input=MAPK1|conditions=A,B")]
+    catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "Which protein is shown and is it more active?")
+    text = assemble_answer(ScientificAnswer(observations=["e0r0"]), catalogue, values, evidence)
+    assert "not biological activity" in text
+    assert "activity_scope" not in answer_catalogue(evidence, "external_activity", "Is MAPK1 more active?")[0]["requiredTopics"]
+
+
+@pytest.mark.parametrize("question", ["Is it more active?", "Is it more active? Explain simply.",
+    "Does that mean the treatment caused MAPK1 to be less active?"])
+def test_canvas_activity_limitation_is_global_not_missing_per_tile(question):
+    evidence = [Evidence(tool="canvas tile 1: proteinBoxplot", status="available", text=
+        "result_overview|entity=protein|selected_input=AKT1|conditions=A,B")]
+    catalogue, values = answer_catalogue(evidence, "analysis.canvas", question)
+    text = catalogue_fallback(catalogue, values, evidence)
+    assert "not biological activity" in text
+    assert "does not resolve" not in text
+    assert all("activity_scope" not in topics for topics in catalogue["tileTopics"].values())
+    assert all("causality" not in topics for topics in catalogue["tileTopics"].values())
+    assert catalogue["observations"] == []
+
+
+def test_brief_canvas_retains_contrast_and_p_metric_without_global_counts():
+    evidence = [Evidence(tool="canvas tile 1: volcano", status="available", text="\n".join([
+        "volcano_contrast|Treated - Vehicle", "volcano_comparison|condition1=Treated|condition2=Vehicle",
+        "volcano_selected_p_metric|for_significance=adj_pval",
+        "volcano_answer_summary|upregulated=4|downregulated=4|not_significant=4|p_value_threshold=0.05|absolute_log2fc_threshold=1",
+        "result_row|label=AKT1|log2FC=1.45|negLog10P=5.009|significance=Upregulated|highlighted=True",
+    ]))]
+    catalogue, values = answer_catalogue(evidence, "analysis.canvas", "What stands out for AKT1? Briefly.")
+    text = catalogue_fallback(catalogue, values, evidence)
+    assert "1.45" in text and "Treated" in text and "Vehicle" in text and "BH-adjusted" in text
+    assert "4 features" not in text and "8 significant" not in text
+
+
+def test_simple_boxplot_answer_does_not_require_method_lecture_or_mean_comparison():
+    evidence = [Evidence(tool="single_protein_boxplot", status="available", text=(
+        "single_protein_boxplot_selection|selected_input=AKT1|conditions=Vehicle,Treated\n"
+        "single_protein_boxplot_table_row|Condition=Vehicle|Mean=18|Median=18|SampleCount=4\n"
+        "single_protein_boxplot_table_row|Condition=Treated|Mean=19|Median=19|SampleCount=4\n"
+        "single_protein_boxplot_definition|median=50th_percentile"))]
+    catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "Explain that in simpler words")
+    assert "method" not in catalogue["requiredTopics"]
+    assert all(item["metric"] != "Mean" for item in catalogue["comparisonFields"])
+    answer = assemble_answer(ScientificAnswer(observations=["e0r0","e0r1"]), catalogue, values, evidence)
+    assert "You're looking at AKT1" in answer
+    assert "middle value (median)" in answer
+    assert "Whiskers" not in answer
 
 
 @pytest.mark.parametrize("fallback", [False, True])
@@ -32,8 +248,10 @@ def test_canvas_completeness_requires_each_contrast_and_p_metric(fallback):
     answer = (catalogue_fallback(catalogue, values, evidence) if fallback else
               assemble_answer(ScientificAnswer(observations=["e1r2"]), catalogue, values, evidence))
     assert "contrast B - A" in answer and "contrast A - B" in answer
-    assert "canvas tile 1: volcano: The y-axis is the negative log10 of the BH-adjusted p-value" in answer
-    assert "canvas tile 2: volcano: The y-axis is the negative log10 of the raw p-value" in answer
+    tiles = {paragraph.split(": ", 1)[0]: paragraph for paragraph in answer.split("\n\n") if paragraph.startswith("Tile ")}
+    assert "The y-axis is the negative log10 of the BH-adjusted p-value" in tiles["Tile 1 (volcano)"]
+    assert "The y-axis is the negative log10 of the raw p-value" in tiles["Tile 2 (volcano)"]
+    assert answer.count("Tile 1 (volcano):") == 1 and answer.count("Tile 2 (volcano):") == 1
     assert "1 features" in answer and "2 features" in answer
 
 
@@ -80,7 +298,7 @@ def test_unknown_requested_topic_is_explicit_not_invented():
     evidence = [Evidence(tool="test", status="available", text="result|count=12")]
     catalogue, values = answer_catalogue(evidence, "unknown", "What intensity scale is used?")
     answer = assemble_answer(ScientificAnswer(observations=["e0r0"]), catalogue, values, evidence)
-    assert "does not resolve the requested intensity scale" in answer
+    assert "can't settle the intensity scale" in answer
 
 
 @pytest.mark.parametrize("choice", [
@@ -160,7 +378,7 @@ def test_fallback_is_honest_and_keeps_units_and_coverage():
     text = catalogue_fallback(catalogue, values, evidence)
     assert "couldn't produce a validated explanation" in text
     assert "10.72%" in text and "cannot establish or rule out a batch effect" in text
-    assert "not an exhaustive" in text
+    assert "not every row of it" in text
 
 
 def test_uploaded_identifiers_are_not_reinterpreted_or_translated():
@@ -176,7 +394,7 @@ def test_source_qualifications_are_preserved():
     evidence = [Evidence(tool="test", status="partial", text="result|count=12\nRequested module uses default settings, not current UI selections.")]
     catalogue, values = answer_catalogue(evidence, "unknown", "Summarize")
     text = assemble_answer(ScientificAnswer(observations=["e0r0"]), catalogue, values, evidence)
-    assert "default settings" in text and "not an exhaustive" in text
+    assert "default settings" in text and "not every row of it" in text
 
 
 def test_canvas_sentences_retain_their_tile_attribution():
@@ -184,13 +402,13 @@ def test_canvas_sentences_retain_their_tile_attribution():
                 Evidence(tool="canvas tile 2: volcano", status="available", text="result|count=24")]
     catalogue, values = answer_catalogue(evidence, "analysis.canvas", "Summarize both tiles")
     text = assemble_answer(ScientificAnswer(observations=["e0r0", "e1r0"]), catalogue, values, evidence)
-    assert "canvas tile 1: volcano: Result: count: 12" in text
-    assert "canvas tile 2: volcano: Result: count: 24" in text
+    assert "Tile 1 (volcano): Result: count: 12" in text
+    assert "Tile 2 (volcano): Result: count: 24" in text
 
 
 def test_boxplot_method_uses_reviewed_sentence_not_field_names():
     evidence = [Evidence(tool="boxplot", status="available", text="single_protein_boxplot_definition|whiskers=outermost_observed_values_within_the_1.5_IQR_fences")]
-    catalogue, _ = answer_catalogue(evidence, "singleProtein.boxplot", "Explain")
+    catalogue, _ = answer_catalogue(evidence, "singleProtein.boxplot", "Explain the whiskers")
     assert "outermost observed values" in catalogue["methods"][0]["text"]
     assert "boxplot_definition" not in catalogue["methods"][0]["text"]
 
@@ -212,7 +430,7 @@ def test_deduplication_does_not_remove_another_tiles_formula():
     catalogue, values = answer_catalogue(evidence, "analysis.canvas", "Explain", method_only=True)
     text = assemble_answer(ScientificAnswer(methods=["e0r0", "e0r1", "e1r0", "method"]), catalogue, values, evidence)
     assert "log2fc: first" not in text
-    assert "canvas tile 2: volcano: Volcano formula: log2fc: second" in text
+    assert "Tile 2 (volcano): Volcano formula: log2fc: second" in text
     assert "not a single statistical test" in text
 
 
@@ -222,7 +440,7 @@ def test_related_observations_share_a_paragraph_without_changing_values():
         "single_protein_boxplot_table_row|Condition=B|Median=13.860|SampleCount=4"))]
     catalogue, values = answer_catalogue(evidence, "singleProtein.boxplot", "Summarize")
     text = assemble_answer(ScientificAnswer(observations=["e0r0", "e0r1"]), catalogue, values, evidence)
-    assert text == "A: median 12.240, from 3 samples. B: median 13.860, from 4 samples."
+    assert text == "In A, the median is 12.240 across 3 samples. In B, the median is 13.860 across 4 samples."
 
 
 def test_deduplication_keeps_generic_method_when_it_supplies_required_scale():
@@ -260,7 +478,6 @@ def test_method_sentence_does_not_run_dataset_comparison_guard():
 
 
 def test_concise_method_answer_covers_causality_without_narration_call(monkeypatch):
-    from app.schemas.assistant import AssistantRequest
     from app.services import scientific_assistant as assistant
     monkeypatch.setattr(assistant, "_execution_profile", lambda *args: ("compact", 2, 600))
     calls = []
@@ -277,7 +494,6 @@ def test_concise_method_answer_covers_causality_without_narration_call(monkeypat
 
 @pytest.mark.parametrize("provider", ["ollama", "openai", "anthropic", "gemini"])
 def test_same_contract_for_all_providers_and_method_scope_excludes_history(monkeypatch, provider):
-    from app.schemas.assistant import AssistantRequest
     from app.services import scientific_assistant as assistant
     monkeypatch.setattr(assistant, "_execution_profile", lambda *args: ("compact", 2, 600))
     calls = []

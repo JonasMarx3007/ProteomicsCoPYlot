@@ -1,7 +1,7 @@
-import { AssistantSelect } from "../../components/AssistantFields";
+import { AssistantAppearanceMount, AssistantSelect } from "../../components/AssistantFields";
+import PlotImage from "../../components/PlotImage";
 import { MATPLOTLIB_CONTROLS, MATPLOTLIB_NO_FRAME_CONTROLS, MATPLOTLIB_Y_DASHED_GRID_CONTROLS } from "../../lib/plotControlDefaults";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import SelectField from "../../components/SelectField";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
 import { compactAdvancedPlotSettings as compactAdvancedSettings } from "../../lib/plotSerialization";
 import SummaryCard from "../../components/SummaryCard";
@@ -29,10 +29,13 @@ import type {
   CompletenessTab,
   CompletenessTablesResponse,
 } from "../../lib/types";
+import SelectField from "../../components/SelectField";
+import PreviewTable from "../../components/PreviewTable";
+import type { ContextMode } from "../../lib/types";
 
 type Props = {
   activeTab: CompletenessTab;
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
 };
 
 type CompletenessKind = AnnotationKind | "peptide" | "precursor";
@@ -73,7 +76,6 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     return "protein";
   });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
-  const [imageError, setImageError] = useState<string | null>(null);
   const [sampleOptions, setSampleOptions] = useState<string[]>([]);
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
   const [sampleDisplayLabelsWithId, setSampleDisplayLabelsWithId] = useState<Record<string, string>>({});
@@ -255,16 +257,14 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   useEffect(() => {
     if (!onContextModeChange) return;
     if (activeTab !== "missingPlot" && activeTab !== "heatmap" && activeTab !== "tables") {
-      onContextModeChange("");
+      onContextModeChange(null);
       return;
     }
     if (activeTab === "tables") {
-      onContextModeChange(
-        `kind=${kind}|outlierThreshold=${tables.outlierThreshold}|includeId=${tables.includeId ? "true" : "false"}`
-      );
+      onContextModeChange({ kind, outlierThreshold: tables.outlierThreshold, includeId: tables.includeId });
       return;
     }
-    onContextModeChange(`kind=${kind}`);
+    onContextModeChange({ kind });
   }, [activeTab, kind, tables.outlierThreshold, tables.includeId, onContextModeChange]);
 
   useEffect(() => {
@@ -427,7 +427,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
       </section>
       ) : null}
 
-      {activeKindOptions.length > 0 && activeTab !== "tables" && advancedModeEnabled ? (
+      {activeKindOptions.length > 0 && activeTab !== "tables" ? (
+        <AssistantAppearanceMount visible={advancedModeEnabled}>
         <AdvancedPlotOptions
           key={activeTab}
           value={activeAdvancedSettings}
@@ -437,6 +438,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
           visibleControls={activeAdvancedVisibleControls}
           controlDefaults={activeAdvancedControlDefaults}
         />
+        </AssistantAppearanceMount>
       ) : null}
 
       {activeKindOptions.length > 0 && plotView ? (
@@ -465,20 +467,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
             </div>
           </div>
           <div className="mt-4">
-            <img
-              key={plotView.url}
-              src={plotView.url}
-              alt={plotView.title}
-              className="w-full rounded-xl border border-slate-200"
-              onLoad={() => setImageError(null)}
-              onError={() => setImageError("Failed to load plot image. Check backend logs for details.")}
-            />
+            <PlotImage url={plotView.url} alt={plotView.title} />
           </div>
-          {imageError ? (
-            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {imageError}
-            </div>
-          ) : null}
         </section>
       ) : null}
 
@@ -509,6 +499,13 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                 <SummaryCard label="Outlier Threshold" value={`${tableData.outlierThreshold}%`} />
                 <SummaryCard label="Outlier Samples" value={String(tableData.outliers.length)} />
               </div>
+              {tableData.excludedAllMissingCount > 0 ? (
+                <p className="text-xs text-slate-500">
+                  {tableData.excludedAllMissingCount} feature{tableData.excludedAllMissingCount === 1 ? "" : "s"} with no
+                  value in any selected sample {tableData.excludedAllMissingCount === 1 ? "is" : "are"} excluded from the
+                  plot and the tables.
+                </p>
+              ) : null}
 
               <section>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -666,61 +663,6 @@ function OptionsLayout({
       <div className="flex flex-wrap gap-3">{toggles}</div>
       {inputs && inputs.length > 0 ? <div className="grid gap-4 lg:grid-cols-3">{inputs}</div> : null}
       <div>{sizeRow}</div>
-    </div>
-  );
-}
-
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  const columns = useMemo(() => collectColumns(rows), [rows]);
-
-  if (rows.length === 0 || columns.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full table-fixed border-collapse text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th key={column} className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700">
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-              {columns.map((column) => {
-                const value = row[column];
-                const text = value == null ? "" : String(value);
-                return (
-                  <td
-                    key={`${rowIndex}-${column}`}
-                    className="border-b border-slate-100 px-3 py-2 text-slate-600"
-                    title={text}
-                  >
-                    <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {text}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

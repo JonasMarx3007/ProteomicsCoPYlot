@@ -2,8 +2,8 @@
   "tokens": [
     {
       "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "project": "GRK_project",
-      "label": "GRK Project"
+      "project": "example_project",
+      "label": "Example Project"
     }
   ]
 }

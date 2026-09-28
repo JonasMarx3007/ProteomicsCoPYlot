@@ -27,25 +27,32 @@ from app.schemas.summary import (
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_current_dataset
 from app.services.peptide_metadata_store import get_peptide_metadata
-from app.services.functions import (
-    entity_labels_for_kind,
-    sample_label_frame,
+from app.services.completeness_tools import completeness_excluded_feature_count
+from app.services.completeness_tools import (
     completeness_missing_value_plot,
     completeness_missing_value_plot_peptide,
+)
+from app.services.phospho_tools import (
     phospho_coverage_png,
     phosphosite_plot_png,
-    qc_abundance_plot,
+)
+from app.services.plot_images import (
     qc_abundance_interactive_html,
+    qc_abundance_plot,
     qc_boxplot_plot,
     qc_correlation_plot,
     qc_coverage_plot,
     qc_cv_plot,
     qc_intensity_histogram_plot,
-    qc_peptide_coverage_plot,
-    qc_pca_plot,
     qc_pca_interactive_html,
+    qc_pca_plot,
+    qc_peptide_coverage_plot,
 )
+from app.services.functions import (
+    entity_labels_for_kind,
+    sample_label_frame,)
 from app.services.plot_images import qc_pca_feature_summary
+from app.services.functions import resolve_feature_scaling
 from app.services.peptide_tools import (
     normalize_protease,
     peptide_missed_cleavage_plot,
@@ -393,18 +400,6 @@ def _module_settings(
     return dict(values)
 
 
-def _advanced_enabled(context: SummaryReportContext) -> bool:
-    """Whether the appearance settings go into the report: always.
-
-    Advanced mode only decides whether the panel is on screen. The settings are
-    the plot's -- the figure the user is looking at carries them with the panel
-    closed -- so a report built from that session reproduces them either way.
-    `advancedPlotMode` is still carried in the context for older clients and is
-    no longer read.
-    """
-    return True
-
-
 def _advanced_settings_from_map(values: Mapping[str, Any], key: str) -> dict[str, Any] | None:
     item = values.get(key)
     if not isinstance(item, Mapping):
@@ -413,20 +408,14 @@ def _advanced_settings_from_map(values: Mapping[str, Any], key: str) -> dict[str
 
 
 def _global_advanced_settings(context: SummaryReportContext, key: str) -> dict[str, Any] | None:
-    if not _advanced_enabled(context):
-        return None
     return _advanced_settings_from_map(context.advancedPlotSettingsByKey, key)
 
 
 def _qc_advanced_settings(context: SummaryReportContext, tab: str) -> dict[str, Any] | None:
-    if not _advanced_enabled(context):
-        return None
     return _advanced_settings_from_map(context.qcAdvancedSettingsByTab, tab)
 
 
 def _completeness_advanced_settings(context: SummaryReportContext, tab: str) -> dict[str, Any] | None:
-    if not _advanced_enabled(context):
-        return None
     return _advanced_settings_from_map(context.completenessAdvancedSettingsByTab, tab)
 
 
@@ -546,7 +535,12 @@ def _imputation_paragraphs(kind: str) -> list[str]:
             seed = _format_imputation_value(getattr(imputation, "seed", None), digits=0)
             sample_wise = bool(getattr(imputation, "sampleWise", False))
     if imputation_mode == "none":
-        return ""
+        return []
+    if imputation_mode not in {"numerical", "quantile"}:
+        return [
+            "The saved imputed matrix was restored, but its imputation method and parameters "
+            "are unknown. The sampling distribution, random seed and draw scope cannot be reported."
+        ]
 
     template_paragraphs = GENERAL_COMMENTS.get("Imputation", [])
     if imputation_mode == "numerical":
@@ -580,16 +574,19 @@ def _imputation_paragraphs(kind: str) -> list[str]:
 
 
 _NORMALIZATION_REPORT_LABELS = {
-    "none": "No normalization was applied.",
-    "median": "Samples were median-centred on the log2 values before filtering.",
+    "none": (
+        "None; sample loading and instrument drift are uncorrected unless the upload "
+        "was already normalized upstream."
+    ),
+    "median": "Samples were median-centred on the log2 values (applied globally, before filtering).",
     "quantile": (
-        "Samples were quantile-normalized on the log2 values before filtering "
-        "(Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185)."
+        "Samples were quantile-normalized on the log2 values (applied globally, before "
+        "filtering; Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185)."
     ),
     "vsn": (
         "Variance-stabilizing normalization (VSN, Bioconductor vsn; Huber et al. 2002, "
-        "doi:10.1093/bioinformatics/18.suppl_1.S96) was applied before filtering, "
-        "replacing the plain log2 transform."
+        "doi:10.1093/bioinformatics/18.suppl_1.S96) replaced the plain log2 transform "
+        "(applied globally, before filtering)."
     ),
 }
 
@@ -599,12 +596,48 @@ _NORMALIZATION_REPORT_LABELS = {
 _TEST_TYPE_REPORT_LABELS = {
     "unpaired": "unpaired two-sample t-test (pooled variance)",
     "unpaired_welch": "unpaired two-sample t-test (Welch, unequal variance)",
-    "paired": "paired t-test (pooled variance)",
+    "paired": "paired t-test (on within-pair differences)",
 }
 
 
+def _normalization_description(annotation) -> str | None:
+    """What was done to every sample's values, on its own line.
+
+    Normalization is applied to the whole log2 matrix before any row filter, so
+    it holds for every data source -- including plots that skip the filter.
+    It used to be the last sentence of the filtering description, where a
+    "Not applied to this plot" prefix made it read as not applied either.
+    """
+    if annotation is None:
+        return None
+    filter_config = getattr(annotation, "filter_config", None)
+    if filter_config is None:
+        return None
+    normalization = str(getattr(filter_config, "normalization", "none")).strip().lower()
+    if normalization in {"", "none"}:
+        # Nothing to describe: "none" usually means the upload was normalized
+        # upstream, and a line saying so reads as though a step was skipped.
+        return None
+    return _NORMALIZATION_REPORT_LABELS.get(normalization, f"{normalization}.")
+
+
+def _filter_is_applied(filter_config) -> bool:
+    """A threshold of zero keeps every row, so it is no filter at all.
+
+    The default configuration is zero; a report that describes it as "rows with
+    at least 0 valid values were retained" is true and useless. It is stated as
+    no filtering, which is what requiring nothing means.
+    """
+    if filter_config is None:
+        return False
+    method = str(getattr(filter_config, "method", "at_least_n")).strip().lower()
+    if method == "percentage":
+        return float(getattr(filter_config, "minPercentage", 0.0) or 0.0) > 0.0
+    return int(getattr(filter_config, "minPresent", 0) or 0) > 0
+
+
 def _filter_description(annotation) -> str | None:
-    """How this level's rows were filtered and normalized, as one sentence.
+    """How this level's rows were filtered, as one sentence.
 
     Shared so the level-wide filtering note and a volcano's own statistics block
     cannot describe the same filtering differently.
@@ -614,6 +647,10 @@ def _filter_description(annotation) -> str | None:
     filter_config = getattr(annotation, "filter_config", None)
     if filter_config is None:
         return None
+    if not _filter_is_applied(filter_config):
+        return (
+            f"No completeness filter was applied (all {len(annotation.source_data)} rows retained)."
+        )
 
     method = str(getattr(filter_config, "method", "at_least_n")).strip().lower()
     mode = str(getattr(filter_config, "mode", "per_group")).strip().lower()
@@ -627,26 +664,36 @@ def _filter_description(annotation) -> str | None:
         threshold = float(getattr(filter_config, "minPercentage", 70.0))
         threshold_text = f"{threshold:.4f}".rstrip("0").rstrip(".")
         description = (
-            f"Rows with at least {threshold_text}% completeness {scope} were retained."
+            f"Rows with at least {threshold_text}% completeness {scope} were retained"
         )
     else:
         threshold = int(getattr(filter_config, "minPresent", 0))
         description = (
-            f"Rows with at least {threshold} valid values {scope} were retained."
+            f"Rows with at least {threshold} valid values {scope} were retained"
         )
     description += (
-        f" Filtered data contains {len(annotation.filtered_data)} out of "
-        f"{len(annotation.source_data)} source rows."
-    )
-    # Normalization is applied to the log2 matrix before filtering, so it
-    # belongs with the filtering description. Without it a median-centred,
-    # quantile-normalised or VSN-normalised analysis is indistinguishable
-    # from an unnormalised one in the report.
-    normalization = str(getattr(filter_config, "normalization", "none")).strip().lower()
-    description += (
-        f" {_NORMALIZATION_REPORT_LABELS.get(normalization, f'Normalization: {normalization}.')}"
+        f" ({len(annotation.filtered_data)} of {len(annotation.source_data)} rows)."
     )
     return description
+
+
+def _filter_not_applied_description(annotation) -> str | None:
+    """The filtering line for a plot that ran on the unfiltered matrix.
+
+    Says only what the reader needs here: that this plot skipped the filter,
+    how many rows it therefore used, and how many the filtered sections keep --
+    so the two counts side by side in one report are explained. The full filter
+    recipe appears where the filter was actually applied.
+    """
+    if annotation is None or getattr(annotation, "filter_config", None) is None:
+        return None
+    if not _filter_is_applied(annotation.filter_config):
+        return f"No completeness filter was applied (all {len(annotation.source_data)} rows retained)."
+    return (
+        f"Not applied to this plot; it uses all {len(annotation.source_data)} rows. "
+        f"(The filtered matrix used by other sections of this report keeps "
+        f"{len(annotation.filtered_data)} rows.)"
+    )
 
 
 def _imputation_html(*, kind: str, imputed: bool, subject: str = "this comparison") -> str:
@@ -709,10 +756,18 @@ def _data_provenance_html(
     parts = [
         f"<p><strong>Data source:</strong> {_DATA_SOURCE_LABELS[source]}</p>"
     ]
-    filter_description = _filter_description(get_annotation(kind))
+    annotation = get_annotation(kind)
+    normalization_description = _normalization_description(annotation)
+    if normalization_description:
+        parts.append(
+            f"<p><strong>Normalization:</strong> {html.escape(normalization_description)}</p>"
+        )
+    filter_description = (
+        _filter_not_applied_description(annotation)
+        if source == "data"
+        else _filter_description(annotation)
+    )
     if filter_description:
-        if source == "data":
-            filter_description = "Not applied to this plot. Configured filtering: " + filter_description
         parts.append(
             f"<p><strong>Filtering:</strong> {html.escape(filter_description)}</p>"
         )
@@ -722,6 +777,26 @@ def _data_provenance_html(
     if completeness:
         parts.append(f"<p><strong>Features used:</strong> {html.escape(completeness)}</p>")
     return "".join(parts)
+
+
+def _completeness_exclusion_html(kind: str) -> str:
+    """One line naming the rows the completeness page leaves out, if any.
+
+    Features with no value in any selected sample carry no information about
+    those samples' completeness; the missing-value plot, heatmap and tables all
+    exclude them. Nothing is written when there are none.
+    """
+    try:
+        excluded = int(completeness_excluded_feature_count(kind))
+    except Exception:
+        return ""
+    if excluded <= 0:
+        return ""
+    noun = "feature was" if excluded == 1 else "features were"
+    return (
+        f"<p><strong>Features used:</strong> {excluded} {noun} excluded because they have "
+        "no value in any selected sample; the plot and the completeness tables count the remaining rows.</p>"
+    )
 
 
 def _pca_completeness_description(kind: str, data_source: str) -> str:
@@ -950,26 +1025,94 @@ def _missing_plot_options(settings: Mapping[str, Any], *, peptide=False) -> dict
 
 
 def _pca_plot_options(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The report's projection is always a PCA.
+
+    The QC page also offers UMAP and t-SNE for exploration; the report does not
+    carry them. A saved `method` other than PCA is ignored here, and the
+    UMAP/t-SNE parameters are not forwarded, so the figure under the heading
+    "PCA Plot" is a PCA whatever the page currently shows.
+    """
     return {
         **({"scaling": _to_str(settings["scaling"], "auto")} if "scaling" in settings else {}),
         "header": _to_bool(settings.get("header"), True),
         "legend": _to_bool(settings.get("legend"), True),
         "plot_dim": _to_str(settings.get("plotDim"), "2D"),
-        "method": _to_str(settings.get("method"), "PCA"),
+        "method": "PCA",
         "add_ellipses": _to_bool(settings.get("addEllipses"), False),
         "dot_size": _to_int(settings.get("dotSize"), 5, minimum=1, maximum=60),
         "cluster_method": _to_str(settings.get("clusterMethod"), "None"),
         "cluster_count": _to_int(settings.get("clusterCount"), 3, minimum=2, maximum=200),
         "color_by": _to_str(settings.get("colorBy"), "Condition"),
-        "umap_n_neighbors": _to_int(settings.get("umapNNeighbors"), 15, minimum=2, maximum=500),
-        "umap_min_dist": _to_float(settings.get("umapMinDist"), 0.1, minimum=0.0, maximum=1.0),
-        "tsne_perplexity": _to_float(settings.get("tsnePerplexity"), 30.0, minimum=1.0, maximum=1000.0),
-        "tsne_learning_rate": _to_float(settings.get("tsneLearningRate"), 200.0, minimum=10.0, maximum=10000.0),
-        "dbscan_eps": _to_float(settings.get("dbscanEps"), 0.5, minimum=1e-6, maximum=1000.0),
+        "dbscan_eps_factor": _to_float(settings.get("dbscanEpsFactor"), 0.5, minimum=1e-6, maximum=1000.0),
         "dbscan_min_samples": _to_int(settings.get("dbscanMinSamples"), 2, minimum=1, maximum=500),
         "random_state": _to_int(settings.get("randomState"), 42, minimum=0, maximum=10_000_000),
         "width_cm": _to_float(settings.get("widthCm"), 20.0, minimum=6.0, maximum=60.0),
     }
+
+
+def _pca_parameters_html(kind: str, data_source: str, options: Mapping[str, Any]) -> str:
+    """State the settings that determine the PCA figure, as the volcano states its test.
+
+    Scaling, dimension, clustering and its parameters, colouring and ellipses
+    are what a reader needs to reproduce the plot; none of them can be read off
+    the image. The DBSCAN radius is relative (factor x median sample distance),
+    so the resolved radius is written next to the factor when it can be
+    computed.
+    """
+    scaling = resolve_feature_scaling(options.get("scaling", "auto"), method="PCA")
+    scaling_text = (
+        "centred features (each feature's mean subtracted; features weighted by their variance)"
+        if scaling == "centered"
+        else "unit-variance features (each feature centred and divided by its standard deviation)"
+    )
+    plot_dim = str(options.get("plot_dim", "2D")).upper()
+    parts = [f"PCA, {plot_dim}, {scaling_text}"]
+
+    cluster_key = str(options.get("cluster_method", "None")).strip().lower()
+    if cluster_key in {"none", "", "off"}:
+        parts.append("clustering: none")
+    elif cluster_key == "kmeans":
+        parts.append(
+            f"clustering: k-means with k = {int(options.get('cluster_count', 3))} "
+            f"(random seed {int(options.get('random_state', 42))})"
+        )
+    elif cluster_key in {"agglomerative", "hierarchical"}:
+        parts.append(
+            f"clustering: agglomerative (Ward linkage) with k = {int(options.get('cluster_count', 3))}"
+        )
+    elif cluster_key == "dbscan":
+        factor = float(options.get("dbscan_eps_factor", 0.5))
+        min_samples = int(options.get("dbscan_min_samples", 2))
+        radius = f"eps = {factor:g} × the median distance between samples in the projection"
+        try:
+            summary = qc_pca_feature_summary(
+                kind,
+                data_source=data_source,
+                plot_dim=plot_dim,
+                method="PCA",
+                scaling=str(options.get("scaling", "auto")),
+                cluster_method="DBSCAN",
+                dbscan_eps_factor=factor,
+                dbscan_min_samples=min_samples,
+                random_state=int(options.get("random_state", 42)),
+            )
+            resolved = summary.get("dbscan") or {}
+            if resolved.get("epsEffective"):
+                radius += (
+                    f" ({float(resolved['medianSampleDistance']):.3g}), "
+                    f"i.e. eps = {float(resolved['epsEffective']):.3g}"
+                )
+        except Exception:
+            pass
+        parts.append(f"clustering: DBSCAN with {radius}, min_samples = {min_samples}")
+
+    color_by = str(options.get("color_by", "Condition")).strip().lower()
+    parts.append("coloured by cluster" if color_by == "cluster" and cluster_key not in {"none", "", "off"} else "coloured by condition")
+    if plot_dim != "3D":
+        parts.append(
+            "minimum enclosing ellipse per group" if options.get("add_ellipses") else "no group ellipses"
+        )
+    return f"<p><strong>Projection:</strong> {html.escape('; '.join(parts))}.</p>"
 
 
 def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
@@ -1010,15 +1153,22 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         description = _filter_description(annotation)
         if description is None:
             continue
+        normalization_description = _normalization_description(annotation)
         # Imputation stands beside the filtering, not only inside the plot
         # blocks that use it: both decide which numbers a reader is looking at,
         # and a report with no volcano and no imputed PCA used to say nothing
         # about imputation at all.
         filter_paragraphs[kind] = (
-            "<p>QC plots use unfiltered, non-imputed data unless another data source is stated. "
-            "Filtering and imputation apply to clustering and statistical plots according to "
-            "the selected data source; PCA also uses its stated data source.</p>"
-            f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
+            f"<p>QC plots use the {'normalized, ' if normalization_description else ''}unfiltered, "
+            "non-imputed data unless another data source is stated. Filtering and imputation "
+            "apply to clustering and statistical plots according to the selected data source; "
+            "PCA also uses its stated data source.</p>"
+            + (
+                f"<p><strong>Normalization:</strong> {html.escape(normalization_description)}</p>"
+                if normalization_description
+                else ""
+            )
+            + f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
             + _level_imputation_html(kind)
         )
 
@@ -1340,7 +1490,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             general_comment_key="MissingValueProt",
             text_entries=text_entries,
             text_key="MissingValueProt",
-            content_html=_safe_png(
+            content_html=_completeness_exclusion_html("protein") + _safe_png(
                 renderer=lambda: completeness_missing_value_plot(kind="protein", advanced=completeness_missing_advanced,
                     **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Protein Missing Value Plot",
@@ -1442,7 +1592,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             data_source=protein_pca_data_source,
             subject="this plot",
             completeness=_pca_completeness_description("protein", protein_pca_data_source),
-        )
+        ) + _pca_parameters_html("protein", protein_pca_data_source, _pca_plot_options(protein_pca))
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{protein_block}.6",
@@ -1633,7 +1783,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             general_comment_key="MissingValuePhos",
             text_entries=text_entries,
             text_key="MissingValuePhos",
-            content_html=_safe_png(
+            content_html=_completeness_exclusion_html("phospho") + _safe_png(
                 renderer=lambda: completeness_missing_value_plot(kind="phospho", advanced=completeness_missing_advanced,
                     **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Phospho Missing Value Plot",
@@ -1732,7 +1882,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             data_source=phospho_pca_data_source,
             subject="this plot",
             completeness=_pca_completeness_description("phospho", phospho_pca_data_source),
-        )
+        ) + _pca_parameters_html("phospho", phospho_pca_data_source, _pca_plot_options(phospho_pca))
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{phospho_block}.8",

@@ -1,6 +1,6 @@
 import { AssistantInput, AssistantSelect } from "./AssistantFields";
 import { useState } from "react";
-import { clampPlotDimensionCm, clampPlotDpi } from "../lib/plotLimits";
+import { clampPlotDimensionCm, clampPlotDpi, MIN_PLOT_DIMENSION_CM, MAX_PLOT_DIMENSION_CM, MIN_PLOT_DPI, MAX_PLOT_DPI } from "../lib/plotLimits";
 
 export function Checkbox({
   label,
@@ -20,28 +20,6 @@ export function Checkbox({
         className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
       />
       {label}
-    </label>
-  );
-}
-
-export function ColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        type="color"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-2 py-1"
-      />
     </label>
   );
 }
@@ -86,10 +64,16 @@ export function NumericField({
   label,
   value,
   onChange,
+  appearance = false,
+  min,
+  max,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  appearance?: boolean;
+  min?: number;
+  max?: number;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
@@ -110,10 +94,13 @@ export function NumericField({
   };
 
   return (
-    <label className="block text-sm">
+    <label className="block text-sm" data-assistant-appearance={appearance ? "true" : undefined}>
       <span className="mb-2 block font-medium text-slate-700">{label}</span>
       <AssistantInput
         type="text"
+        data-assistant-permission={appearance ? "view" : undefined}
+        min={min}
+        max={max}
         lang="en-US"
         inputMode="decimal"
         value={displayedValue}
@@ -155,9 +142,9 @@ export function SizeRow({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <NumericField label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
-      <NumericField label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
-      <NumericField label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
+      <NumericField appearance min={MIN_PLOT_DIMENSION_CM} max={MAX_PLOT_DIMENSION_CM} label="Width (cm)" value={widthCm} onChange={(value) => onWidthChange(clampPlotDimensionCm(value))} />
+      <NumericField appearance min={MIN_PLOT_DIMENSION_CM} max={MAX_PLOT_DIMENSION_CM} label="Height (cm)" value={heightCm} onChange={(value) => onHeightChange(clampPlotDimensionCm(value))} />
+      <NumericField appearance min={MIN_PLOT_DPI} max={MAX_PLOT_DPI} label="DPI" value={dpi} onChange={(value) => onDpiChange(clampPlotDpi(value))} />
     </div>
   );
 }

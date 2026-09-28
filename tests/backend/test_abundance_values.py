@@ -38,10 +38,8 @@ import matplotlib
 matplotlib.use("Agg")
 
 from app.services.annotation_store import get_annotation
-from app.services.data_tools import original_intensity_frame
 from app.services.plot_images import (
     _abundance_mean_intensities,
-    _get_current_frame,
     _get_sample_columns,
 )
 from app.services.viewer_bootstrap import load_viewer_state
@@ -57,7 +55,11 @@ def loaded():
 def _linear_means(kind: str) -> pd.DataFrame:
     """Condition means of the uploaded linear intensities, computed here."""
     annotation = get_annotation(kind)
-    frame = original_intensity_frame(_get_current_frame(kind), annotation)
+    # The plot reads the normalized, unfiltered, non-imputed matrix on the
+    # linear scale, so the expectation is built from that same matrix.
+    frame = annotation.log2_data.copy()
+    samples = [c for c in annotation.metadata["sample"].astype(str) if c in frame.columns]
+    frame[samples] = np.power(2.0, frame[samples].apply(pd.to_numeric, errors="coerce"))
     samples = _get_sample_columns(kind, frame)
     numeric = frame[samples].apply(pd.to_numeric, errors="coerce")
     # The renderer holes out zeros before averaging; a zero intensity is an

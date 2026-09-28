@@ -1,5 +1,4 @@
 import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
-import SelectField from "../../components/SelectField";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getDistributionSummary, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
@@ -13,10 +12,11 @@ import {
 import { withBasePath } from "../../lib/basePath";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
+import type { ContextMode, AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
+import SelectField from "../../components/SelectField";
 
 type Props = {
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
   advancedPlotOptions?: ReactNode;
 };
 
@@ -39,7 +39,7 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
   );
   const [randomSeed, setRandomSeed] = useState(() => Number(persisted.randomSeed ?? 187));
   useEffect(() => {
-    onContextModeChange?.(JSON.stringify({ kind, randomSeed }));
+    onContextModeChange?.({ kind, randomSeed });
   }, [onContextModeChange, kind, randomSeed]);
 
   useEffect(() => {
@@ -181,10 +181,9 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">QQ Norm Reference</h3>
             <p className="mt-2 text-sm text-slate-600">
-              Three quantile-quantile plots of data whose distribution is known, for comparison with the
-              plot above. Read the middle of the cloud first and the ends second: a departure in the
-              central mass describes the whole matrix, while a departure confined to the last few points
-              on either side describes a handful of features.
+              Three synthetic distributions for comparison with the plot above. Each point represents
+              an ordered intensity value, not a feature. This pooled view describes the overall
+              intensity distribution; it does not validate individual statistical tests.
             </p>
             <div className="mt-4">
               <img
@@ -197,33 +196,27 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
               <div>
                 <dt className="font-semibold text-slate-900">A straight line — normal</dt>
                 <dd className="mt-1">
-                  The values follow a normal distribution, and only the extreme few wander, which they do
-                  in any finite sample. This is what a log<sub>2</sub> intensity matrix should look like,
-                  and it is why intensities are log-transformed at all: raw intensities span orders of
-                  magnitude and are strongly right-skewed, while their logarithms are close to normal.
+                  Values approximately following the line are compatible with a normal distribution.
+                  Log transformation often reduces intensity skewness, but does not guarantee a normal
+                  distribution across different proteins or sites.
                 </dd>
               </div>
               <div>
                 <dt className="font-semibold text-slate-900">A curve — skewed</dt>
                 <dd className="mt-1">
-                  Bending upwards at the right means a long upper tail: a minority of features far more
-                  abundant than the bulk. The consequence is on the tests that follow, since a t-test
-                  assumes approximate normality and its p-values are optimistic on a strongly skewed
-                  matrix, the more so the fewer replicates there are. A pronounced curve on a matrix that
-                  should be log-transformed usually means it is not — check the scale on the annotation
-                  page before reading anything into the shape.
+                  Upward curvature indicates right-skewed intensities. Check the declared data scale,
+                  but the curve alone does not establish a scale error or invalid p-values.
+                  Feature-level tests concern replicate measurements within conditions, or paired
+                  differences, rather than all intensities pooled together.
                 </dd>
               </div>
               <div>
-                <dt className="font-semibold text-slate-900">Ends lifting away — heavy tails</dt>
+                <dt className="font-semibold text-slate-900">Both ends departing — heavy tails</dt>
                 <dd className="mt-1">
-                  More extreme values at both ends than a normal distribution would produce. In a
-                  proteomics matrix this is ordinary in moderation, because the dynamic range is real. It
-                  matters when it is not moderate: extreme values pull means and standard deviations, so a
-                  fold change computed over a feature sitting in such a tail rests on one or two
-                  measurements. Ends bending <em>towards</em> the line are the opposite case — truncation,
-                  from a quantitation floor, an upstream filter, or a report that writes a fixed value in
-                  place of a low measurement.
+                  The lower tail falls below the line and the upper tail rises above it. Inspect
+                  extreme observations in their feature and sample context; their pooled rank alone
+                  does not show whether they drive a fold change. Tails bending inward suggest lighter
+                  tails, which can arise from a bounded distribution or truncation, among other causes.
                 </dd>
               </div>
             </dl>

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -867,7 +867,7 @@ def reset_all_uploaded_metadata(*, all_sessions: bool = False) -> None:
         _METADATA_SESSIONS.clear()
     else:
         _METADATA_SESSIONS.pop(get_session_id(), None)
-    invalidate_runtime_cache("metadata:reset-all")
+    invalidate_runtime_cache("metadata:reset-all", all_sessions=all_sessions)
 
 
 def snapshot_metadata_session_state() -> _MetadataSessionState | None:

@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
 import { getQcPlotOptions } from "./api";
 import { subscribeDatasetStateChanged } from "./datasetEvents";
-import type { AnnotationKind, QcPlotOptionsResponse } from "./types";
+import type { AnnotationKind, ContextMode, QcPlotOptionsResponse } from "./types";
 
-export function usePlotLabels(workflow: string, mode: string, enabled: boolean) {
+export function usePlotLabels(workflow: string, mode: ContextMode | null, enabled: boolean) {
   let kind = ({ protein: "protein", phosphosite: "phospho", phosphoprotein: "phosprot" } as Record<string, string>)[workflow] || "";
-  try {
-    const selected = mode.trim().startsWith("{") ? JSON.parse(mode).kind : /(?:^|\|)kind=([^|]+)/.exec(mode)?.[1];
-    if (["protein", "phospho", "phosprot"].includes(selected)) kind = selected;
-  } catch { /* Incomplete selections have no label catalogue yet. */ }
+  const selected = mode?.kind;
+  if (selected === "protein" || selected === "phospho" || selected === "phosprot") kind = selected;
   const [result, setResult] = useState<{ kind: string; data: QcPlotOptionsResponse } | null>(null);
   useEffect(() => {
     if (!enabled || !kind) return;

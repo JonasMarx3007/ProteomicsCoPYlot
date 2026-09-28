@@ -29,7 +29,7 @@ def no_model_discovery(monkeypatch):
 def context(
     module: str,
     workflow: str = "protein",
-    mode: str | None = None,
+    mode: dict | None = None,
 ) -> str:
     lines = []
     for name in ["general_proteomics_context", *_MODULE_SPECIFIC_AI_FUNCTIONS.get(module, [])]:
@@ -40,6 +40,17 @@ def context(
 
 def test_context_sanitizer_preserves_numeric_zero() -> None:
     assert ai_functions._safe_context_text(0) == "0"
+
+
+def test_unknown_restored_imputation_does_not_invent_a_draw_scope(monkeypatch):
+    from app.schemas.annotation import AnnotationImputationInfo
+
+    annotation = ai_functions.get_annotation("protein")
+    monkeypatch.setattr(annotation, "imputation", AnnotationImputationInfo(mode="unknown", applied=True))
+    payload = ai_functions.general_proteomics_context(workflow="protein")
+    line = next(line for line in payload["data"]["text"].splitlines() if "project_dataset|kind=protein|" in line)
+    assert "parameters=unknown:applied=true" in line
+    assert "sample_wise=" not in line and "q=" not in line and "seed=" not in line
 
 
 def test_assistant_retains_late_summary_and_method_when_evidence_is_long():
@@ -76,7 +87,7 @@ def test_assistant_other_module_uses_disclosed_defaults(monkeypatch):
         calls.append((module, workflow, mode))
         return [Evidence(tool="cv", status="available", text="CV evidence")]
     monkeypatch.setattr(assistant, "_module_evidence", evidence)
-    request = AssistantRequest(message="Explain CV", view={"module": "qc.coverage", "workflow": "protein", "mode": "summary=true"})
+    request = AssistantRequest(message="Explain CV", view={"module": "qc.coverage", "workflow": "protein", "mode": {"summary": True}})
     result = assistant.scientific_evidence(request, AssistantPlan(task="current_plot", module="qc.cv"))
     assert calls == [("qc.cv", "protein", None)]
     assert "default settings" in result[-1].text
@@ -86,7 +97,7 @@ def test_assistant_other_module_uses_disclosed_defaults(monkeypatch):
 def test_assistant_cv_method_and_normalization_provenance():
     text = ai_functions.qc_cov_plot()["data"]["text"]
     assert "SD=sample_standard_deviation_ddof_1" in text
-    assert "source=uploaded_intensities_before_normalization_and_imputation" in text
+    assert "source=normalized_unfiltered_non_imputed_data_back_transformed_to_linear" in text
     assert "normalization_scope=within_this_application_only" in ai_functions.general_proteomics_context()["data"]["text"]
 
 
@@ -141,7 +152,7 @@ def test_tool_numbers_are_rendered_unchanged_and_hypotheses_labelled(monkeypatch
     monkeypatch.setattr(assistant, "assistant_completion", lambda *a, **kw: ("synthetic", next(replies)))
     monkeypatch.setattr(assistant, "scientific_evidence", lambda *args: [Evidence(tool="test", status="partial", text="result|p_value=2.588e-07")])
     result = assistant.assistant_step(AssistantRequest(message="Explain", view={"module":"qc.cv"}))
-    assert "2.588e-07" in result.answer and "not established" in result.answer and "not an exhaustive" in result.answer
+    assert "2.588e-07" in result.answer and "not established" in result.answer and "not every row of it" in result.answer
 
 
 def test_capability_classification_never_invents_a_tested_rating(monkeypatch):
@@ -209,19 +220,15 @@ def test_assistant_schema_limits_targets_and_compact_actions(monkeypatch):
     from app.schemas.assistant import AssistantRequest
     from app.services import scientific_assistant as assistant
     def completion(*args, schema):
-        assert schema["properties"]["actions"]["maxItems"] == 1
-        choices = schema["properties"]["actions"]["anyOf"]
-        assert len(choices) == 2
-        setter = choices[1]["items"]["anyOf"][0]["properties"]
-        assert setter["type"]["enum"] == ["set_control"]
-        assert setter["target"]["enum"] == ["rotation"]
-        assert setter["value"]["type"] == "string"
+        assert "actions" not in schema["properties"]
+        assert schema["properties"]["styles"]["maxItems"] == 8
         assert "UiAction" not in schema["$defs"]
-        assert schema["properties"]["module"]["enum"] == [""]
-        return "synthetic", '{"task":"ui","actions":[{"type":"set_control","target":"rotation","value":"45"},{"type":"set_control","target":"rotation","value":"60"}]}'
+        return "synthetic", '{"task":"ui","styles":[{"element":"plot","property":"rotation","value":"45"},{"element":"plot","property":"rotation","value":"60"}]}'
     monkeypatch.setattr(assistant, "assistant_completion", completion)
-    with pytest.raises(ValueError, match="too many changes"):
-        assistant.assistant_step(AssistantRequest(message="Rotate labels", view={"module":"qc.cv", "advancedOptions":True, "destinations":{"qc.cv":"CV"}, "controls":[{"id":"rotation","label":"Rotation","type":"number","value":"0"}]}))
+    # A two-setter batch is no longer refused for the compact profile (see
+    # test_assistant_controls.py); setting one control twice still is.
+    with pytest.raises(ValueError, match="only once per request step"):
+        assistant.assistant_step(AssistantRequest(message="Rotate labels", view={"module":"qc.cv", "advancedOptions":True, "destinations":{"qc.cv":"CV"}, "controls":[{"id":"rotation","label":"Rotation","type":"number","value":"0", "appearance":True, "permission":"view"}]}))
 
 
 @pytest.mark.parametrize("task", ["current_plot", "qc_review", "entity_lookup", "project_state"])
@@ -254,7 +261,7 @@ def test_scientific_assistant_uses_server_evidence(monkeypatch, task):
     '{"task":"ui","actions":[{"type":"delete","target":"dataset"}]}',
     '{"task":"ui","actions":[{"type":"navigate","target":"unknown"}]}',
     '{"task":"ui","actions":[{"type":"set_control","target":"unknown","value":"x"}]}',
-    '{"task":"current_plot","actions":[{"type":"advanced_options"}]}',
+    '{"task":"current_plot","actions":[{"type":"navigate","target":"qc.cv"}]}',
     'This is not a structured plan.',
 ])
 def test_scientific_assistant_rejects_invalid_plans(monkeypatch, plan):
@@ -304,7 +311,7 @@ def test_coverage_context_exposes_final_extremes_without_recalculation() -> None
 
 
 def test_boxplot_and_cv_contexts_expose_bounded_comparisons() -> None:
-    boxplot = context("qc.boxplot", mode="Mean")
+    boxplot = context("qc.boxplot", mode={"mode": "Mean"})
     assert "comparison is descriptive: true" in boxplot
     assert "inferential test results: not available" in boxplot
     assert "report only numerical differences from available summary statistics" in boxplot
@@ -325,7 +332,7 @@ def test_boxplot_and_cv_contexts_expose_bounded_comparisons() -> None:
 def test_missingness_threshold_context_does_not_invent_outliers() -> None:
     text = context(
         "completeness.tables",
-        mode="kind=protein|outlierThreshold=20|includeId=true",
+        mode={"kind": "protein", "outlierThreshold": 20, "includeId": True},
     )
     assert "Direct answer evidence: threshold percent: 20; count: 0" in text
     assert "result: no samples exceed the threshold" in text
@@ -345,7 +352,7 @@ def test_histogram_context_matches_condition_mean_distributions() -> None:
 def test_pca_context_exposes_scores_and_bounded_geometry() -> None:
     text = context(
         "qc.pca",
-        mode="method=PCA|plotDim=2D|type=Normal",
+        mode={"method": "PCA", "plotDim": "2D", "type": "Normal"},
     )
     assert "Pca Variance: pc1: 49.65; pc2: 9.14; pc1 pc2 total: 58.79" in text
     assert text.count("Pca Sample Score:") == 10
@@ -389,7 +396,7 @@ def test_pca_context_and_report_use_selected_scaling(monkeypatch):
     for scaling, expected_pc1 in [('unit_variance', 76.87419249), ('centered', 99.99680015)]:
         options = report._pca_plot_options({'scaling': scaling})
         _, report_variance, _ = projection('protein', scaling=options['scaling'])
-        text = context('qc.pca', mode=f'method=PCA|plotDim=2D|dataSource=data|scaling={scaling}')
+        text = context('qc.pca', mode={'method': 'PCA', 'plotDim': '2D', 'dataSource': 'data', 'scaling': scaling})
         assert captured[-1][0]['scaling'] == scaling
         np.testing.assert_allclose(captured[-1][1], report_variance)
         assert report_variance[0] == pytest.approx(expected_pc1)
@@ -397,10 +404,10 @@ def test_pca_context_and_report_use_selected_scaling(monkeypatch):
 
 
 def test_abundance_context_respects_condition_and_rejects_stale_selection():
-    text = context('qc.abundance', mode='condition=WT')
+    text = context('qc.abundance', mode={'condition': 'WT'})
     assert 'condition: WT; rank: 1' in text
     assert 'condition: GRK; rank:' not in text
-    stale = context('qc.abundance', mode='condition=missing%7Ccondition')
+    stale = context('qc.abundance', mode={'condition': 'missing|condition'})
     assert 'status: unavailable' in stale
     assert 'Abundance Top Entity:' not in stale
 
@@ -430,10 +437,10 @@ def test_literal_selection_transport_matches_plot_table_and_context(monkeypatch)
     assert image.status_code == exported.status_code == 200
     assert image.content == b'png'
     assert [row['Identifier'] for row in exported.json()['rows']] == names
-    mode = json.dumps({'proteins': names, 'conditions': names, 'kind': 'protein'})
+    mode = {'proteins': names, 'conditions': names, 'kind': 'protein'}
     ai_functions.single_protein_lineplot(mode=mode)
     assert seen == [(names, names)] * 3
-    assert ai_functions._parse_mode_pairs(json.dumps({'protein': 'P1;P2|δ', 'header': 'false'}))['protein'] == 'P1;P2|δ'
+    assert ai_functions._mode_fields({'protein': 'P1;P2|δ', 'header': 'false'})['protein'] == 'P1;P2|δ'
 
 
 @pytest.mark.parametrize('raw', ['[1]', '[null]', '[["nested"]]', '[broken'])
@@ -474,7 +481,10 @@ def test_selection_transport_retains_legacy_contracts():
     from app.services.functions import parse_selection_list
     assert parse_selection_list('A,B;C') == ['A', 'B;C']
     assert ai_functions._split_mode_list('A,B;C') == ['A', 'B', 'C']
-    assert ai_functions._parse_mode_pairs('protein=P1|header=false') == {'protein': 'P1', 'header': 'false'}
+    # One reader for the view's selections: keys lower-cased, native values as
+    # the text the evidence builders compare, empty selections dropped.
+    assert ai_functions._mode_fields({'Protein': 'P1', 'header': False, 'n': 3, 'ids': ['a', 'b'], 'x': '', 'y': None}) == {
+        'protein': 'P1', 'header': 'false', 'n': '3', 'ids': '["a", "b"]'}
 
 
 @pytest.mark.parametrize('level,quantity,expected', [
@@ -483,7 +493,6 @@ def test_selection_transport_retains_legacy_contracts():
 ])
 def test_peptide_coverage_context_matches_plot_and_selected_input(monkeypatch, level, quantity, expected):
     import pandas as pd
-    from urllib.parse import quote
     from app.services import peptide_tools, plot_images
 
     frame = pd.DataFrame({'File.Name': ['ctrl_01.raw'] * 4 + ['treat_01.raw'] * 4,
@@ -506,16 +515,16 @@ def test_peptide_coverage_context_matches_plot_and_selected_input(monkeypatch, l
         return b'png'
     monkeypatch.setattr(plot_images, '_to_png_bytes', inspect)
     assert plot_images.qc_peptide_coverage_plot(quantity_column=quantity, level=level) == b'png'
-    text = context('qc.coverage', workflow='peptide', mode=f'level={level}|quantityColumn={quote(quantity)}')
+    text = context('qc.coverage', workflow='peptide', mode={'level': level, 'quantityColumn': quantity})
     assert f'entity: {level}s' in text
     assert f'count: {expected}' in text
     assert 'samples: 1' in text
-    invalid = context('qc.coverage', workflow='peptide', mode=f'level={level}|quantityColumn=Removed')
+    invalid = context('qc.coverage', workflow='peptide', mode={'level': level, 'quantityColumn': 'Removed'})
     assert 'unavailable' in invalid
 
 
 def test_missing_heatmap_context_distinguishes_aggregates_from_visual_patterns() -> None:
-    text = context("completeness.heatmap", mode="kind=protein")
+    text = context("completeness.heatmap", mode={"kind": "protein"})
     assert "Missing Heatmap Data: status: available" in text
     assert "sample summaries support column level comparisons" in text
     assert "specific row or block patterns require the rendered heatmap or row level matrix" in text
@@ -537,9 +546,9 @@ def test_volcano_context_is_rank_limited_and_uses_informative_significance_value
             # Pinned on the filtered matrix: this test is about how the context
             # is formatted and rank-limited, so it names its matrix explicitly
             # rather than riding on whatever the default happens to be.
-            "source=volcano|kind=protein|dataSource=filtered|condition1=WT|condition2=GRK|"
-            "identifier=workflow|testType=unpaired|pValueThreshold=0.05|"
-            "log2fcThreshold=1|useUncorrected=false|maxRanked=2"
+            {"source": "volcano", "kind": "protein", "dataSource": "filtered", "condition1": "WT",
+             "condition2": "GRK", "identifier": "workflow", "testType": "unpaired", "pValueThreshold": 0.05,
+             "log2fcThreshold": 1, "useUncorrected": False, "maxRanked": 2}
         ),
     )
     assert "max per group: 2" in text
@@ -564,13 +573,13 @@ def test_all_ai_statistical_contexts_preserve_the_selected_test_type(
     is_paired: bool,
 ) -> None:
     volcano = ai_functions.stats_volcano_plot(
-        mode=f"source=volcano_control|testType={test_type}"
+        mode={"source": "volcano_control", "testType": test_type}
     )["summary"]
     ora = ai_functions.stats_ora_plot(
-        mode=f"source=volcano_control|testType={test_type}"
+        mode={"source": "volcano_control", "testType": test_type}
     )["summary"]
     phosprot = ai_functions.phospho_phosprot_regulation_plot(
-        mode=f"testType={test_type}"
+        mode={"testType": test_type}
     )["summary"]
 
     for payload in (volcano, ora, phosprot):
@@ -614,7 +623,6 @@ def test_plot_catalogue_has_explicit_evidence_coverage_gaps():
 @pytest.mark.parametrize("uncorrected", [False, True])
 @pytest.mark.parametrize("posthoc", ["none", "tukey"])
 def test_anova_evidence_matches_ui_calculation(monkeypatch, source, uncorrected, posthoc):
-    import json
     import pandas as pd
     from app.schemas.stats import AnovaRequest
     from app.services import stats_tools
@@ -631,7 +639,7 @@ def test_anova_evidence_matches_ui_calculation(monkeypatch, source, uncorrected,
     mode = request.model_dump()
     selected = str(expected.clusterRows[0]["cluster"]) if source == "anova_cluster" else "none"
     mode["selectedCluster"] = selected
-    text = ai_functions.stats_anova_plot("protein", json.dumps(mode))["data"]["text"]
+    text = ai_functions.stats_anova_plot("protein", mode)["data"]["text"]
     assert f"full_analysis_tested={expected.totalRows}" in text
     assert f"full_analysis_significant={expected.significantCount}" in text
     assert "source_used=filtered" in text
@@ -642,7 +650,7 @@ def test_anova_evidence_matches_ui_calculation(monkeypatch, source, uncorrected,
     assert f"comparisons={len(expected.postHocRows)}" in text
     for row in selected_rows[:5]:
         assert f"term={row['ProteinNames']}|f_statistic={ai_functions._fmt_value(row['f_statistic'])}|raw_p_value={ai_functions._fmt_probability(row['pval'])}|selected_p_value={ai_functions._fmt_probability(row['adj_pval'])}" in text
-    evidence = _module_evidence("stats.anova", "protein", json.dumps(mode))[0]
+    evidence = _module_evidence("stats.anova", "protein", mode)[0]
     assert evidence.status != "unavailable"
     assert evidence.context["anova_parameters"]["selected_p_metric"] == metric
     if len(selected_rows) > 5:
@@ -651,7 +659,7 @@ def test_anova_evidence_matches_ui_calculation(monkeypatch, source, uncorrected,
 
 def test_anova_evidence_invalid_parameters_and_peptides_are_unavailable():
     from app.services.scientific_assistant import _module_evidence
-    for workflow, mode in [("peptide", None), ("protein", '{"nClusters":0}'), ("protein", '{"source":"invented"}')]:
+    for workflow, mode in [("peptide", None), ("protein", {"nClusters": 0}), ("protein", {"source": "invented"})]:
         assert _module_evidence("stats.anova", workflow, mode)[0].status == "unavailable"
 
 
@@ -662,10 +670,10 @@ def test_anova_empty_results_warnings_and_stale_cluster(monkeypatch):
         labelColumn="ProteinNames", totalRows=0, significantCount=0, clusterCount=0, rows=[],
         warnings=["No rows passed the ANOVA threshold; clustering was not run."])
     monkeypatch.setattr(ai_functions._stats_tools, "run_anova", lambda request: result)
-    evidence = _module_evidence("stats.anova", "protein", '{"source":"anova_cluster"}')[0]
+    evidence = _module_evidence("stats.anova", "protein", {"source": "anova_cluster"})[0]
     assert evidence.status == "available"
     assert "full_analysis_tested=0" in evidence.text and "clustering was not run" in evidence.text
-    assert _module_evidence("stats.anova", "protein", '{"source":"anova_cluster","selectedCluster":"99"}')[0].status == "unavailable"
+    assert _module_evidence("stats.anova", "protein", {"source": "anova_cluster", "selectedCluster": "99"})[0].status == "unavailable"
 
 
 def test_anova_infinite_f_and_zero_probability_are_preserved(monkeypatch):
@@ -700,7 +708,7 @@ def test_simulation_adapter_matches_actual_sensitivity_results(monkeypatch, test
     request = SimulationRequest(kind="protein", condition1="A", condition2="B", testType=test_type,
                                 varianceMultiplier=2, sampleSizeOverride=6)
     result = stats_tools.run_simulation(request)
-    text = ai_functions.stats_simulation_plot("protein", request.model_dump_json())["data"]["text"]
+    text = ai_functions.stats_simulation_plot("protein", request.model_dump(mode="json"))["data"]["text"]
     assert f"upregulatedCount={result.upregulatedCount}" in text
     assert "sampleSizeOverride=6" in text and "scope=hypothetical_sensitivity_analysis" in text
     assert "effectiveSampleSizeCondition1Min=6" in text
@@ -709,7 +717,6 @@ def test_simulation_adapter_matches_actual_sensitivity_results(monkeypatch, test
 @pytest.mark.parametrize("source", ["volcano", "volcano_control"])
 @pytest.mark.parametrize("uncorrected", [True, False])
 def test_ksea_adapter_uses_export_contract_not_kinase_results(monkeypatch, source, uncorrected):
-    import json
     import pandas as pd
     calls = []
     def export(**kwargs):
@@ -717,23 +724,23 @@ def test_ksea_adapter_uses_export_contract_not_kinase_results(monkeypatch, sourc
         return pd.DataFrame({"UPD_seq": ["AAAAAAASAAAAAAA"], "log2FC": [0], "pval": [.5], "adj_pval": [.5], "significance": ["Not significant"]})
     monkeypatch.setattr(ai_functions._phospho_tools, "ksea_table", export)
     mode = {"source": source, "condition1": "A", "condition2": "B", "condition1Control": "C", "condition2Control": "D", "useUncorrected": uncorrected}
-    text = ai_functions.phospho_ksea_export("phosphosite", json.dumps(mode))["data"]["text"]
+    text = ai_functions.phospho_ksea_export("phosphosite", mode)["data"]["text"]
     assert calls[0]["source"] == source and calls[0]["use_uncorrected"] is uncorrected
     assert "export_rows=1" in text and "not_kinase_activity_results" in text
     assert "all_testable_sites_not_only_significant=true" in text
 
 
 def test_canvas_reports_composition_not_fabricated_results():
-    text = ai_functions.analysis_canvas_context("protein", '{"tiles":["volcano","boxplot"]}')["data"]["text"]
+    text = ai_functions.analysis_canvas_context("protein", {"tiles": ["volcano", "boxplot"]})["data"]["text"]
     assert "tile_count=2" in text and "consult_separate_tile_evidence" in text
     with pytest.raises(ValueError):
         ai_functions.analysis_canvas_context("protein")
 
 
 @pytest.mark.parametrize("module,workflow,mode", [
-    ("stats.simulation", "protein", '{"condition1":"A","condition2":"B","sampleSizeOverride":1}'),
-    ("phospho.ksea", "protein", None), ("phospho.ksea", "phosphosite", '{"source":"invalid"}'),
-    ("analysis.canvas", "protein", '{"tiles":{}}'),
+    ("stats.simulation", "protein", {"condition1": "A", "condition2": "B", "sampleSizeOverride": 1}),
+    ("phospho.ksea", "protein", None), ("phospho.ksea", "phosphosite", {"source": "invalid"}),
+    ("analysis.canvas", "protein", {"tiles": {}}),
 ])
 def test_new_adapters_reject_unsupported_context(module, workflow, mode):
     from app.services.scientific_assistant import _module_evidence

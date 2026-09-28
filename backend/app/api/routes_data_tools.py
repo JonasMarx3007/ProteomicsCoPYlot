@@ -18,6 +18,9 @@ from app.schemas.data_tools import (
     ImputationRunRequest,
 )
 from app.schemas.completeness import CompletenessTablesResponse
+from app.services.completeness_tools import (
+    completeness_tables,
+)
 from app.services.data_tools import (
     distribution_summary,
     export_id_translation,
@@ -27,7 +30,6 @@ from app.services.data_tools import (
     run_id_translation,
     run_imputation,
 )
-from app.services.functions import completeness_tables
 
 LOGGER = logging.getLogger(__name__)
 

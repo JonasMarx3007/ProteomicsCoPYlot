@@ -37,6 +37,7 @@ import type {
   PhosprotAggregationSource,
 } from "../../lib/types";
 import { NORMALIZATION_LABELS } from "../../lib/types";
+import PreviewTable from "../../components/PreviewTable";
 
 type ConditionDraft = {
   id: number;
@@ -1253,89 +1254,6 @@ export default function AnnotationPage() {
           No annotation result yet.
         </section>
       )}
-    </div>
-  );
-}
-
-
-function PreviewTable({
-  rows,
-  emptyText,
-  downloadAction,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-  downloadAction?: {
-    label: string;
-    onClick: () => void | Promise<void>;
-    disabled?: boolean;
-  };
-}) {
-  const columns = useMemo(() => {
-    const seen = new Set<string>();
-    rows.forEach((row) => {
-      Object.keys(row).forEach((key) => seen.add(key));
-    });
-    return Array.from(seen);
-  }, [rows]);
-
-  if (rows.length === 0 || columns.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {downloadAction ? (
-        <button
-          type="button"
-          onClick={downloadAction.onClick}
-          disabled={Boolean(downloadAction.disabled)}
-          className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {downloadAction.label}
-        </button>
-      ) : null}
-      <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-        <table className="min-w-full table-fixed border-collapse text-sm">
-          <thead className="bg-slate-50">
-            <tr>
-              {columns.map((column) => (
-                <th
-                  key={column}
-                  className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
-                >
-                  {column}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-                {columns.map((column) => {
-                  const value = row[column];
-                  const text = value == null ? "" : String(value);
-                  return (
-                    <td
-                      key={`${rowIndex}-${column}`}
-                      className="border-b border-slate-100 px-3 py-2 text-slate-600"
-                      title={text}
-                    >
-                      <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
-                        {text}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }

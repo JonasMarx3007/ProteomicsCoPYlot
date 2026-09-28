@@ -1,9 +1,7 @@
 import { SizeRow } from "../../components/PlotFields";
 import { withoutStaticSize } from "../../lib/plotRenderType";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
-import { contextMode } from "../../lib/plotSerialization";
-import PreviewTable from "../../components/PreviewTable";
+import { AssistantSelect } from "../../components/AssistantFields";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -23,10 +21,14 @@ import type {
   ComparisonOptionsResponse,
   ComparisonTab,
 } from "../../lib/types";
+import PreviewTable from "../../components/PreviewTable";
+import SelectField from "../../components/SelectField";
+import TextField from "../../components/TextField";
+import type { ContextMode } from "../../lib/types";
 
 type Props = {
   activeTab: ComparisonTab;
-  onContextModeChange?: (mode: string) => void;
+  onContextModeChange?: (mode: ContextMode | null) => void;
   advancedPlotOptions?: ReactNode;
 };
 
@@ -335,41 +337,40 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   useEffect(() => {
     if (!onContextModeChange) return;
     if (!hasKind) {
-      onContextModeChange("");
+      onContextModeChange(null);
       return;
     }
-    const sanitize = (value: string) => String(value ?? "");
-    const parts =
+    const mode: ContextMode =
       activeTab === "pearson"
-        ? [
-            `kind=${kind}`,
-            "dataSource=data",
-            "tab=pearson",
-            `type=${pearson.type}`,
-            `mode=${pearson.mode}`,
-            `sample1=${sanitize(pearson.sample1)}`,
-            `sample2=${sanitize(pearson.sample2)}`,
-            `condition1=${sanitize(pearson.condition1)}`,
-            `condition2=${sanitize(pearson.condition2)}`,
-            `alias1=${sanitize(pearson.alias1)}`,
-            `alias2=${sanitize(pearson.alias2)}`,
-          ]
-        : [
-            `kind=${kind}`,
-            "dataSource=data",
-            "tab=venn",
-            `mode=${venn.mode}`,
-            `first=${sanitize(venn.first)}`,
-            `second=${sanitize(venn.second)}`,
-            `third=${sanitize(venn.third)}`,
-            `alias1=${sanitize(venn.alias1)}`,
-            `alias2=${sanitize(venn.alias2)}`,
-            `alias3=${sanitize(venn.alias3)}`,
-            `color1=${sanitize(venn.color1)}`,
-            `color2=${sanitize(venn.color2)}`,
-            `color3=${sanitize(venn.color3)}`,
-          ];
-    onContextModeChange(contextMode(parts));
+        ? {
+            kind: kind,
+            dataSource: "data",
+            tab: "pearson",
+            type: pearson.type,
+            mode: pearson.mode,
+            sample1: pearson.sample1,
+            sample2: pearson.sample2,
+            condition1: pearson.condition1,
+            condition2: pearson.condition2,
+            alias1: pearson.alias1,
+            alias2: pearson.alias2,
+          }
+        : {
+            kind: kind,
+            dataSource: "data",
+            tab: "venn",
+            mode: venn.mode,
+            first: venn.first,
+            second: venn.second,
+            third: venn.third,
+            alias1: venn.alias1,
+            alias2: venn.alias2,
+            alias3: venn.alias3,
+            color1: venn.color1,
+            color2: venn.color2,
+            color3: venn.color3,
+          };
+    onContextModeChange(mode);
   }, [
     onContextModeChange,
     activeTab,
@@ -625,12 +626,14 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         <div className="space-y-4">
           <div className="grid gap-4 lg:grid-cols-2 max-w-2xl">
             <SelectField
+              labels={{ "": "None" }}
               label="Mode"
               value={pearson.mode}
               options={["Single", "Condition"]}
               onChange={(value) => setPearson({ ...pearson, mode: value })}
             />
             <SelectField
+              labels={{ "": "None" }}
               label="Type"
               value={pearson.type}
               options={["Normal", "Interactive"]}
@@ -639,6 +642,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <SelectField
+              labels={{ "": "None" }}
               label={pearson.mode === "Single" ? "Sample 1" : "Condition 1"}
               value={pearson.mode === "Single" ? pearson.sample1 : pearson.condition1}
               options={pool}
@@ -649,6 +653,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               }
             />
             <SelectField
+              labels={{ "": "None" }}
               label={pearson.mode === "Single" ? "Sample 2" : "Condition 2"}
               value={pearson.mode === "Single" ? pearson.sample2 : pearson.condition2}
               options={pool}
@@ -692,6 +697,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       <div className="space-y-4">
         <div className="max-w-xs">
           <SelectField
+            labels={{ "": "None" }}
             label="Mode"
             value={venn.mode}
             options={["Single", "Condition"]}
@@ -700,18 +706,21 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
           <SelectField
+            labels={{ "": "None" }}
             label={venn.mode === "Single" ? "Sample 1" : "Condition 1"}
             value={venn.first}
             options={vennPool}
             onChange={(value) => setVenn({ ...venn, first: value })}
           />
           <SelectField
+            labels={{ "": "None" }}
             label={venn.mode === "Single" ? "Sample 2" : "Condition 2"}
             value={venn.second}
             options={vennPool}
             onChange={(value) => setVenn({ ...venn, second: value })}
           />
           <SelectField
+            labels={{ "": "None" }}
             label={venn.mode === "Single" ? "Sample 3 (optional)" : "Condition 3 (optional)"}
             value={venn.third}
             options={["", ...vennPool]}
@@ -752,56 +761,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   }
 }
 
-function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantSelect
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option || "None"}
-          </option>
-        ))}
-      </AssistantSelect>
-    </label>
-  );
-}
 
-function TextField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
-}
 
 function cmToIframeHeight(heightCm: number): number {
   const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (12 * 96) / 2.54;

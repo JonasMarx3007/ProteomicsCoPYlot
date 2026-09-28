@@ -20,6 +20,33 @@ const field = (page, label, tag = 'select') => page.getByLabel(label, { exact: t
   page.locator('label:not(:has(input, select, textarea))').filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) }).locator('..').locator(tag));
 const tab = (page, name) => page.getByRole('button', { name, exact: true });
 
+test('committed number fields show the accepted rounded or clamped value', async ({ page }) => {
+  await annotated(page);
+  await tab(page, 'Statistical Analysis').click();
+  await tab(page, 'Volcano Plot').click();
+  await field(page, 'Condition 2').selectOption('B');
+  await field(page, 'Type').selectOption('Normal');
+  const labels = page.getByLabel('Label top up-regulated', { exact: true });
+  const download = page.getByRole('link', { name: 'Download Plot', exact: true });
+  await expect(labels).toHaveValue('0');
+  for (const [draft, accepted, key] of [
+    ['0.4', '0', 'Enter'], ['1.6', '2', 'Tab'], ['2.4', '2', 'Enter'],
+    ['-3', '0', 'Tab'], ['-1', '0', 'Enter'], ['1,0', '1', 'Tab'],
+    ['invalid', '1', 'Enter'],
+  ]) {
+    await labels.fill(draft);
+    await expect(labels).toHaveValue(draft.replace(',', '.'));
+    await labels.press(key);
+    await expect(labels).toHaveValue(accepted);
+    await expect(download).toHaveAttribute('href', new RegExp(`labelTopUp=${accepted}(?:&|$)`));
+  }
+  const threshold = page.getByLabel('P-value threshold', { exact: true });
+  await threshold.fill('0.01');
+  await threshold.press('Enter');
+  await expect(threshold).toHaveValue('0.01');
+  await expect(download).toHaveAttribute('href', /pValueThreshold=0\.01(?:&|$)/);
+});
+
 for (const heatmap of [false, true]) {
   test(`${heatmap ? 'heatmap' : 'standard plot'} safely renders structured errors and recovers`, async ({ page }) => {
     await annotated(page);
@@ -45,7 +72,11 @@ for (const heatmap of [false, true]) {
       [JSON.stringify({ detail: '<img src=x onerror="window.errorInjected=true">' }), '<img src=x onerror="window.errorInjected=true">'],
     ];
     let body = '';
-    await page.route(pattern, route => route.fulfill({ status: 422, contentType: 'application/json', body }));
+    const requests = [];
+    await page.route(pattern, route => {
+      requests.push(route.request());
+      return route.fulfill({ status: 422, contentType: 'application/json', body });
+    });
     for (let i = 0; i < cases.length; i++) {
       const [responseBody, message] = cases[i];
       body = responseBody;
@@ -55,6 +86,10 @@ for (const heatmap of [false, true]) {
       await expect(image).toHaveCount(0);
       await expect(page.getByText('private-input', { exact: true })).toHaveCount(0);
     }
+    // StrictMode starts and aborts a first effect in development; no completed
+    // error response should trigger another request for the same plot.
+    const completed = requests.filter(request => !request.failure()).map(request => request.url());
+    expect(new Set(completed).size).toBe(completed.length);
     expect(await page.evaluate(() => Boolean(window.errorInjected))).toBe(false);
     await page.unroute(pattern);
     await control.fill(heatmap ? '0.05' : '20');
@@ -63,6 +98,43 @@ for (const heatmap of [false, true]) {
     expect(crashes).toEqual([]);
   });
 }
+
+test('plot loader ignores stale responses and malformed notice encoding', async ({ page }) => {
+  await page.addInitScript(() => {
+    const revoke = URL.revokeObjectURL.bind(URL);
+    window.revokedPlotUrls = [];
+    URL.revokeObjectURL = url => { window.revokedPlotUrls.push(url); revoke(url); };
+  });
+  await annotated(page);
+  await tab(page, 'Single Protein').click();
+  const image = page.getByRole('img', { name: 'Protein Boxplot', exact: true });
+  await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  const oldBlob = await image.getAttribute('src');
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/plots/single-protein/*/boxplot.png*', async route => {
+    const width = new URL(route.request().url()).searchParams.get('widthCm');
+    if (width === '21') await delayed;
+    await route.fulfill({ status: 200, contentType: 'image/svg+xml',
+      headers: { 'X-CoPYlot-Notice': width === '21' ? 'obsolete' : '100% complete' },
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="green"/></svg>' });
+  });
+  const width = page.getByLabel('Width (cm)', { exact: true });
+  const started = page.waitForRequest(request => request.url().includes('/boxplot.png') && new URL(request.url()).searchParams.get('widthCm') === '21');
+  await width.fill('21');
+  await width.press('Tab');
+  await started;
+  await width.fill('22');
+  await width.press('Tab');
+  await expect(page.getByText('100% complete', { exact: true })).toBeVisible();
+  release();
+  await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  await expect(page.getByText('obsolete', { exact: true })).toHaveCount(0);
+  expect(await page.evaluate(url => window.revokedPlotUrls.includes(url), oldBlob)).toBe(true);
+  const currentBlob = await image.getAttribute('src');
+  await tab(page, 'QC Pipeline').click();
+  await expect.poll(() => page.evaluate(url => window.revokedPlotUrls.includes(url), currentBlob)).toBe(true);
+});
 
 test('heatmap notice follows the rendered result and disappears on replacement failure', async ({ page }) => {
   await annotated(page);
@@ -107,10 +179,11 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
       expect(selectedProtein).toBeTruthy();
       actions = [action('Protein / Site', selectedProtein)];
     }
-    if (calls === 2) actions = [{ type: 'advanced_options', target: '', value: true }];
-    if (calls === 3) actions = [action('Top', false, 'checkbox'), action('X tick label rotation', '45', 'number')];
-    if (calls === 4) actions = [action('Condition colors / A', '#ff0000', 'color'), action('Condition names / A', 'Control', 'text')];
-    if (calls === 6) {
+    // No advanced-options step: the appearance settings are advertised while the
+    // user keeps the panel closed, and only the user may open it.
+    if (calls === 2) actions = [action('Top', false, 'checkbox'), action('X tick label rotation', '45', 'number')];
+    if (calls === 3) actions = [action('Condition colors / A', '#ff0000', 'color'), action('Condition names / A', 'Control', 'text')];
+    if (calls === 5) {
       const memory = route.request().postDataJSON().conversationState;
       expect(memory.status).toBe('completed');
       expect(memory.selections).toContainEqual({ label: 'Protein / Site', value: selectedProtein });
@@ -127,9 +200,13 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
   await tab(page, 'Send').click();
   await tab(page, 'Confirm and send').click();
   await expect(page.getByText(/View updated\./)).toBeVisible({ timeout: 45000 });
-  expect(calls).toBe(6);
+  expect(calls).toBe(5);
+  // The advanced panel stayed closed for the user throughout the styling: its
+  // settings were reachable only through the offscreen assistant mount.
+  await expect(page.locator('[data-assistant-offscreen="true"] [data-assistant-appearance="true"]')).toHaveCount(1);
+  expect(await page.evaluate(() => window.sessionStorage.getItem('copylot:advancedPlotMode'))).not.toBe('1');
   await expect(page.getByRole('combobox', { name: 'Protein / Site', exact: true })).toHaveValue(selectedProtein);
-  const settings = JSON.parse(new URL(await page.getByRole('img', { name: 'Protein Boxplot', exact: true }).getAttribute('src'), page.url()).searchParams.get('advanced'));
+  const settings = JSON.parse(new URL(await page.getByRole('link', { name: 'Download Plot', exact: true }).getAttribute('href'), page.url()).searchParams.get('advanced'));
   expect(settings).toMatchObject({ axisLineTop: false, xTickLabelRotation: 45, conditionColors: { A: '#ff0000' }, conditionLabels: { A: 'Control' } });
   const plot = page.locator('main img').first();
   await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
@@ -155,7 +232,7 @@ test('scientific assistant explains the updated view after a mixed request', asy
       expect(payload.answerOnly).toBe(true);
       expect(payload.receipts).toHaveLength(1);
       expect(payload.receipts[0]).toMatch(/^Opened /);
-      expect(payload.view.mode).toBe(requests[1].view.mode);
+      expect(payload.view.mode).toEqual(requests[1].view.mode);
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
       model: 'scripted-no-inference', revision: 1,
@@ -217,7 +294,7 @@ for (const destination of ['stats.simulation', 'data.distribution', 'phospho.kse
       const { view } = route.request().postDataJSON();
       if (calls) {
         expect(view.module).toBe(destination);
-        const mode = JSON.parse(view.mode);
+        const mode = view.mode;
         expect(mode.kind).toBe('phospho');
         if (destination === 'analysis.canvas') expect(Array.isArray(mode.tiles)).toBe(true);
         if (destination === 'data.distribution') expect(mode.randomSeed).toBe(187);
@@ -276,7 +353,7 @@ test('end-to-end evidence reads uploaded KSEA values and preserves rendered sett
   const token = (await rendered).headers()['x-copylot-evidence'];
   expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
   const first = await askForRealEvidence(page);
-  expect(JSON.parse(first.request.view.mode)).toMatchObject({ externalPlotPresent: true, externalEvidenceToken: token });
+  expect(first.request.view.mode).toMatchObject({ externalPlotPresent: true, externalEvidenceToken: token });
   expect(first.evidence).toHaveLength(1);
   expect(first.evidence[0].text).toContain('log2ff=2');
   expect(first.evidence[0].text).toContain('adj_pval=0.02');
@@ -318,7 +395,7 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   await canvas.getByRole('combobox', { name: 'Condition 1', exact: true }).selectOption('B');
   await canvas.getByRole('combobox', { name: 'Condition 2', exact: true }).selectOption('A');
   const changed = await askForRealEvidence(page);
-  const settings = JSON.parse(changed.request.view.mode).tileEvidence.find(t => t.type === 'volcano').settings;
+  const settings = changed.request.view.mode.tileEvidence.find(t => t.type === 'volcano').settings;
   expect(settings).toMatchObject({ condition1: 'B', condition2: 'A', useUncorrected: true });
   const rawTile = changed.evidence.find(e => e.tool.includes(': volcano'));
   await expect(canvas.locator('svg').getByText('-log10(p-value)', { exact: true })).toBeVisible();
@@ -340,7 +417,7 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   await canvas.getByRole('textbox', { name: 'Protein or gene', exact: true }).fill('K1');
   await canvas.getByRole('textbox', { name: 'Proteins or genes (comma, space, or newline)', exact: true }).fill('K1 K2');
   const mixed = await askForRealEvidence(page);
-  const specs = JSON.parse(mixed.request.view.mode).tileEvidence;
+  const specs = mixed.request.view.mode.tileEvidence;
   expect(specs.find(t => t.type === 'proteinBoxplot').settings).toMatchObject({ protein: 'K1', conditions: ['B', 'A'] });
   expect(specs.find(t => t.type === 'proteinLineplot').settings).toMatchObject({ proteins: ['K1', 'K2'], conditions: ['B', 'A'] });
   for (const type of ['proteinBoxplot', 'proteinLineplot']) {
@@ -353,7 +430,7 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   await canvas.getByRole('combobox', { name: 'Condition 2', exact: true }).last().selectOption('B');
   await canvas.getByRole('combobox', { name: 'P-value mode', exact: true }).last().selectOption('corrected');
   const multiple = await askForRealEvidence(page);
-  const independent = JSON.parse(multiple.request.view.mode).tileEvidence.filter(tile => tile.type === 'volcano');
+  const independent = multiple.request.view.mode.tileEvidence.filter(tile => tile.type === 'volcano');
   expect(independent[0].settings).toMatchObject({ condition1: 'B', condition2: 'A', useUncorrected: true });
   expect(independent[1].settings).toMatchObject({ condition1: 'A', condition2: 'B', useUncorrected: false });
   const unrelatedRequests = [];
@@ -372,16 +449,19 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   expect(volcanoTiles).toHaveLength(2);
   for (const item of volcanoTiles) {
     const contrast = item.text.match(/volcano_contrast\|([^\n]+)/)[1];
-    expect(multiple.answer).toContain(`${item.tool}: The x-axis is log2 fold change for the contrast ${contrast}`);
+    const tileNumber = item.tool.match(/canvas tile (\d+)/)[1];
+    const paragraph = multiple.answer.split('\n\n').find(text => text.startsWith(`Tile ${tileNumber} (volcano):`));
+    expect(paragraph).toBeTruthy();
+    expect(paragraph).toContain(`log2 fold change is ${contrast.replace(' - ', ' minus ')}`);
     const metric = item.text.includes('for_significance=pval') ? 'raw' : 'BH-adjusted';
-    expect(multiple.answer).toContain(`${item.tool}: The y-axis is the negative log10 of the ${metric} p-value`);
+    expect(paragraph).toContain(`The y-axis is the negative log10 of the ${metric} p-value`);
   }
   await canvas.locator(`[data-assistant-tile="${independent[1].id}"] svg circle`).first().click();
   await expect(page.getByRole('combobox', { name: 'Linked plot source', exact: true })).toHaveValue(independent[1].id);
   await page.getByRole('combobox', { name: 'Linked plot source', exact: true }).selectOption(independent[0].id);
   await page.getByRole('combobox', { name: 'Linked plot source', exact: true }).selectOption(independent[1].id);
   const linked = await askForRealEvidence(page);
-  expect(JSON.parse(linked.request.view.mode).tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['A', 'B']);
+  expect(linked.request.view.mode.tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['A', 'B']);
   const styledTile = canvas.locator(`[data-assistant-tile="${independent[1].id}"]`);
   const statisticalRequests = [];
   const observeStyle = request => { if (request.url().endsWith('/api/analysis/volcano/data')) statisticalRequests.push(request); };
@@ -432,10 +512,10 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   await expect(canvas.locator(`[data-assistant-tile="${independent[0].id}"] svg`)).not.toContainText('A & B <test>');
   await expect(page.getByRole('combobox', { name: 'Linked plot source', exact: true })).toHaveValue(independent[1].id);
   const restored = await askForRealEvidence(page);
-  expect(JSON.parse(restored.request.view.mode).tileEvidence.filter(tile => tile.type === 'volcano')).toEqual(independent);
+  expect(restored.request.view.mode.tileEvidence.filter(tile => tile.type === 'volcano')).toEqual(independent);
   await canvas.locator(`[data-assistant-tile="${independent[1].id}"]`).getByRole('button', { name: 'Remove', exact: true }).click();
   const remaining = await askForRealEvidence(page);
-  expect(JSON.parse(remaining.request.view.mode).tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['B', 'A']);
+  expect(remaining.request.view.mode.tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['B', 'A']);
 });
 
 test('end-to-end evidence preserves canvas data sources and matches dedicated tables', async ({ page }) => {
@@ -496,7 +576,7 @@ test('end-to-end evidence preserves canvas data sources and matches dedicated ta
     await tile.screenshot({ path: test.info().outputPath(`canvas-${type}.png`) });
   }
   const evidence = await askForRealEvidence(page);
-  const specs = JSON.parse(evidence.request.view.mode).tileEvidence;
+  const specs = evidence.request.view.mode.tileEvidence;
   expect(specs.every(tile => tile.settings.dataSource === 'imputed')).toBeTruthy();
   expect(evidence.evidence.filter(item => item.tool.startsWith('canvas tile')).every(item => item.status !== 'unavailable')).toBeTruthy();
   await tab(page, 'QC Pipeline').click();
@@ -735,7 +815,7 @@ test('end-to-end evidence follows completed ORA results and clearing', async ({ 
   expect(tile.status).not.toBe('unavailable');
   expect(tile.text).toContain(`termId=${actual.terms[0].termId}`);
   expect(Number(tile.text.match(/\|adjPValue=([^|\n]+)/)[1])).toBe(actual.terms[0].adjPValue);
-  expect(JSON.parse(first.request.view.mode).tileEvidence[0].token).toBe(actual.evidenceToken);
+  expect(first.request.view.mode.tileEvidence[0].token).toBe(actual.evidenceToken);
   const exportLink = page.getByRole('link', { name: 'Download Terms CSV', exact: true });
   const originalExport = await exportLink.getAttribute('href');
   await page.getByPlaceholder('Paste genes separated by comma, space, or newline').fill('TP53');
@@ -765,14 +845,14 @@ test('end-to-end evidence follows completed ORA results and clearing', async ({ 
   expect(rerunResponse.ok(), await rerunResponse.text()).toBeTruthy();
   const updatedResult = await rerunResponse.json();
   const updated = await askForRealEvidence(page);
-  expect(JSON.parse(updated.request.view.mode).tileEvidence[0].token).toBe(updatedResult.evidenceToken);
+  expect(updated.request.view.mode.tileEvidence[0].token).toBe(updatedResult.evidenceToken);
   expect(updatedResult.evidenceToken).not.toBe(actual.evidenceToken);
   expect(updated.evidence.find(e => e.tool.endsWith('oraList')).text).toContain('querySize=1');
   expect(runs).toBe(2);
   await tab(page, 'Clear Result').click();
   const cleared = await askForRealEvidence(page);
   expect(cleared.evidence.find(e => e.tool.endsWith('oraList')).status).toBe('unavailable');
-  expect(JSON.parse(cleared.request.view.mode).tileEvidence[0].token).toBe('');
+  expect(cleared.request.view.mode.tileEvidence[0].token).toBe('');
   expect(runs).toBe(2);
   await tab(page, 'QC Pipeline').click();
   await tab(page, 'Analysis').click();
@@ -821,7 +901,7 @@ test('end-to-end evidence follows control volcano contrasts and removal', async 
       await canvas.getByRole('combobox', { name: 'Condition 2 Control', exact: true }).selectOption('C');
     }
     const result = await askForRealEvidence(page);
-    const settings = JSON.parse(result.request.view.mode).tileEvidence[0].settings;
+    const settings = result.request.view.mode.tileEvidence[0].settings;
     expect(settings).toMatchObject({ source: 'volcano_control', useUncorrected: raw,
       condition1: 'A', condition2: 'B', condition1Control: raw ? 'D' : 'C', condition2Control: raw ? 'C' : 'D' });
     const response = await tabRequest(page).post('/api/analysis/volcano/data', { data: settings });
@@ -836,7 +916,7 @@ test('end-to-end evidence follows control volcano contrasts and removal', async 
   }
   await canvas.getByRole('button', { name: 'Remove', exact: true }).click();
   const removed = await askForRealEvidence(page);
-  expect(JSON.parse(removed.request.view.mode).tileEvidence).toEqual([]);
+  expect(removed.request.view.mode.tileEvidence).toEqual([]);
   expect(removed.evidence.some(e => e.tool.includes('volcanoControl'))).toBe(false);
 });
 
@@ -1027,7 +1107,7 @@ test('peptide upload offers peptide and precursor coverage and missing-value plo
     for (const level of ['peptide', 'precursor']) {
       await field(page, 'Dataset level').selectOption(level);
       const plot = page.locator('main img').first();
-      await expect(plot).toHaveAttribute('src', new RegExp(`/api/plots/${path}/${level}/`));
+      await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', new RegExp(`/api/plots/${path}/${level}/`));
       await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
     }
   }
@@ -1124,7 +1204,7 @@ for (const section of ['QC Pipeline', 'Completeness']) {
     await width.press('Tab');
     await expect(width).toHaveValue('14.5');
     await plotReady();
-    await expect(plot).toHaveAttribute('src', /widthCm=14\.5(?:&|$)/);
+    await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /widthCm=14\.5(?:&|$)/);
     await width.fill('invalid');
     await width.press('Enter');
     await expect(width).toHaveValue('14.5');
@@ -1136,11 +1216,11 @@ for (const section of ['QC Pipeline', 'Completeness']) {
     await expect(page.getByLabel('Toggle Header', { exact: true })).toHaveCount(0);
     await page.getByLabel('Toggle Text', { exact: true }).check();
     await plotReady();
-    await expect(plot).toHaveAttribute('src', /text=true(?:&|$)/);
+    await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /text=true(?:&|$)/);
     await page.getByLabel('Toggle Text', { exact: true }).uncheck();
     await plotReady();
     await expect(page.getByLabel('Toggle Text', { exact: true })).not.toBeChecked();
-    await expect(plot).toHaveAttribute('src', /text=false(?:&|$)/);
+    await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /text=false(?:&|$)/);
     if (section === 'QC Pipeline') {
       await tab(page, 'Boxplot Intensity').click();
       await page.getByLabel('Type', { exact: true }).selectOption('Single');
@@ -1174,7 +1254,7 @@ test('volcano groups related controls and places dimensions below highlights', a
   const highlightBox = await bounds('Highlight terms');
   const widthBox = await bounds('Width (cm)');
   expect(widthBox.y).toBeGreaterThan(highlightBox.y + highlightBox.height);
-  const image = page.locator('img[src*="/volcano.png"]');
+  const image = page.getByRole('img', { name: 'Volcano Plot', exact: true });
   await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
   await page.screenshot({ path: info.outputPath('volcano-layout.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1262,14 +1342,14 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
 
 for (const [panel, endpoint, setting, value, parameter] of [
   ['ANOVA', 'anova', 'P-value threshold', '0.01', 'pValueThreshold'],
-  ['Simulation', 'simulation', 'Variance multiplier', '2', 'varianceMultiplier'],
-  ['Simulation', 'simulation', 'Sample size override (0 = observed, 2-100 fixed)', '8', 'sampleSizeOverride'],
+  ['Replicate & Variance Projection', 'simulation', 'Variance × factor', '2', 'varianceMultiplier'],
+  ['Replicate & Variance Projection', 'simulation', 'Replicates per group (0 = observed, 2-100 fixed)', '8', 'sampleSizeOverride'],
 ]) {
   test(`${panel} hides old results until the changed request completes: ${setting}`, async ({ page }) => {
     await annotated(page);
     await tab(page, 'Statistical Analysis').click();
     await tab(page, panel).click();
-    if (panel === 'Simulation') {
+    if (panel === 'Replicate & Variance Projection') {
       await field(page, 'Condition 1').selectOption('A');
       await field(page, 'Condition 2').selectOption('B');
     }

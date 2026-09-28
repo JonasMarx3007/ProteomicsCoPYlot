@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import logging
 import os
-import tempfile
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterable, Literal, get_args
+from typing import Any, Iterable, Literal, Mapping, get_args
 from uuid import uuid4
 
 import pandas as pd
@@ -24,6 +23,7 @@ from app.schemas.annotation import (
     NormalizationMethod,
     phosprot_filter_config,
 )
+from app.services.managed_temp import open_private, private_temp_dir, write_private_bytes
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.annotation_store import (
     get_annotation,
@@ -94,10 +94,6 @@ LOGGER = logging.getLogger(__name__)
 RESTORE_COMPATIBILITY_NOTICE = (
     "Save states are compatibility snapshots: saved settings were restored, and any "
     "options not present in the file use the current application defaults."
-)
-SIMULATION_SAMPLE_SIZE_MIGRATION_WARNING = (
-    "Legacy Simulation sample-size override 1 was migrated to 0 (use observed sample sizes). "
-    "A t-test cannot estimate variance from one sample per group."
 )
 _RESTORE_LOCKS_GUARD = RLock()
 _RESTORE_LOCKS: dict[str, RLock] = {}
@@ -191,6 +187,7 @@ class PreparedRestoreInput:
     frame_by_package_kind: dict[tuple[str, TableKind], tuple[pd.DataFrame, str, str | None]]
     peptide_path_by_package: dict[str, tuple[str, str | None]]
     warnings: list[str]
+    changed_datasets: set[tuple[str, TableKind]]
 
 
 @dataclass
@@ -358,13 +355,66 @@ def _coerce_phosprot_aggregation(payload: Any) -> str | None:
     return text if text in allowed else None
 
 
-def _coerce_imputation(payload: Any) -> AnnotationImputationInfo | None:
+def _coerce_imputation(payload: Any) -> tuple[AnnotationImputationInfo | None, str | None]:
+    """The saved imputation record, or why it could not be read.
+
+    `(None, None)` means no record was saved. `(None, reason)` means a record
+    was saved but does not validate -- an older schema, a renamed field. The
+    caller decides what to do with the imputed matrix in that case; it must
+    not be thrown away in silence.
+    """
+    if payload is None:
+        return None, None
     if not isinstance(payload, dict):
-        return None
+        return None, f"expected an object, got {type(payload).__name__}"
     try:
-        return AnnotationImputationInfo(**payload)
-    except Exception:
+        return AnnotationImputationInfo(**payload), None
+    except Exception as exc:
+        return None, str(exc).splitlines()[0][:200]
+
+
+def _table_fingerprint(frame: pd.DataFrame) -> str:
+    """Identify the loaded values, independent of integer/float column inference."""
+    content = frame.to_csv(index=False, float_format="%.17g", lineterminator="\n")
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _file_fingerprint(path: Path) -> dict[str, Any] | None:
+    """Size and SHA-256 of a dataset file, so a restore can tell it was replaced."""
+    try:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError:
         return None
+    return {"sizeBytes": size, "sha256": digest.hexdigest()}
+
+
+def _fingerprint_mismatch(entry: Mapping[str, Any], path: Path) -> str | None:
+    """Why the file at `path` is not the one the state was saved from, or None.
+
+    Old exports carry no fingerprint; those are not checked.
+    """
+    return _compare_fingerprint(entry, _file_fingerprint(path))
+
+
+def _compare_fingerprint(entry: Mapping[str, Any], current: dict[str, Any] | None) -> str | None:
+    saved_size = entry.get("sizeBytes")
+    saved_hash = _optional_text(entry.get("sha256"))
+    if saved_size is None and saved_hash is None:
+        return None
+    if saved_size is not None and (type(saved_size) is not int or saved_size < 0):
+        return "saved file size is invalid; file identity could not be verified"
+    if current is None:
+        return "file fingerprint could not be read; file identity could not be verified"
+    if saved_size is not None and saved_size != current["sizeBytes"]:
+        return f"size {current['sizeBytes']:,} bytes now, {saved_size:,} when saved"
+    if saved_hash is not None and saved_hash.lower() != current["sha256"]:
+        return "contents differ (SHA-256 mismatch)"
+    return None
 
 
 def _normalize_metadata_source(payload: Any) -> Literal["manual", "auto", "uploaded", "shared_phospho"]:
@@ -375,15 +425,33 @@ def _normalize_metadata_source(payload: Any) -> Literal["manual", "auto", "uploa
 
 
 def _restore_upload_dir() -> Path:
-    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "restore_uploads"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return private_temp_dir("restore_uploads")
 
 
 def _table_backup_dir() -> Path:
-    base = Path(tempfile.gettempdir()) / "ProteomicsCoPYlot" / "table_uploads"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    """Where a non-portable export writes a copy of a table that has no file.
+
+    Its own directory, apart from `table_uploads`: an uploaded file lands there
+    too when the client sent no path, and the two must stay distinguishable --
+    a derived table is embedded in the export, an upload is not.
+    """
+    return private_temp_dir("table_derived")
+
+
+def _is_derived_table(stored: Any) -> bool:
+    """Whether a stored table was computed in the tool rather than uploaded.
+
+    A derived table has no source file; the only path it can ever carry is the
+    temp copy `_ensure_exportable_table_path` writes for a non-portable export,
+    which lives under the table backup directory.
+    """
+    source_path = _optional_text(getattr(stored, "source_path", None))
+    if not source_path:
+        return True
+    try:
+        return Path(source_path).expanduser().resolve().parent == _table_backup_dir().resolve()
+    except OSError:
+        return False
 
 
 def _ensure_exportable_table_path(stored: Any) -> str | None:
@@ -398,7 +466,8 @@ def _ensure_exportable_table_path(stored: Any) -> str | None:
     filename = Path(str(getattr(stored, "filename", "") or "dataset")).stem or "dataset"
     target = _table_backup_dir() / f"{uuid4().hex}_{filename}.tsv"
     try:
-        frame.to_csv(target, sep="\t", index=False)
+        with open_private(target, "w") as handle:
+            frame.to_csv(handle, sep="\t", index=False)
     except Exception:
         return None
 
@@ -447,43 +516,6 @@ def describe_restore_version_warning(state: dict[str, Any]) -> str | None:
     return (
         f"Save state was created with app version {saved_version}. "
         f"Current app version is {APP_VERSION}."
-    )
-
-
-def migrate_restore_ui_state(payload: Any) -> tuple[dict[str, Any], list[str]]:
-    """Apply narrow, disclosed migrations to otherwise opaque client UI state."""
-    if not isinstance(payload, dict):
-        return {}, []
-    migrated = deepcopy(payload)
-    changed = False
-    for container_name in ("localStorageState", "reportLocalStorage"):
-        storage = migrated.get(container_name)
-        if not isinstance(storage, dict):
-            continue
-        for key, raw in list(storage.items()):
-            if not str(key).endswith("stats.simulation.v1") or not isinstance(raw, str):
-                continue
-            try:
-                simulation_state = json.loads(raw)
-            except Exception:
-                continue
-            if not isinstance(simulation_state, dict):
-                continue
-            sample_size = simulation_state.get("sampleSizeOverride")
-            if not isinstance(sample_size, (int, float)) or isinstance(sample_size, bool):
-                continue
-            if float(sample_size) != 1.0:
-                continue
-            simulation_state["sampleSizeOverride"] = 0
-            storage[key] = json.dumps(
-                simulation_state,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            changed = True
-    return (
-        migrated,
-        [SIMULATION_SAMPLE_SIZE_MIGRATION_WARNING] if changed else [],
     )
 
 
@@ -538,11 +570,30 @@ def export_state_blob(
             if stored is None:
                 dataset_payload[kind] = None
                 continue
-            dataset_payload[kind] = {
+            derived = _is_derived_table(stored)
+            entry: dict[str, Any] = {
                 "filename": str(getattr(stored, "filename", "") or ""),
                 "path": None if portable else _ensure_exportable_table_path(stored),
                 "phosprotAggregation": getattr(stored, "phosprot_aggregation", None),
             }
+            fingerprint_path = entry["path"] or _optional_text(getattr(stored, "source_path", None))
+            if fingerprint_path:
+                # So a restore can tell when the file at this path has been
+                # overwritten since (a re-exported search under the same name).
+                fingerprint = _file_fingerprint(Path(str(fingerprint_path)).expanduser())
+                if fingerprint is not None:
+                    entry.update(fingerprint)
+            frame = getattr(stored, "frame", None)
+            if isinstance(frame, pd.DataFrame):
+                entry["tableSha256"] = _table_fingerprint(frame)
+            if derived and isinstance(frame, pd.DataFrame):
+                # A table derived inside the tool (a phosprot aggregation) has no
+                # file of its own. The temp copy written above is a convenience
+                # on this machine; the table itself travels in the export, so a
+                # portable restore never asks for a file the user never had.
+                entry["derived"] = True
+                entry["frame"] = _frame_to_payload(frame)
+            dataset_payload[kind] = entry
         peptide_stored = current.get("peptide")
         dataset_payload["peptide"] = (
             None
@@ -818,9 +869,12 @@ def inspect_missing_files(
                 continue
 
             filename = _optional_text(dataset_entry.get("filename"))
+            if dataset_entry.get("frame") is not None:
+                # The table itself is in the export (a derived phosprot table).
+                continue
             path_text = _optional_text(dataset_entry.get("path")) if allow_local_paths else None
             has_replacement = (package_name, kind) in replacements
-            if path_text:
+            if path_text and not has_replacement:
                 candidate = Path(path_text).expanduser()
                 if candidate.exists() and candidate.is_file():
                     continue
@@ -870,6 +924,7 @@ def _prepare_restore_inputs(
 
     frame_by_package_kind: dict[tuple[str, TableKind], tuple[pd.DataFrame, str, str | None]] = {}
     peptide_path_by_package: dict[str, tuple[str, str | None]] = {}
+    changed_datasets: set[tuple[str, TableKind]] = set()
     warnings: list[str] = []
 
     for package_entry in packages:
@@ -892,9 +947,30 @@ def _prepare_restore_inputs(
             filename = _optional_text(dataset_entry.get("filename")) or f"{kind}.csv"
             path_text = _optional_text(dataset_entry.get("path")) if allow_local_paths else None
             replacement = replacements.get((package_name, kind))
-            if path_text:
+            embedded = dataset_entry.get("frame")
+            if embedded is not None and replacement is None:
+                try:
+                    frame_by_package_kind[(package_name, kind)] = (
+                        _frame_from_payload(embedded),
+                        filename,
+                        None,
+                    )
+                    continue
+                except RestoreStateError as exc:
+                    raise RestoreStateError(
+                        f"Embedded table for {package_name}:{kind} is invalid: {exc}"
+                    ) from exc
+            if path_text and replacement is None:
                 candidate = Path(path_text).expanduser()
                 if candidate.exists() and candidate.is_file():
+                    mismatch = _fingerprint_mismatch(dataset_entry, candidate)
+                    if mismatch:
+                        changed_datasets.add((package_name, kind))
+                        warnings.append(
+                            f"The file for {package_name}:{kind} ({candidate.name}) was modified after "
+                            f"this state was saved ({mismatch}); it was restored anyway, so results "
+                            "may not match the saved analysis."
+                        )
                     frame_by_package_kind[(package_name, kind)] = (
                         _read_table_from_path(str(candidate)),
                         filename or candidate.name,
@@ -909,6 +985,17 @@ def _prepare_restore_inputs(
                 replacement,
                 label=f"Replacement file for {package_name}:{kind}",
             )
+            mismatch = _compare_fingerprint(dataset_entry, {
+                "sizeBytes": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+            })
+            if not dataset_entry.get("sha256"):
+                mismatch = "no saved SHA-256 fingerprint; file identity could not be verified"
+            if mismatch:
+                changed_datasets.add((package_name, kind))
+                warnings.append(
+                    f"The replacement file for {package_name}:{kind} does not have a verified match "
+                    f"to the saved source ({mismatch}); results may not match the saved analysis."
+                )
             frame = read_dataframe(replacement.file.filename or filename, io.BytesIO(content))
             frame_by_package_kind[(package_name, kind)] = (
                 frame,
@@ -916,6 +1003,19 @@ def _prepare_restore_inputs(
                 replacement.source_path if allow_local_paths else None,
             )
             warnings.append(f"Restored {package_name}:{kind} from uploaded replacement file.")
+
+        for kind in _TABLE_KINDS:
+            prepared_table = frame_by_package_kind.get((package_name, kind))
+            entry = datasets.get(kind)
+            if prepared_table is None or not isinstance(entry, dict) or "tableSha256" not in entry:
+                continue
+            if entry["tableSha256"] != _table_fingerprint(prepared_table[0]):
+                changed_datasets.add((package_name, kind))
+                warnings.append(
+                    f"The restored table for {package_name}:{kind} differs from the data loaded "
+                    "in the saved analysis; the source may have changed before the state was saved. "
+                    "Results will be recomputed without the saved imputed data."
+                )
 
         peptide_entry = datasets.get("peptide")
         if peptide_entry is None:
@@ -925,7 +1025,7 @@ def _prepare_restore_inputs(
         peptide_filename = _optional_text(peptide_entry.get("filename")) or "peptide.tsv"
         peptide_path = _optional_text(peptide_entry.get("path")) if allow_local_paths else None
         replacement = replacements.get((package_name, "peptide"))
-        if peptide_path:
+        if peptide_path and replacement is None:
             candidate = Path(peptide_path).expanduser()
             if candidate.exists() and candidate.is_file():
                 peptide_path_by_package[package_name] = (str(candidate), str(candidate))
@@ -945,7 +1045,7 @@ def _prepare_restore_inputs(
                 label=f"Replacement file for {package_name}:peptide",
             )
             target = _restore_upload_dir() / f"{uuid4().hex}_{Path(peptide_filename).name}"
-            target.write_bytes(content)
+            write_private_bytes(target, content)
             peptide_path_by_package[package_name] = (str(target.resolve()), None)
         warnings.append(f"Restored {package_name}:peptide from uploaded replacement file.")
 
@@ -953,6 +1053,7 @@ def _prepare_restore_inputs(
         frame_by_package_kind=frame_by_package_kind,
         peptide_path_by_package=peptide_path_by_package,
         warnings=warnings,
+        changed_datasets=changed_datasets,
     )
 
 
@@ -1193,7 +1294,7 @@ def _apply_prepared_restore_state(
                 is_log2_transformed = bool(annotation_entry.get("isLog2Transformed", True))
                 log2_auto_detected = bool(annotation_entry.get("log2AutoDetected", False))
                 metadata_source = _normalize_metadata_source(annotation_entry.get("metadataSource"))
-                imputation = _coerce_imputation(annotation_entry.get("imputation"))
+                imputation, imputation_problem = _coerce_imputation(annotation_entry.get("imputation"))
                 imputed_data = pd.DataFrame()
                 imputed_payload = annotation_entry.get("imputedFrame")
                 if imputed_payload is not None:
@@ -1205,6 +1306,13 @@ def _apply_prepared_restore_state(
                             f"{package_name}:{profile_name}:{kind}."
                         )
                 required_imputed_samples = metadata_frame["sample"].astype(str).tolist()
+                if not imputed_data.empty and (package_name, kind) in prepared.changed_datasets:
+                    warnings.append(
+                        f"Discarded stale imputed data for {package_name}:{profile_name}:{kind} "
+                        "because the source file no longer matches its saved fingerprint. "
+                        "Run imputation again before selecting imputed results."
+                    )
+                    imputed_data = pd.DataFrame()
                 if not imputed_data.empty and any(
                     sample not in imputed_data.columns for sample in required_imputed_samples
                 ):
@@ -1213,6 +1321,20 @@ def _apply_prepared_restore_state(
                         "because sample columns no longer match."
                     )
                     imputed_data = pd.DataFrame()
+                if imputation is None and imputation_problem is not None and not imputed_data.empty:
+                    # The matrix is intact; only its description is unreadable.
+                    # Keep the matrix and say so, rather than dropping every
+                    # "imputed data" plot back to the raw matrix in silence.
+                    warnings.append(
+                        f"The imputation record for {package_name}:{profile_name}:{kind} could not be "
+                        f"read ({imputation_problem}); the imputed matrix was kept, its parameters are unknown."
+                    )
+                    imputation = AnnotationImputationInfo(mode="unknown", applied=True)
+                elif imputation is None and imputation_problem is not None:
+                    warnings.append(
+                        f"The imputation record for {package_name}:{profile_name}:{kind} could not be "
+                        f"read ({imputation_problem}) and no imputed matrix was saved; imputation is not restored."
+                    )
                 if imputation is None:
                     imputed_data = pd.DataFrame()
                 elif imputed_data.empty:
@@ -1285,18 +1407,6 @@ def _apply_prepared_restore_state(
                 set_condition_palette(kind, {str(key): str(value) for key, value in palette_value.items()})
 
     active_package = str(backend.get("activePackage", "")).strip()
-    legacy_peptide_metadata_payload = backend.get("peptideMetadata")
-    legacy_peptide_package = (
-        active_package
-        if active_package and active_package in package_names
-        else (package_names[0] if package_names else "")
-    )
-    if legacy_peptide_package:
-        _restore_peptide_metadata_payload(
-            legacy_peptide_metadata_payload,
-            package_name=legacy_peptide_package,
-            warnings=warnings,
-        )
     if active_package and active_package in package_names:
         set_active_package(active_package)
     elif package_names:

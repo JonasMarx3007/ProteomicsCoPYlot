@@ -175,6 +175,8 @@ def test_local_gpu_preference_is_preserved(monkeypatch, enabled, expected):
 def test_http_management_method_destination_and_refresh(monkeypatch, action, method, path, suffix):
     base = "http://127.0.0.1:11436"
     monkeypatch.setenv("COPYLOT_OLLAMA_URL", "http://127.0.0.1:11435/api/chat")
+    # A loopback endpoint on a port other than Ollama's must be allowed explicitly.
+    monkeypatch.setenv("COPYLOT_OLLAMA_ALLOWED_ENDPOINTS", base)
     monkeypatch.setattr(chat_tools, "_MODELS_CACHE", {base: (float("inf"), ["stale"])})
     requests = []
 

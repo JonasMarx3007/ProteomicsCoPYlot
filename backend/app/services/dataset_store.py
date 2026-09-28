@@ -202,7 +202,7 @@ def reset_all_datasets(*, all_sessions: bool = False) -> None:
         _DATASET_SESSIONS.clear()
     else:
         _DATASET_SESSIONS.pop(get_session_id(), None)
-    invalidate_runtime_cache("dataset:reset-all")
+    invalidate_runtime_cache("dataset:reset-all", all_sessions=all_sessions)
 
 
 def snapshot_dataset_session_state() -> _DatasetSessionState | None:

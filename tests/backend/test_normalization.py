@@ -37,10 +37,16 @@ COMMON_MEDIAN_TOLERANCE = {"median": 1e-9, "quantile": 1e-3}
 
 @pytest.mark.parametrize("method", ["none", "median", "quantile", "vsn"])
 @pytest.mark.parametrize("log2_upload", [False, True])
-def test_cv_and_abundance_use_uploaded_intensities(monkeypatch, method, log2_upload):
+def test_cv_and_abundance_use_the_normalized_qc_matrix(monkeypatch, method, log2_upload):
+    """CV and abundance describe the same matrix as every other QC plot.
+
+    They used to read the raw upload, so with normalization on they reported
+    variance the pipeline had already removed while the boxplot beside them
+    showed aligned medians. Now they are 2 ** the normalized, unfiltered,
+    non-imputed log2 matrix: a scale choice, not a matrix choice.
+    """
     from app.services import plot_images, table_functions
     from app.services.annotation_processor import prepare_normalized_log2_data
-    from proteomicscopylot.notebook_functions import inverse_log2_transform_data
 
     columns = ["A1", "A2", "A3"]
     linear = pd.DataFrame({"ProteinNames": ["P1", "P2", "P3", "P4"],
@@ -51,25 +57,56 @@ def test_cv_and_abundance_use_uploaded_intensities(monkeypatch, method, log2_upl
         uploaded[columns] = np.log2(uploaded[columns])
     meta = pd.DataFrame({"sample": columns, "condition": "A"})
     if method == "vsn":
-        # Source selection must never invert a VSN result, whatever it contains.
         monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data: data * 0 + 99)
     normalized = prepare_normalized_log2_data(uploaded, columns, log2_upload, method)
     annotation = SimpleNamespace(source_data=uploaded, metadata=meta,
         is_log2_transformed=log2_upload, log2_data=normalized,
         filtered_data=normalized.iloc[:1], imputed_data=normalized.fillna(50))
+    expected = normalized.copy()
+    expected[columns] = np.power(2.0, expected[columns].apply(pd.to_numeric, errors="coerce"))
+    from app.services import data_tools
+
+    # metadata_for_kind and the two QC frame accessors live in data_tools, so
+    # the matrix is patched once, where both the plots and the tables read it.
+    monkeypatch.setattr(data_tools, "get_annotation", lambda kind: annotation)
+    monkeypatch.setattr(data_tools, "qc_matrix", lambda kind: (normalized.copy(), meta.copy()))
+    monkeypatch.setattr(plot_images, "get_annotation", lambda kind: annotation)
+    monkeypatch.setattr(plot_images, "_get_current_frame", lambda kind: annotation.imputed_data)
     for module in [plot_images, table_functions]:
-        monkeypatch.setattr(module, "get_annotation", lambda kind: annotation)
-        monkeypatch.setattr(module, "_get_current_frame", lambda kind: annotation.imputed_data)
         monkeypatch.setattr(module, "_get_sample_columns", lambda kind, frame: columns)
-        pd.testing.assert_frame_equal(module._original_scale_frame("protein"), linear)
-    cv = table_functions.prepare_cov_df(table_functions._original_scale_frame("protein")[columns], meta)
-    expected_cv = table_functions.prepare_cov_df(linear[columns], meta)
+        pd.testing.assert_frame_equal(module.linear_qc_frame("protein"), expected)
+    cv = table_functions.prepare_cov_df(table_functions.linear_qc_frame("protein")[columns], meta)
+    expected_cv = table_functions.prepare_cov_df(expected[columns], meta)
     pd.testing.assert_frame_equal(cv, expected_cv)
+    if method == "none":
+        # With no normalization the QC matrix is the upload itself.
+        pd.testing.assert_frame_equal(expected[columns], linear[columns])
     abundance, _, _, _ = plot_images._abundance_mean_intensities("protein")
-    np.testing.assert_allclose(abundance.A, np.log10(linear[columns].mean(axis=1).dropna()))
-    notebook_source = inverse_log2_transform_data(uploaded, meta) if log2_upload else uploaded.copy()
-    pd.testing.assert_frame_equal(notebook_source, linear, check_like=True)
-    pd.testing.assert_frame_equal(annotation.source_data, uploaded)
+    np.testing.assert_allclose(abundance.A, np.log10(expected[columns].mean(axis=1).dropna()))
+
+
+def test_median_normalization_changes_the_cv_a_loading_offset_produced(monkeypatch):
+    """The reason for the matrix choice: a 4x loading is not sample variance."""
+    from app.services import table_functions
+    from app.services.annotation_processor import prepare_normalized_log2_data
+
+    rng = np.random.default_rng(3)
+    columns = ["A1", "A2", "A3", "A4"]
+    # Small replicate noise, so that the 4x loading offset dominates the CV.
+    base = np.power(2.0, rng.normal(20, 0.15, (300, 4)))
+    base[:, 3] *= 4.0
+    uploaded = pd.DataFrame(base, columns=columns)
+    uploaded.insert(0, "ProteinNames", [f"P{i}" for i in range(300)])
+    meta = pd.DataFrame({"sample": columns, "condition": "A"})
+    raw_cv = float(table_functions.prepare_cov_df(uploaded[columns], meta)["median"].iloc[0])
+    normalized = prepare_normalized_log2_data(uploaded, columns, False, "median")
+    from app.services import data_tools
+
+    monkeypatch.setattr(data_tools, "qc_matrix", lambda kind: (normalized.copy(), meta.copy()))
+    normalized_cv = table_functions.prepare_cov_df(
+        table_functions.linear_qc_frame("protein")[columns], meta
+    )["median"].iloc[0]
+    assert normalized_cv < raw_cv / 2
 
 
 def test_r_uploaded_intensity_qc_matches_python_reference():

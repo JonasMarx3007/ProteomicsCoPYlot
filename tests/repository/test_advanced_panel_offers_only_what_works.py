@@ -29,6 +29,7 @@ SERVICES = ROOT / "backend" / "app" / "services"
 TYPES = ROOT / "frontend" / "src" / "lib" / "types.ts"
 
 RENDERER_MODULES = [
+    "plot_styling.py",
     "plot_images.py",
     "stats_tools.py",
     "single_protein_tools.py",
@@ -42,10 +43,7 @@ RENDERER_MODULES = [
 # Keys the backend resolves through a helper rather than by name, or that are
 # structural rather than cosmetic. Each needs a reason.
 NOT_READ_BY_NAME = {
-    # Written alongside the `*Element` objects for older save files and for the
-    # assistant, and read by `_advanced_text(settings, "title")` and friends.
-    "title", "xLabel", "yLabel", "titleSize",
-    # Read through `_apply_advanced_axes` / `_advanced_plotly_layout`.
+    # Read through `apply_advanced_axes` / `advanced_plotly_layout`.
     "titleElement", "xLabelElement", "yLabelElement",
 }
 
@@ -94,7 +92,7 @@ def test_every_marker_key_a_renderer_reads_can_be_set() -> None:
     }
     read |= {
         match.group(1)
-        for match in re.finditer(r'_group_override\([^,]+,\s*"(\w+)"', renderers)
+        for match in re.finditer(r'group_override\([^,]+,\s*"(\w+)"', renderers)
     }
     marker_keys = {key for key in read if key.lower().startswith(("marker", "conditionmarker"))}
     assert marker_keys, "no marker keys found; the scan is broken"
@@ -110,7 +108,7 @@ def test_the_shape_vocabularies_match() -> None:
     block = panel[panel.index("const MARKER_SHAPE_OPTIONS") : panel.index("const MARKER_OVERRIDE_MAPS")]
     offered = set(re.findall(r'value: "([\w-]+)"', block))
 
-    backend = (SERVICES / "plot_images.py").read_text(encoding="utf-8")
+    backend = (SERVICES / "plot_styling.py").read_text(encoding="utf-8")
     known = set(
         re.findall(
             r'^\s+"([\w-]+)": \("[^"]+", "[^"]+"\),',

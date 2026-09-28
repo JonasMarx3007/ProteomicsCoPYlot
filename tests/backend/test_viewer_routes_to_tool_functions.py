@@ -56,6 +56,11 @@ IMPUTATION_PARAMS = (
 )
 
 
+# The tool's standard quantile settings, written out: the viewer refuses an
+# imputation mode that does not state its parameters (2026-09-24).
+QUANTILE = {"mode": "quantile", "q_value": 0.01, "adjust_std": 0.3, "seed": 1337, "sample_wise": True}
+
+
 def _project(tmp_path: Path, **package_overrides) -> Path:
     """The shipped reference project, with its dataset package amended.
 
@@ -128,9 +133,10 @@ def test_a_filter_that_keeps_nothing_fails_the_project_rather_than_unfiltering(
     samples is the simplest way to keep nothing.
     """
     config_path = project(
+        filter_method_protein="at_least_n",
         filter_min_protein=999,
         filter_mode_protein="per_group",
-        imputation={"mode": "quantile"},
+        imputation=QUANTILE,
     )
     load_viewer_state(config_path)
 
@@ -166,7 +172,7 @@ def test_the_viewer_refuses_to_impute_phosphoproteins(project) -> None:
     A phosphoprotein matrix is collapsed from phosphosites, so imputing it
     directly invents protein-level values that no site supports.
     """
-    config_path = project(imputation={"mode": "quantile"})
+    config_path = project(imputation=QUANTILE)
     load_viewer_state(config_path)
 
     annotation = get_annotation("phosprot")
@@ -180,7 +186,7 @@ def test_the_viewer_refuses_to_impute_phosphoproteins(project) -> None:
 
 
 def test_refusing_one_level_does_not_cost_the_project_the_others(project) -> None:
-    config_path = project(imputation={"mode": "quantile"})
+    config_path = project(imputation=QUANTILE)
     result = load_viewer_state(config_path)
 
     for kind in ("protein", "phospho"):
@@ -207,26 +213,14 @@ def test_the_refusal_comes_from_the_tools_own_guard() -> None:
         require_imputable_kind("phosprot")
 
 
-# --- a bad setting costs its own feature, not the project --------------------
+# --- invalid settings are rejected before loading ---------------------------
 
 
-def test_an_out_of_range_seed_does_not_take_down_the_whole_package(project) -> None:
-    """One mistyped key must not cost a viewer every annotation.
-
-    `AnnotationImputationInfo.seed` is `ge=0`, and the failure path echoed the
-    config value straight back into it -- so the ValidationError was raised
-    inside the except block that was meant to contain the problem.
-    """
-    config_path = project(imputation={"mode": "quantile", "seed": -1})
-    result = load_viewer_state(config_path)
-
-    annotation = get_annotation("protein")
-    assert annotation is not None, (
-        f"a bad seed destroyed the package: {result.warnings}"
-    )
-    assert annotation.imputation.applied is False
-    assert not annotation.filtered_data.empty, "the data itself is unaffected"
-    assert any("imputation" in w.lower() for w in annotation.warnings)
+def test_an_out_of_range_seed_is_rejected_before_loading(project, monkeypatch) -> None:
+    config_path = project(imputation={**QUANTILE, "seed": -1})
+    monkeypatch.setattr(viewer_bootstrap, "set_active_package", lambda *_: pytest.fail("Invalid config changed the active package"))
+    with pytest.raises(ValueError, match="'seed' has an invalid value -1"):
+        load_viewer_state(config_path)
 
 
 def test_the_failure_path_never_raises_on_an_unreportable_setting() -> None:
@@ -272,7 +266,7 @@ def test_the_viewer_names_the_samples_it_could_not_impute(project, monkeypatch) 
     monkeypatch.setattr(
         viewer_bootstrap, "impute_values_with_diagnostics", with_a_skipped_sample
     )
-    load_viewer_state(project(imputation={"mode": "quantile"}))
+    load_viewer_state(project(imputation=QUANTILE))
 
     annotation = get_annotation("protein")
     said = " ".join(annotation.warnings)
@@ -319,8 +313,9 @@ def test_naming_only_a_mode_yields_the_tools_standard_settings(
 
 
 def test_the_standard_settings_are_what_a_project_actually_runs(project) -> None:
-    """End to end, not just at the resolver."""
-    load_viewer_state(project(imputation={"mode": "quantile"}))
+    """End to end, not just at the resolver: the written-out standard block
+    resolves to exactly the tool's own request defaults."""
+    load_viewer_state(project(imputation=QUANTILE))
     applied = get_annotation("protein").imputation
     tool = ImputationRunRequest(kind="protein")
     assert applied.applied is True
@@ -394,7 +389,7 @@ def test_a_refused_imputation_is_not_described_as_if_it_had_run(project) -> None
     """
     from app.services.report_function import _imputation_paragraphs
 
-    load_viewer_state(project(imputation={"mode": "quantile"}))
+    load_viewer_state(project(imputation=QUANTILE))
 
     refused = get_annotation("phosprot")
     assert refused.imputation.mode == "quantile"

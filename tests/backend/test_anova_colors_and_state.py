@@ -32,7 +32,12 @@ from app.services.condition_palette_store import (
 from app.services.stats_tools import anova_png
 from app.services.viewer_bootstrap import load_viewer_state
 
-STATS_PAGE = ROOT / "frontend" / "src" / "features" / "stats" / "StatisticalAnalysisPage.tsx"
+STATS_DIR = ROOT / "frontend" / "src" / "features" / "stats"
+
+
+def _stats_source() -> str:
+    """The statistics section: the page, its panels and their shared helpers."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in sorted(STATS_DIR.glob("*.ts*")))
 RESTORE_UI = ROOT / "frontend" / "src" / "lib" / "restoreUiState.ts"
 
 
@@ -72,13 +77,13 @@ def test_a_user_chosen_condition_colour_reaches_the_heatmap(loaded) -> None:
 def test_the_heatmap_asks_for_the_palette_of_the_level_being_plotted(monkeypatch, loaded) -> None:
     """Phospho conditions must not be coloured from the protein palette."""
     seen: list[str] = []
-    real = stats_tools._advanced_condition_colors
+    real = stats_tools.advanced_condition_colors
 
     def spy(kind, plt, conditions, settings):
         seen.append(kind)
         return real(kind, plt, conditions, settings)
 
-    monkeypatch.setattr(stats_tools, "_advanced_condition_colors", spy)
+    monkeypatch.setattr(stats_tools, "advanced_condition_colors", spy)
     anova_png(AnovaRequest(kind="phospho", source="anova"))
     assert seen and set(seen) == {"phospho"}, seen
 
@@ -103,7 +108,7 @@ ANOVA_CONTROLS = (
 
 
 def test_every_anova_control_is_written_to_the_saved_key() -> None:
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     start = source.index('writePersistedUiState("stats.anova.v1"')
     block = source[start : source.index("});", start)]
     for control in ANOVA_CONTROLS:
@@ -140,7 +145,7 @@ def test_each_control_restores_to_a_default_when_absent(control: str, default: s
     older save restores `undefined` into the request and the run fails or, worse,
     silently uses whatever the backend defaults to without the UI agreeing.
     """
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     # Exactly this property: `persisted.postHoc` must not match a read of
     # `persisted.postHocCondition1`, which is a different control with a
     # different default.
@@ -183,7 +188,7 @@ def test_an_old_state_file_without_the_new_controls_still_parses() -> None:
 
 def test_numeric_controls_survive_a_malformed_saved_value() -> None:
     """NaN from a wrongly-typed old value would reach the backend as a 422."""
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     assert "function restoreNumber(" in source
     assert "Number.isFinite(parsed)" in source
     assert source.count("restoreClusterCount(persisted.nClusters)") == 2, (
@@ -205,5 +210,5 @@ def test_the_guarded_ranges_match_the_schema() -> None:
         AnovaRequest(kind="protein", nClusters=0)
     with pytest.raises(pydantic.ValidationError):
         AnovaRequest(kind="protein", pValueThreshold=0)
-    source = STATS_PAGE.read_text(encoding="utf-8")
+    source = _stats_source()
     assert "min: 1, max: 100" in source, "the UI clamp drifted from the schema"

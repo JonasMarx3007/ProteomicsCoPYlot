@@ -22,13 +22,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "frontend" / "src"
 
 RESTORE = SRC / "features" / "data" / "RestorePage.tsx"
-STATS = SRC / "features" / "stats" / "StatisticalAnalysisPage.tsx"
+STATS = SRC / "features" / "stats"  # the page, its panels and their shared helpers
 CANVAS = SRC / "features" / "analysis" / "AnalysisPage.tsx"
 PHOSPHO = SRC / "features" / "phospho" / "PhosphoSpecificPage.tsx"
 PANEL = SRC / "components" / "plots" / "AdvancedPlotOptions.tsx"
 
 
 def _read(path: Path) -> str:
+    if path.is_dir():
+        return "\n".join(_read(child) for child in sorted(path.glob("*.ts*")))
     return path.read_text(encoding="utf-8")
 
 
@@ -90,7 +92,9 @@ def test_the_simulation_sample_size_field_explains_itself_in_its_label() -> None
     """The grey paragraph under it said what the label now says."""
     source = _read(STATS)
     assert "Use 0 for each row&apos;s observed replicate counts" not in source
-    assert 'label="Sample size override (0 = observed, 2-100 fixed)"' in source
+    # 2026-09-24: the panel became "Replicate & Variance Projection" and the
+    # field says what it sets; the meaning of 0 stays in the label.
+    assert 'label="Replicates per group (0 = observed, 2-100 fixed)"' in source
 
 
 def test_the_phosprot_regulation_options_have_no_score_explanation_box() -> None:
