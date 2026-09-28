@@ -141,6 +141,11 @@ class EnrichmentTerm(BaseModel):
     name: str
     termSize: int
     intersectionSize: int
+    # Overlap / number of query genes in the background: clusterProfiler's
+    # GeneRatio, the quantity the ORA dot plot puts on its x axis.
+    querySize: int
+    geneRatio: float
+    # Overlap / term size: how much of the term the query covers.
     hitPercent: float
     pValue: float
     adjPValue: float

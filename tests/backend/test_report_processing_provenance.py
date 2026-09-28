@@ -114,7 +114,7 @@ def test_the_preamble_is_where_the_filtering_already_is() -> None:
     assert imputation < first_section.start(), (
         "the processing statement must precede the plots it describes"
     )
-    scope = body.index("QC plots use unfiltered, non-imputed data unless another data source is stated.")
+    scope = body.index("QC plots use the unfiltered, non-imputed data unless another data source is stated.")
     assert scope < filtering
     assert "PCA also uses its stated data source" in body[scope:filtering]
 
@@ -237,10 +237,14 @@ def test_unfiltered_pca_distinguishes_configured_filtering_from_applied_filterin
         r"<strong>Filtering:</strong>\s*([^<]+)", _pca_block(report_html)
     )
     assert in_pca is not None, "the PCA block should carry its own filtering line"
-    assert in_pca.group(1).strip() == "Not applied to this plot. Configured filtering: " + expected, (
-        f"the PCA block describes the filter differently:\n"
-        f"  preamble: {expected}\n  pca:      {in_pca.group(1).strip()}"
-    )
+    # A plot that skipped the filter states that, with the row counts, rather
+    # than repeating the recipe the preamble already gives.
+    annotation = get_annotation("protein")
+    assert in_pca.group(1).strip() == (
+        f"Not applied to this plot; it uses all {len(annotation.source_data)} rows. "
+        f"(The filtered matrix used by other sections of this report keeps "
+        f"{len(annotation.filtered_data)} rows.)"
+    ), f"the PCA block describes the filter differently:\n  pca: {in_pca.group(1).strip()}"
 
 
 # --- PCA gets what the volcano gets ------------------------------------------

@@ -110,7 +110,7 @@ def test_the_three_preview_plots_take_their_parameters_from_the_request() -> Non
     routes = ROUTES.read_text(encoding="utf-8")
     for name in ("before-missing", "overall-fit", "after-imputation"):
         start = routes.index(f'"/imputation/{{kind}}/{name}.png"')
-        block = routes[start : routes.index("except ValueError", start)]
+        block = routes[start : routes.index("with plot_errors(", start)]
         for parameter in ("method", "qValue", "adjustStd", "downShift", "width", "seed"):
             assert parameter in block, f"{name} does not take {parameter}"
         assert "dataSource" not in block, (

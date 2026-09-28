@@ -8,8 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from app.api.routes_tool_auth import _client_key as tool_client_key
-from app.api.routes_viewer_auth import _client_key as viewer_client_key
+from app.api.routes_tool_auth import LOGIN_RATE_LIMIT as tool_login_rate_limit
+from app.api.routes_viewer_auth import LOGIN_RATE_LIMIT as viewer_login_rate_limit
 from app.main import (
     _authentication_configuration_error,
     _remote_local_path_request_denied,
@@ -228,17 +228,32 @@ def test_launcher_cli_stops_before_starting_unprotected_public_server(
     assert "Refusing to bind" in capsys.readouterr().err
 
 
+def _limiter_key(limiter, request: Request) -> str:
+    """The address the limiter counts against, read off the bucket it creates."""
+    limiter.attempts.clear()
+    limiter.enforce(request, bucket="probe")
+    (key,) = limiter.attempts
+    limiter.attempts.clear()
+    return key[0]
+
+
 def test_login_rate_limit_key_ignores_spoofed_forwarded_header() -> None:
     request = _request("POST", "/api/tool/auth/login", forwarded_for="198.51.100.99")
-    assert tool_client_key(request) == "10.0.0.5"
-    assert viewer_client_key(request) == "10.0.0.5"
+    assert _limiter_key(tool_login_rate_limit, request) == "10.0.0.5"
+    assert _limiter_key(viewer_login_rate_limit, request) == "10.0.0.5"
 
 
 def test_login_rate_limit_honors_forwarded_header_from_explicit_proxy(monkeypatch) -> None:
     monkeypatch.setenv("COPYLOT_TRUSTED_PROXY_IPS", "10.0.0.5")
     request = _request("POST", "/api/tool/auth/login", forwarded_for="198.51.100.99")
-    assert tool_client_key(request) == "198.51.100.99"
-    assert viewer_client_key(request) == "198.51.100.99"
+    assert _limiter_key(tool_login_rate_limit, request) == "198.51.100.99"
+    assert _limiter_key(viewer_login_rate_limit, request) == "198.51.100.99"
+
+
+def test_the_two_login_realms_count_separately() -> None:
+    """One shared limiter class, but a budget each: filling the viewer portal's
+    must not lock the tool out."""
+    assert tool_login_rate_limit.attempts is not viewer_login_rate_limit.attempts
 
 
 def test_pbkdf2_password_hash_round_trip_and_iteration_cap() -> None:
@@ -417,11 +432,11 @@ def test_invalid_auth_combinations_and_placeholder_credentials_fail_closed(
     monkeypatch.setenv("COPYLOT_VIEWER_PORTAL_ENABLED", "0")
     access_file = tmp_path / "tool_access.json"
     access_file.write_text(
-        json.dumps({"password_sha256": "0" * 64, "tokens": []}),
+        json.dumps({"password_pbkdf2_sha256": "600000$" + "0" * 32 + "$" + "0" * 64, "tokens": []}),
         encoding="utf-8",
     )
     monkeypatch.setenv("COPYLOT_TOOL_ACCESS_FILE", str(access_file))
-    assert "example placeholder" in (_authentication_configuration_error() or "")
+    assert "placeholder" in (_authentication_configuration_error() or "")
 
 
 def test_passive_security_headers_do_not_restrict_embedding(monkeypatch) -> None:
@@ -482,7 +497,7 @@ def test_login_registers_rotated_session_without_followup(monkeypatch, mode, met
         'password_pbkdf2_sha256': password_hash, 'tokens': [token_hash],
     })
     monkeypatch.setattr(viewer, '_load_access_entries', lambda *a: [
-        viewer.ViewerAccessEntry('synthetic', 'Synthetic', '', '', password_hash),
+        viewer.ViewerAccessEntry('synthetic', 'Synthetic', password_hash),
     ])
     monkeypatch.setattr(viewer, '_load_qr_access_entries', lambda *a: [
         viewer.ViewerQrAccessEntry('synthetic', 'Synthetic', token_hash),
@@ -664,7 +679,7 @@ def test_the_rotated_id_is_still_reachable_by_a_header_based_client() -> None:
     source = (root / "backend" / "app" / "api" / "routes_tool_auth.py").read_text(
         encoding="utf-8"
     )
-    assert "_set_rotated_session_cookie(response, rotated)" in source, (
+    assert "set_session_cookie(response, rotated)" in source, (
         "the login has to hand the new id out somehow; Set-Cookie is the channel "
         "a header-based client reads without storing anything"
     )

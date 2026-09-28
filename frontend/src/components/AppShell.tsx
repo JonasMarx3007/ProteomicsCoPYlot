@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
 import Modal from "./Modal";
-import type { SidebarSection } from "../lib/types";
+import type { ContextMode, SidebarSection } from "../lib/types";
+
 import type {
   ChatMessage,
   ChatProvider,
@@ -26,6 +27,10 @@ import {
 import { runAssistant } from "../lib/runAssistant";
 import { AssistantConversation } from "../lib/assistantConversation";
 
+// A stable empty mode, so the assistant's view does not change identity on
+// every render of a page that reports none.
+const EMPTY_CONTEXT_MODE: ContextMode = {};
+
 type AppShellProps = {
   activeSection: SidebarSection;
   onSectionChange: (section: SidebarSection) => void;
@@ -33,7 +38,7 @@ type AppShellProps = {
   topBar?: ReactNode;
   activeModuleKey?: string;
   activeWorkflowScope?: string;
-  activeContextMode?: string;
+  activeContextMode?: ContextMode | null;
   aiEnabled?: boolean;
   assistantDestinations?: Record<string, string>;
   onAssistantNavigate?: (destination: string) => void;
@@ -87,7 +92,7 @@ export default function AppShell({
   topBar,
   activeModuleKey = "",
   activeWorkflowScope = "",
-  activeContextMode = "",
+  activeContextMode = null,
   aiEnabled = false,
   rightPanel = "none",
   onRightPanelChange,
@@ -138,7 +143,7 @@ export default function AppShell({
   const chatOpen = aiEnabled && rightPanel === "chat";
   const moduleKey = activeModuleKey.trim();
   const workflowScope = String(activeWorkflowScope || "").trim().toLowerCase();
-  const contextMode = String(activeContextMode || "").trim();
+  const contextMode = activeContextMode ?? EMPTY_CONTEXT_MODE;
   const usingOllama = chatProvider === "ollama";
   const selectedChatModel = usingOllama ? chatModel.trim() : chatRemoteModel.trim();
   const viewRef = useRef({ module: moduleKey, workflow: workflowScope, mode: contextMode, destinations: assistantDestinations });

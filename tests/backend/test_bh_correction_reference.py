@@ -118,5 +118,7 @@ def test_the_fallback_refuses_methods_it_does_not_implement(monkeypatch) -> None
     module = _fallback_module(
         monkeypatch, ROOT / "backend/app/services/functions.py", "_fallback_methods"
     )
-    with pytest.raises(ModuleNotFoundError, match="statsmodels is required"):
+    # 2026-09-25: the backend's BH no longer goes through statsmodels at all
+    # (stats_core.bh_adjust), so the refusal names the real limit.
+    with pytest.raises(ValueError, match="Only method='fdr_bh'"):
         module.multipletests(np.array([0.01, 0.5]), method="bonferroni")

@@ -16,7 +16,7 @@ from app.services.viewer_bootstrap import (
 from app.services.viewer_portal import _normalize_project_name
 
 TRAVERSING = ["..", ".", "...", "....", "../", "..\\"]
-LEGITIMATE = ["good_name", "a.b", "v1.2-final", "GRK_project", "run-2024_01", "x"]
+LEGITIMATE = ["good_name", "a.b", "v1.2-final", "example_project", "run-2024_01", "x"]
 
 
 @pytest.mark.parametrize("name", TRAVERSING)

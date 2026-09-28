@@ -267,6 +267,10 @@ export default function IdTranslatorPage() {
   );
 }
 
+// Local on purpose: this page's dropdowns are plain `<select>` elements.
+// The shared `components/SelectField` renders an `AssistantSelect`, which
+// registers the control for the assistant -- a behaviour change, not a
+// refactor, so it is a decision rather than a cleanup.
 function SelectField({
   label,
   value,

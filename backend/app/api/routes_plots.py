@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
 from app.schemas.annotation import AnnotationKind, DataSource
@@ -29,40 +32,52 @@ from app.schemas.stats import (
     VolcanoRequest,
 )
 from app.services.annotation_store import get_annotation
-from app.services.functions import (
-    _phosprot_values_are_centred,
-    data_source_options,
-    parse_selection_list,
-    comparison_pearson_html,
-    comparison_pearson_png,
-    comparison_venn_png,
+from app.services.comparison_tools import (
+    pearson_correlation_html,
+    pearson_correlation_png,
+    venn_png,
+)
+from app.services.completeness_tools import (
     completeness_missing_value_heatmap,
     completeness_missing_value_plot,
     completeness_missing_value_plot_peptide,
     completeness_missing_value_plot_precursor,
-    distribution_qqnorm_plot,
-    imputed_data_available,
-    imputation_after_plot,
-    imputation_before_plot,
-    imputation_overall_fit_plot,
+)
+from app.services.phospho_tools import (
     phospho_coverage_png,
     phospho_distribution_png,
     phospho_sty_png,
     phosphosite_plot_png,
-    qc_abundance_plot,
+)
+from app.services.plot_images import (
+    distribution_qqnorm_plot,
+    imputation_after_plot,
+    imputation_before_plot,
+    imputation_overall_fit_plot,
     qc_abundance_interactive_html,
+    qc_abundance_plot,
     qc_boxplot_plot,
     qc_correlation_plot,
     qc_coverage_plot,
-    qc_peptide_coverage_plot,
     qc_cv_plot,
     qc_intensity_histogram_plot,
-    qc_pca_plot,
     qc_pca_interactive_html,
+    qc_pca_plot,
+    qc_peptide_coverage_plot,
+)
+from app.services.plot_styling import (
+    parse_advanced_plot_settings,
+)
+from app.services.single_protein_tools import (
     single_protein_boxplot_plot,
     single_protein_heatmap_plot,
     single_protein_lineplot_plot,
 )
+from app.services.functions import (
+    _phosprot_values_are_centred,
+    data_source_options,
+    parse_selection_list,
+    imputed_data_available,)
 from app.services.single_protein_tools import (
     single_protein_boxplot_table,
     single_protein_heatmap_table,
@@ -98,8 +113,6 @@ from app.services.stats_tools import (
     ora_plot_png,
     pathway_heatmap_png,
     simulation_html,
-    volcano_control_html,
-    volcano_control_png,
     volcano_html,
     volcano_png,
 )
@@ -111,12 +124,44 @@ from app.services.peptide_tools import (
 )
 from app.services.plot_images import (
     _sample_label,
-    parse_advanced_plot_settings,
     qc_pca_feature_summary,
 )
 from app.services.upload_limits import ensure_upload_size
 
 LOGGER = logging.getLogger(__name__)
+
+
+@contextmanager
+def plot_errors(what: str, *, optional_dependency: bool = False):
+    """Turn a renderer's failure into the answer the page expects.
+
+    A `ValueError` is the renderer refusing the request -- an empty selection, a
+    threshold out of range, a comparison that cannot be formed -- so its message
+    *is* the answer and goes out as a 400. Anything else is ours to fix: it is
+    logged with its traceback and answered with one fixed sentence, because an
+    exception string can carry a file path or a column of someone's data.
+
+    `optional_dependency` marks the plots that need a package the base install
+    may not have. Those services raise `ModuleNotFoundError` with a message that
+    names the package and how to install it, which is actionable and discloses
+    nothing about the host, so that one message is passed through.
+
+    Fifty-nine routes wrote these six lines out by hand.
+    """
+    try:
+        yield
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ModuleNotFoundError as e:
+        if optional_dependency:
+            LOGGER.exception("Optional dependency missing")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        LOGGER.exception(what)
+        raise HTTPException(status_code=500, detail=f"{what}.") from e
+    except Exception as e:
+        LOGGER.exception(what)
+        raise HTTPException(status_code=500, detail=f"{what}.") from e
+
 
 router = APIRouter(prefix="/api/plots", tags=["plots"])
 
@@ -161,92 +206,99 @@ def _table_rows(df) -> dict[str, list[dict[str, object]]]:
     return {"rows": safe_df.to_dict(orient="records")}
 
 
+
+def split_terms(value: str) -> list[str]:
+    """A comma-separated highlight list as the model wants it."""
+    return [term.strip() for term in value.split(",") if term.strip()]
+
+
+@dataclass
+class VolcanoQuery:
+    """What a volcano is *of*: the comparison, the matrix and the test.
+
+    The printed figure and the interactive page answer that question the same
+    way and differ only in how they draw it, so both read it from here instead
+    of repeating the list. The ORA pair drifted exactly that way once: the
+    figure route lost `clusterMethod` and drew a different partition than the
+    table beside it (FABLE-REVIEW D2). Sharing the parameters makes that
+    impossible rather than unlikely.
+    """
+
+    condition1: str
+    condition2: str
+    dataSource: DataSource = "data"
+    identifier: FeatureIdentifier = "workflow"
+    pValueThreshold: float = 0.05
+    log2fcThreshold: float = 1.0
+    testType: StatsTestType = "unpaired"
+    useUncorrected: bool = False
+    highlightTerms: str = ""
+
+    def request(self, kind: AnnotationKind) -> VolcanoRequest:
+        return VolcanoRequest(
+            kind=kind,
+            dataSource=self.dataSource,
+            condition1=self.condition1,
+            condition2=self.condition2,
+            identifier=self.identifier,
+            pValueThreshold=self.pValueThreshold,
+            log2fcThreshold=self.log2fcThreshold,
+            testType=self.testType,
+            useUncorrected=self.useUncorrected,
+            highlightTerms=split_terms(self.highlightTerms),
+        )
+
+
+@dataclass
+class VolcanoControlQuery:
+    """The same question, plus the two conditions the change is measured against."""
+
+    volcano: Annotated[VolcanoQuery, Depends()]
+    condition1Control: str
+    condition2Control: str
+
+    def request(self, kind: AnnotationKind) -> VolcanoControlRequest:
+        base = self.volcano
+        return VolcanoControlRequest(
+            kind=kind,
+            dataSource=base.dataSource,
+            condition1=base.condition1,
+            condition2=base.condition2,
+            condition1Control=self.condition1Control,
+            condition2Control=self.condition2Control,
+            identifier=base.identifier,
+            pValueThreshold=base.pValueThreshold,
+            log2fcThreshold=base.log2fcThreshold,
+            testType=base.testType,
+            useUncorrected=base.useUncorrected,
+            highlightTerms=split_terms(base.highlightTerms),
+        )
+
+
 @router.get("/stats/{kind}/volcano.html", response_class=HTMLResponse)
 def stats_volcano_route(
     kind: AnnotationKind,
-    condition1: str,
-    condition2: str,
-    dataSource: str = "data",
-    identifier: FeatureIdentifier = "workflow",
-    pValueThreshold: float = 0.05,
-    log2fcThreshold: float = 1.0,
-    testType: StatsTestType = "unpaired",
-    useUncorrected: bool = False,
-    highlightTerms: str = "",
+    query: Annotated[VolcanoQuery, Depends()],
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
-        payload = VolcanoRequest(
-            kind=kind,
-            dataSource=dataSource,
-            condition1=condition1,
-            condition2=condition2,
-            identifier=identifier,
-            pValueThreshold=pValueThreshold,
-            log2fcThreshold=log2fcThreshold,
-            testType=testType,
-            useUncorrected=useUncorrected,
-            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
-        )
-        return HTMLResponse(content=volcano_html(payload, advanced=parse_advanced_plot_settings(advanced)))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render volcano plot")
-        raise HTTPException(status_code=500, detail="Failed to render volcano plot.") from e
+    with plot_errors("Failed to render volcano plot"):
+        return HTMLResponse(content=volcano_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced)))
 
 
 @router.get("/stats/{kind}/volcano-control.html", response_class=HTMLResponse)
 def stats_volcano_control_route(
     kind: AnnotationKind,
-    condition1: str,
-    condition2: str,
-    condition1Control: str,
-    condition2Control: str,
-    dataSource: str = "data",
-    identifier: FeatureIdentifier = "workflow",
-    pValueThreshold: float = 0.05,
-    log2fcThreshold: float = 1.0,
-    testType: StatsTestType = "unpaired",
-    useUncorrected: bool = False,
-    highlightTerms: str = "",
+    query: Annotated[VolcanoControlQuery, Depends()],
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
-        payload = VolcanoControlRequest(
-            kind=kind,
-            dataSource=dataSource,
-            condition1=condition1,
-            condition2=condition2,
-            condition1Control=condition1Control,
-            condition2Control=condition2Control,
-            identifier=identifier,
-            pValueThreshold=pValueThreshold,
-            log2fcThreshold=log2fcThreshold,
-            testType=testType,
-            useUncorrected=useUncorrected,
-            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
-        )
-        return HTMLResponse(content=volcano_control_html(payload, advanced=parse_advanced_plot_settings(advanced)))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render control volcano plot")
-        raise HTTPException(status_code=500, detail="Failed to render control volcano plot.") from e
+    with plot_errors("Failed to render control volcano plot"):
+        return HTMLResponse(content=volcano_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced)))
 
 
 @router.get("/stats/{kind}/volcano.png")
 def stats_volcano_png_route(
     kind: AnnotationKind,
-    condition1: str,
-    condition2: str,
-    dataSource: DataSource = "data",
-    identifier: FeatureIdentifier = "workflow",
-    pValueThreshold: float = 0.05,
-    log2fcThreshold: float = 1.0,
-    testType: StatsTestType = "unpaired",
-    useUncorrected: bool = False,
-    highlightTerms: str = "",
+    query: Annotated[VolcanoQuery, Depends()],
     labelTopUp: int = 0,
     labelTopDown: int = 0,
     widthCm: float = 18,
@@ -255,22 +307,10 @@ def stats_volcano_png_route(
     advanced: str = "",
 ) -> Response:
     """The volcano as a figure for print. Same numbers, journal styling."""
-    try:
-        payload = VolcanoRequest(
-            kind=kind,
-            dataSource=dataSource,
-            condition1=condition1,
-            condition2=condition2,
-            identifier=identifier,
-            pValueThreshold=pValueThreshold,
-            log2fcThreshold=log2fcThreshold,
-            testType=testType,
-            useUncorrected=useUncorrected,
-            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
-        )
+    with plot_errors("Failed to render volcano plot"):
         return _png_response(
             volcano_png(
-                payload,
+                query.request(kind),
                 advanced=parse_advanced_plot_settings(advanced),
                 width_cm=widthCm,
                 height_cm=heightCm,
@@ -279,27 +319,12 @@ def stats_volcano_png_route(
                 label_top_down=labelTopDown,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render volcano plot")
-        raise HTTPException(status_code=500, detail="Failed to render volcano plot.") from e
 
 
 @router.get("/stats/{kind}/volcano-control.png")
 def stats_volcano_control_png_route(
     kind: AnnotationKind,
-    condition1: str,
-    condition2: str,
-    condition1Control: str,
-    condition2Control: str,
-    dataSource: DataSource = "data",
-    identifier: FeatureIdentifier = "workflow",
-    pValueThreshold: float = 0.05,
-    log2fcThreshold: float = 1.0,
-    testType: StatsTestType = "unpaired",
-    useUncorrected: bool = False,
-    highlightTerms: str = "",
+    query: Annotated[VolcanoControlQuery, Depends()],
     labelTopUp: int = 0,
     labelTopDown: int = 0,
     widthCm: float = 18,
@@ -307,24 +332,10 @@ def stats_volcano_control_png_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
-        payload = VolcanoControlRequest(
-            kind=kind,
-            dataSource=dataSource,
-            condition1=condition1,
-            condition2=condition2,
-            condition1Control=condition1Control,
-            condition2Control=condition2Control,
-            identifier=identifier,
-            pValueThreshold=pValueThreshold,
-            log2fcThreshold=log2fcThreshold,
-            testType=testType,
-            useUncorrected=useUncorrected,
-            highlightTerms=[term.strip() for term in highlightTerms.split(",") if term.strip()],
-        )
+    with plot_errors("Failed to render control volcano plot"):
         return _png_response(
-            volcano_control_png(
-                payload,
+            volcano_png(
+                query.request(kind),
                 advanced=parse_advanced_plot_settings(advanced),
                 width_cm=widthCm,
                 height_cm=heightCm,
@@ -333,11 +344,6 @@ def stats_volcano_control_png_route(
                 label_top_down=labelTopDown,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render control volcano plot")
-        raise HTTPException(status_code=500, detail="Failed to render control volcano plot.") from e
 
 
 @router.get("/stats/{kind}/anova.png")
@@ -356,7 +362,7 @@ def stats_anova_route(
     selectedCluster: int | None = None,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render ANOVA plot"):
         payload = AnovaRequest(
             kind=kind,
             source=source,
@@ -373,11 +379,6 @@ def stats_anova_route(
             clusterMethod=clusterMethod,
         )
         return _png_response(anova_png(payload, selected_cluster=selectedCluster, advanced=parse_advanced_plot_settings(advanced)))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render ANOVA plot")
-        raise HTTPException(status_code=500, detail="Failed to render ANOVA plot.") from e
 
 
 @router.get("/stats/{kind}/ora/{direction}.png")
@@ -401,16 +402,23 @@ def stats_ora_route(
     minTermSize: int = 20,
     maxTermSize: int = 300,
     backgroundMode: str = "experiment",
+    clusterMethod: AnovaClusterMethod = "average",
+    organism: str = "human",
     widthCm: float = 26,
     heightCm: float = 12,
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render ORA plot"):
         payload = EnrichmentRequest(
             kind=kind,
             source=source,
             dataSource=dataSource,
+            # Must reach the request: an ANOVA-cluster ORA re-runs the clustering,
+            # and a dropped linkage draws "cluster n" from a different partition
+            # than the table the user is looking at.
+            clusterMethod=clusterMethod,
+            organism=organism,
             condition1=condition1,
             condition2=condition2,
             condition1Control=condition1Control,
@@ -437,11 +445,6 @@ def stats_ora_route(
                 dpi=dpi,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render ORA plot")
-        raise HTTPException(status_code=500, detail="Failed to render ORA plot.") from e
 
 
 @router.get("/stats/{kind}/pathway-heatmap.png")
@@ -462,7 +465,7 @@ def stats_pathway_heatmap_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render pathway heatmap"):
         condition_list = parse_selection_list(conditions)
         return _png_response(
             pathway_heatmap_png(
@@ -483,11 +486,6 @@ def stats_pathway_heatmap_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render pathway heatmap")
-        raise HTTPException(status_code=500, detail="Failed to render pathway heatmap.") from e
 
 
 @router.get("/stats/{kind}/simulation.html", response_class=HTMLResponse)
@@ -505,7 +503,7 @@ def stats_simulation_route(
     sampleSizeOverride: int = 0,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render simulation plot"):
         payload = SimulationRequest(
             kind=kind,
             source="volcano",
@@ -521,11 +519,6 @@ def stats_simulation_route(
             sampleSizeOverride=sampleSizeOverride,
         )
         return HTMLResponse(content=simulation_html(payload, advanced=parse_advanced_plot_settings(advanced)))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render simulation plot")
-        raise HTTPException(status_code=500, detail="Failed to render simulation plot.") from e
 
 
 @router.get("/peptide/rt.png")
@@ -540,7 +533,7 @@ def peptide_rt_route(
     dpi: int = 100,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render peptide RT plot"):
         return _png_response(
             peptide_rt_plot(
                 method=method,
@@ -554,11 +547,6 @@ def peptide_rt_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render peptide RT plot")
-        raise HTTPException(status_code=500, detail="Failed to render peptide RT plot.") from e
 
 
 @router.get("/peptide/rt-interactive.html", response_class=HTMLResponse)
@@ -570,7 +558,7 @@ def peptide_rt_interactive_route(
     heightCm: float = 15,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render interactive peptide RT plot", optional_dependency=True):
         return HTMLResponse(
             content=peptide_rt_interactive_html(
                 add_line=addLine,
@@ -581,16 +569,6 @@ def peptide_rt_interactive_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render interactive peptide RT plot")
-        raise HTTPException(status_code=500, detail="Failed to render interactive peptide RT plot.") from e
 
 
 @router.get("/peptide/modification.png")
@@ -603,7 +581,7 @@ def peptide_modification_route(
     dpi: int = 100,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render peptide modification plot"):
         return _png_response(
             peptide_modification_plot(
                 include_id=includeId,
@@ -615,11 +593,6 @@ def peptide_modification_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render peptide modification plot")
-        raise HTTPException(status_code=500, detail="Failed to render peptide modification plot.") from e
 
 
 @router.get("/peptide/missed-cleavage.png")
@@ -634,7 +607,7 @@ def peptide_missed_cleavage_route(
     dpi: int = 100,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render peptide missed-cleavage plot"):
         return _png_response(
             peptide_missed_cleavage_plot(
                 include_id=includeId,
@@ -648,11 +621,6 @@ def peptide_missed_cleavage_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render peptide missed-cleavage plot")
-        raise HTTPException(status_code=500, detail="Failed to render peptide missed-cleavage plot.") from e
 
 
 def _csv_values(raw: str) -> list[str]:
@@ -671,7 +639,7 @@ def imputation_before_route(
     sampleWise: bool = True,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render imputation plot"):
         return _png_response(
             imputation_before_plot(
                 kind=kind,
@@ -685,11 +653,6 @@ def imputation_before_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render imputation plot")
-        raise HTTPException(status_code=500, detail="Failed to render imputation plot.") from e
 
 
 @router.get("/imputation/{kind}/overall-fit.png")
@@ -705,7 +668,7 @@ def imputation_overall_route(
     showImputationDraw: bool = True,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render imputation plot"):
         return _png_response(
             imputation_overall_fit_plot(
                 kind=kind,
@@ -720,11 +683,6 @@ def imputation_overall_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render imputation plot")
-        raise HTTPException(status_code=500, detail="Failed to render imputation plot.") from e
 
 
 @router.get("/imputation/{kind}/after-imputation.png")
@@ -740,7 +698,7 @@ def imputation_after_route(
     normalization: str = "separate",
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render imputation plot"):
         return _png_response(
             imputation_after_plot(
                 kind=kind,
@@ -755,11 +713,6 @@ def imputation_after_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render imputation plot")
-        raise HTTPException(status_code=500, detail="Failed to render imputation plot.") from e
 
 
 @router.get("/distribution/{kind}/qqnorm.png")
@@ -768,7 +721,7 @@ def distribution_qq_route(
     randomSeed: int = 187,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QQ plot"):
         return _png_response(
             distribution_qqnorm_plot(
                 kind,
@@ -776,11 +729,6 @@ def distribution_qq_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QQ plot")
-        raise HTTPException(status_code=500, detail="Failed to render QQ plot.") from e
 
 
 @router.get("/completeness/{kind}/missing-value.png")
@@ -797,7 +745,7 @@ def completeness_missing_value_route(
     advanced: str = "",
     quantityColumn: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render completeness plot"):
         kind_normalized = kind.strip().lower()
         advanced_settings = parse_advanced_plot_settings(advanced)
         if kind_normalized == "peptide":
@@ -846,11 +794,6 @@ def completeness_missing_value_route(
                 )
             )
         raise ValueError("Unsupported completeness dataset level.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render completeness plot")
-        raise HTTPException(status_code=500, detail="Failed to render completeness plot.") from e
 
 
 @router.get("/completeness/{kind}/missing-heatmap.png")
@@ -863,7 +806,7 @@ def completeness_missing_heatmap_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render completeness plot"):
         return _png_response(
             completeness_missing_value_heatmap(
                 kind=kind,
@@ -875,11 +818,6 @@ def completeness_missing_heatmap_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render completeness plot")
-        raise HTTPException(status_code=500, detail="Failed to render completeness plot.") from e
 
 
 @router.get("/qc/{kind}/coverage.png")
@@ -899,7 +837,7 @@ def qc_coverage_route(
     quantityColumn: str = "",
     referenceLine: bool = True,
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         kind_normalized = kind.strip().lower()
         advanced_settings = parse_advanced_plot_settings(advanced)
         if kind_normalized in {"peptide", "precursor"}:
@@ -936,11 +874,6 @@ def qc_coverage_route(
                 )
             )
         raise ValueError("Unsupported QC dataset level.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/coverage-table")
@@ -948,13 +881,8 @@ def qc_coverage_table_route(
     kind: AnnotationKind,
     summary: bool = False,
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load coverage table"):
         return _table_rows(qc_coverage_table(kind=kind, summary=summary))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load coverage table")
-        raise HTTPException(status_code=500, detail="Failed to load coverage table.") from e
 
 
 @router.get("/qc/{kind}/pca-features")
@@ -968,7 +896,7 @@ def qc_pca_features_route(
     colorBy: PcaColorBy = "Condition",
     clusterMethod: str = "None",
     clusterCount: int = 3,
-    dbscanEps: float = 0.5,
+    dbscanEpsFactor: float = 0.5,
     dbscanMinSamples: int = 2,
     umapNNeighbors: int = 15,
     umapMinDist: float = 0.1,
@@ -978,7 +906,7 @@ def qc_pca_features_route(
 ) -> dict[str, object]:
     # The ellipse notice needs the same projection the figure was drawn from, so
     # this route takes every control that moves a point.
-    try:
+    with plot_errors("Failed to summarise PCA features"):
         return qc_pca_feature_summary(
             kind,
             data_source=dataSource,
@@ -989,7 +917,7 @@ def qc_pca_features_route(
             color_by=colorBy,
             cluster_method=clusterMethod,
             cluster_count=clusterCount,
-            dbscan_eps=dbscanEps,
+            dbscan_eps_factor=dbscanEpsFactor,
             dbscan_min_samples=dbscanMinSamples,
             umap_n_neighbors=umapNNeighbors,
             umap_min_dist=umapMinDist,
@@ -997,11 +925,6 @@ def qc_pca_features_route(
             tsne_learning_rate=tsneLearningRate,
             random_state=randomState,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to summarise PCA features")
-        raise HTTPException(status_code=500, detail="Failed to summarise PCA features.") from e
 
 
 @router.get("/qc/{kind}/options")
@@ -1067,7 +990,7 @@ def qc_hist_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         return _png_response(
             qc_intensity_histogram_plot(
                 kind=kind,
@@ -1079,11 +1002,6 @@ def qc_hist_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/boxplot.png")
@@ -1100,24 +1018,9 @@ def qc_boxplot_route(
     heightCm: float = 10,
     dpi: int = 300,
     advanced: str = "",
-    boxBorderColor: str = "",
-    boxMedianColor: str = "",
-    boxOutlierColor: str = "",
-    boxOutlierEdgeColor: str = "",
-    boxOutlierSize: float | None = None,
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         advanced_settings = parse_advanced_plot_settings(advanced)
-        if boxBorderColor.strip():
-            advanced_settings["boxBorderColor"] = boxBorderColor.strip()
-        if boxMedianColor.strip():
-            advanced_settings["boxMedianColor"] = boxMedianColor.strip()
-        if boxOutlierColor.strip():
-            advanced_settings["boxOutlierColor"] = boxOutlierColor.strip()
-        if boxOutlierEdgeColor.strip():
-            advanced_settings["boxOutlierEdgeColor"] = boxOutlierEdgeColor.strip()
-        if boxOutlierSize is not None and boxOutlierSize > 0:
-            advanced_settings["boxOutlierSize"] = boxOutlierSize
         return _png_response(
             qc_boxplot_plot(
                 kind=kind,
@@ -1134,11 +1037,6 @@ def qc_boxplot_route(
                 advanced=advanced_settings,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/boxplot-table")
@@ -1146,13 +1044,8 @@ def qc_boxplot_table_route(
     kind: AnnotationKind,
     mode: BoxplotMode = "Mean",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load boxplot table"):
         return _table_rows(qc_boxplot_table(kind=kind, mode=mode))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load boxplot table")
-        raise HTTPException(status_code=500, detail="Failed to load boxplot table.") from e
 
 
 @router.get("/qc/{kind}/cv.png")
@@ -1168,7 +1061,7 @@ def qc_cv_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         return _png_response(
             qc_cv_plot(
                 kind=kind,
@@ -1183,22 +1076,12 @@ def qc_cv_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/cv-table")
 def qc_cv_table_route(kind: AnnotationKind) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load CV table"):
         return _table_rows(qc_cv_table(kind=kind))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load CV table")
-        raise HTTPException(status_code=500, detail="Failed to load CV table.") from e
 
 
 @router.get("/qc/{kind}/pca.png")
@@ -1218,7 +1101,7 @@ def qc_pca_route(
     umapMinDist: float = 0.1,
     tsnePerplexity: float = 30.0,
     tsneLearningRate: float = 200.0,
-    dbscanEps: float = 0.5,
+    dbscanEpsFactor: float = 0.5,
     dbscanMinSamples: int = 2,
     randomState: int = 42,
     scaling: FeatureScaling = "auto",
@@ -1227,7 +1110,7 @@ def qc_pca_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         advanced_settings = parse_advanced_plot_settings(advanced)
         return _png_response(
             qc_pca_plot(
@@ -1246,7 +1129,7 @@ def qc_pca_route(
                 umap_min_dist=umapMinDist,
                 tsne_perplexity=tsnePerplexity,
                 tsne_learning_rate=tsneLearningRate,
-                dbscan_eps=dbscanEps,
+                dbscan_eps_factor=dbscanEpsFactor,
                 dbscan_min_samples=dbscanMinSamples,
                 random_state=randomState,
                 scaling=scaling,
@@ -1256,11 +1139,6 @@ def qc_pca_route(
                 advanced=advanced_settings,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/pca-interactive.html")
@@ -1280,7 +1158,7 @@ def qc_pca_interactive_route(
     umapMinDist: float = 0.1,
     tsnePerplexity: float = 30.0,
     tsneLearningRate: float = 200.0,
-    dbscanEps: float = 0.5,
+    dbscanEpsFactor: float = 0.5,
     dbscanMinSamples: int = 2,
     randomState: int = 42,
     scaling: FeatureScaling = "auto",
@@ -1288,7 +1166,7 @@ def qc_pca_interactive_route(
     heightCm: float = 10,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render interactive PCA plot", optional_dependency=True):
         html = qc_pca_interactive_html(
             kind=kind,
             data_source=dataSource,
@@ -1305,7 +1183,7 @@ def qc_pca_interactive_route(
             umap_min_dist=umapMinDist,
             tsne_perplexity=tsnePerplexity,
             tsne_learning_rate=tsneLearningRate,
-            dbscan_eps=dbscanEps,
+            dbscan_eps_factor=dbscanEpsFactor,
             dbscan_min_samples=dbscanMinSamples,
             random_state=randomState,
             scaling=scaling,
@@ -1314,16 +1192,6 @@ def qc_pca_interactive_route(
             advanced=parse_advanced_plot_settings(advanced),
         )
         return HTMLResponse(content=html)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render interactive PCA plot")
-        raise HTTPException(status_code=500, detail="Failed to render interactive PCA plot.") from e
 
 
 @router.get("/qc/{kind}/abundance.png")
@@ -1337,7 +1205,7 @@ def qc_abundance_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         return _png_response(
             qc_abundance_plot(
                 kind=kind,
@@ -1350,11 +1218,6 @@ def qc_abundance_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/qc/{kind}/abundance-interactive.html")
@@ -1367,7 +1230,7 @@ def qc_abundance_interactive_route(
     heightCm: float = 10,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render interactive abundance plot", optional_dependency=True):
         html = qc_abundance_interactive_html(
             kind=kind,
             header=header,
@@ -1378,16 +1241,6 @@ def qc_abundance_interactive_route(
             advanced=parse_advanced_plot_settings(advanced),
         )
         return HTMLResponse(content=html)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render interactive abundance plot")
-        raise HTTPException(status_code=500, detail="Failed to render interactive abundance plot.") from e
 
 
 @router.get("/qc/{kind}/correlation.png")
@@ -1400,12 +1253,9 @@ def qc_correlation_route(
     heightCm: float = 16,
     dpi: int = 400,
     advanced: str = "",
-    correlationColorMap: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render QC plot"):
         advanced_settings = parse_advanced_plot_settings(advanced)
-        if correlationColorMap.strip():
-            advanced_settings["correlationColorMap"] = correlationColorMap.strip()
         return _png_response(
             qc_correlation_plot(
                 kind=kind,
@@ -1418,14 +1268,6 @@ def qc_correlation_route(
                 advanced=advanced_settings,
             )
         )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e) or "Correlation plot failed due to invalid or insufficient data.",
-        ) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render QC plot")
-        raise HTTPException(status_code=500, detail="Failed to render QC plot.") from e
 
 
 @router.get("/single-protein/{kind}/options")
@@ -1435,18 +1277,13 @@ def single_protein_options_route(
     identifier: FeatureIdentifier = "workflow",
     dataSource: DataSource = "data",
 ) -> dict[str, object]:
-    try:
+    with plot_errors("Failed to load single-protein options"):
         return single_protein_options(
             kind=kind,
             tab=tab,
             identifier=identifier,
             data_source=dataSource,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load single-protein options")
-        raise HTTPException(status_code=500, detail="Failed to load single-protein options.") from e
 
 
 @router.get("/single-protein/{kind}/boxplot.png")
@@ -1467,7 +1304,7 @@ def single_protein_boxplot_route(
     advanced: str = "",
     sampleN: bool = True,
 ) -> Response:
-    try:
+    with plot_errors("Failed to render single-protein boxplot", optional_dependency=True):
         return _png_response(
             single_protein_boxplot_plot(
                 kind=kind,
@@ -1487,16 +1324,6 @@ def single_protein_boxplot_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render single-protein boxplot")
-        raise HTTPException(status_code=500, detail="Failed to render single-protein boxplot.") from e
 
 
 @router.get("/single-protein/{kind}/lineplot.png")
@@ -1514,7 +1341,7 @@ def single_protein_lineplot_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render single-protein lineplot", optional_dependency=True):
         return _png_response(
             single_protein_lineplot_plot(
                 kind=kind,
@@ -1531,16 +1358,6 @@ def single_protein_lineplot_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render single-protein lineplot")
-        raise HTTPException(status_code=500, detail="Failed to render single-protein lineplot.") from e
 
 
 @router.get("/single-protein/{kind}/heatmap.png")
@@ -1562,7 +1379,7 @@ def single_protein_heatmap_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render single-protein heatmap", optional_dependency=True):
         return _png_response(
             single_protein_heatmap_plot(
                 kind=kind,
@@ -1583,16 +1400,6 @@ def single_protein_heatmap_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render single-protein heatmap")
-        raise HTTPException(status_code=500, detail="Failed to render single-protein heatmap.") from e
 
 
 @router.get("/single-protein/{kind}/boxplot-table")
@@ -1603,7 +1410,7 @@ def single_protein_boxplot_table_route(
     identifier: FeatureIdentifier = "workflow",
     dataSource: DataSource = "data",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load single-protein boxplot table"):
         return _table_rows(
             single_protein_boxplot_table(
                 kind=kind,
@@ -1613,11 +1420,6 @@ def single_protein_boxplot_table_route(
                 data_source=dataSource,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load single-protein boxplot table")
-        raise HTTPException(status_code=500, detail="Failed to load single-protein boxplot table.") from e
 
 
 @router.get("/single-protein/{kind}/lineplot-table")
@@ -1629,7 +1431,7 @@ def single_protein_lineplot_table_route(
     identifier: FeatureIdentifier = "workflow",
     dataSource: DataSource = "data",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load single-protein lineplot table"):
         return _table_rows(
             single_protein_lineplot_table(
                 kind=kind,
@@ -1640,11 +1442,6 @@ def single_protein_lineplot_table_route(
                 data_source=dataSource,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load single-protein lineplot table")
-        raise HTTPException(status_code=500, detail="Failed to load single-protein lineplot table.") from e
 
 
 @router.get("/single-protein/{kind}/heatmap-table")
@@ -1660,7 +1457,7 @@ def single_protein_heatmap_table_route(
     clusterCols: bool = False,
     valueType: str = "log2",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load single-protein heatmap table", optional_dependency=True):
         return _table_rows(
             single_protein_heatmap_table(
                 kind=kind,
@@ -1675,27 +1472,12 @@ def single_protein_heatmap_table_route(
                 value_type=valueType,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load single-protein heatmap table")
-        raise HTTPException(status_code=500, detail="Failed to load single-protein heatmap table.") from e
 
 
 @router.get("/phospho/options")
 def phospho_options_route() -> dict[str, object]:
-    try:
+    with plot_errors("Failed to load phospho options"):
         return phospho_options()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load phospho options")
-        raise HTTPException(status_code=500, detail="Failed to load phospho options.") from e
 
 
 @router.get("/phospho/phosphosite-plot.png")
@@ -1707,7 +1489,7 @@ def phosphosite_plot_route(
     dpi: int = 100,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render phosphosite plot", optional_dependency=True):
         return _png_response(
             phosphosite_plot_png(
                 cutoff=cutoff,
@@ -1718,29 +1500,14 @@ def phosphosite_plot_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render phosphosite plot")
-        raise HTTPException(status_code=500, detail="Failed to render phosphosite plot.") from e
 
 
 @router.get("/phospho/phosphosite-plot-table")
 def phosphosite_plot_table_route(
     cutoff: float = 0.0,
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load phosphosite table"):
         return _table_rows(phosphosite_plot_table(cutoff=cutoff))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load phosphosite table")
-        raise HTTPException(status_code=500, detail="Failed to load phosphosite table.") from e
 
 
 @router.get("/phospho/coverage.png")
@@ -1758,7 +1525,7 @@ def phospho_coverage_route(
     conditions: str = "",
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render phospho coverage plot", optional_dependency=True):
         return _png_response(
             phospho_coverage_png(
                 include_id=includeId,
@@ -1775,16 +1542,6 @@ def phospho_coverage_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render phospho coverage plot")
-        raise HTTPException(status_code=500, detail="Failed to render phospho coverage plot.") from e
 
 
 @router.get("/phospho/coverage-table")
@@ -1793,7 +1550,7 @@ def phospho_coverage_table_route(
     mode: PhosphoCoverageMode = "Normal",
     conditions: str = "",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load phospho coverage table"):
         return _table_rows(
             phospho_coverage_table(
                 include_id=includeId,
@@ -1801,11 +1558,6 @@ def phospho_coverage_table_route(
                 conditions=_csv_values(conditions),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load phospho coverage table")
-        raise HTTPException(status_code=500, detail="Failed to load phospho coverage table.") from e
 
 
 @router.get("/phospho/distribution.png")
@@ -1818,7 +1570,7 @@ def phospho_distribution_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render phospho distribution plot", optional_dependency=True):
         return _png_response(
             phospho_distribution_png(
                 cutoff=cutoff,
@@ -1830,29 +1582,14 @@ def phospho_distribution_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render phospho distribution plot")
-        raise HTTPException(status_code=500, detail="Failed to render phospho distribution plot.") from e
 
 
 @router.get("/phospho/distribution-table")
 def phospho_distribution_table_route(
     cutoff: float = 0.0,
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load phospho distribution table"):
         return _table_rows(phospho_distribution_table(cutoff=cutoff))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load phospho distribution table")
-        raise HTTPException(status_code=500, detail="Failed to load phospho distribution table.") from e
 
 
 @router.get("/phospho/ksea.png")
@@ -1873,7 +1610,7 @@ def phospho_ksea_route(
     dpi: int = 220,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render KSEA plot", optional_dependency=True):
         return _png_response(
             ksea_plot_png(
                 condition1=condition1,
@@ -1893,16 +1630,6 @@ def phospho_ksea_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render KSEA plot")
-        raise HTTPException(status_code=500, detail="Failed to render KSEA plot.") from e
 
 
 @router.get("/phospho/ksea-table")
@@ -1918,7 +1645,7 @@ def phospho_ksea_table_route(
     testType: str = "unpaired",
     useUncorrected: bool = False,
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load KSEA table"):
         return _table_rows(
             ksea_table(
                 condition1=condition1,
@@ -1933,11 +1660,6 @@ def phospho_ksea_table_route(
                 use_uncorrected=useUncorrected,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load KSEA table")
-        raise HTTPException(status_code=500, detail="Failed to load KSEA table.") from e
 
 
 @router.post("/phospho/ksea-volcano.html", response_class=HTMLResponse)
@@ -1956,7 +1678,7 @@ def phospho_ksea_uploaded_volcano_route(
     if not fileSt.filename or not fileTnc.filename:
         raise HTTPException(status_code=400, detail="Both KSEA result files are required.")
 
-    try:
+    with plot_errors("Failed to generate KSEA volcano", optional_dependency=True):
         ensure_upload_size(fileSt, label="KSEA S/T result file")
         ensure_upload_size(fileTnc, label="KSEA Y result file")
         df_st = read_dataframe(fileSt.filename, fileSt.file)
@@ -1980,16 +1702,6 @@ def phospho_ksea_uploaded_volcano_route(
         )
         response.headers["X-Copylot-Evidence"] = store_snapshot(evidence)
         return response
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to generate KSEA volcano")
-        raise HTTPException(status_code=500, detail="Failed to generate KSEA volcano.") from e
 
 
 @router.get("/phospho/phosprot-regulation.png")
@@ -2002,13 +1714,14 @@ def phospho_phosprot_regulation_route(
     useUncorrected: bool = False,
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
+    dataSource: DataSource = "data",
     header: bool = True,
     widthCm: float = 20,
     heightCm: float = 12,
     dpi: int = 220,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render phosprot regulation plot", optional_dependency=True):
         return _png_response(
             phosprot_regulation_png(
                 condition1=condition1,
@@ -2019,6 +1732,7 @@ def phospho_phosprot_regulation_route(
                 use_uncorrected=useUncorrected,
                 max_hover_sites=maxHoverSites,
                 show_phosphosites=showPhosphosites,
+                data_source=dataSource,
                 header=header,
                 width_cm=widthCm,
                 height_cm=heightCm,
@@ -2026,16 +1740,6 @@ def phospho_phosprot_regulation_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render phosprot regulation plot")
-        raise HTTPException(status_code=500, detail="Failed to render phosprot regulation plot.") from e
 
 
 @router.get("/phospho/phosprot-regulation.html", response_class=HTMLResponse)
@@ -2048,10 +1752,11 @@ def phospho_phosprot_regulation_html_route(
     useUncorrected: bool = False,
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
+    dataSource: DataSource = "data",
     header: bool = True,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render interactive phosprot regulation plot", optional_dependency=True):
         return HTMLResponse(
             content=phosprot_regulation_html(
                 condition1=condition1,
@@ -2062,20 +1767,11 @@ def phospho_phosprot_regulation_html_route(
                 use_uncorrected=useUncorrected,
                 max_hover_sites=maxHoverSites,
                 show_phosphosites=showPhosphosites,
+                data_source=dataSource,
                 header=header,
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render interactive phosprot regulation plot")
-        raise HTTPException(status_code=500, detail="Failed to render interactive phosprot regulation plot.") from e
 
 
 @router.get("/phospho/phosprot-regulation-table")
@@ -2088,8 +1784,9 @@ def phospho_phosprot_regulation_table_route(
     useUncorrected: bool = False,
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
+    dataSource: DataSource = "data",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load phosprot regulation table"):
         return _table_rows(
             phosprot_regulation_table(
                 condition1=condition1,
@@ -2100,13 +1797,9 @@ def phospho_phosprot_regulation_table_route(
                 use_uncorrected=useUncorrected,
                 max_hover_sites=maxHoverSites,
                 show_phosphosites=showPhosphosites,
+                data_source=dataSource,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load phosprot regulation table")
-        raise HTTPException(status_code=500, detail="Failed to load phosprot regulation table.") from e
 
 
 @router.get("/phospho/sty.png")
@@ -2117,7 +1810,7 @@ def phospho_sty_route(
     dpi: int = 140,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render STY plot", optional_dependency=True):
         return _png_response(
             phospho_sty_png(
                 header=header,
@@ -2127,40 +1820,20 @@ def phospho_sty_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render STY plot")
-        raise HTTPException(status_code=500, detail="Failed to render STY plot.") from e
 
 
 @router.get("/phospho/sty-table")
 def phospho_sty_table_route() -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load STY table"):
         return _table_rows(phospho_sty_table())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load STY table")
-        raise HTTPException(status_code=500, detail="Failed to load STY table.") from e
 
 
 @router.get("/comparison/{kind}/options")
 def comparison_options_route(
     kind: AnnotationKind,
 ) -> dict[str, list[str] | int | bool | str]:
-    try:
+    with plot_errors("Failed to load comparison options"):
         return comparison_options(kind=kind)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load comparison options")
-        raise HTTPException(status_code=500, detail="Failed to load comparison options.") from e
 
 
 @router.get("/comparison/{kind}/pearson.png")
@@ -2181,9 +1854,9 @@ def comparison_pearson_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render Pearson correlation", optional_dependency=True):
         return _png_response(
-            comparison_pearson_png(
+            pearson_correlation_png(
                 kind=kind,
                 mode=mode,
                 sample1=sample1,
@@ -2201,16 +1874,6 @@ def comparison_pearson_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render Pearson correlation")
-        raise HTTPException(status_code=500, detail="Failed to render Pearson correlation.") from e
 
 
 @router.get("/comparison/{kind}/pearson.html", response_class=HTMLResponse)
@@ -2230,9 +1893,9 @@ def comparison_pearson_interactive_route(
     heightCm: float = 12,
     advanced: str = "",
 ) -> HTMLResponse:
-    try:
+    with plot_errors("Failed to render interactive Pearson correlation", optional_dependency=True):
         return HTMLResponse(
-            content=comparison_pearson_html(
+            content=pearson_correlation_html(
                 kind=kind,
                 mode=mode,
                 sample1=sample1,
@@ -2249,16 +1912,6 @@ def comparison_pearson_interactive_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render interactive Pearson correlation")
-        raise HTTPException(status_code=500, detail="Failed to render interactive Pearson correlation.") from e
 
 
 @router.get("/comparison/{kind}/pearson-table")
@@ -2272,7 +1925,7 @@ def comparison_pearson_table_route(
     alias1: str = "",
     alias2: str = "",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load Pearson table"):
         return _table_rows(
             pearson_correlation_table(
                 kind=kind,
@@ -2285,11 +1938,6 @@ def comparison_pearson_table_route(
                 alias2=alias2,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load Pearson table")
-        raise HTTPException(status_code=500, detail="Failed to load Pearson table.") from e
 
 
 @router.get("/comparison/{kind}/venn.png")
@@ -2311,9 +1959,9 @@ def comparison_venn_route(
     dpi: int = 300,
     advanced: str = "",
 ) -> Response:
-    try:
+    with plot_errors("Failed to render Venn diagram", optional_dependency=True):
         return _png_response(
-            comparison_venn_png(
+            venn_png(
                 kind=kind,
                 mode=mode,
                 first=first,
@@ -2332,16 +1980,6 @@ def comparison_venn_route(
                 advanced=parse_advanced_plot_settings(advanced),
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except ModuleNotFoundError as e:
-        # Our own message names the missing package and how to install it,
-        # which is actionable and discloses nothing about the host.
-        LOGGER.exception("Optional dependency missing")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to render Venn diagram")
-        raise HTTPException(status_code=500, detail="Failed to render Venn diagram.") from e
 
 
 @router.get("/comparison/{kind}/venn-table")
@@ -2355,7 +1993,7 @@ def comparison_venn_table_route(
     alias2: str = "",
     alias3: str = "",
 ) -> dict[str, list[dict[str, object]]]:
-    try:
+    with plot_errors("Failed to load Venn table"):
         return _table_rows(
             venn_table(
                 kind=kind,
@@ -2368,8 +2006,3 @@ def comparison_venn_table_route(
                 alias3=alias3,
             )
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to load Venn table")
-        raise HTTPException(status_code=500, detail="Failed to load Venn table.") from e

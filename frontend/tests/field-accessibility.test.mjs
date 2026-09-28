@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 
-const MODULES = ['features/stats/StatisticalAnalysisPage', 'features/completeness/CompletenessPage',
+const MODULES = ['features/stats/VolcanoPanel', 'features/stats/PathwayHeatmapPanel', 'features/completeness/CompletenessPage',
   'features/data/ColorsPage', 'components/SelectField', 'features/data/IdTranslatorPage',
   'features/data/ImputationPage', 'features/peptide/PeptideLevelPage', 'components/QcFields'];
 
@@ -41,7 +41,7 @@ for (const module of MODULES) {
     if (labels.length === 0) return; // the page uses the shared fields instead
     for (const label of labels) assert.match(label[1], /htmlFor=\{fieldId\}/);
     assert.match(source, /const fieldId = useId\(\)/);
-    assert.match(source, /<(?:select|input|textarea|AssistantSelect|AssistantInput) id=\{fieldId\}/);
+    assert.match(source, /<(?:select|input|textarea|Assistant(?:Select|Input|Textarea)) id=\{fieldId\}/);
   });
 }
 
@@ -55,7 +55,10 @@ test('the rule recognises both correct forms and rejects a bare caption', () => 
 test('shared advanced styling and volcano multiline controls stay assistant-aware', async () => {
   const advanced = await readFile(new URL('../src/components/plots/AdvancedPlotOptions.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(advanced, /<(?:input|select|textarea)\b/);
-  const stats = await readFile(new URL('../src/features/stats/StatisticalAnalysisPage.tsx', import.meta.url), 'utf8');
-  assert.match(stats, /<AssistantTextarea id=\{fieldId\} data-assistant-permission="view"/);
-  assert.doesNotMatch(stats, /<textarea\b/);
+  const volcano = await readFile(new URL('../src/features/stats/VolcanoPanel.tsx', import.meta.url), 'utf8');
+  assert.match(volcano, /<AssistantTextarea id=\{fieldId\} data-assistant-permission="view"/);
+  const statsDir = new URL('../src/features/stats/', import.meta.url);
+  for (const name of await readdir(statsDir)) {
+    assert.doesNotMatch(await readFile(new URL(name, statsDir), 'utf8'), /<textarea\b/, name);
+  }
 });

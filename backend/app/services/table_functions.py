@@ -4,27 +4,12 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns, original_intensity_frame
+from app.services.data_tools import _get_sample_columns, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
 from app.services.functions import (
     extract_sample_id as _extract_id_or_number,
-    qc_matrix,
     raw_zero_to_nan,
 )
 from app.services.runtime_cache import apply_cached_wrappers
-
-
-def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.metadata.empty:
-        meta = annotation.metadata.copy()
-        meta = meta[meta["sample"].isin(sample_columns)]
-        if not meta.empty:
-            meta = meta.drop_duplicates(subset=["sample"])
-            meta = meta.set_index("sample").reindex(sample_columns).reset_index()
-            meta["condition"] = meta["condition"].fillna("sample").astype(str)
-            return meta
-    return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)})
 
 
 def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
@@ -44,18 +29,6 @@ def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
     )
     ordered = ordered.sort_values("_condition_order", kind="stable")
     return ordered.drop(columns="_condition_order").reset_index(drop=True)
-
-
-def _coverage_frame(kind: AnnotationKind) -> pd.DataFrame:
-    return qc_matrix(kind)[0]
-
-
-def _log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
-    return qc_matrix(kind)[0]
-
-
-def _original_scale_frame(kind: AnnotationKind) -> pd.DataFrame:
-    return original_intensity_frame(_get_current_frame(kind), get_annotation(kind))
 
 
 def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
@@ -274,7 +247,7 @@ def prepare_cov_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
 
 
 def qc_coverage_table(kind: AnnotationKind, summary: bool = False) -> pd.DataFrame:
-    frame = _coverage_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     meta = _metadata_for_kind(kind, frame, sample_columns)
     if summary:
@@ -283,7 +256,7 @@ def qc_coverage_table(kind: AnnotationKind, summary: bool = False) -> pd.DataFra
 
 
 def qc_boxplot_table(kind: AnnotationKind, mode: str = "Mean") -> pd.DataFrame:
-    frame = _log2_qc_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     meta = _metadata_for_kind(kind, frame, sample_columns)
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
@@ -293,7 +266,7 @@ def qc_boxplot_table(kind: AnnotationKind, mode: str = "Mean") -> pd.DataFrame:
 
 
 def qc_cv_table(kind: AnnotationKind) -> pd.DataFrame:
-    frame = _original_scale_frame(kind)
+    frame = linear_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     frame = raw_zero_to_nan(frame, sample_columns)
     meta = _metadata_for_kind(kind, frame, sample_columns)

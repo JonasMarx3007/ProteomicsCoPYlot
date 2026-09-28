@@ -46,7 +46,7 @@ from app.services.session_context import (
 from app.services.session_cleanup import expire_idle_session, touch_and_cleanup_sessions
 from app.services.session_operation_gate import session_operation_scope
 from app.services.temp_cleanup import cleanup_managed_temp_files
-from app.services.request_security import local_path_access_allowed
+from app.services.request_security import local_path_access_allowed, peer_is_trusted_proxy
 from app.services.tool_access import (
     tool_access_enabled,
     tool_session_authenticated,
@@ -587,6 +587,17 @@ async def heavy_workload_middleware(request: Request, call_next):
         )
 
 
+def _request_is_https(request: Request) -> bool:
+    """TLS terminated here, or at a trusted reverse proxy that says so."""
+    if request.url.scheme == "https":
+        return True
+    peer = request.client.host if request.client and request.client.host else ""
+    return (
+        peer_is_trusted_proxy(peer)
+        and str(request.headers.get("x-forwarded-proto", "")).split(",", 1)[0].strip().lower() == "https"
+    )
+
+
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
@@ -599,6 +610,8 @@ async def security_headers_middleware(request: Request, call_next):
             "Content-Security-Policy", GENERATED_HTML_CSP + "; sandbox allow-scripts allow-downloads"
         )
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if _request_is_https(request):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()",

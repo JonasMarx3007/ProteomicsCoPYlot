@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from app.services.html_security import GENERATED_HTML_META
-from app.services.plot_webgl import force_svg_rendering
 from app.services.functions import comparison_contrast, entity_labels_for_kind
 
+from app.services.reference_db import reference_db_candidates
 from app.services.plot_export import (
     MAX_AUTO_FIT_CM,
     MAX_AUTO_FIT_PIXELS,
@@ -13,11 +12,8 @@ from app.services.plot_export import (
 )
 
 import logging
-import math
 
 import hashlib
-import os
-import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -26,7 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
 from scipy.spatial.distance import pdist
-from scipy.stats import hypergeom, t
+from scipy.stats import hypergeom
 
 from app.schemas.annotation import AnnotationKind, DataSource, ResolvedSource
 from app.schemas.stats import (
@@ -54,6 +50,7 @@ from app.services.clustering_tools import (
     heatmap_notice,
     completeness_message,
     drop_incomplete_features,
+    row_zscore,
 )
 from app.services.functions import (
     constant_within_group,
@@ -68,116 +65,31 @@ from app.services.functions import (
     paired_t_test,
     resolve_test_type,
 )
-from app.services.plot_images import (
-    _advanced_alpha,
-    _advanced_color_text,
-    _advanced_condition_colors,
-    _advanced_label,
-    _advanced_number,
-    _advanced_plotly_layout,
-    _advanced_size,
-    _advanced_optional_number,
-    _advanced_text,
-    _apply_advanced_axes,
+from app.services.plot_styling import (
+    advanced_alpha,
+    advanced_color_text,
+    advanced_condition_colors,
+    advanced_element_number,
+    advanced_label,
+    advanced_number,
+    advanced_optional_number,
+    advanced_plotly_layout,
+    advanced_size,
+    advanced_text,
+    apply_advanced_axes,
     advanced_color_map,
     marker_area,
     resolve_marker_shape,
     resolve_reference_line,
 )
 from app.services.runtime_cache import apply_cached_wrappers
-
-def _get_plt():
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    return plt
-
-
-def _get_plotly():
-    import plotly.graph_objects as go
-
-    return go
-
-
-
-
-def _plotly_html(fig) -> str:
-    fig = force_svg_rendering(fig)
-    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
-    body = fig.to_html(
-        full_html=False,
-        include_plotlyjs=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{GENERATED_HTML_META}"
-        "<style>"
-        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
-        "#plot-root{width:100%;height:100%;}"
-        ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:360px;}"
-        "</style>"
-        "</head><body><div id='plot-root'>"
-        f"{body}"
-        "</div>"
-        "<script>"
-        "(function(){"
-        "function firstPlot(){"
-        "return document.querySelector('.js-plotly-plot,.plotly-graph-div');"
-        "}"
-        "function resolveLayoutHeight(el){"
-        "if(!el){return 0;}"
-        "var value=0;"
-        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
-        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
-        "return Math.max(0,value);"
-        "}"
-        "function resizePlot(){"
-        "var el=firstPlot();"
-        "if(!(el && window.Plotly)){return;}"
-        "var viewportHeight=Math.max(360,(window.innerHeight||0)-8);"
-        "var layoutHeight=resolveLayoutHeight(el);"
-        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
-        "window.Plotly.relayout(el,{height:nextHeight}).catch(function(){});"
-        "window.Plotly.Plots.resize(el);"
-        "}"
-        "window.addEventListener('load', resizePlot);"
-        "window.addEventListener('resize', resizePlot);"
-        "setTimeout(resizePlot, 80);"
-        "setTimeout(resizePlot, 260);"
-        "})();"
-        "</script></body></html>"
-    )
-
-
-
-
-def _bh_adjust(pvalues: np.ndarray) -> np.ndarray:
-    pvalues = np.asarray(pvalues, dtype=float)
-    if pvalues.size == 0:
-        return pvalues
-    finite = np.isfinite(pvalues)
-    if not finite.all():
-        result = np.full(pvalues.shape, np.nan)
-        result[finite] = _bh_adjust(pvalues[finite])
-        return result
-    order = np.argsort(pvalues)
-    ranked = pvalues[order]
-    adjusted = np.empty_like(ranked)
-    n = float(len(ranked))
-    running = 1.0
-    for idx in range(len(ranked) - 1, -1, -1):
-        rank = idx + 1.0
-        value = float(ranked[idx] * n / rank)
-        running = min(running, value)
-        adjusted[idx] = running
-    adjusted = np.clip(adjusted, 0.0, 1.0)
-    restored = np.empty_like(adjusted)
-    restored[order] = adjusted
-    return restored
-
+from app.services.plotting_common import get_plt as _get_plt, get_plotly_go as _get_plotly, plotly_html as _plotly_html
+from app.services.stats_core import (
+    bh_adjust as _bh_adjust,
+    pooled_se_df,
+    satterthwaite as _satterthwaite,
+    two_sided_t_pvalues,
+)
 
 # A downloaded table is read without the UI that produced it, so it has to say
 # whether its p-values were corrected. The `adj_pval` column keeps its name for
@@ -195,26 +107,6 @@ def _variance_and_count(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     counts = np.sum(np.isfinite(values), axis=1).astype(float)
     variances = np.nanvar(values, axis=1, ddof=1)
     return variances, counts
-
-
-def _satterthwaite(components: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
-    """Standard error and effective degrees of freedom for a sum of group means.
-
-    Each component is (variance, n) for one independent group. Welch-Satterthwaite
-    is used rather than pooling because the control conditions in a
-    control-normalised comparison need not share the variance of the conditions
-    being compared.
-    """
-    ratios = [variance / count for variance, count in components]
-    se_squared = np.sum(ratios, axis=0)
-    denominator = np.sum(
-        [ratio**2 / np.maximum(count - 1.0, 1e-12) for ratio, (_, count) in zip(ratios, components)],
-        axis=0,
-    )
-    with np.errstate(divide="ignore", invalid="ignore"):
-        dof = se_squared**2 / denominator
-    dof = np.where(se_squared == 0, 1.0, dof)
-    return np.sqrt(se_squared), dof
 
 
 def _safe_neg_log10(values: np.ndarray) -> np.ndarray:
@@ -382,7 +274,9 @@ def _volcano_dataframe(
             kind, data_source=data_source
         )
     elif frame_override is not None and metadata_override is not None:
-        source_used = "filtered"
+        # The caller chose the matrix; report the source it asked for rather
+        # than stamping every override "filtered".
+        source_used = data_source
         frame = frame_override.copy()
         metadata = metadata_override.copy()
         warnings = []
@@ -494,9 +388,7 @@ def _volcano_dataframe(
             components = [(np.nanvar(diffs, axis=1, ddof=1), n_diff)]
             components.extend(_variance_and_count(control) for control in control_arrays)
             se, dof = _satterthwaite(components)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                t_stat = log2fc / se
-            pvals = 2.0 * t.sf(np.abs(t_stat), dof)
+            pvals = two_sided_t_pvalues(log2fc, se, dof)
     else:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
@@ -515,12 +407,8 @@ def _volcano_dataframe(
             components.extend(_variance_and_count(control) for control in control_arrays)
             se, dof = _satterthwaite(components)
         else:
-            pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0)
-            se = np.sqrt(pooled_var * (1.0 / n1 + 1.0 / n2))
-            dof = n1 + n2 - 2.0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_stat = log2fc / se
-        pvals = 2.0 * t.sf(np.abs(t_stat), dof)
+            se, dof = pooled_se_df(var1, n1, var2, n2)
+        pvals = two_sided_t_pvalues(log2fc, se, dof)
 
     adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
 
@@ -642,15 +530,15 @@ def _volcano_condition_texts(
     name in the panel and a different one on the plot. Only the names change --
     `comparison_contrast` still states condition 1 minus condition 2.
     """
-    name1 = _advanced_label(str(condition1), advanced, "conditionLabels")
-    name2 = _advanced_label(str(condition2), advanced, "conditionLabels")
+    name1 = advanced_label(str(condition1), advanced, "conditionLabels")
+    name2 = advanced_label(str(condition2), advanced, "conditionLabels")
     control1 = (
-        _advanced_label(str(condition1_control), advanced, "conditionLabels")
+        advanced_label(str(condition1_control), advanced, "conditionLabels")
         if condition1_control
         else condition1_control
     )
     control2 = (
-        _advanced_label(str(condition2_control), advanced, "conditionLabels")
+        advanced_label(str(condition2_control), advanced, "conditionLabels")
         if condition2_control
         else condition2_control
     )
@@ -678,25 +566,25 @@ def _volcano_marker_style(
         # This class's own setting, then the general one, then the class default.
         # Setting the general size in the panel clears the three class values, so
         # they all move together and can then be pulled apart again one by one.
-        general_size = _advanced_optional_number(advanced, "markerSize")
-        general_alpha = _advanced_optional_number(advanced, "markerAlpha")
+        general_size = advanced_optional_number(advanced, "markerSize")
+        general_alpha = advanced_optional_number(advanced, "markerAlpha")
         style[significance] = {
-            "size": _advanced_size(
+            "size": advanced_size(
                 advanced,
                 size_key,
                 general_size if general_size is not None else default_size,
             ),
-            "alpha": _advanced_alpha(
+            "alpha": advanced_alpha(
                 advanced,
                 alpha_key,
                 general_alpha if general_alpha is not None else default_alpha,
             ),
-            "color": _advanced_text(advanced, color_key) or palette[significance],
-            "shape": resolve_marker_shape(_advanced_text(advanced, "markerShape")),
+            "color": advanced_text(advanced, color_key) or palette[significance],
+            "shape": resolve_marker_shape(advanced_text(advanced, "markerShape")),
         }
     style["_highlight"] = {
-        "size": _advanced_size(advanced, "volcanoHighlightSize", 10.0),
-        "color": _advanced_text(advanced, "volcanoHighlightColor") or "#22c55e",
+        "size": advanced_size(advanced, "volcanoHighlightSize", 10.0),
+        "color": advanced_text(advanced, "volcanoHighlightColor") or "#22c55e",
     }
     return style
 
@@ -825,7 +713,7 @@ def _volcano_figure(
                 "size": size,
                 "opacity": style[significance]["alpha"],
                 "symbol": resolve_marker_shape(
-                    _advanced_text(advanced, "markerShape"), "plotly"
+                    advanced_text(advanced, "markerShape"), "plotly"
                 ),
             }
             if highlighted:
@@ -1066,7 +954,7 @@ def _volcano_png_figure(
     ax.set_ylabel("-log10 p-value" if use_uncorrected else "-log10 adj. p-value", fontsize=11)
     ax.set_title(volcano_title, fontsize=12)
     ax.tick_params(labelsize=9)
-    # The journal defaults. `_apply_advanced_axes` runs afterwards, so anyone who
+    # The journal defaults. `apply_advanced_axes` runs afterwards, so anyone who
     # wants the frame or the grid back can still ask for it.
     ax.grid(False)
     for side in ("top", "right"):
@@ -1087,7 +975,7 @@ def _volcano_png_figure(
     )
     if legend is not None:
         legend.set_zorder(6)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
 
     # Labelled last, and after the layout has settled. Placement is measured in
@@ -1103,13 +991,52 @@ def _volcano_png_figure(
             ax,
             hits,
             label_column=label_column,
-            fontsize=max(4.0, _advanced_number(advanced, "volcanoLabelSize", 7.0)),
+            fontsize=max(4.0, advanced_number(advanced, "volcanoLabelSize", 7.0)),
         )
     return fig, plt
 
 
+def _volcano_inputs(payload: VolcanoRequest | VolcanoControlRequest) -> tuple[pd.DataFrame, dict]:
+    """The rows behind a volcano, and the arguments both renderers draw from.
+
+    A volcano varies along two axes: plain or control-corrected (two more
+    conditions, carried by the payload), and figure or interactive page (a
+    different renderer). That used to be four functions repeating one argument
+    list, which is four places for a new setting to reach three of them.
+    """
+    controls = {}
+    if isinstance(payload, VolcanoControlRequest):
+        controls = {
+            "condition1_control": payload.condition1Control,
+            "condition2_control": payload.condition2Control,
+        }
+    _, label_column, df, _ = _volcano_dataframe(
+        kind=payload.kind,
+        condition1=payload.condition1,
+        condition2=payload.condition2,
+        identifier=payload.identifier,
+        p_value_threshold=payload.pValueThreshold,
+        log2fc_threshold=payload.log2fcThreshold,
+        test_type=payload.testType,
+        use_uncorrected=payload.useUncorrected,
+        data_source=payload.dataSource,
+        **controls,
+    )
+    figure_arguments = {
+        "label_column": label_column,
+        "condition1": payload.condition1,
+        "condition2": payload.condition2,
+        "p_value_threshold": payload.pValueThreshold,
+        "log2fc_threshold": payload.log2fcThreshold,
+        "use_uncorrected": payload.useUncorrected,
+        "highlight_terms": payload.highlightTerms,
+        **controls,
+    }
+    return df, figure_arguments
+
+
 def volcano_png(
-    payload: VolcanoRequest,
+    payload: VolcanoRequest | VolcanoControlRequest,
     advanced: dict | None = None,
     *,
     width_cm: float = 18.0,
@@ -1118,26 +1045,11 @@ def volcano_png(
     label_top_up: int = 0,
     label_top_down: int = 0,
 ) -> bytes:
-    _, label_column, df, _ = _volcano_dataframe(
-        kind=payload.kind,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        identifier=payload.identifier,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        test_type=payload.testType,
-        use_uncorrected=payload.useUncorrected,
-        data_source=payload.dataSource,
-    )
+    """The volcano as a figure for print; a control request draws the control volcano."""
+    df, figure_arguments = _volcano_inputs(payload)
     fig, plt = _volcano_png_figure(
         df,
-        label_column=label_column,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        use_uncorrected=payload.useUncorrected,
-        highlight_terms=payload.highlightTerms,
+        **figure_arguments,
         advanced=advanced,
         width_cm=width_cm,
         height_cm=height_cm,
@@ -1148,105 +1060,13 @@ def volcano_png(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def volcano_control_png(
-    payload: VolcanoControlRequest,
-    advanced: dict | None = None,
-    *,
-    width_cm: float = 18.0,
-    height_cm: float = 14.0,
-    dpi: int = 300,
-    label_top_up: int = 0,
-    label_top_down: int = 0,
-) -> bytes:
-    _, label_column, df, _ = _volcano_dataframe(
-        kind=payload.kind,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        identifier=payload.identifier,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        test_type=payload.testType,
-        use_uncorrected=payload.useUncorrected,
-        data_source=payload.dataSource,
-        condition1_control=payload.condition1Control,
-        condition2_control=payload.condition2Control,
-    )
-    fig, plt = _volcano_png_figure(
-        df,
-        label_column=label_column,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        condition1_control=payload.condition1Control,
-        condition2_control=payload.condition2Control,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        use_uncorrected=payload.useUncorrected,
-        highlight_terms=payload.highlightTerms,
-        advanced=advanced,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        label_top_up=label_top_up,
-        label_top_down=label_top_down,
-    )
-    return _to_png_bytes(fig, plt, dpi=dpi)
-
-
-def volcano_html(payload: VolcanoRequest, advanced: dict | None = None) -> str:
-    _, label_column, df, _ = _volcano_dataframe(
-        kind=payload.kind,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        identifier=payload.identifier,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        test_type=payload.testType,
-        use_uncorrected=payload.useUncorrected,
-        data_source=payload.dataSource,
-    )
-    fig = _volcano_figure(
-        df,
-        label_column=label_column,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        use_uncorrected=payload.useUncorrected,
-        highlight_terms=payload.highlightTerms,
-        advanced=advanced,
-    )
-    fig.update_layout(**_advanced_plotly_layout(advanced))
-    return _plotly_html(fig)
-
-
-def volcano_control_html(payload: VolcanoControlRequest, advanced: dict | None = None) -> str:
-    _, label_column, df, _ = _volcano_dataframe(
-        kind=payload.kind,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        identifier=payload.identifier,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        test_type=payload.testType,
-        use_uncorrected=payload.useUncorrected,
-        data_source=payload.dataSource,
-        condition1_control=payload.condition1Control,
-        condition2_control=payload.condition2Control,
-    )
-    fig = _volcano_figure(
-        df,
-        condition1_control=payload.condition1Control,
-        condition2_control=payload.condition2Control,
-        label_column=label_column,
-        condition1=payload.condition1,
-        condition2=payload.condition2,
-        p_value_threshold=payload.pValueThreshold,
-        log2fc_threshold=payload.log2fcThreshold,
-        use_uncorrected=payload.useUncorrected,
-        highlight_terms=payload.highlightTerms,
-        advanced=advanced,
-    )
-    fig.update_layout(**_advanced_plotly_layout(advanced))
+def volcano_html(
+    payload: VolcanoRequest | VolcanoControlRequest, advanced: dict | None = None
+) -> str:
+    """The same volcano as the interactive page."""
+    df, figure_arguments = _volcano_inputs(payload)
+    fig = _volcano_figure(df, **figure_arguments, advanced=advanced)
+    fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
@@ -1388,10 +1208,7 @@ def _anova_cluster_dataframe(
     if matrix.shape[0] > 1:
         matrix, completeness = drop_incomplete_features(matrix, context="ANOVA clustering")
         cluster_df = cluster_df.loc[completeness.kept].reset_index(drop=True)
-    row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-    row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-    matrix = (matrix - row_mean) / row_sd
+    matrix = row_zscore(matrix)
 
     if matrix.shape[0] <= 1:
         cluster_df.insert(1, "cluster", 1)
@@ -1595,10 +1412,7 @@ def _anova_heatmap_figure(
         )
     missing_mask = ~np.isfinite(raw_matrix)
     matrix = raw_matrix.copy()
-    row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-    row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-    row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-    matrix = (matrix - row_mean) / row_sd
+    matrix = row_zscore(matrix)
     display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
     cluster_matrix = matrix.copy()
     row_linkage = None
@@ -1637,7 +1451,7 @@ def _anova_heatmap_figure(
     # user set on the Colors page and any per-plot override. This heatmap used to
     # generate its own tab20 palette, so a condition was one colour here and a
     # different one in the volcano, PCA and boxplots beside it.
-    condition_hex = _advanced_condition_colors(kind, plt, unique_conditions, advanced)
+    condition_hex = advanced_condition_colors(kind, plt, unique_conditions, advanced)
     condition_colors = {
         condition: to_rgba(condition_hex.get(condition, "#808080"))
         for condition in unique_conditions
@@ -1677,7 +1491,7 @@ def _anova_heatmap_figure(
             row_label_texts = [str(value) for value in plot_df.index.tolist()]
         heatmap_height_pt = 9.2 * 72 * 0.62
         auto_size = min(7.0, max(2.0, 0.8 * heatmap_height_pt / max(len(row_label_texts), 1)))
-        row_label_size = _advanced_number(advanced, "rowLabelSize", 0.0) or auto_size
+        row_label_size = advanced_number(advanced, "rowLabelSize", 0.0) or auto_size
         longest = max((len(text) for text in row_label_texts), default=0)
         row_label_width = min(0.6, max(0.04, longest * row_label_size * 0.6 / 72 / 9.0))
 
@@ -1735,6 +1549,9 @@ def _anova_heatmap_figure(
             above_threshold_color="black",
             link_color_func=lambda _: "black",
         )
+        # scipy draws leaf 0 at the bottom of a left-oriented dendrogram while
+        # imshow draws row 0 at the top; flip the axis so branches meet their rows.
+        ax_cluster.invert_yaxis()
     ax_cluster.set_axis_off()
 
     cmap = plt.get_cmap("RdBu_r").copy()
@@ -1750,7 +1567,7 @@ def _anova_heatmap_figure(
         ax.set_yticklabels(
             row_label_texts,
             fontsize=row_label_size,
-            color=_advanced_color_text(advanced, "rowLabelColor") or "black",
+            color=advanced_color_text(advanced, "rowLabelColor") or "black",
         )
         ax.tick_params(axis="y", length=0, pad=2)
     else:
@@ -1763,7 +1580,7 @@ def _anova_heatmap_figure(
             facecolor=condition_colors[condition],
             # The advanced panel offers a condition rename on this plot; the
             # legend read the original name regardless.
-            label=_advanced_label(str(condition), advanced, "conditionLabels"),
+            label=advanced_label(str(condition), advanced, "conditionLabels"),
         )
         for condition in unique_conditions
     ]
@@ -1823,41 +1640,12 @@ def anova_png(payload: AnovaRequest, selected_cluster: int | None = None, advanc
         row_labels=payload.showRowLabels,
     )
     for ax in fig.axes:
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt, dpi=150)
 
 
-def _db_candidates(filename: str) -> list[Path]:
-    here = Path(__file__).resolve()
-    project_root = here.parents[3]
-    sibling_root = project_root.parent / "proteomics-copylot"
-    local_appdata = os.getenv("LOCALAPPDATA", "").strip()
-
-    roots: list[Path] = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        roots.append(Path(meipass))
-    if getattr(sys, "frozen", False):
-        roots.append(Path(sys.executable).resolve().parent)
-    roots.append(Path(sys.prefix))
-    if local_appdata:
-        roots.append(Path(local_appdata) / "proteomics-copylot")
-    roots.extend([project_root, sibling_root])
-
-    candidates = [root / "data" / "db" / filename for root in roots]
-    unique_candidates: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_candidates.append(candidate)
-    return unique_candidates
-
-
 def _go_db_candidates() -> list[Path]:
-    return _db_candidates("all_go_terms_genes.csv")
+    return reference_db_candidates("all_go_terms_genes.csv")
 
 
 @lru_cache(maxsize=1)
@@ -2196,6 +1984,8 @@ def _enrichment_terms(
                 name=description,
                 termSize=len(term_genes),
                 intersectionSize=len(overlap),
+                querySize=sample_size,
+                geneRatio=len(overlap) / max(1, sample_size),
                 hitPercent=(len(overlap) / max(1, len(term_genes))) * 100.0,
                 pValue=float(p_value),
                 adjPValue=adj_p_value,
@@ -2410,7 +2200,7 @@ def _ora_direction_texts(
     if direction == "cluster":
         raise ValueError("Volcano ORA plots require the up or down direction.")
     word = "Upregulated" if direction == "up" else "Downregulated"
-    name = _advanced_label(str(payload.condition1), advanced, "conditionLabels").strip()
+    name = advanced_label(str(payload.condition1), advanced, "conditionLabels").strip()
     return (f"{word} in {name}" if name else word), word.lower()
 
 
@@ -2545,7 +2335,9 @@ def ora_plot_png(
     frame = pd.DataFrame(
         {
             "name": [term.name for term in terms],
-            "hitPercent": [term.hitPercent for term in terms],
+            # GeneRatio (overlap / query size), the x axis every ORA dot plot
+            # from clusterProfiler onwards uses; term coverage stays in the table.
+            "geneRatio": [term.geneRatio for term in terms],
             "intersectionSize": [term.intersectionSize for term in terms],
             "score": [_safe_neg_log10(np.asarray([term.adjPValue]))[0] for term in terms],
         }
@@ -2554,15 +2346,14 @@ def ora_plot_png(
     y_positions = np.arange(len(frame))
 
     # The tick size the figure will actually be drawn at, because the labels are
-    # wrapped and the canvas sized before `_apply_advanced_axes` runs.
+    # wrapped and the canvas sized before `apply_advanced_axes` runs.
     tick_points = (
-        _advanced_number(advanced, "yTickLabelSize", 0.0)
-        or _advanced_number(advanced, "tickLabelSize", 0.0)
+        advanced_number(advanced, "yTickLabelSize", 0.0)
         # rcParams gives "medium" as often as a number, and "medium" is a
         # relative size, not a measurement.
         or _rc_font_points(plt, "ytick.labelsize", 10.0)
     )
-    title_points = _advanced_number(advanced, "titleSize", 0.0) or 12.0
+    title_points = advanced_element_number(advanced, "titleElement", "size") or 12.0
 
     # A GO description runs to 187 characters. Left on one line it either spills
     # off the canvas or forces a figure half a metre wide; broken to a share of
@@ -2591,7 +2382,7 @@ def ora_plot_png(
         figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi))
     )
     scatter = ax.scatter(
-        frame["hitPercent"],
+        frame["geneRatio"],
         y_positions,
         s=areas,
         c=frame["score"],
@@ -2608,7 +2399,7 @@ def ora_plot_png(
     # the frame, and the widest one touches the right spine.
     ax.set_ylim(len(frame) - 0.5, -0.5)
     ax.margins(x=0.14)
-    ax.set_xlabel("Hits (%)")
+    ax.set_xlabel("GeneRatio (overlap / query genes)")
     background_label = (
         "tested-gene background"
         if result.backgroundMode == "experiment"
@@ -2638,7 +2429,7 @@ def ora_plot_png(
     # pass after pass, until it runs out of passes.
     cbar = fig.colorbar(scatter, ax=ax, pad=0.02, shrink=0.82, aspect=30)
     cbar.set_label("-log10 adjusted p-value")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     # After the panel, not before: the labels were wrapped to this size and the
     # canvas was sized for it, so the drawn size has to be the one that was
     # measured. It is never larger than the size that was asked for.
@@ -2801,14 +2592,9 @@ def pathway_heatmap_png(
         raise ValueError("No matching pathway genes were found in the current dataset.")
 
     if value_type == "z":
-        def z_transform(row: pd.Series) -> pd.Series:
-            mean = row.mean(skipna=True)
-            std = row.std(skipna=True)
-            if pd.isna(std) or float(std) == 0.0:
-                return pd.Series([np.nan] * len(row), index=row.index)
-            return (row - mean) / std
-
-        heatmap_data = heatmap_data.apply(z_transform, axis=1)
+        heatmap_data = pd.DataFrame(
+            row_zscore(heatmap_data), index=heatmap_data.index, columns=heatmap_data.columns
+        )
         color_label = "Z-score"
     else:
         color_label = intensity_unit_label(_phosprot_values_are_centred(kind))
@@ -2866,12 +2652,17 @@ def pathway_heatmap_png(
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi)))
     matrix = np.ma.masked_invalid(heatmap_data.to_numpy(dtype=float))
     fig._copylot_notice = heatmap_notice(total_genes, len(heatmap_data), noun="genes")
+    # A z-score is a diverging quantity: draw it on the same diverging map and
+    # symmetric limits as the ANOVA heatmaps, so equal colours mean equal z.
     image = ax.imshow(
-        matrix, aspect="auto", cmap=advanced_color_map(advanced, "plasma")
+        matrix,
+        aspect="auto",
+        cmap=advanced_color_map(advanced, "RdBu_r" if value_type == "z" else "plasma"),
+        **({"vmin": -2.5, "vmax": 2.5} if value_type == "z" else {}),
     )
     ax.set_xticks(np.arange(heatmap_data.shape[1]))
     ax.set_xticklabels(
-        [_advanced_label(str(column), advanced, "conditionLabels") for column in heatmap_data.columns],
+        [advanced_label(str(column), advanced, "conditionLabels") for column in heatmap_data.columns],
         rotation=90,
     )
     ax.set_yticks(np.arange(heatmap_data.shape[0]))
@@ -2889,7 +2680,7 @@ def pathway_heatmap_png(
     )
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label(color_label)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     # The requested width/height is a floor, not a ceiling: a normal GO term has
     # more gene labels than the default 20 x 12 cm canvas can hold, and the page
@@ -2961,15 +2752,9 @@ def _simulation_dataframe(
             [(var1, simulated_n1), (var2, simulated_n2)]
         )
     else:
-        pooled_var = (
-            (simulated_n1 - 1.0) * var1 + (simulated_n2 - 1.0) * var2
-        ) / (simulated_n1 + simulated_n2 - 2.0)
-        se = np.sqrt(pooled_var * (1.0 / simulated_n1 + 1.0 / simulated_n2))
-        degrees_freedom = simulated_n1 + simulated_n2 - 2.0
+        se, degrees_freedom = pooled_se_df(var1, simulated_n1, var2, simulated_n2)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t_stat = log2fc / se
-    pvals = np.asarray(2.0 * t.sf(np.abs(t_stat), degrees_freedom), dtype=float)
+    pvals = two_sided_t_pvalues(log2fc, se, degrees_freedom)
     selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
@@ -3059,7 +2844,7 @@ def simulation_html(payload: SimulationRequest, advanced: dict | None = None) ->
         font={"size": 12},
     )
     fig.update_layout(margin={"l": 40, "r": 20, "t": 80, "b": 40})
-    fig.update_layout(**_advanced_plotly_layout(advanced))
+    fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 

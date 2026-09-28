@@ -1,7 +1,6 @@
-import { AssistantSelect } from "../../components/AssistantFields";
+import { AssistantAppearanceMount, AssistantSelect } from "../../components/AssistantFields";
 import { MATPLOTLIB_CONTROLS, PLOTLY_DEFAULT_TEMPLATE_CONTROLS } from "../../lib/plotControlDefaults";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import SelectField from "../../components/SelectField";
 import PlotImage from "../../components/PlotImage";
 import { withoutStaticSize } from "../../lib/plotRenderType";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
@@ -44,14 +43,17 @@ import {
   resolveDataSource,
   savedDataSource,
 } from "../../lib/types";
+import SelectField from "../../components/SelectField";
+import PreviewTable from "../../components/PreviewTable";
+import type { ContextMode } from "../../lib/types";
 
 type Props = {
   activeTab: QcTab;
   onWorkflowScopeChange?: (workflow: string) => void;
-  onBoxplotModeChange?: (mode: string) => void;
-  onPcaContextModeChange?: (mode: string) => void;
-  onAbundanceContextModeChange?: (mode: string) => void;
-  onCoverageContextModeChange?: (mode: string) => void;
+  onBoxplotContextModeChange?: (mode: ContextMode | null) => void;
+  onPcaContextModeChange?: (mode: ContextMode | null) => void;
+  onAbundanceContextModeChange?: (mode: ContextMode | null) => void;
+  onCoverageContextModeChange?: (mode: ContextMode | null) => void;
 };
 
 type QcTableRequest = {
@@ -87,41 +89,10 @@ function withAdvancedParams(
   return { ...params, advanced: advanced ?? "" };
 }
 
-function withBoxplotStyleParams(
-  params: Record<string, string | number | boolean>,
-  settings: AdvancedPlotSettings
-): Record<string, string | number | boolean> {
-  const next = { ...params };
-  const boxBorderColor = settings.boxBorderColor?.trim();
-  const boxMedianColor = settings.boxMedianColor?.trim();
-  const boxOutlierColor = settings.boxOutlierColor?.trim();
-  const boxOutlierEdgeColor = settings.boxOutlierEdgeColor?.trim();
-  if (boxBorderColor) next.boxBorderColor = boxBorderColor;
-  if (boxMedianColor) next.boxMedianColor = boxMedianColor;
-  if (boxOutlierColor) next.boxOutlierColor = boxOutlierColor;
-  if (boxOutlierEdgeColor) next.boxOutlierEdgeColor = boxOutlierEdgeColor;
-  if (settings.boxOutlierSize && settings.boxOutlierSize > 0) {
-    next.boxOutlierSize = settings.boxOutlierSize;
-  }
-  return next;
-}
-
-function withCorrelationStyleParams(
-  params: Record<string, string | number | boolean>,
-  settings: AdvancedPlotSettings
-): Record<string, string | number | boolean> {
-  const next = { ...params };
-  const correlationColorMap = settings.correlationColorMap?.trim();
-  if (correlationColorMap) {
-    next.correlationColorMap = correlationColorMap;
-  }
-  return next;
-}
-
 export default function QCPipelinePage({
   activeTab,
   onWorkflowScopeChange,
-  onBoxplotModeChange,
+  onBoxplotContextModeChange,
   onPcaContextModeChange,
   onAbundanceContextModeChange,
   onCoverageContextModeChange,
@@ -243,7 +214,7 @@ export default function QCPipelinePage({
     umapMinDist: Number(persistedPca.umapMinDist ?? 0.1),
     tsnePerplexity: Number(persistedPca.tsnePerplexity ?? 30),
     tsneLearningRate: Number(persistedPca.tsneLearningRate ?? 200),
-    dbscanEps: Number(persistedPca.dbscanEps ?? 0.5),
+    dbscanEpsFactor: Number(persistedPca.dbscanEpsFactor ?? 0.5),
     dbscanMinSamples: Number(persistedPca.dbscanMinSamples ?? 2),
     randomState: Number(persistedPca.randomState ?? 42),
     widthCm: restorePlotDimensionCm(persistedPca.widthCm, 20),
@@ -327,12 +298,12 @@ export default function QCPipelinePage({
   }, [kind, datasets?.peptide, coverage]);
 
   useEffect(() => {
-    onAbundanceContextModeChange?.(activeTab === "abundance" ? `condition=${encodeURIComponent(abundance.condition)}` : "");
+    onAbundanceContextModeChange?.(activeTab === "abundance" ? { condition: abundance.condition } : null);
   }, [activeTab, abundance.condition, onAbundanceContextModeChange]);
 
   useEffect(() => {
     onCoverageContextModeChange?.(activeTab === "coverage"
-      ? `level=${kind === "precursor" ? "precursor" : "peptide"}|quantityColumn=${encodeURIComponent(coverage.quantityColumn)}` : "");
+      ? { level: kind === "precursor" ? "precursor" : "peptide", quantityColumn: coverage.quantityColumn } : null);
   }, [activeTab, kind, coverage.quantityColumn, onCoverageContextModeChange]);
 
   const activeKindOptions = useMemo<Array<{ value: QcKind; label: string }>>(() => {
@@ -398,31 +369,31 @@ export default function QCPipelinePage({
   }, [activeKindOptions, kind, onWorkflowScopeChange]);
 
   useEffect(() => {
-    if (!onBoxplotModeChange) return;
+    if (!onBoxplotContextModeChange) return;
     if (activeTab !== "boxplot") {
-      onBoxplotModeChange("");
+      onBoxplotContextModeChange(null);
       return;
     }
-    onBoxplotModeChange(String(box.mode || "").trim());
-  }, [activeTab, box.mode, onBoxplotModeChange]);
+    onBoxplotContextModeChange({ mode: String(box.mode || "").trim() });
+  }, [activeTab, box.mode, onBoxplotContextModeChange]);
 
   useEffect(() => {
     if (!onPcaContextModeChange) return;
     if (activeTab !== "pca") {
-      onPcaContextModeChange("");
+      onPcaContextModeChange(null);
       return;
     }
     const method = String(pca.method || "").trim();
     const plotDim = String(pca.plotDim || "").trim();
     const type = String(pca.type || "").trim();
-    const parts = [
-      `method=${method || "PCA"}`,
-      `plotDim=${plotDim || "2D"}`,
-      `type=${type || "Normal"}`,
-      `dataSource=${pca.dataSource}`,
-      `scaling=${pca.scaling}`,
-    ];
-    onPcaContextModeChange(parts.join("|"));
+    const mode: ContextMode = {
+      method: method || "PCA",
+      plotDim: plotDim || "2D",
+      type: type || "Normal",
+      dataSource: pca.dataSource,
+      scaling: pca.scaling,
+    };
+    onPcaContextModeChange(mode);
   }, [activeTab, pca.dataSource, pca.method, pca.plotDim, pca.type, pca.scaling, onPcaContextModeChange]);
 
   const [pcaFeatures, setPcaFeatures] = useState<QcPcaFeatureSummary | null>(null);
@@ -446,7 +417,7 @@ export default function QCPipelinePage({
         colorBy: pca.colorBy,
         clusterMethod: pca.clusterMethod,
         clusterCount: pca.clusterCount,
-        dbscanEps: pca.dbscanEps,
+        dbscanEpsFactor: pca.dbscanEpsFactor,
         dbscanMinSamples: pca.dbscanMinSamples,
         umapNNeighbors: pca.umapNNeighbors,
         umapMinDist: pca.umapMinDist,
@@ -479,7 +450,7 @@ export default function QCPipelinePage({
     pca.colorBy,
     pca.clusterMethod,
     pca.clusterCount,
-    pca.dbscanEps,
+    pca.dbscanEpsFactor,
     pca.dbscanMinSamples,
     pca.umapNNeighbors,
     pca.umapMinDist,
@@ -785,10 +756,9 @@ export default function QCPipelinePage({
       };
     }
     if (activeTab === "boxplot") {
-      const boxParams = withBoxplotStyleParams(box, activeAdvancedRenderSettings);
       return {
         mode: "image" as const,
-        url: buildPlotUrl(`/api/plots/qc/${kind}/boxplot.png`, withAdvancedParams(boxParams, activeAdvancedParam)),
+        url: buildPlotUrl(`/api/plots/qc/${kind}/boxplot.png`, withAdvancedParams(box, activeAdvancedParam)),
       };
     }
     if (activeTab === "cv") {
@@ -819,10 +789,9 @@ export default function QCPipelinePage({
       }
       return { mode: "image" as const, url: buildPlotUrl(`/api/plots/qc/${kind}/abundance.png`, plotParams) };
     }
-    const correlationParams = withCorrelationStyleParams(correlation, activeAdvancedRenderSettings);
     return {
       mode: "image" as const,
-      url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, withAdvancedParams(correlationParams, activeAdvancedParam)),
+      url: buildPlotUrl(`/api/plots/qc/${kind}/correlation.png`, withAdvancedParams(correlation, activeAdvancedParam)),
     };
   }, [
     activeTab,
@@ -836,7 +805,6 @@ export default function QCPipelinePage({
     correlation,
     activeKindOptions,
     activeAdvancedParam,
-    activeAdvancedRenderSettings,
     peptideQuantityError,
   ]);
 
@@ -911,7 +879,8 @@ export default function QCPipelinePage({
       </section>
       ) : null}
 
-      {activeKindOptions.length > 0 && advancedModeEnabled ? (
+      {activeKindOptions.length > 0 ? (
+        <AssistantAppearanceMount visible={advancedModeEnabled}>
         <AdvancedPlotOptions
           key={activeTab}
           value={activeAdvancedSettings}
@@ -923,6 +892,7 @@ export default function QCPipelinePage({
           visibleControls={activeAdvancedVisibleControls}
           controlDefaults={activeAdvancedControlDefaults}
         />
+        </AssistantAppearanceMount>
       ) : null}
 
       {activeKindOptions.length > 0 ? (
@@ -1274,9 +1244,9 @@ export default function QCPipelinePage({
               ? [
                   <NumericField
                     key="dbscan-eps"
-                    label="DBSCAN Eps"
-                    value={pca.dbscanEps}
-                    onChange={(v) => setPca({ ...pca, dbscanEps: Math.max(0.001, v) })}
+                    label="DBSCAN eps (× median sample distance)"
+                    value={pca.dbscanEpsFactor}
+                    onChange={(v) => setPca({ ...pca, dbscanEpsFactor: Math.max(0.001, v) })}
                   />,
                   <NumericField
                     key="dbscan-min-samples"
@@ -1487,6 +1457,14 @@ function PcaFeatureNotice({
           </span>
         ) : null}
       </div>
+      {summary.dbscan ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+          <span className="font-medium">DBSCAN eps used: {summary.dbscan.epsEffective.toPrecision(3)}</span>{" "}
+          &mdash; {summary.dbscan.epsFactor} × the median distance between samples in this projection
+          ({summary.dbscan.medianSampleDistance.toPrecision(3)}). Samples labelled Noise have fewer than
+          the minimum number of neighbours within that radius.
+        </div>
+      ) : null}
       {skipped.length > 0 ? (
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <span className="font-medium">
@@ -1571,63 +1549,6 @@ function scalingValue(label: string): string {
   return label === "Unit variance" ? "unit_variance" : "centered";
 }
 
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  const columns = useMemo(() => collectColumns(rows), [rows]);
-
-  if (rows.length === 0 || columns.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-[28rem] overflow-auto rounded-xl border border-slate-200">
-      <table className="min-w-full table-fixed border-collapse text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50/50">
-              {columns.map((column) => {
-                const value = row[column];
-                const text = value == null ? "" : String(value);
-                return (
-                  <td
-                    key={`${rowIndex}-${column}`}
-                    className="border-b border-slate-100 px-3 py-2 text-slate-600"
-                    title={text}
-                  >
-                    <div className="max-w-[28ch] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {text}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function cmToIframeHeight(heightCm: number): number {
   const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (10 * 96) / 2.54;

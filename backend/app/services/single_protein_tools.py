@@ -11,69 +11,29 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.services.clustering_tools import drop_incomplete_features, heatmap_notice
-from app.services.annotation_store import get_annotation
+from app.services.clustering_tools import drop_incomplete_features, heatmap_notice, row_zscore
 from app.services.functions import (
+    condition_sample_labels,
     extract_sample_id as _extract_id_or_number,
     _phosprot_values_are_centred,
     data_source_options,
     select_matrix,
     intensity_unit_label,
 )
-from app.services.plot_images import (
-    _advanced_condition_colors,
-    _advanced_label,
-    _advanced_number,
-    _advanced_text,
-    _apply_advanced_axes,
+from app.services.plot_styling import (
+    advanced_condition_colors,
+    advanced_label,
+    advanced_number,
+    advanced_text,
+    apply_advanced_axes,
     advanced_color_map,
     resolve_marker,
 )
 from app.services.runtime_cache import apply_cached_wrappers
+from app.services.plotting_common import get_plt as _get_plt, get_sns as _get_seaborn
+from app.services.data_tools import metadata_for_kind as _metadata_for_kind
 
 SingleProteinIdentifier = Literal["workflow", "genes"]
-
-
-def _get_plt():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        return plt
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "matplotlib is required for plot rendering. Install it with: pip install matplotlib"
-        ) from exc
-
-
-def _get_seaborn():
-    try:
-        import seaborn as sns
-
-        return sns
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "seaborn is required for heatmap rendering. Install it with: pip install seaborn"
-        ) from exc
-
-
-
-
-
-
-def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.metadata.empty:
-        meta = annotation.metadata.copy()
-        meta = meta[meta["sample"].isin(sample_columns)]
-        if not meta.empty:
-            meta = meta.drop_duplicates(subset=["sample"])
-            meta = meta.set_index("sample").reindex(sample_columns).reset_index()
-            meta["condition"] = meta["condition"].fillna("sample").astype(str)
-            return meta
-    return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)})
 
 
 def _analysis_frame(
@@ -167,17 +127,11 @@ def _build_sample_labels(meta: pd.DataFrame, include_id: bool) -> pd.DataFrame:
     labeled = meta.copy()
     labeled["sample"] = labeled["sample"].astype(str)
     labeled["condition"] = labeled["condition"].astype(str)
-    labeled["sample_idx"] = labeled.groupby("condition").cumcount() + 1
+    labeled["new_sample"] = condition_sample_labels(labeled)
     if include_id:
-        labeled["new_sample"] = labeled.apply(
-            lambda row: f"{row['condition']}_{row['sample_idx']}\n({_extract_id_or_number(str(row['sample']))})",
-            axis=1,
-        )
-    else:
-        labeled["new_sample"] = labeled.apply(
-            lambda row: f"{row['condition']}_{row['sample_idx']}",
-            axis=1,
-        )
+        # The id goes on a second line so a long run name cannot widen the axis.
+        ids = labeled["sample"].map(lambda sample: _extract_id_or_number(str(sample)))
+        labeled["new_sample"] = labeled["new_sample"] + "\n(" + ids.astype(str) + ")"
     return labeled
 
 
@@ -658,13 +612,7 @@ def _heatmap_matrix(
     # short labels are not guaranteed to be.
     value_type_normalized = str(value_type).lower()
     if value_type_normalized == "z":
-        def _z_row(row: pd.Series) -> pd.Series:
-            mean = row.mean(skipna=True)
-            std = row.std(skipna=True)
-            if std == 0 or np.isnan(std):
-                return row * np.nan
-            return (row - mean) / std
-        matrix = matrix.apply(_z_row, axis=1)
+        matrix = pd.DataFrame(row_zscore(matrix), index=matrix.index, columns=matrix.columns)
         cbar_label = "Z-score"
     elif value_type_normalized == "log2":
         cbar_label = intensity_unit_label(_phosprot_values_are_centred(kind))
@@ -862,10 +810,10 @@ def single_protein_lineplot_plot(
     ax.grid(True, alpha=0.2)
     if legend:
         ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.84, 1])
     else:
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -923,7 +871,7 @@ def single_protein_boxplot_plot(
     # The project palette, and the advanced condition colours over it. This used
     # to be a bare tab20 lookup, so a colour set on the Colors page or in the
     # advanced panel was ignored here while every QC plot honoured it.
-    condition_color = _advanced_condition_colors(kind, plt, list(labels), advanced)
+    condition_color = advanced_condition_colors(kind, plt, list(labels), advanced)
     box_positions = [
         index
         for index, label in enumerate(labels, start=1)
@@ -943,13 +891,13 @@ def single_protein_boxplot_plot(
             # of them.
             flierprops={
                 "marker": "o",
-                "markersize": max(1.0, _advanced_number(advanced, "boxOutlierSize", 5.0)),
-                "markerfacecolor": _advanced_text(advanced, "boxOutlierColor") or "red",
-                "markeredgecolor": _advanced_text(advanced, "boxOutlierEdgeColor") or "black",
+                "markersize": max(1.0, advanced_number(advanced, "boxOutlierSize", 5.0)),
+                "markerfacecolor": advanced_text(advanced, "boxOutlierColor") or "red",
+                "markeredgecolor": advanced_text(advanced, "boxOutlierEdgeColor") or "black",
                 "markeredgewidth": 0.5,
             },
-            medianprops={"color": _advanced_text(advanced, "boxMedianColor") or "#b22222"},
-            boxprops={"edgecolor": _advanced_text(advanced, "boxBorderColor") or "#000000"},
+            medianprops={"color": advanced_text(advanced, "boxMedianColor") or "#b22222"},
+            boxprops={"edgecolor": advanced_text(advanced, "boxBorderColor") or "#000000"},
         )
         for patch, label in zip(box["boxes"], box_labels):
             patch.set_facecolor(condition_color[label])
@@ -1001,9 +949,9 @@ def single_protein_boxplot_plot(
     ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(
         [
-            f"{_advanced_label(label, advanced, 'conditionLabels')} (n={condition_values[label].size})"
+            f"{advanced_label(label, advanced, 'conditionLabels')} (n={condition_values[label].size})"
             if sample_n
-            else _advanced_label(label, advanced, "conditionLabels")
+            else advanced_label(label, advanced, "conditionLabels")
             for label in labels
         ],
         rotation=45,
@@ -1032,15 +980,15 @@ def single_protein_boxplot_plot(
         handles = [plt.Line2D([0], [0], color=condition_color[label], lw=4) for label in labels]
         ax.legend(
             handles,
-            [_advanced_label(label, advanced, "conditionLabels") for label in labels],
+            [advanced_label(label, advanced, "conditionLabels") for label in labels],
             title="Condition",
             bbox_to_anchor=(1.02, 1),
             loc="upper left",
         )
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.84, 1])
     else:
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -1126,6 +1074,9 @@ def single_protein_heatmap_plot(
     sns.heatmap(
         matrix,
         cmap=plt.get_cmap(advanced_color_map(advanced, str(cmap_name))),
+        # Symmetric limits in z mode, so equal colours mean equal z as on the
+        # other heatmaps; the map itself stays the caller's choice.
+        **({"vmin": -2.5, "vmax": 2.5} if str(value_type).lower() == "z" else {}),
         cbar_kws={"label": cbar_label},
         linewidths=0.5,
         linecolor="gray",
@@ -1141,7 +1092,7 @@ def single_protein_heatmap_plot(
         ax.set_title(f"{protein} ({suffix})")
     ax.set_xlabel("Sample")
     ax.set_ylabel("PTM site")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 

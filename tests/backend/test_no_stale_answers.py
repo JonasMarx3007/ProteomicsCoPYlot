@@ -98,14 +98,13 @@ MUST_BUMP = [
     "setActiveMetadataProfile",
     "updateAnnotationPairing",
     "uploadAnnotationMetadata",
-    "clearUploadedAnnotationMetadata",
-    # Added after the sweep below found them missing:
+    # Added after the sweep below found them missing (2026-09-25: the unused
+    # clients uploadPhosprot/uploadPeptideMetadata/clearUploadedAnnotationMetadata
+    # were deleted from api.ts and dropped here):
     "generateAnnotation",
     "runImputation",
     "aggregatePhosprot",
-    "uploadPhosprot",
     "setConditionPalette",
-    "uploadPeptideMetadata",
     "generatePeptideMetadata",
 ]
 

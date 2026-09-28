@@ -23,12 +23,12 @@ def focus_data(monkeypatch):
 
 
 def test_single_site_and_explicit_all_sites_remain_distinct(focus_data):
-    single = canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1", conditions=["B", "A"]), "")
+    single = canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1", conditions=["B", "A"]), {})
     assert single["features"] == ["P1_S1"] and single["conditions"] == ["B", "A"]
-    all_sites = canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1", allSites=True, conditions=["A", "B"]), "")
+    all_sites = canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1", allSites=True, conditions=["A", "B"]), {})
     assert all_sites["features"] == ["P1_S1", "P1_S2"]
     with pytest.raises(ValueError, match="No exact match"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1", conditions=["A", "B"]), "")
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1", conditions=["A", "B"]), {})
 
 
 @pytest.mark.parametrize('module,action', [('qc.cv', 'navigate'), ('analysis.canvas', 'focus_canvas')])
@@ -58,30 +58,30 @@ def test_canvas_explanation_shortcut_does_not_consume_other_intent(question):
 
 def test_protein_request_does_not_substitute_available_sites(focus_data):
     with pytest.raises(ValueError, match="No other level"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="P1", conditions=["A", "B"]), "")
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="P1", conditions=["A", "B"]), {})
     assert focus_data == ["protein"]
 
 
 def test_existing_other_level_canvas_is_preserved(focus_data):
     with pytest.raises(ValueError, match="another data level"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1"), json.dumps({"kind": "protein", "tiles": ["volcano"]}))
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1"), {"kind": "protein", "tiles": ["volcano"]})
     assert not focus_data
 
 
 def test_linked_comparison_is_used_and_ambiguous_conditions_require_choice(focus_data):
     request = CanvasFocusRequest(kind="phospho", query="P1_S1")
     with pytest.raises(ValueError, match="two distinct"):
-        canvas_focus.resolve_canvas_focus(request, "")
+        canvas_focus.resolve_canvas_focus(request, {})
     context = {"linkedVolcanoId": "second", "tileEvidence": [
         {"id": "first", "type": "volcano", "settings": {"condition1": "A", "condition2": "B"}},
         {"id": "second", "type": "volcano", "settings": {"condition1": "C", "condition2": "A"}}]}
-    assert canvas_focus.resolve_canvas_focus(request, json.dumps(context))["conditions"] == ["C", "A"]
+    assert canvas_focus.resolve_canvas_focus(request, context)["conditions"] == ["C", "A"]
 
 
 @pytest.mark.parametrize("conditions", [["A"], ["A", "A"], ["A", "missing"]])
 def test_invalid_conditions_do_not_change_canvas(focus_data, conditions):
     with pytest.raises(ValueError, match="two distinct"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1", conditions=conditions), "")
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1", conditions=conditions), {})
 
 
 def test_ambiguous_gene_requires_exact_protein(monkeypatch):
@@ -89,10 +89,10 @@ def test_ambiguous_gene_requires_exact_protein(monkeypatch):
     meta = pd.DataFrame({"condition": ["A", "B"]})
     monkeypatch.setattr(canvas_focus, "select_matrix", lambda *args, **kwargs: ("data", frame, meta))
     with pytest.raises(ValueError, match="multiple features"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="G"), "")
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="G"), {})
     with pytest.raises(ValueError, match="multiple features"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="G."), "", message="Show protein G.")
-    assert canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="P1"), "")["features"] == ["P1"]
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="G."), {}, message="Show protein G.")
+    assert canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="protein", query="P1"), {})["features"] == ["P1"]
 
 
 def test_ambiguous_feature_choices_are_bounded_and_counted(monkeypatch):
@@ -100,7 +100,7 @@ def test_ambiguous_feature_choices_are_bounded_and_counted(monkeypatch):
     meta = pd.DataFrame({'condition': ['A', 'B']})
     monkeypatch.setattr(canvas_focus, 'select_matrix', lambda *args, **kwargs: ('data', frame, meta))
     with pytest.raises(ValueError) as error:
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind='protein', query='G'), '')
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind='protein', query='G'), {})
     message = str(error.value)
     assert '7 matches' in message and 'first 5' in message
     assert '"P0"' in message and '"P4"' in message and '"P5"' not in message
@@ -110,7 +110,7 @@ def test_ambiguous_feature_choices_are_bounded_and_counted(monkeypatch):
 def test_punctuation_candidate_is_grounded_but_never_automatically_applied(focus_data):
     request = CanvasFocusRequest(kind="phospho", query="P1_S1.", conditions=["A", "B"])
     with pytest.raises(canvas_focus.CanvasIdentifierCandidate) as error:
-        canvas_focus.resolve_canvas_focus(request, "", message="Show phosphosite P1_S1.")
+        canvas_focus.resolve_canvas_focus(request, {}, message="Show phosphosite P1_S1.")
     assert error.value.query == "P1_S1"
     assert request.query == "P1_S1."
 
@@ -118,14 +118,14 @@ def test_punctuation_candidate_is_grounded_but_never_automatically_applied(focus
 @pytest.mark.parametrize("message", ["Show P1_S10.", "Show something else", 'Show "P1_S1."', "Show ‘P1_S1.’"])
 def test_candidate_must_be_in_question_and_not_explicitly_quoted(focus_data, message):
     with pytest.raises(ValueError, match="No exact match"):
-        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1.", conditions=["A", "B"]), "", message=message)
+        canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="P1_S1.", conditions=["A", "B"]), {}, message=message)
 
 
 def test_real_punctuation_identifier_is_preserved(monkeypatch):
     frame = pd.DataFrame({"PTM_Collapse_key": ["K0", "K0."]})
     meta = pd.DataFrame({"condition": ["A", "B"]})
     monkeypatch.setattr(canvas_focus, "select_matrix", lambda *args, **kwargs: ("data", frame, meta))
-    assert canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="K0."), "", message="Show K0.")["features"] == ["K0."]
+    assert canvas_focus.resolve_canvas_focus(CanvasFocusRequest(kind="phospho", query="K0."), {}, message="Show K0.")["features"] == ["K0."]
 
 
 @pytest.mark.parametrize("choice,accepted", [

@@ -1,7 +1,17 @@
+"""Plaintext and unsalted-SHA-256 credentials are refused, not warned about.
+
+Until 2026-09 both the viewer access file and the tool access file accepted
+`password` / `password_sha256` next to PBKDF2 hashes and only logged a
+warning. Plaintext is readable by anyone who can open the file; an unsalted
+digest of a human-chosen password falls to a precomputed table. A file that
+still carries one now fails validation with a message naming the entry and
+what to store instead, and nothing weaker than PBKDF2 is ever compared.
+"""
+
 from __future__ import annotations
 
-import io
-import logging
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -10,196 +20,87 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.services.viewer_portal import (
-    ViewerAccessEntry,
-    _password_matches,
-    _warn_about_legacy_credential,
-)
+from app.services import tool_access, viewer_portal
 from app.services.password_hashing import hash_password
+from app.services.viewer_portal import ViewerAccessEntry, _entry_from_object, _password_matches
 
 SECRET = "correct horse battery staple"
 
 
-def _entry(**overrides) -> ViewerAccessEntry:
-    values = {
-        "project": "GRK_project",
-        "project_label": "GRK",
-        "password": "",
-        "password_sha256": "",
-        "password_pbkdf2_sha256": "",
-    }
-    values.update(overrides)
-    return ViewerAccessEntry(**values)
+def test_a_pbkdf2_entry_is_accepted_and_authenticates():
+    entry = _entry_from_object({"project": "example_project", "password_pbkdf2_sha256": hash_password(SECRET)}, index=1)
+    assert entry.project == "example_project"
+    assert _password_matches(SECRET, entry) is True
+    assert _password_matches("wrong", entry) is False
 
 
-def _captured_warning(entry: ViewerAccessEntry) -> str:
-    stream = io.StringIO()
-    handler = logging.StreamHandler(stream)
-    logger = logging.getLogger("app.services.viewer_portal")
-    logger.addHandler(handler)
-    logger.setLevel(logging.WARNING)
-    try:
-        _warn_about_legacy_credential(entry)
-    finally:
-        logger.removeHandler(handler)
-    return stream.getvalue()
+def test_a_plaintext_viewer_password_is_refused():
+    with pytest.raises(ValueError) as excinfo:
+        _entry_from_object({"project": "example_project", "password": SECRET}, index=2)
+    message = str(excinfo.value)
+    assert "entry #2 (example_project) uses a plaintext 'password'" in message
+    assert "password_pbkdf2_sha256" in message
+    assert SECRET not in message
 
 
-def test_recommended_form_warns_about_nothing() -> None:
-    assert _captured_warning(_entry(password_pbkdf2_sha256=hash_password(SECRET))) == ""
-
-
-def test_plaintext_password_is_reported() -> None:
-    warning = _captured_warning(_entry(password=SECRET))
-    assert "plaintext" in warning
-    assert "GRK_project" in warning
-    assert "password_pbkdf2_sha256" in warning, "the warning should say what to use instead"
-
-
-def test_unsalted_hash_is_reported() -> None:
-    warning = _captured_warning(_entry(password_sha256="9f86d081884c7d65" * 4))
-    assert "unsalted" in warning
-    assert "GRK_project" in warning
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        _entry(password=SECRET),
-        _entry(password_sha256="9f86d081884c7d65" * 4),
-        _entry(password=SECRET, password_sha256="9f86d081884c7d65" * 4),
-    ],
-)
-def test_the_credential_itself_is_never_logged(entry: ViewerAccessEntry) -> None:
-    warning = _captured_warning(entry)
-    assert SECRET not in warning
-    assert entry.password_sha256 not in warning or not entry.password_sha256
-
-
-def test_a_stronger_form_present_suppresses_the_warning() -> None:
-    entry = _entry(password=SECRET, password_pbkdf2_sha256=hash_password(SECRET))
-    assert _captured_warning(entry) == ""
-
-
-def test_warning_does_not_change_authentication() -> None:
-    for entry in (
-        _entry(password_pbkdf2_sha256=hash_password(SECRET)),
-        _entry(password=SECRET),
-    ):
-        assert _password_matches(SECRET, entry) is True
-        assert _password_matches("wrong", entry) is False
-
-
-def _tool_warning(data: dict) -> str:
-    import logging
-
-    from app.services import tool_access
-
-    records: list[str] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record.getMessage() % record.args if record.args else record.getMessage())
-
-    handler = _Capture()
-    tool_access.LOGGER.addHandler(handler)
-    try:
-        tool_access._warn_about_legacy_credential(data)
-    finally:
-        tool_access.LOGGER.removeHandler(handler)
-    return " ".join(records)
-
-
-def test_tool_access_pbkdf2_warns_about_nothing() -> None:
-    from app.services.password_hashing import hash_password
-
-    assert _tool_warning({"password_pbkdf2_sha256": hash_password(SECRET)}) == ""
-
-
-def test_tool_access_unsalted_hash_is_reported() -> None:
-    import hashlib
-
-    digest = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-    warning = _tool_warning({"password_sha256": digest})
-    assert "unsalted SHA-256" in warning
-    assert "password_pbkdf2_sha256" in warning, "the warning must name the better option"
-
-
-def test_tool_access_never_logs_the_credential() -> None:
-    import hashlib
-
-    digest = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-    warning = _tool_warning({"password_sha256": digest})
-    assert SECRET not in warning
-    assert digest not in warning, "the hash itself must not be logged either"
-
-
-def test_a_stronger_tool_credential_suppresses_the_warning() -> None:
-    import hashlib
-
-    from app.services.password_hashing import hash_password
-
-    warning = _tool_warning(
-        {
-            "password_sha256": hashlib.sha256(SECRET.encode("utf-8")).hexdigest(),
-            "password_pbkdf2_sha256": hash_password(SECRET),
-        }
-    )
-    assert warning == ""
-
-
-def test_the_tool_warning_does_not_change_authentication() -> None:
-    import hashlib
-    import json
-    import tempfile
-    from pathlib import Path
-
-    from app.services import tool_access
-
-    digest = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        (root / "local").mkdir()
-        (root / "local" / "tool_access.local.json").write_text(
-            json.dumps({"password_sha256": digest, "tokens": []}), encoding="utf-8"
+def test_an_unsalted_viewer_hash_is_refused_even_next_to_a_pbkdf2_hash():
+    digest = hashlib.sha256(SECRET.encode()).hexdigest()
+    with pytest.raises(ValueError, match="unsalted 'password_sha256'"):
+        _entry_from_object({"project": "example_project", "password_sha256": digest}, index=1)
+    with pytest.raises(ValueError, match="unsalted 'password_sha256'"):
+        _entry_from_object(
+            {"project": "example_project", "password_sha256": digest, "password_pbkdf2_sha256": hash_password(SECRET)},
+            index=1,
         )
-        tool_access.authenticate_tool_password(SECRET, project_root=root)
-        with pytest.raises(ValueError, match="Invalid tool password"):
-            tool_access.authenticate_tool_password("wrong", project_root=root)
 
 
-def test_validating_the_config_actually_emits_the_warning(monkeypatch) -> None:
-    import hashlib
-    import json
-    import logging
-    import tempfile
-    from pathlib import Path
+def test_an_entry_without_any_credential_is_refused():
+    with pytest.raises(ValueError, match="must define password_pbkdf2_sha256"):
+        _entry_from_object({"project": "example_project"}, index=3)
 
-    from app.services import tool_access
 
-    digest = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-    records: list[str] = []
+def test_the_old_passwords_object_layout_is_refused(tmp_path, monkeypatch):
+    access = tmp_path / "viewer_access.json"
+    access.write_text(json.dumps({"passwords": {SECRET: "example_project"}}), encoding="utf-8")
+    monkeypatch.setenv("COPYLOT_VIEWER_ACCESS_FILE", str(access))
+    with pytest.raises(ValueError, match="'passwords' object, which stores plaintext"):
+        viewer_portal._load_access_entries(ROOT)
 
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record.getMessage() % record.args if record.args else record.getMessage())
 
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        (root / "local").mkdir()
-        (root / "local" / "tool_access.local.json").write_text(
-            json.dumps({"password_sha256": digest, "tokens": []}), encoding="utf-8"
-        )
-        monkeypatch.setattr(tool_access, "_load_access", lambda *a, **k: {
-            "password_sha256": digest, "tokens": []
-        })
-        handler = _Capture()
-        tool_access.LOGGER.addHandler(handler)
-        try:
-            tool_access.validate_tool_access_configuration()
-        finally:
-            tool_access.LOGGER.removeHandler(handler)
+def test_the_entry_type_has_no_room_for_weaker_forms():
+    assert set(ViewerAccessEntry.__dataclass_fields__) == {"project", "project_label", "password_pbkdf2_sha256"}
 
-    assert any("unsalted SHA-256" in message for message in records), (
-        "validate_tool_access_configuration accepted a legacy hash without reporting it"
+
+def test_tool_access_pbkdf2_is_the_only_accepted_form():
+    assert tool_access._password_pbkdf2_hash({"password_pbkdf2_sha256": hash_password(SECRET)})
+    with pytest.raises(ValueError, match="unsalted password_sha256"):
+        tool_access._password_pbkdf2_hash({"password_sha256": hashlib.sha256(SECRET.encode()).hexdigest()})
+    with pytest.raises(ValueError, match="must define password_pbkdf2_sha256"):
+        tool_access._password_pbkdf2_hash({"tokens": []})
+
+
+def test_tool_login_uses_only_the_pbkdf2_hash(tmp_path, monkeypatch):
+    access = tmp_path / "tool_access.json"
+    access.write_text(json.dumps({"password_pbkdf2_sha256": hash_password(SECRET), "tokens": []}), encoding="utf-8")
+    monkeypatch.setenv("COPYLOT_TOOL_ACCESS_FILE", str(access))
+    monkeypatch.setattr(tool_access, "_grant_authenticated_session", lambda: "session")
+    assert tool_access.authenticate_tool_password(SECRET) == "session"
+    with pytest.raises(ValueError, match="Invalid tool password"):
+        tool_access.authenticate_tool_password("wrong")
+
+
+def test_viewer_portal_startup_validation_runs_with_pbkdf2_and_qr_entries(tmp_path, monkeypatch):
+    """The whole startup path, not just the parsers: a QR token file is parsed too."""
+    access = tmp_path / "viewer_access.json"
+    access.write_text(
+        json.dumps({"credentials": [{"project": "HEK293", "password_pbkdf2_sha256": hash_password(SECRET)}]}),
+        encoding="utf-8",
     )
+    qr = tmp_path / "viewer_qr_access.json"
+    qr.write_text(
+        json.dumps({"tokens": [{"project": "HEK293", "token_sha256": hashlib.sha256(b"qr-secret").hexdigest()}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("COPYLOT_VIEWER_ACCESS_FILE", str(access))
+    monkeypatch.setenv("COPYLOT_VIEWER_QR_ACCESS_FILE", str(qr))
+    viewer_portal.validate_viewer_portal_configuration()

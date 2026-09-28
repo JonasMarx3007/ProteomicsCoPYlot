@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 // the request -- because all three are one `className` or one forgotten prop
 // away from silently going back to how they were.
 
-const PAGE = new URL('../src/features/stats/StatisticalAnalysisPage.tsx', import.meta.url);
+const PAGE = new URL('../src/features/stats/OraPanel.tsx', import.meta.url);
 
 async function pageSource() {
   return readFile(PAGE, 'utf8');

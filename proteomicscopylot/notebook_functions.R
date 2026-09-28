@@ -206,11 +206,13 @@ rm(.copylot_source_file)
          Phosphoprotein = "Phosphoprotein", stop("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'", call. = FALSE))
 }
 
-.row_zscore <- function(m) {
-  means <- rowMeans(m, na.rm = TRUE)
-  sds <- apply(m, 1, sd, na.rm = TRUE)
+.row_zscore <- function(matrix) {
+  # Same convention as backend row_zscore(): sample sd (n - 1); rows with zero
+  # or undefined sd map to 0.
+  means <- rowMeans(matrix, na.rm = TRUE)
+  sds <- apply(matrix, 1, sd, na.rm = TRUE)
   sds[!is.finite(sds) | sds == 0] <- 1
-  sweep(sweep(m, 1, means, "-"), 1, sds, "/")
+  sweep(sweep(matrix, 1, means, "-"), 1, sds, "/")
 }
 
 .plot_heatmap <- function(
@@ -236,6 +238,9 @@ rm(.copylot_source_file)
   if (!all(is.finite(zlim)) || diff(zlim) == 0) {
     zlim <- c(0, 1)
   }
+  # Clip to the colour limits, as matplotlib's vmin/vmax does; graphics::image()
+  # refuses finite values outside zlim.
+  z[is.finite(z)] <- pmax(pmin(z[is.finite(z)], zlim[2]), zlim[1])
 
   colors <- palette %||% colorRampPalette(c("#313695", "white", "#a50026"))(100)
   old_par <- par(no.readonly = TRUE)
@@ -1145,7 +1150,7 @@ coverage_plot <- function(
     border = NA,
     ylim = c(0, ymax),
     axes = FALSE,
-    xlab = "Condition",
+    xlab = "Sample",
     ylab = y_label,
     main = if (header) title else ""
   )
@@ -1363,24 +1368,20 @@ coverage_plot_pep <- function(
       quantity_column,
       max
     )
-    peptide_count <- nrow(wide_data)
   } else {
     wide_data <- data
-    peptide_count <- if (feature_column %in% names(data)) {
-      length(unique(data[[feature_column]]))
-    } else {
-      nrow(data)
-    }
   }
 
   mapping <- .peptide_sample_map(setdiff(names(wide_data), feature_column), meta$sample)
   matched <- match(names(mapping), names(wide_data))
   names(wide_data)[matched] <- meta$new_sample[match(unname(mapping), meta$sample)]
   samples <- intersect(meta$new_sample, names(wide_data))
-  counts <- colSums(
-    !is.na(wide_data[, samples, drop = FALSE]) &
-      wide_data[, samples, drop = FALSE] != 0
-  )
+  quantified <- !is.na(wide_data[, samples, drop = FALSE]) &
+    wide_data[, samples, drop = FALSE] != 0
+  counts <- colSums(quantified)
+  # Reference line: features quantified in at least one annotated sample (the
+  # union of the bars), as in coverage_plot; not the number of sequences in the file.
+  peptide_count <- sum(rowSums(quantified) > 0)
   conditions <- meta$condition[match(samples, meta$new_sample)]
   condition_levels <- unique(meta$condition)
   condition_colors <- setNames(
@@ -1404,7 +1405,7 @@ coverage_plot_pep <- function(
     border = NA,
     ylim = c(0, max(counts, peptide_count) * 1.1),
     axes = FALSE,
-    xlab = "Condition",
+    xlab = "Sample",
     ylab = paste("Number of", paste0(level, "s")),
     main = if (header) paste0(if (level == "precursor") "Precursors" else "Peptides", " per sample") else ""
   )
@@ -1465,7 +1466,7 @@ histo_int <- function(data, meta, plot_colors=NULL, header=TRUE, legend=TRUE, wi
     ylim = y_range,
     xlab = "log2 Intensity",
     ylab = "Density",
-    main = if (header) "Distribution of measured intensity (log2)" else "",
+    main = if (header) "Distribution of mean intensity per condition (log2)" else "",
     bty = "l"
   )
 
@@ -1516,7 +1517,7 @@ boxplot_int <- function(data, meta, outliers=FALSE, header=TRUE, plot_colors=NUL
     boxlwd = 1.5,
     xlab = "Condition",
     ylab = "log2 Intensity",
-    main = if (header) "Measured intensity values (log2)" else ""
+    main = if (header) "Mean intensity per condition (log2)" else ""
   )
 
   if (text) {
@@ -3933,6 +3934,7 @@ different_genes_control <- function(
   data.frame(
     source = character(0), term_id = character(0), term_name = character(0),
     term_size = integer(0), intersection_size = integer(0),
+    query_size = integer(0), gene_ratio = numeric(0),
     p_value = numeric(0), adj_p_value = numeric(0), stringsAsFactors = FALSE
   )
 }
@@ -4025,6 +4027,8 @@ enrichment_data <- function(
     term_name = db$description[eligible],
     term_size = term_sizes[eligible],
     intersection_size = intersection_sizes,
+    query_size = length(query),
+    gene_ratio = intersection_sizes / length(query),
     p_value = p_values,
     adj_p_value = stats::p.adjust(p_values, method = "BH"),
     stringsAsFactors = FALSE
@@ -4057,7 +4061,8 @@ enrichment_analysis <- function(
   )
   if (!nrow(result)) return(NULL)
 
-  hits <- result$intersection_size / result$term_size * 100
+  # GeneRatio (overlap / query genes), as in clusterProfiler's dot plot.
+  hits <- result$gene_ratio
   colors <- colorRampPalette(c("#2166ac", "white", "#b2182b"))(100)
   color_index <- cut(
     -log10(pmax(result$adj_p_value, .Machine$double.xmin)),
@@ -4075,7 +4080,7 @@ enrichment_analysis <- function(
     cex = sqrt(result$intersection_size),
     col = colors[color_index],
     yaxt = "n",
-    xlab = "Hits (%)",
+    xlab = "GeneRatio (overlap / query genes)",
     ylab = "",
     main = paste0(
       "GO Enrichment (ORA)\n",
@@ -4212,7 +4217,8 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
   if (value_type == "z") {
     heatmap_data <- .row_zscore(heatmap_data)
     color_label <- "Z-score"
-    zlim <- NULL
+    # Symmetric limits on a diverging map, as on the ANOVA heatmaps.
+    zlim <- c(-2.5, 2.5)
   } else if (value_type == "log2") {
     color_label <- "log2 Intensity"
     zlim <- NULL
@@ -4272,7 +4278,11 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
     labels = header,
     zlim = zlim,
     color_label = color_label,
-    palette = colorRampPalette(c("#0d0887", "#cc4778", "#f0f921"))(100)
+    palette = if (value_type == "z") {
+      colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(100)
+    } else {
+      colorRampPalette(c("#0d0887", "#cc4778", "#f0f921"))(100)
+    }
   )
 }
 
@@ -4776,10 +4786,10 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     "Precursor.Quantity",
     max
   )
-  names(wide_data) <- vapply(names(wide_data), extract_id_or_number, character(1))
-
+  sample_map <- .peptide_sample_map(names(wide_data), meta$sample)
   meta <- .sample_meta(meta, id = id, newline = TRUE)
-  id_map <- setNames(meta$new_sample, meta$id)
+  labels <- setNames(meta$new_sample, meta$sample)
+  id_map <- setNames(labels[unname(sample_map)], names(sample_map))
   names(wide_data) <- ifelse(
     names(wide_data) %in% names(id_map),
     id_map[names(wide_data)],
@@ -4814,7 +4824,7 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     col = colors,
     border = NA,
     ylim = c(0, 100),
-    ylab = "Percentage of peptides with missed cleavage (%)",
+    ylab = "Peptides with missed cleavage (%)",
     main = if (header) {
       paste0("Missed cleavages per sample (", .PROTEASE_LABELS[[resolved_protease]], ")")
     } else {
@@ -5314,7 +5324,7 @@ sty_plot <- function(data) {
   if (total > 0) {
     count_ticks <- pretty(c(0, max(counts)))
     axis(4, at = count_ticks, labels = sprintf("%.0f", count_ticks / total * 100))
-    mtext("Percentage (%)", side = 4, line = 2.5)
+    mtext("Share of sites (%)", side = 4, line = 2.5)
   }
 
   .plot_result()
@@ -5969,6 +5979,15 @@ missing_value_plot_pep <- function(
   )
 }
 
+.feature_axis_label <- function(data) {
+  # What one row of the matrix is, for an axis label.
+  columns <- names(data)
+  if ("Phosphoprotein" %in% columns) return("Phosphoproteins")
+  if ("PTM_Collapse_key" %in% columns) return("Phosphosites")
+  if ("ProteinNames" %in% columns) return("Proteins")
+  "Features"
+}
+
 missing_value_heatmap <- function(
     data,
     meta,
@@ -5997,7 +6016,7 @@ missing_value_heatmap <- function(
     zlim = c(0, 1),
     axes = FALSE,
     xlab = "Sample",
-    ylab = "Protein Numbers",
+    ylab = .feature_axis_label(data),
     main = if (header) "Missing Values Heatmap" else ""
   )
   axis(1, seq_along(samples), samples, las = 2, cex.axis = 0.65)

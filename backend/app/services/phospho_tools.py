@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from app.services.html_security import GENERATED_HTML_META
-from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     cm_to_inch as _cm_to_inch,
@@ -24,92 +22,17 @@ from app.services.functions import (
     extract_sample_id as _extract_id_or_number,
     imputed_data_available,
 )
-from app.services.plot_images import (
-    _advanced_label,
-    _advanced_plotly_layout,
-    _apply_advanced_axes,
+from app.services.plot_styling import (
+    advanced_label,
+    advanced_plotly_layout,
+    apply_advanced_axes,
     advanced_color,
     marker_style,
     plotly_marker,
     resolve_reference_line,
 )
 from app.services.runtime_cache import apply_cached_wrappers
-
-
-def _get_plt():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.ticker as mtick
-
-        return plt, mtick
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "matplotlib is required for phospho plot rendering. Install it with: pip install matplotlib"
-        ) from exc
-
-
-def _get_plotly():
-    import plotly.express as px
-
-    return px
-
-
-def _get_plotly_go():
-    import plotly.graph_objects as go
-
-    return go
-
-
-
-
-def _plotly_html(fig) -> str:
-    fig = force_svg_rendering(fig)
-    bg = str(getattr(fig.layout, "paper_bgcolor", None) or "#fff").strip() or "#fff"
-    body = fig.to_html(
-        full_html=False,
-        include_plotlyjs=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{GENERATED_HTML_META}"
-        "<style>"
-        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
-        "#plot-root{width:100%;height:100%;}"
-        ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:420px;}"
-        "</style>"
-        "</head><body><div id='plot-root'>"
-        f"{body}"
-        "</div>"
-        "<script>"
-        "(function(){"
-        "function firstPlot(){return document.querySelector('.js-plotly-plot,.plotly-graph-div');}"
-        "function resolveLayoutHeight(el){"
-        "if(!el){return 0;}"
-        "var value=0;"
-        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
-        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
-        "return Math.max(0,value);"
-        "}"
-        "function resizePlot(){"
-        "var el=firstPlot();"
-        "if(!(el && window.Plotly)){return;}"
-        "var viewportHeight=Math.max(420,(window.innerHeight||0)-8);"
-        "var layoutHeight=resolveLayoutHeight(el);"
-        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
-        "window.Plotly.relayout(el,{height:nextHeight}).catch(function(){});"
-        "window.Plotly.Plots.resize(el);"
-        "}"
-        "window.addEventListener('load', resizePlot);"
-        "window.addEventListener('resize', resizePlot);"
-        "setTimeout(resizePlot, 80);"
-        "setTimeout(resizePlot, 260);"
-        "})();"
-        "</script></body></html>"
-    )
+from app.services.plotting_common import get_plt_with_ticker as _get_plt, get_plotly_px as _get_plotly, get_plotly_go as _get_plotly_go, plotly_html as _plotly_html
 
 
 def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
@@ -150,15 +73,29 @@ def _ksea_context(
     return frame, meta, sample_columns
 
 
-def _phospho_regulation_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    """Use the processed analysis matrix, retaining the legacy raw fallback."""
+def _phospho_regulation_context(
+    data_source: str = "data",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """The matrix the regulation plot's volcano runs on.
+
+    `data_source` is the same choice the Statistics volcano offers (data /
+    filtered / imputed), so the sites this plot sums are the sites that volcano
+    shows for the same settings.
+    """
+    data_mode = str(data_source).strip().lower()
+    if data_mode not in DATA_SOURCES:
+        raise ValueError(
+            "Unsupported phosphoprotein-regulation data source. Choose 'data', 'filtered', or 'imputed'."
+        )
     annotation = get_annotation("phospho")
     if annotation is not None and not annotation.metadata.empty:
-        _, frame, meta = select_matrix("phospho", "data")
+        _, frame, meta = select_matrix("phospho", data_mode)
         sample_columns = [
             sample for sample in meta["sample"].astype(str).tolist() if sample in frame.columns
         ]
         return frame, meta, sample_columns
+    if data_mode != "data":
+        raise ValueError("Generate phosphosite annotations before selecting filtered or imputed data.")
     return _phospho_context()
 
 
@@ -278,7 +215,7 @@ def phosphosite_plot_png(
     ax.grid(False)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -397,7 +334,7 @@ def phospho_coverage_png(
                            color="black", alpha=.6, s=8)
         ax.set_xticks(x)
         ax.set_xticklabels(
-            [_advanced_label(str(condition), advanced, "conditionLabels") for condition in conds],
+            [advanced_label(str(condition), advanced, "conditionLabels") for condition in conds],
             rotation=45,
             ha="right",
         )
@@ -433,10 +370,10 @@ def phospho_coverage_png(
 
     if legend:
         ax.legend(loc="center left", bbox_to_anchor=(1, 0.5))
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.86, 1])
     else:
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -495,7 +432,7 @@ def phospho_distribution_png(
     ax.set_ylabel("Frequency")
     if header:
         ax.set_title("Distribution of phosphosite counts per protein")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -547,7 +484,7 @@ def phospho_sty_png(
     ax.spines["right"].set_visible(False)
     ax.grid(axis="y", alpha=0.25, linewidth=0.8)
     ax.set_axisbelow(True)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
 
     total_count = int(table["Count"].sum())
     if total_count > 0:
@@ -555,7 +492,7 @@ def phospho_sty_png(
             "right", functions=(lambda count: count * 100 / total_count,
                                 lambda percent: percent * total_count / 100),
         )
-        ax2.set_ylabel("Percentage (%)")
+        ax2.set_ylabel("Share of sites (%)")
         ax2.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
 
     y_max = float(table["Count"].max()) if not table.empty else 0.0
@@ -821,7 +758,7 @@ def ksea_plot_png(
         else:
             ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
     ax.legend(loc="best")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -998,7 +935,7 @@ def ksea_uploaded_volcano_html(
         hovermode="closest",
         margin=dict(l=40, r=20, t=60 if header else 30, b=40),
     )
-    fig.update_layout(**_advanced_plotly_layout(advanced))
+    fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
@@ -1012,6 +949,7 @@ def phosprot_regulation_table(
     use_uncorrected: bool = False,
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
+    data_source: str = "data",
 ) -> pd.DataFrame:
     if str(condition1).strip() == str(condition2).strip():
         raise ValueError("Select two different conditions to plot.")
@@ -1020,10 +958,10 @@ def phosprot_regulation_table(
     group_col = "Protein_group"
     from app.services.stats_tools import _volcano_dataframe
 
-    source_frame, source_metadata, _ = _phospho_regulation_context()
+    source_frame, source_metadata, _ = _phospho_regulation_context(data_source)
     _, _, volcano_df, _ = _volcano_dataframe(
         kind="phospho",
-        data_source="data",
+        data_source=data_source,
         condition1=condition1,
         condition2=condition2,
         identifier="workflow",
@@ -1134,7 +1072,7 @@ def _empty_phosprot_regulation_html(
             )
         ],
     )
-    fig.update_layout(**_advanced_plotly_layout(advanced))
+    fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 
@@ -1192,6 +1130,7 @@ def phosprot_regulation_png(
     use_uncorrected: bool = False,
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
+    data_source: str = "data",
     header: bool = True,
     width_cm: float = 20,
     height_cm: float = 12,
@@ -1208,6 +1147,7 @@ def phosprot_regulation_png(
         use_uncorrected=use_uncorrected,
         max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites,
+        data_source=data_source,
     )
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     if table.empty:
@@ -1237,7 +1177,7 @@ def phosprot_regulation_png(
     ax.set_ylabel("Cumulative Significant Down-Site |log2FC|")
     if header:
         ax.set_title("Cumulative Significant Phosphosite Regulation by Protein")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
 
@@ -1252,6 +1192,7 @@ def phosprot_regulation_html(
     use_uncorrected: bool = False,
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
+    data_source: str = "data",
     header: bool = True,
     advanced: dict | None = None,
 ) -> str:
@@ -1264,6 +1205,7 @@ def phosprot_regulation_html(
         use_uncorrected=use_uncorrected,
         max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites,
+        data_source=data_source,
     )
     if table.empty:
         # The same empty result the PNG draws an explanation for. It used to
@@ -1273,7 +1215,7 @@ def phosprot_regulation_html(
         # answer, whichever renderer the Type selector is on.
         return _empty_phosprot_regulation_html(header=header, advanced=advanced)
     fig = _phosprot_regulation_figure(table, header=header, advanced=advanced)
-    fig.update_layout(**_advanced_plotly_layout(advanced))
+    fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
 

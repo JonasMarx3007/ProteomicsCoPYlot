@@ -30,7 +30,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FEATURES = ROOT / "frontend" / "src" / "features"
-STATS = FEATURES / "stats" / "StatisticalAnalysisPage.tsx"
+ANOVA_PANEL = FEATURES / "stats" / "AnovaPanel.tsx"
+ORA_PANEL = FEATURES / "stats" / "OraPanel.tsx"
 
 KEYED = sorted(
     path
@@ -80,12 +81,14 @@ def test_every_stored_key_is_the_key_the_panel_compares_against(path: Path) -> N
 STATS_PANELS = [
     (
         "ANOVA",
+        ANOVA_PANEL,
         "const requestPayload = useMemo<AnovaRequest | null>",
         "const currentResultKey = requestPayload",
         "const currentResultKey = requestPayload",
     ),
     (
         "ORA",
+        ORA_PANEL,
         "runEnrichmentAnalysis({",
         "} satisfies EnrichmentRequest",
         "const currentResultKey = JSON.stringify({",
@@ -93,11 +96,13 @@ STATS_PANELS = [
 ]
 
 
-@pytest.mark.parametrize("name,start,end,key_anchor", STATS_PANELS, ids=lambda value: str(value)[:12])
+@pytest.mark.parametrize(
+    "name,panel,start,end,key_anchor", STATS_PANELS, ids=lambda value: str(value)[:12]
+)
 def test_every_request_field_is_in_that_request_key(
-    name: str, start: str, end: str, key_anchor: str
+    name: str, panel: Path, start: str, end: str, key_anchor: str
 ) -> None:
-    source = _source(STATS)
+    source = _source(panel)
     request = source[source.index(start) : source.index(end, source.index(start))]
     fields = _field_names(request) - {"revision"}
     key_start = source.index(key_anchor)
@@ -121,7 +126,7 @@ def test_every_request_field_is_in_that_request_key(
 
 def test_the_anova_key_is_derived_from_its_request() -> None:
     """The specific regression, pinned by shape rather than by field list."""
-    source = _source(STATS)
+    source = _source(ANOVA_PANEL)
     start = source.index("const requestPayload = useMemo<AnovaRequest | null>")
     request = source[start : source.index("const currentResultKey", start)]
     assert "postHocCondition1" in request and "postHocCondition2" in request
@@ -135,7 +140,7 @@ def test_the_anova_key_is_derived_from_its_request() -> None:
 
 def test_the_running_message_is_derived_from_the_same_result() -> None:
     """`running` says 'still working'; it must mean it."""
-    source = _source(STATS)
+    source = _source(ANOVA_PANEL)
     assert "const running = Boolean(requestPayload) && !result && !error;" in source, (
         "if `running` stops being derived from `result`, the panel can claim to "
         "be working while holding the answer, or the reverse"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import re
 from typing import Any
+from app.schemas.assistant import ContextMode
 from app.services import ai_functions
 
 _MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
@@ -85,7 +86,7 @@ def _readable_context_line(line: str) -> str:
 def _function_payload(
     function_name: str,
     workflow: str,
-    mode: str | None,
+    mode: ContextMode | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     source_func = getattr(ai_functions, function_name, None)
     if not callable(source_func):

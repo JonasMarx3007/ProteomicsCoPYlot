@@ -152,7 +152,7 @@ def test_ai_missed_cleavage_context_uses_selected_backend_rule(monkeypatch) -> N
     )
 
     text = ai_functions.peptide_missed_cleavage_plot(
-        mode="protease=trypsin_lysc"
+        mode={"protease": "trypsin_lysc"}
     )["data"]["text"]
 
     assert "protease=trypsin_lysc" in text

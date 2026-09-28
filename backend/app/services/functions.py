@@ -12,45 +12,40 @@ import pandas as pd
 import scipy.stats as stats
 from scipy.cluster.hierarchy import leaves_list, linkage
 
-from app.schemas.annotation import AnnotationKind
-from app.schemas.completeness import CompletenessTablesResponse
 from app.services.clustering_tools import (
     completeness_message,
     drop_incomplete_features,
+    row_zscore,
 )
-from app.services.runtime_cache import apply_cached_wrappers
 
 
-def parse_selection_list(raw: str, *, legacy_semicolons: bool = False) -> list[str]:
+def parse_selection_list(raw: str, *, accept_semicolons: bool = False) -> list[str]:
+    """A JSON array, or a comma-separated list.
+
+    `accept_semicolons` is for lists a language model wrote: asked for several
+    names it returns "A; B" about as often as "A, B", and that is a live habit
+    rather than an old file format.
+    """
     text = str(raw or "").strip()
     if text.startswith("["):
         values = json.loads(text)
         if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
             raise ValueError("Selections must be an array of strings.")
         return values
-    if legacy_semicolons:
+    if accept_semicolons:
         text = text.replace(";", ",")
     return [value.strip() for value in text.split(",") if value.strip()]
 
-try:
-    from statsmodels.stats.multitest import multipletests
-except ModuleNotFoundError:
+from app.services.stats_core import bh_adjust as _bh_adjust
 
-    def multipletests(pvals, alpha=0.05, method="fdr_bh"):
-        if method != "fdr_bh":
-            raise ModuleNotFoundError(
-                "statsmodels is required for multipletests methods other than 'fdr_bh'."
-            )
-        pvals = np.asarray(pvals, dtype=float)
-        n = len(pvals)
-        order = np.argsort(pvals)
-        ranked = pvals[order]
-        adjusted_ranked = ranked * n / np.arange(1, n + 1)
-        adjusted_ranked = np.minimum.accumulate(adjusted_ranked[::-1])[::-1]
-        adjusted = np.empty_like(adjusted_ranked)
-        adjusted[order] = np.clip(adjusted_ranked, 0, 1)
-        reject = adjusted <= alpha
-        return reject, adjusted, None, None
+
+def multipletests(pvals, alpha=0.05, method="fdr_bh"):
+    """Benjamini-Hochberg only, in the statsmodels return shape, from one shared implementation."""
+    if method != "fdr_bh":
+        raise ValueError("Only method='fdr_bh' is supported here.")
+    adjusted = _bh_adjust(np.asarray(pvals, dtype=float))
+    return adjusted <= alpha, adjusted, None, None
+
 
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 # What `choose_best_source` reports. Narrower than the schema's
@@ -139,6 +134,16 @@ def entity_labels_for_kind(kind) -> tuple[str, str]:
     return ENTITY_LABELS_BY_KIND.get(key, ENTITY_LABELS_BY_KIND["protein"])
 
 
+def condition_sample_labels(frame: pd.DataFrame) -> pd.Series:
+    """``condition_N`` per row: N is the sample's 1-based place inside its condition.
+
+    Every plot renames its sample columns this way. The expression was written
+    out in six places, including inside `sample_label_frame`, whose whole job is
+    to be the one copy the report's sample-mapping table can be trusted against.
+    """
+    return frame["condition"].astype(str) + "_" + (frame.groupby("condition").cumcount() + 1).astype(str)
+
+
 def sample_label_frame(metadata: pd.DataFrame) -> pd.DataFrame:
     """Original sample name -> the generic ``condition_N`` label used in plots.
 
@@ -172,8 +177,7 @@ def sample_label_frame(metadata: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
     frame = frame.reset_index(drop=True)
 
-    index = frame.groupby("condition").cumcount() + 1
-    frame["label"] = frame["condition"] + "_" + index.astype(str)
+    frame["label"] = condition_sample_labels(frame)
     if "pair_id" in frame.columns:
         frame["pair_id"] = frame["pair_id"].fillna("").astype(str).str.strip()
     else:
@@ -1147,10 +1151,7 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
         cluster_df = cluster_df.loc[completeness.kept]
         _warn_dropped_features(completeness, purpose="clustering")
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
 
     if matrix.shape[0] <= 1:
         cluster_df[cluster_col] = 1
@@ -1436,7 +1437,7 @@ def anova_plot(
     if "new_sample" in meta_plot.columns:
         meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
     else:
-        meta_plot["plot_sample"] = meta_plot["condition"] + "_" + (meta_plot.groupby("condition").cumcount() + 1).astype(str)
+        meta_plot["plot_sample"] = condition_sample_labels(meta_plot)
 
     sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_df.columns]
     if not sample_cols:
@@ -1459,10 +1460,7 @@ def anova_plot(
     labels = plot_df[label_col].astype(str).tolist()
 
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
         cmap = "RdBu_r"
         color_label = "row z-score"
         vmin, vmax = -2.5, 2.5
@@ -1522,6 +1520,9 @@ def anova_plot(
 
     if show_dendrograms and row_linkage is not None:
         dendrogram(row_linkage, ax=ax_row_dendrogram, orientation="left", no_labels=True, color_threshold=0, above_threshold_color="black", link_color_func=lambda _: "black")
+        # scipy draws leaf 0 at the bottom of a left-oriented dendrogram while
+        # imshow draws row 0 at the top; flip the axis so branches meet their rows.
+        ax_row_dendrogram.invert_yaxis()
     ax_row_dendrogram.set_axis_off()
 
     ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
@@ -1588,7 +1589,7 @@ def anova_plot_cluster(
     if "new_sample" in meta_plot.columns:
         meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
     else:
-        meta_plot["plot_sample"] = meta_plot["condition"] + "_" + (meta_plot.groupby("condition").cumcount() + 1).astype(str)
+        meta_plot["plot_sample"] = condition_sample_labels(meta_plot)
 
     sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_cluster_df.columns]
     if not sample_cols:
@@ -1608,10 +1609,7 @@ def anova_plot_cluster(
     labels = plot_df[label_col].astype(str).tolist()
 
     if z_score:
-        row_mean = np.nanmean(matrix, axis=1, keepdims=True)
-        row_sd = np.nanstd(matrix, axis=1, keepdims=True)
-        row_sd[(row_sd == 0) | ~np.isfinite(row_sd)] = 1
-        matrix = (matrix - row_mean) / row_sd
+        matrix = row_zscore(matrix)
         cmap = "RdBu_r"
         color_label = "row z-score"
         vmin, vmax = -2.5, 2.5
@@ -1789,892 +1787,8 @@ def qqnorm_plot_data(
     }
 
 
-# Imputation Pipeline
-def imputation_before_plot(
-    kind: AnnotationKind,
-    q_value: float,
-    adjust_std: float,
-    seed: int,
-    sample_wise: bool,
-    method="quantile",
-    down_shift=1.8,
-    width=0.3,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import imputation_before_plot as _impl
-
-    return _impl(
-        kind,
-        q_value,
-        adjust_std,
-        seed,
-        sample_wise,
-        method=method,
-        down_shift=down_shift,
-        width=width,
-        advanced=advanced,
-    )
-
-
-def imputation_overall_fit_plot(
-    kind: AnnotationKind,
-    q_value: float,
-    adjust_std: float,
-    seed: int,
-    sample_wise: bool,
-    show_imputation_draw: bool = True,
-    method="quantile",
-    down_shift=1.8,
-    width=0.3,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import imputation_overall_fit_plot as _impl
-
-    return _impl(
-        kind,
-        q_value,
-        adjust_std,
-        seed,
-        sample_wise,
-        show_imputation_draw,
-        method=method,
-        down_shift=down_shift,
-        width=width,
-        advanced=advanced,
-    )
-
-
-def imputation_after_plot(
-    kind: AnnotationKind,
-    q_value: float,
-    adjust_std: float,
-    seed: int,
-    sample_wise: bool,
-    normalization: str = "separate",
-    method="quantile",
-    down_shift=1.8,
-    width=0.3,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import imputation_after_plot as _impl
-
-    return _impl(
-        kind,
-        q_value,
-        adjust_std,
-        seed,
-        sample_wise,
-        normalization,
-        method=method,
-        down_shift=down_shift,
-        width=width,
-        advanced=advanced,
-    )
-
-
-# Distribution Pipeline
-def distribution_qqnorm_plot(
-    kind: AnnotationKind,
-    random_seed: int = 187,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import distribution_qqnorm_plot as _impl
-
-    return _impl(kind, random_seed=random_seed, advanced=advanced)
-
-
-# Completeness Pipeline
-def completeness_missing_value_plot(
-    kind: AnnotationKind,
-    bin_count: int = 0,
-    header: bool = True,
-    text: bool = True,
-    text_size: int = 8,
-    color: str = "#2563eb",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.completeness_tools import completeness_missing_value_plot as _impl
-
-    return _impl(
-        kind=kind,
-        bin_count=bin_count,
-        header=header,
-        text=text,
-        text_size=text_size,
-        color=color,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def completeness_missing_value_plot_peptide(
-    bin_count: int = 0,
-    header: bool = True,
-    text: bool = True,
-    text_size: int = 8,
-    color: str = "#2563eb",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    quantity_column: str | None = None,
-) -> bytes:
-    from app.services.completeness_tools import completeness_missing_value_plot_peptide as _impl
-
-    return _impl(
-        bin_count=bin_count,
-        header=header,
-        text=text,
-        text_size=text_size,
-        color=color,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        quantity_column=quantity_column,
-    )
-
-
-def completeness_missing_value_plot_precursor(
-    bin_count: int = 0,
-    header: bool = True,
-    text: bool = True,
-    text_size: int = 8,
-    color: str = "#2563eb",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    quantity_column: str | None = None,
-) -> bytes:
-    from app.services.completeness_tools import completeness_missing_value_plot_precursor as _impl
-
-    return _impl(
-        bin_count=bin_count,
-        header=header,
-        text=text,
-        text_size=text_size,
-        color=color,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        quantity_column=quantity_column,
-    )
-
-
-def completeness_missing_value_heatmap(
-    kind: AnnotationKind,
-    include_id: bool = True,
-    header: bool = True,
-    width_cm: float = 10,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.completeness_tools import completeness_missing_value_heatmap as _impl
-
-    return _impl(
-        kind=kind,
-        include_id=include_id,
-        header=header,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def completeness_tables(
-    kind: AnnotationKind,
-    outlier_threshold: float = 50.0,
-    include_id: bool = True,
-) -> CompletenessTablesResponse:
-    from app.services.completeness_tools import completeness_tables as _impl
-
-    return _impl(
-        kind=kind,
-        outlier_threshold=outlier_threshold,
-        include_id=include_id,
-    )
-
-
-# QC Pipeline
-def qc_coverage_plot(
-    kind: AnnotationKind,
-    include_id: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    summary: bool = False,
-    text: bool = False,
-    text_size: int = 9,
-    random_seed: int = 187,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    reference_line: bool = True,
-) -> bytes:
-    from app.services.plot_images import qc_coverage_plot as _impl
-
-    return _impl(
-        kind=kind,
-        include_id=include_id,
-        header=header,
-        legend=legend,
-        summary=summary,
-        text=text,
-        text_size=text_size,
-        random_seed=random_seed,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        reference_line=reference_line,
-    )
-
-
-def qc_peptide_coverage_plot(
-    include_id: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    quantity_column: str | None = None,
-    level: str = "peptide",
-    reference_line: bool = True,
-) -> bytes:
-    from app.services.plot_images import qc_peptide_coverage_plot as _impl
-
-    return _impl(
-        include_id=include_id,
-        header=header,
-        legend=legend,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        quantity_column=quantity_column,
-        level=level,
-        reference_line=reference_line,
-    )
-
-
-def qc_intensity_histogram_plot(
-    kind: AnnotationKind,
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_intensity_histogram_plot as _impl
-
-    return _impl(
-        kind=kind,
-        header=header,
-        legend=legend,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def qc_boxplot_plot(
-    kind: AnnotationKind,
-    mode: str = "Mean",
-    outliers: bool = False,
-    include_id: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    text: bool = False,
-    text_size: int = 9,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_boxplot_plot as _impl
-
-    return _impl(
-        kind=kind,
-        mode=mode,
-        outliers=outliers,
-        include_id=include_id,
-        header=header,
-        legend=legend,
-        text=text,
-        text_size=text_size,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def qc_cv_plot(
-    kind: AnnotationKind,
-    outliers: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    text: bool = False,
-    text_size: int = 9,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_cv_plot as _impl
-
-    return _impl(
-        kind=kind,
-        outliers=outliers,
-        header=header,
-        legend=legend,
-        text=text,
-        text_size=text_size,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def qc_pca_plot(
-    kind: AnnotationKind,
-    data_source: str = "data",
-    header: bool = True,
-    legend: bool = True,
-    plot_dim: str = "2D",
-    method: str = "PCA",
-    add_ellipses: bool = False,
-    dot_size: int = 5,
-    cluster_method: str = "None",
-    cluster_count: int = 3,
-    color_by: str = "Condition",
-    umap_n_neighbors: int = 15,
-    umap_min_dist: float = 0.1,
-    tsne_perplexity: float = 30.0,
-    tsne_learning_rate: float = 200.0,
-    dbscan_eps: float = 0.5,
-    dbscan_min_samples: int = 2,
-    random_state: int = 42,
-    scaling: str = "auto",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_pca_plot as _impl
-
-    return _impl(
-        kind=kind,
-        data_source=data_source,
-        header=header,
-        legend=legend,
-        plot_dim=plot_dim,
-        method=method,
-        add_ellipses=add_ellipses,
-        dot_size=dot_size,
-        cluster_method=cluster_method,
-        cluster_count=cluster_count,
-        color_by=color_by,
-        umap_n_neighbors=umap_n_neighbors,
-        umap_min_dist=umap_min_dist,
-        tsne_perplexity=tsne_perplexity,
-        tsne_learning_rate=tsne_learning_rate,
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-        random_state=random_state,
-        scaling=scaling,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def qc_pca_interactive_html(
-    kind: AnnotationKind,
-    data_source: str = "data",
-    header: bool = True,
-    legend: bool = True,
-    plot_dim: str = "2D",
-    method: str = "PCA",
-    add_ellipses: bool = False,
-    dot_size: int = 8,
-    cluster_method: str = "None",
-    cluster_count: int = 3,
-    color_by: str = "Condition",
-    umap_n_neighbors: int = 15,
-    umap_min_dist: float = 0.1,
-    tsne_perplexity: float = 30.0,
-    tsne_learning_rate: float = 200.0,
-    dbscan_eps: float = 0.5,
-    dbscan_min_samples: int = 2,
-    random_state: int = 42,
-    scaling: str = "auto",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    advanced: dict | None = None,
-) -> str:
-    from app.services.plot_images import qc_pca_interactive_html as _impl
-
-    return _impl(
-        kind=kind,
-        data_source=data_source,
-        header=header,
-        legend=legend,
-        plot_dim=plot_dim,
-        method=method,
-        add_ellipses=add_ellipses,
-        dot_size=dot_size,
-        cluster_method=cluster_method,
-        cluster_count=cluster_count,
-        color_by=color_by,
-        umap_n_neighbors=umap_n_neighbors,
-        umap_min_dist=umap_min_dist,
-        tsne_perplexity=tsne_perplexity,
-        tsne_learning_rate=tsne_learning_rate,
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-        random_state=random_state,
-        scaling=scaling,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        advanced=advanced,
-    )
-
-
-def qc_abundance_plot(
-    kind: AnnotationKind,
-    header: bool = True,
-    legend: bool = True,
-    condition: str = "All Conditions",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_abundance_plot as _impl
-
-    return _impl(
-        kind=kind,
-        header=header,
-        legend=legend,
-        condition=condition,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def qc_abundance_interactive_html(
-    kind: AnnotationKind,
-    condition: str = "All Conditions",
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    advanced: dict | None = None,
-) -> str:
-    from app.services.plot_images import qc_abundance_interactive_html as _impl
-
-    return _impl(
-        kind=kind,
-        condition=condition,
-        header=header,
-        legend=legend,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        advanced=advanced,
-    )
-
-
-def qc_correlation_plot(
-    kind: AnnotationKind,
-    method: str = "Matrix",
-    include_id: bool = False,
-    full_range: bool = False,
-    width_cm: float = 20,
-    height_cm: float = 16,
-    dpi: int = 400,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.plot_images import qc_correlation_plot as _impl
-
-    return _impl(
-        kind=kind,
-        method=method,
-        include_id=include_id,
-        full_range=full_range,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-# Single Protein Pipeline
-def single_protein_boxplot_plot(
-    kind: AnnotationKind,
-    protein: str,
-    conditions: list[str],
-    identifier: str = "workflow",
-    outliers: bool = False,
-    dots: bool = False,
-    random_seed: int = 69,
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    data_source: str = "data",
-    sample_n: bool = True,
-) -> bytes:
-    from app.services.single_protein_tools import single_protein_boxplot_plot as _impl
-
-    return _impl(
-        kind=kind,
-        protein=protein,
-        conditions=conditions,
-        identifier=identifier,
-        outliers=outliers,
-        dots=dots,
-        random_seed=random_seed,
-        header=header,
-        legend=legend,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        data_source=data_source,
-        sample_n=sample_n,
-    )
-
-
-def single_protein_lineplot_plot(
-    kind: AnnotationKind,
-    proteins: list[str],
-    conditions: list[str],
-    include_id: bool = False,
-    identifier: str = "workflow",
-    header: bool = True,
-    legend: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    data_source: str = "data",
-) -> bytes:
-    from app.services.single_protein_tools import single_protein_lineplot_plot as _impl
-
-    return _impl(
-        kind=kind,
-        proteins=proteins,
-        conditions=conditions,
-        include_id=include_id,
-        identifier=identifier,
-        header=header,
-        legend=legend,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        data_source=data_source,
-    )
-
-
-def single_protein_heatmap_plot(
-    kind: AnnotationKind,
-    protein: str,
-    conditions: list[str],
-    identifier: str = "workflow",
-    include_id: bool = False,
-    header: bool = True,
-    filter_m1: bool = True,
-    cluster_rows: bool = False,
-    cluster_cols: bool = False,
-    value_type: str = "log2",
-    cmap_name: str = "plasma",
-    width_cm: float = 20,
-    height_cm: float = 12,
-    dpi: int = 300,
-    advanced: dict | None = None,
-    data_source: str = "data",
-) -> bytes:
-    from app.services.single_protein_tools import single_protein_heatmap_plot as _impl
-
-    return _impl(
-        kind=kind,
-        protein=protein,
-        conditions=conditions,
-        identifier=identifier,
-        include_id=include_id,
-        header=header,
-        filter_m1=filter_m1,
-        cluster_rows=cluster_rows,
-        cluster_cols=cluster_cols,
-        value_type=value_type,
-        cmap_name=cmap_name,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-        data_source=data_source,
-    )
-
-
-# Phospho-specific Pipeline
-def phosphosite_plot_png(
-    cutoff: float = 0.0,
-    color: str = "#87CEEB",
-    width_cm: float = 15,
-    height_cm: float = 10,
-    dpi: int = 100,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.phospho_tools import phosphosite_plot_png as _impl
-
-    return _impl(
-        cutoff=cutoff,
-        color=color,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def phospho_coverage_png(
-    include_id: bool = False,
-    header: bool = True,
-    legend: bool = True,
-    mode: str = "Normal",
-    color_class_i: str = "#2563eb",
-    color_not_class_i: str = "#f59e0b",
-    random_seed: int = 69,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    conditions: list[str] | None = None,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.phospho_tools import phospho_coverage_png as _impl
-
-    return _impl(
-        include_id=include_id,
-        header=header,
-        legend=legend,
-        mode=mode,
-        color_class_i=color_class_i,
-        color_not_class_i=color_not_class_i,
-        random_seed=random_seed,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        conditions=conditions,
-        advanced=advanced,
-    )
-
-
-def phospho_distribution_png(
-    cutoff: float = 0.0,
-    header: bool = True,
-    color: str = "#87CEEB",
-    width_cm: float = 20,
-    height_cm: float = 15,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.phospho_tools import phospho_distribution_png as _impl
-
-    return _impl(
-        cutoff=cutoff,
-        header=header,
-        color=color,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def phospho_sty_png(
-    header: bool = True,
-    width_cm: float = 17.78,
-    height_cm: float = 11.43,
-    dpi: int = 140,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.phospho_tools import phospho_sty_png as _impl
-
-    return _impl(
-        header=header,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-# Comparison Pipeline
-def comparison_pearson_png(
-    kind: AnnotationKind,
-    mode: str = "Single",
-    sample1: str = "",
-    sample2: str = "",
-    condition1: str = "",
-    condition2: str = "",
-    alias1: str = "",
-    alias2: str = "",
-    color: str = "#1f77b4",
-    dot_size: float = 60,
-    header: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 12,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.comparison_tools import pearson_correlation_png as _impl
-
-    return _impl(
-        kind=kind,
-        mode=mode,
-        sample1=sample1,
-        sample2=sample2,
-        condition1=condition1,
-        condition2=condition2,
-        alias1=alias1,
-        alias2=alias2,
-        color=color,
-        dot_size=dot_size,
-        header=header,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-def comparison_pearson_html(
-    kind: AnnotationKind,
-    mode: str = "Single",
-    sample1: str = "",
-    sample2: str = "",
-    condition1: str = "",
-    condition2: str = "",
-    alias1: str = "",
-    alias2: str = "",
-    color: str = "#1f77b4",
-    dot_size: float = 8,
-    header: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 12,
-    advanced: dict | None = None,
-) -> str:
-    from app.services.comparison_tools import pearson_correlation_html as _impl
-
-    return _impl(
-        kind=kind,
-        mode=mode,
-        sample1=sample1,
-        sample2=sample2,
-        condition1=condition1,
-        condition2=condition2,
-        alias1=alias1,
-        alias2=alias2,
-        color=color,
-        dot_size=dot_size,
-        header=header,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        advanced=advanced,
-    )
-
-
-def comparison_venn_png(
-    kind: AnnotationKind,
-    mode: str = "Single",
-    first: str = "",
-    second: str = "",
-    third: str = "",
-    alias1: str = "",
-    alias2: str = "",
-    alias3: str = "",
-    color1: str = "#1f77b4",
-    color2: str = "#ff7f0e",
-    color3: str = "#2ca02c",
-    header: bool = True,
-    width_cm: float = 15,
-    height_cm: float = 12,
-    dpi: int = 300,
-    advanced: dict | None = None,
-) -> bytes:
-    from app.services.comparison_tools import venn_png as _impl
-
-    return _impl(
-        kind=kind,
-        mode=mode,
-        first=first,
-        second=second,
-        third=third,
-        alias1=alias1,
-        alias2=alias2,
-        alias3=alias3,
-        color1=color1,
-        color2=color2,
-        color3=color3,
-        header=header,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-        advanced=advanced,
-    )
-
-
-apply_cached_wrappers(
-    globals(),
-    [
-        "imputation_before_plot",
-        "imputation_overall_fit_plot",
-        "imputation_after_plot",
-        "distribution_qqnorm_plot",
-        "completeness_missing_value_plot",
-        "completeness_missing_value_plot_peptide",
-        "completeness_missing_value_plot_precursor",
-        "completeness_missing_value_heatmap",
-        "completeness_tables",
-        "qc_coverage_plot",
-        "qc_peptide_coverage_plot",
-        "qc_intensity_histogram_plot",
-        "qc_boxplot_plot",
-        "qc_cv_plot",
-        "qc_pca_plot",
-        "qc_pca_interactive_html",
-        "qc_abundance_plot",
-        "qc_abundance_interactive_html",
-        "qc_correlation_plot",
-        "single_protein_boxplot_plot",
-        "single_protein_lineplot_plot",
-        "single_protein_heatmap_plot",
-        "phosphosite_plot_png",
-        "phospho_coverage_png",
-        "phospho_distribution_png",
-        "phospho_sty_png",
-        "comparison_pearson_png",
-        "comparison_pearson_html",
-        "comparison_venn_png",
-    ],
-)
+# The section markers that used to head the render facade are gone with it:
+# each pipeline's renderers live in their own module (plot_images,
+# completeness_tools, single_protein_tools, phospho_tools, comparison_tools)
+# and are imported from there. What stays here is the analysis core the three
+# pipelines share.

@@ -117,8 +117,8 @@ def _stream_dataframe_download(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        LOGGER.exception("{error_detail}")
-        raise HTTPException(status_code=500, detail="{error_detail}.") from e
+        LOGGER.exception(error_detail)
+        raise HTTPException(status_code=500, detail=f"{error_detail}.") from e
 
 
 def _invalidate_auto_generated_profile_annotations(kind: MetadataAnnotationKind) -> None:

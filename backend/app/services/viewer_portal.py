@@ -37,8 +37,6 @@ _PROJECT_NAME_RE = re.compile(r"^(?=.*[^.])[A-Za-z0-9_.-]{1,128}$")
 class ViewerAccessEntry:
     project: str
     project_label: str
-    password: str
-    password_sha256: str
     password_pbkdf2_sha256: str
 
 
@@ -130,12 +128,35 @@ def _normalize_project_name(value: str) -> str:
     return project
 
 
+def _refuse_legacy_credential(raw: dict[str, Any], *, index: int, project: str) -> None:
+    """Plaintext and unsalted SHA-256 passwords are refused, not merely warned about.
+
+    Plaintext is readable by anyone who can open the file; an unsalted digest
+    of a human-chosen password falls to a precomputed table. Both were
+    accepted with a log warning until 2026-09; a deployment that still carries
+    one now fails to start and is told what to store instead.
+    """
+    if str(raw.get("password", "")):
+        form = "a plaintext 'password'"
+    elif str(raw.get("password_sha256", "")).strip():
+        form = "an unsalted 'password_sha256' hash"
+    else:
+        return
+    raise ValueError(
+        f"Viewer access entry #{index} ({project or 'no project'}) uses {form}, which is no "
+        "longer accepted. Store a PBKDF2 hash as password_pbkdf2_sha256 instead "
+        "(see docs/INSTALLATION.md for the one-line command that generates it)."
+    )
+
+
 def _normalize_sha256(value: str) -> str:
+    """A 64-hex SHA-256 digest as stored for QR tokens (random secrets, so a
+    plain digest is adequate there; passwords are PBKDF2 only)."""
     digest = str(value or "").strip().lower()
     if not digest:
         return ""
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        raise ValueError("password_sha256 must be a 64-character lowercase hex digest.")
+        raise ValueError("token_sha256 must be a 64-character lowercase hex digest.")
     return digest
 
 
@@ -146,21 +167,16 @@ def _hash_token(token: str) -> str:
 def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
     project = _normalize_project_name(str(raw.get("project", "")))
     project_label = str(raw.get("label", project)).strip() or project
-    password = str(raw.get("password", ""))
-    password_sha256 = _normalize_sha256(str(raw.get("password_sha256", "")))
+    _refuse_legacy_credential(raw, index=index, project=project)
     password_pbkdf2_sha256 = str(raw.get("password_pbkdf2_sha256", "")).strip()
-    if password_pbkdf2_sha256:
-        validate_password_hash(password_pbkdf2_sha256)
-    if not password and not password_sha256 and not password_pbkdf2_sha256:
+    if not password_pbkdf2_sha256:
         raise ValueError(
-            f"Viewer access entry #{index} must define password, password_sha256, "
-            "or password_pbkdf2_sha256."
+            f"Viewer access entry #{index} ({project}) must define password_pbkdf2_sha256."
         )
+    validate_password_hash(password_pbkdf2_sha256)
     return ViewerAccessEntry(
         project=project,
         project_label=project_label,
-        password=password,
-        password_sha256=password_sha256,
         password_pbkdf2_sha256=password_pbkdf2_sha256,
     )
 
@@ -193,34 +209,15 @@ def _parse_access_entries(raw: Any) -> list[ViewerAccessEntry]:
                 entries.append(_entry_from_object(item, index=idx))
             return entries
 
-        passwords = raw.get("passwords")
-        if isinstance(passwords, dict):
-            for password, target in passwords.items():
-                project = ""
-                label = ""
-                password_sha256 = ""
-                if isinstance(target, str):
-                    project = target
-                elif isinstance(target, dict):
-                    project = str(target.get("project", ""))
-                    label = str(target.get("label", "")).strip()
-                    password_sha256 = _normalize_sha256(str(target.get("password_sha256", "")))
-                else:
-                    raise ValueError("viewer access passwords values must be strings or objects.")
-                entries.append(
-                    ViewerAccessEntry(
-                        project=_normalize_project_name(project),
-                        project_label=label or _normalize_project_name(project),
-                        password=str(password),
-                        password_sha256=password_sha256,
-                        password_pbkdf2_sha256="",
-                    )
-                )
-            return entries
+        if isinstance(raw.get("passwords"), dict):
+            # The pre-2026 layout keyed projects by their plaintext password.
+            raise ValueError(
+                "viewer access file uses the 'passwords' object, which stores plaintext "
+                "passwords and is no longer accepted. Use a 'credentials' list with "
+                "password_pbkdf2_sha256 entries (see docs/INSTALLATION.md)."
+            )
 
-    raise ValueError(
-        "viewer access file must contain either a 'credentials' list or a 'passwords' object."
-    )
+    raise ValueError("viewer access file must contain a 'credentials' list.")
 
 
 def _parse_qr_access_entries(raw: Any) -> list[ViewerQrAccessEntry]:
@@ -285,41 +282,7 @@ def _load_qr_access_entries(project_root: Path) -> list[ViewerQrAccessEntry]:
 
 
 def _password_matches(raw_password: str, entry: ViewerAccessEntry) -> bool:
-    if entry.password_pbkdf2_sha256 and verify_password(raw_password, entry.password_pbkdf2_sha256):
-        return True
-    if entry.password and secrets.compare_digest(raw_password, entry.password):
-        return True
-    if entry.password_sha256:
-        digest = hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
-        if secrets.compare_digest(digest, entry.password_sha256):
-            return True
-    return False
-
-
-def _warn_about_legacy_credential(entry: ViewerAccessEntry) -> None:
-    """Make a weak credential form visible rather than silently accepted.
-
-    `password` and `password_sha256` remain supported -- docs/INSTALLATION.md
-    promises they stay compatible -- so this only reports. Plaintext is readable
-    by anyone who can open the file; unsalted SHA-256 has no salt and no
-    iterations, so a human-chosen password falls to a precomputed table. The
-    project name is logged, never the credential.
-    """
-    if entry.password_pbkdf2_sha256:
-        return
-    if entry.password:
-        form, reason = "a plaintext password", "it is readable by anyone who can open the file"
-    elif entry.password_sha256:
-        form, reason = "an unsalted SHA-256 hash", "it has no salt and no key stretching"
-    else:
-        return
-    LOGGER.warning(
-        "Viewer project '%s' authenticates with %s; %s. Prefer password_pbkdf2_sha256 "
-        "for published deployments (see docs/INSTALLATION.md for how to generate one).",
-        entry.project,
-        form,
-        reason,
-    )
+    return verify_password(raw_password, entry.password_pbkdf2_sha256)
 
 
 def validate_viewer_portal_configuration() -> None:
@@ -328,16 +291,8 @@ def validate_viewer_portal_configuration() -> None:
     if not entries:
         raise ValueError("Viewer portal has no configured password credentials.")
     for entry in entries:
-        if (
-            entry.password_sha256
-            and not entry.password
-            and not entry.password_pbkdf2_sha256
-            and not any(character != "0" for character in entry.password_sha256)
-        ):
-            raise ValueError("Viewer password hash still contains the example placeholder.")
         if resolve_viewer_project_config(entry.project) is None:
             raise ValueError(f"Viewer project '{entry.project}' has no viewer_config.json.")
-        _warn_about_legacy_credential(entry)
 
     qr_entries = _load_qr_access_entries(root)
     for entry in qr_entries:

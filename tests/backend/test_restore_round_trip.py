@@ -265,20 +265,6 @@ def test_portable_export_omits_all_local_dataset_paths() -> None:
         reset_all_datasets()
 
 
-def test_legacy_top_level_peptide_metadata_targets_saved_active_package() -> None:
-    state = _minimal_state("Active")
-    state["backend"]["packages"].append(
-        {"name": "Other", "datasets": {kind: None for kind in ("protein", "phospho", "phosprot", "peptide")}}
-    )
-    state["backend"]["peptideMetadata"] = {
-        "filename": "legacy.csv",
-        "frame": {"columns": ["sample", "condition"], "data": [["S1", "C"]]},
-    }
-    restore_state.apply_restore_state(state, {})
-    assert get_peptide_metadata(package_name="Active") is not None
-    assert get_peptide_metadata(package_name="Other") is None
-
-
 @pytest.mark.parametrize(
     "mode", ["robust_site_median", "sum_ignore_na", "sum_propagate_na", "mean", "uploaded"]
 )

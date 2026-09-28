@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from app.services.html_security import GENERATED_HTML_META
-from app.services.plot_webgl import force_svg_rendering
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
     cm_to_inch as _cm_to_inch,
+    # One pixel size for interactive figures. This module floored at 240 px and
+    # plot_export at 320, so the same 6 cm plot came out narrower here than on
+    # the comparison and peptide pages, which already import this one.
+    cm_to_px as _cm_to_px,
 )
 
-import json
 import math
-import re
-from functools import lru_cache
-from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as np
@@ -20,14 +18,12 @@ import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.services.annotation_store import get_annotation
-from app.services.condition_palette_store import build_condition_color_map
-from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind, original_intensity_frame
+from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
 from app.services.functions import (
     _phosprot_values_are_centred,
     intensity_unit_label,
     resolve_feature_scaling,
     abundance_axis_label,
-    qc_matrix,
     select_matrix,
     choose_best_source,
     extract_sample_id as _extract_id_or_number,
@@ -36,105 +32,29 @@ from app.services.functions import (
     qqnorm_plot_data,
     raw_zero_to_nan,
 )
-
-
-def _get_plt():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        return plt
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "matplotlib is required for plot rendering. Install it with: "
-            "pip install matplotlib"
-        ) from exc
-
-
-def _get_plotly():
-    try:
-        import plotly.express as px
-        import plotly.graph_objects as go
-
-        return px, go
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "plotly is required for interactive plots. Install it with: "
-            "pip install plotly"
-        ) from exc
-
-
-
-
-
-
-def _cm_to_px(value_cm: float) -> int:
-    return max(240, int(round(float(value_cm) * (96.0 / 2.54))))
-
+from app.services.runtime_cache import apply_cached_wrappers
+from app.services.plotting_common import get_plt as _get_plt, get_plotly as _get_plotly, plotly_html as _plotly_html
+from app.services.plot_styling import (
+    advanced_anchor,
+    advanced_condition_colors,
+    advanced_element_text,
+    advanced_label,
+    advanced_number,
+    advanced_plotly_layout,
+    advanced_text,
+    advanced_text_position,
+    apply_advanced_axes,
+    pca_default_size,
+    rename_composite_sample_label,
+    advanced_color_map,
+    advanced_label_size,
+    apply_plotly_group_markers,
+    marker_style,
+    resolve_reference_line,
+)
 
 def _make_fig(plt, width_cm: float, height_cm: float):
     return plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
-
-
-def _plotly_html_background(fig) -> str:
-    try:
-        value = str(fig.layout.paper_bgcolor or "#fff").strip()
-    except Exception:
-        return "#fff"
-    return value if value else "#fff"
-
-
-def _plotly_html(fig) -> str:
-    fig = force_svg_rendering(fig)
-    bg = _plotly_html_background(fig)
-    body = fig.to_html(
-        full_html=False,
-        include_plotlyjs=True,
-        config={"displaylogo": False, "responsive": True},
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"{GENERATED_HTML_META}"
-        "<style>"
-        f"html,body{{margin:0;padding:0;background:{bg};width:100%;height:100%;}}"
-        "#plot-root{width:100%;height:100%;}"
-        ".js-plotly-plot,.plotly-graph-div{width:100%!important;min-height:360px;}"
-        "</style>"
-        "</head><body>"
-        "<div id='plot-root'>"
-        f"{body}"
-        "</div>"
-        "<script>"
-        "(function(){"
-        "function firstPlot(){"
-        "return document.querySelector('.js-plotly-plot,.plotly-graph-div');"
-        "}"
-        "function resolveLayoutHeight(el){"
-        "if(!el){return 0;}"
-        "var value=0;"
-        "if(el.layout && Number.isFinite(Number(el.layout.height))){value=Number(el.layout.height);}"
-        "else if(el._fullLayout && Number.isFinite(Number(el._fullLayout.height))){value=Number(el._fullLayout.height);}"
-        "return Math.max(0,value);"
-        "}"
-        "function resizePlot(){"
-        "var el=firstPlot();"
-        "if(!(el && window.Plotly)){return;}"
-        "var viewportHeight=Math.max(360,(window.innerHeight||0)-8);"
-        "var layoutHeight=resolveLayoutHeight(el);"
-        "var nextHeight=Math.max(layoutHeight,viewportHeight);"
-        "window.Plotly.relayout(el,{height:nextHeight}).catch(function(){});"
-        "window.Plotly.Plots.resize(el);"
-        "}"
-        "window.addEventListener('load', resizePlot);"
-        "window.addEventListener('resize', resizePlot);"
-        "setTimeout(resizePlot, 80);"
-        "setTimeout(resizePlot, 260);"
-        "})();"
-        "</script>"
-        "</body></html>"
-    )
 
 
 def _imputation_source(kind: AnnotationKind):
@@ -149,14 +69,6 @@ def _imputation_source(kind: AnnotationKind):
     ):
         frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
     return source_name, frame
-
-
-def _original_scale_frame(kind: AnnotationKind):
-    return original_intensity_frame(_get_current_frame(kind), get_annotation(kind))
-
-
-def _distribution_frame(kind: AnnotationKind):
-    return qc_matrix(kind)[0]
 
 
 def _peptide_file_column(frame: pd.DataFrame) -> str:
@@ -196,28 +108,6 @@ def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.Data
     return meta.rename(columns={"new_sample": "label"})
 
 
-def _coverage_frame(kind: AnnotationKind):
-    return qc_matrix(kind)[0]
-
-
-def _log2_qc_frame(kind: AnnotationKind):
-    return qc_matrix(kind)[0]
-
-
-def _metadata_for_kind(kind: AnnotationKind, frame: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
-    annotation = get_annotation(kind)
-    if annotation is not None and not annotation.metadata.empty:
-        meta = annotation.metadata.copy()
-        meta = meta[meta["sample"].isin(sample_columns)]
-        if not meta.empty:
-            meta = meta.drop_duplicates(subset=["sample"])
-            meta = meta.set_index("sample").reindex(sample_columns).reset_index()
-            meta["condition"] = meta["condition"].fillna("sample").astype(str)
-            return meta
-
-    return pd.DataFrame({"sample": sample_columns, "condition": ["sample"] * len(sample_columns)}).copy()
-
-
 def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
     if meta.empty:
         return meta.copy()
@@ -242,1313 +132,6 @@ def _sample_label(sample: str, condition: str, index: int, include_id: bool) -> 
         return f"{condition}_{index + 1}"
     sid = _extract_id_or_number(sample)
     return f"{condition}_{index + 1}\n({sid})"
-
-
-def _normalized_conditions(conditions: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for condition in conditions:
-        normalized = str(condition).strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(normalized)
-    return ordered
-
-
-def _condition_colors(kind: AnnotationKind, _plt, conditions: list[str]) -> dict[str, str]:
-    return build_condition_color_map(kind, _normalized_conditions(conditions))
-
-
-def parse_advanced_plot_settings(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return parsed
-
-
-def _advanced_text(settings: dict[str, Any] | None, key: str) -> str | None:
-    value = (settings or {}).get(key)
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _advanced_number(settings: dict[str, Any] | None, key: str, default: float = 0.0) -> float:
-    value = (settings or {}).get(key)
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if math.isfinite(number) else default
-
-
-def advanced_color(settings: dict[str, Any] | None, key: str, default: str) -> str:
-    """A colour the advanced panel may override, falling back to the plot's own.
-
-    Every colour picker that used to sit in a plot's normal options row reaches
-    its renderer through one of these, so the picker can move into the advanced
-    panel without each route growing another parameter.
-    """
-    return _advanced_color_text(settings, key) or default
-
-
-def advanced_label_size(settings: dict[str, Any] | None, default: float) -> float:
-    """The size of the value labels drawn on bars and boxes.
-
-    Was a per-page "Text Size" field, clamped 6-20 on one page, 6-24 on another
-    and unbounded on a third. One setting, one floor.
-    """
-    return max(4.0, _advanced_number(settings, "valueLabelSize", default))
-
-
-def marker_area(diameter: float) -> float:
-    """Matplotlib's `s` for a marker of the given diameter in points.
-
-    Every dot size in this tool is expressed as a **diameter in points**, so one
-    number means the same dot whichever renderer draws it. Matplotlib wants an
-    area in points squared, plotly wants the diameter, and the conversion is
-    just the square -- `sqrt(s)` is the marker's width in points.
-
-    Before this existed each plot invented its own scale: the PCA multiplied the
-    setting by 10, the correlation scatter took its square root, and the two
-    routes behind one control declared different defaults (5 and 8, 60 and 8).
-    A "dot size" of 60 therefore drew a different dot on every page.
-    """
-    return max(1.0, float(diameter)) ** 2
-
-
-def _advanced_size(settings: dict[str, Any] | None, key: str, default: float) -> float:
-    """A marker diameter from the advanced settings, floored at something visible."""
-    return max(0.5, _advanced_number(settings, key, default))
-
-
-# One name per shape, and the spelling each renderer wants for it. A shape set
-# in the advanced panel has to draw the same marker in the figure and in the
-# interactive plot beside it, and matplotlib and plotly agree on none of their
-# own names -- so the panel's vocabulary is neither of theirs.
-MARKER_SHAPES: dict[str, tuple[str, str]] = {
-    # name:        (matplotlib, plotly)
-    "circle": ("o", "circle"),
-    "square": ("s", "square"),
-    "diamond": ("D", "diamond"),
-    "triangle-up": ("^", "triangle-up"),
-    "triangle-down": ("v", "triangle-down"),
-    "cross": ("P", "cross"),
-    "x": ("X", "x"),
-    "star": ("*", "star"),
-    "pentagon": ("p", "pentagon"),
-    "hexagon": ("h", "hexagon"),
-}
-DEFAULT_MARKER_SHAPE = "circle"
-
-# The per-condition override maps, and the general key each one falls back to.
-# Read together by `marker_style`, written together by the panel: choosing a
-# general value clears the map beside it, so every group snaps to the new value
-# and can then be moved off it again one at a time.
-_CONDITION_MARKER_KEYS: dict[str, str] = {
-    "conditionMarkerSizes": "markerSize",
-    "conditionMarkerShapes": "markerShape",
-    "conditionMarkerAlphas": "markerAlpha",
-    "conditionMarkerEdgeWidths": "markerEdgeWidth",
-    "conditionMarkerEdgeColors": "markerEdgeColor",
-}
-
-
-def _group_override(
-    settings: dict[str, Any] | None, map_key: str, group: str | None
-) -> Any:
-    """This group's entry in one override map, or None."""
-    if not settings or group is None:
-        return None
-    mapping = settings.get(map_key)
-    if not isinstance(mapping, dict):
-        return None
-    value = mapping.get(str(group))
-    return value if value not in (None, "") else None
-
-
-
-def advanced_color_map(settings: dict[str, Any] | None, default: str) -> str:
-    """The colour scale the panel asks for, or this plot's own.
-
-    An unknown name falls back rather than raising: the field is free text, and
-    a half-typed colour map should not replace the figure with a 400 while the
-    user is still typing it.
-    """
-    name = _advanced_text(settings, "correlationColorMap")
-    if not name:
-        return default
-    try:
-        import matplotlib
-
-        matplotlib.colormaps[str(name)]
-    except (KeyError, ValueError, ImportError):
-        return default
-    return str(name)
-
-
-def resolve_marker_shape(name: Any, renderer: str = "matplotlib") -> str:
-    """One shape name, in the renderer's own spelling."""
-    key = str(name or DEFAULT_MARKER_SHAPE).strip().lower()
-    matplotlib_name, plotly_name = MARKER_SHAPES.get(
-        key, MARKER_SHAPES[DEFAULT_MARKER_SHAPE]
-    )
-    return plotly_name if renderer == "plotly" else matplotlib_name
-
-
-@dataclass
-class MarkerAppearance:
-    """One class of dot, fully resolved: general settings, then this group's."""
-
-    diameter: float
-    alpha: float
-    edge_width: float
-    edge_color: str
-    shape: str
-    color: str | None
-
-    def matplotlib(self) -> dict[str, Any]:
-        style: dict[str, Any] = {
-            "s": marker_area(self.diameter),
-            "alpha": self.alpha,
-            "linewidths": self.edge_width,
-            "edgecolors": self.edge_color if self.edge_width > 0 else "none",
-            "marker": resolve_marker_shape(self.shape),
-        }
-        if self.color:
-            style["color"] = self.color
-        return style
-
-    def plotly(self, *, with_opacity: bool = True) -> dict[str, Any]:
-        marker: dict[str, Any] = {
-            "size": self.diameter,
-            "symbol": resolve_marker_shape(self.shape, "plotly"),
-        }
-        if with_opacity:
-            marker["opacity"] = self.alpha
-        if self.color:
-            marker["color"] = self.color
-        if self.edge_width > 0:
-            marker["line"] = {"width": self.edge_width, "color": self.edge_color}
-        return marker
-
-
-def resolve_marker(
-    settings: dict[str, Any] | None,
-    *,
-    size: float,
-    alpha: float,
-    group: str | None = None,
-    color: str | None = None,
-    color_default: str | None = None,
-    use_color: bool = True,
-    size_key: str = "markerSize",
-    alpha_key: str = "markerAlpha",
-    edge_width_key: str = "markerEdgeWidth",
-    edge_color_key: str = "markerEdgeColor",
-    edge_width_default: float = 0.0,
-    edge_color_default: str = "#000000",
-) -> MarkerAppearance:
-    """A dot's appearance: the plot's default, then the general setting, then this group's.
-
-    `group` names the class being drawn -- a condition on a PCA or an abundance
-    curve, a significance class on a volcano. `color` is the colour the plot has
-    already decided on, usually from the condition palette; it wins over the
-    general `markerColor`, because a condition's colour is set in the colours
-    card and nowhere else. `color_default` is what to fall back to when neither
-    is given.
-
-    The `*_key` arguments let a plot name its own general keys: the
-    single-protein boxplot's jittered points have had `boxPointSize` and friends
-    since before this existed, and they are that plot's general layer.
-
-    `use_color=False` is for a plot that colours its points from the data --
-    a colour-mapped scatter cannot also be handed one colour, and a general
-    `markerColor` must not turn its colour bar into a flat wash.
-    """
-    size_override = _group_override(settings, "conditionMarkerSizes", group)
-    diameter = (
-        max(0.5, float(size_override))
-        if size_override is not None
-        else _advanced_size(settings, size_key, size)
-    )
-
-    alpha_override = _group_override(settings, "conditionMarkerAlphas", group)
-    opacity = (
-        min(1.0, max(0.0, float(alpha_override)))
-        if alpha_override is not None
-        else _advanced_alpha(settings, alpha_key, alpha)
-    )
-
-    edge_width = _group_override(settings, "conditionMarkerEdgeWidths", group)
-    if edge_width is None:
-        edge_width = _advanced_number(settings, edge_width_key, edge_width_default)
-    edge_width = max(0.0, float(edge_width))
-
-    edge_color = _group_override(settings, "conditionMarkerEdgeColors", group)
-    if edge_color is None:
-        edge_color = _advanced_text(settings, edge_color_key)
-
-    shape = _group_override(settings, "conditionMarkerShapes", group)
-    if shape is None:
-        shape = _advanced_text(settings, "markerShape")
-
-    resolved_color = (
-        (color or advanced_color(settings, "markerColor", "") or color_default)
-        if use_color
-        else None
-    )
-    return MarkerAppearance(
-        diameter=diameter,
-        alpha=opacity,
-        edge_width=edge_width,
-        edge_color=str(edge_color or edge_color_default),
-        shape=str(shape or DEFAULT_MARKER_SHAPE),
-        color=resolved_color,
-    )
-
-
-def marker_style(
-    settings: dict[str, Any] | None,
-    *,
-    size: float,
-    alpha: float,
-    group: str | None = None,
-    color: str | None = None,
-    color_default: str | None = None,
-    use_color: bool = True,
-    edge_width_default: float = 0.0,
-    edge_color_default: str = "#000000",
-) -> dict[str, Any]:
-    """Matplotlib scatter kwargs for one class of dot.
-
-    The outline is off unless asked for, because an outline on a scatter of
-    eight thousand points fills the figure with ink.
-    """
-    return resolve_marker(
-        settings,
-        size=size,
-        alpha=alpha,
-        group=group,
-        color=color,
-        color_default=color_default,
-        use_color=use_color,
-        edge_width_default=edge_width_default,
-        edge_color_default=edge_color_default,
-    ).matplotlib()
-
-
-def plotly_marker(
-    settings: dict[str, Any] | None,
-    *,
-    size: float,
-    alpha: float | None = None,
-    group: str | None = None,
-    color: str | None = None,
-    color_default: str | None = None,
-    use_color: bool = True,
-    edge_width_default: float = 0.0,
-    edge_color_default: str = "#000000",
-) -> dict[str, Any]:
-    """The same resolution, as a plotly `marker` dict."""
-    appearance = resolve_marker(
-        settings,
-        size=size,
-        alpha=alpha if alpha is not None else 1.0,
-        group=group,
-        color=color,
-        color_default=color_default,
-        use_color=use_color,
-        edge_width_default=edge_width_default,
-        edge_color_default=edge_color_default,
-    )
-    return appearance.plotly(with_opacity=alpha is not None)
-
-
-
-def apply_plotly_group_markers(
-    fig: Any,
-    settings: dict[str, Any] | None,
-    *,
-    size: float,
-    alpha: float | None = None,
-    display_to_group: dict[str, str] | None = None,
-    colors: dict[str, str] | None = None,
-) -> None:
-    """Give each trace the marker its own group resolves to.
-
-    Plotly express makes one trace per group and names it with whatever the
-    frame was coloured by -- which on these plots is the *display* label, after
-    any renaming. The override maps are keyed by the real condition name, so the
-    display label has to be translated back before it is looked up, or renaming
-    a condition would quietly drop its point settings.
-    """
-    lookup = display_to_group or {}
-
-    def update(trace: Any) -> None:
-        name = str(getattr(trace, "name", "") or "")
-        group = lookup.get(name, name)
-        trace.update(
-            marker=plotly_marker(
-                settings,
-                size=size,
-                alpha=alpha,
-                group=group,
-                color=(colors or {}).get(group),
-            )
-        )
-
-    fig.for_each_trace(update)
-
-
-def _pca_default_size(dot_size: float) -> float:
-    """The old `dotSize` number, read as a diameter.
-
-    The projection's legacy control multiplied its value by 10 for matplotlib
-    and passed it raw to plotly, so the two renderers drew different dots from
-    one setting. The number now means a diameter in both, and the historical
-    default of 5 lands on a dot of about the size it used to draw.
-    """
-    return max(1.0, float(dot_size)) * 1.2
-
-
-def plotly_marker_size(settings: dict[str, Any] | None, default: float) -> float:
-    """The same diameter, for the plotly side of a plot that has both."""
-    return _advanced_size(settings, "markerSize", default)
-
-
-def _advanced_alpha(settings: dict[str, Any] | None, key: str, default: float) -> float:
-    """An opacity from the advanced settings, clamped to the range that exists."""
-    return min(1.0, max(0.0, _advanced_number(settings, key, default)))
-
-
-def _advanced_optional_number(settings: dict[str, Any] | None, key: str) -> float | None:
-    if not settings or key not in settings:
-        return None
-    value = settings.get(key)
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _advanced_bool(settings: dict[str, Any] | None, key: str, default: bool = False) -> bool:
-    if not settings or key not in settings:
-        return default
-    value = settings.get(key)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _advanced_choice(settings: dict[str, Any] | None, key: str, allowed: set[str], default: str) -> str:
-    value = _advanced_text(settings, key)
-    if value in allowed:
-        return value
-    return default
-
-
-def _advanced_color_text(settings: dict[str, Any] | None, key: str) -> str | None:
-    value = _advanced_text(settings, key)
-    if not value:
-        return None
-    return value
-
-
-# --------------------------------------------------------------------------- #
-# Fonts
-# --------------------------------------------------------------------------- #
-
-# The faces a figure may be drawn in, and what each renderer has to be told to
-# get one. Journals ask for Arial, Helvetica or Times New Roman; what is
-# installed in this image is the Liberation family, whose metrics are identical
-# to those three, so a figure drawn here measures the same as one drawn on a
-# machine that has the originals.
-#
-# Every list ends at a DejaVu face, which ships with matplotlib. A family name
-# matplotlib cannot resolve is a warning on stderr and a silent substitution --
-# the figure comes back in the wrong face and nothing in the response says so --
-# and ending each list at something that is certainly present means there is
-# never anything to substitute.
-PLOT_FONTS: dict[str, tuple[tuple[str, ...], str]] = {
-    # name:          (matplotlib family list,                       plotly CSS stack)
-    "helvetica": (
-        ("Liberation Sans", "Helvetica", "Arial", "DejaVu Sans"),
-        "Helvetica, Arial, 'Liberation Sans', sans-serif",
-    ),
-    "times": (
-        ("Liberation Serif", "Times New Roman", "Times", "DejaVu Serif"),
-        "'Times New Roman', Times, 'Liberation Serif', serif",
-    ),
-    "courier": (
-        ("Liberation Mono", "Courier New", "Courier", "DejaVu Sans Mono"),
-        "'Courier New', Courier, 'Liberation Mono', monospace",
-    ),
-    "dejavu-sans": (("DejaVu Sans",), "'DejaVu Sans', Verdana, sans-serif"),
-    "dejavu-serif": (("DejaVu Serif",), "'DejaVu Serif', Georgia, serif"),
-}
-
-# The one global key, and the element that may disagree with it. An element key
-# left unset -- or set to the empty string, which is what the panel's "Same as
-# all text" option sends -- follows the global one, so the common case is a
-# single choice and the exception costs one more.
-FONT_KEY = "fontFamily"
-FONT_ELEMENT_KEYS: dict[str, str] = {
-    "title": "titleFontFamily",
-    "axisLabel": "axisLabelFontFamily",
-    "tick": "tickFontFamily",
-    "legend": "legendFontFamily",
-    "valueLabel": "valueLabelFontFamily",
-}
-
-
-def resolve_font(
-    settings: dict[str, Any] | None, element: str | None = None
-) -> tuple[tuple[str, ...], str] | None:
-    """The face this element should be drawn in, or None to leave it alone.
-
-    None is not the same as a default: no font setting at all means the renderer
-    never touches the family, so every plot keeps whatever it had before this
-    existed. Only an explicit choice changes anything.
-    """
-    for key in ([FONT_ELEMENT_KEYS[element]] if element in FONT_ELEMENT_KEYS else []) + [FONT_KEY]:
-        name = _advanced_text(settings, key)
-        if name and name in PLOT_FONTS:
-            return PLOT_FONTS[name]
-    return None
-
-
-@lru_cache(maxsize=None)
-def installed_family(families: tuple[str, ...]) -> str:
-    """The first of these faces that is actually installed.
-
-    Handing matplotlib the whole list works, but it logs a `findfont: Font
-    family 'Arial' not found` line for every name it steps over -- on a server
-    where the Liberation clones are what is installed, that is three lines of
-    noise per figure for a lookup that succeeded. Resolving once, here, keeps
-    the preference order (a machine that really has Arial gets Arial) and says
-    nothing when it falls through to the clone.
-    """
-    from matplotlib import font_manager  # noqa: PLC0415 -- import cost, once
-
-    available = {font.name for font in font_manager.fontManager.ttflist}
-    for name in families:
-        if name in available:
-            return name
-    # Nothing matched: hand back the last name, which is a DejaVu face shipped
-    # with matplotlib, so the substitution is the one that would have happened
-    # anyway rather than a hard failure in the middle of a render.
-    return families[-1]
-
-
-def mpl_font_family(settings: dict[str, Any] | None, element: str | None = None) -> list[str] | None:
-    """`set_fontfamily` argument for this element, or None to leave it alone."""
-    font = resolve_font(settings, element)
-    return [installed_family(font[0])] if font else None
-
-
-def plotly_font_family(settings: dict[str, Any] | None, element: str | None = None) -> str | None:
-    """`font.family` for this element, or None to leave it alone."""
-    font = resolve_font(settings, element)
-    return font[1] if font else None
-
-
-def verify_fonts_installed() -> str:
-    """Prove every offered face resolves to a file, and warm the font cache.
-
-    Run at image build time. A family matplotlib cannot find is not an error at
-    render time -- it warns once, substitutes DejaVu and draws the figure -- so
-    without this the panel could offer five fonts and produce one, and the only
-    evidence would be a line in a log nobody reads. Building the cache here also
-    keeps the first plot of a container's life from paying for it.
-
-    Returns a line naming what was found, so the build log says it out loud.
-    """
-    plt = _get_plt()
-    from matplotlib import font_manager  # noqa: PLC0415 -- build-time only
-
-    available = {font.name for font in font_manager.fontManager.ttflist}
-    missing = {
-        name: families[0] for name, (families, _) in PLOT_FONTS.items() if families[0] not in available
-    }
-    if missing:
-        raise RuntimeError(
-            "fonts offered by the advanced panel are not installed in this image: "
-            + ", ".join(f"{name} needs {face}" for name, face in sorted(missing.items()))
-            + ". Install them (fonts-liberation, fonts-dejavu-core) or take them out of PLOT_FONTS."
-        )
-    figure, axes = plt.subplots(figsize=(1, 1))
-    for families, _ in PLOT_FONTS.values():
-        axes.set_title("Ag", fontfamily=installed_family(families))
-        figure.canvas.draw()
-    plt.close(figure)
-    return "fonts ok: " + ", ".join(sorted(families[0] for families, _ in PLOT_FONTS.values()))
-
-
-def _set_font_family(artist: Any, family: list[str] | None) -> None:
-    """Set a matplotlib text artist's family, tolerating one that has none."""
-    if family is None or artist is None:
-        return
-    setter = getattr(artist, "set_fontfamily", None)
-    if setter is None:
-        return
-    setter(family)
-
-
-_PLOT_THEME_MAP: dict[str, dict[str, str]] = {
-    "white": {
-        "mpl_figure": "#ffffff",
-        "mpl_axes": "#ffffff",
-        "text": "#111827",
-        "axis": "#111827",
-        "grid": "#e5e7eb",
-        "plotly_template": "plotly_white",
-        "plotly_paper": "#ffffff",
-        "plotly_plot": "#ffffff",
-    },
-    "minimal": {
-        "mpl_figure": "#ffffff",
-        "mpl_axes": "#ffffff",
-        "text": "#111827",
-        "axis": "#111827",
-        "grid": "#f1f5f9",
-        "plotly_template": "simple_white",
-        "plotly_paper": "#ffffff",
-        "plotly_plot": "#ffffff",
-    },
-    "soft_gray": {
-        "mpl_figure": "#f8fafc",
-        "mpl_axes": "#ffffff",
-        "text": "#0f172a",
-        "axis": "#334155",
-        "grid": "#cbd5e1",
-        "plotly_template": "plotly_white",
-        "plotly_paper": "#f8fafc",
-        "plotly_plot": "#ffffff",
-    },
-    "presentation": {
-        "mpl_figure": "#ffffff",
-        "mpl_axes": "#ffffff",
-        "text": "#020617",
-        "axis": "#020617",
-        "grid": "#d1d5db",
-        "plotly_template": "presentation",
-        "plotly_paper": "#ffffff",
-        "plotly_plot": "#ffffff",
-    },
-    "dark": {
-        "mpl_figure": "#111827",
-        "mpl_axes": "#0f172a",
-        "text": "#e5e7eb",
-        "axis": "#cbd5e1",
-        "grid": "#334155",
-        "plotly_template": "plotly_dark",
-        "plotly_paper": "#111827",
-        "plotly_plot": "#0f172a",
-    },
-}
-
-
-def _advanced_theme(settings: dict[str, Any] | None) -> dict[str, str]:
-    theme_id = _advanced_choice(settings, "plotTheme", set(_PLOT_THEME_MAP), "default")
-    return _PLOT_THEME_MAP.get(theme_id, {})
-
-
-def _mpl_axis_line_style(settings: dict[str, Any] | None) -> str:
-    style = _advanced_choice(settings, "axisLineStyle", {"solid", "dashed", "dotted", "dashdot"}, "solid")
-    return {
-        "solid": "-",
-        "dashed": "--",
-        "dotted": ":",
-        "dashdot": "-.",
-    }.get(style, "-")
-
-
-def _mpl_grid_line_style(settings: dict[str, Any] | None) -> str:
-    style = _advanced_choice(settings, "gridLineStyle", {"solid", "dashed", "dotted", "dashdot"}, "solid")
-    return {
-        "solid": "-",
-        "dashed": "--",
-        "dotted": ":",
-        "dashdot": "-.",
-    }.get(style, "-")
-
-
-def _plotly_grid_line_style(settings: dict[str, Any] | None) -> str:
-    style = _advanced_choice(settings, "gridLineStyle", {"solid", "dashed", "dotted", "dashdot"}, "solid")
-    return {
-        "solid": "solid",
-        "dashed": "dash",
-        "dotted": "dot",
-        "dashdot": "dashdot",
-    }.get(style, "solid")
-
-
-_LINE_STYLE_NAMES = {"solid", "dashed", "dotted", "dashdot"}
-_MPL_LINE_STYLES = {"solid": "-", "dashed": "--", "dotted": ":", "dashdot": "-."}
-_PLOTLY_LINE_STYLES = {"solid": "solid", "dashed": "dash", "dotted": "dot", "dashdot": "dashdot"}
-
-
-@dataclass(frozen=True)
-class ReferenceLine:
-    """How to draw a threshold or guide line, for either renderer.
-
-    Every plot in this tool that draws a line over its data -- the coverage
-    plot's total, a volcano's fold-change and p-value thresholds, a Q-Q fit, an
-    identity line, a regression fit, the imputation draw area -- used to hardcode
-    its own colour, dash and width. Two of them read a colour from the advanced
-    panel and their interactive twins ignored it, so the same figure changed
-    appearance when you switched renderer.
-
-    They all come through here now. `visible` is what the panel's switch sets,
-    and the defaults are each plot's own, so nothing looks different until
-    somebody changes something.
-    """
-
-    visible: bool
-    color: str
-    style: str
-    width: float
-
-    def matplotlib(self) -> dict[str, Any]:
-        return {
-            "color": self.color,
-            "linestyle": _MPL_LINE_STYLES.get(self.style, "--"),
-            "linewidth": self.width,
-        }
-
-    def plotly(self) -> dict[str, Any]:
-        return {
-            "color": self.color,
-            "dash": _PLOTLY_LINE_STYLES.get(self.style, "dash"),
-            "width": self.width,
-        }
-
-
-def resolve_reference_line(
-    settings: dict[str, Any] | None,
-    *,
-    color: str = "red",
-    style: str = "dashed",
-    width: float = 1.5,
-) -> ReferenceLine:
-    """The reference line for this plot: the panel's choice, else the plot's own."""
-    return ReferenceLine(
-        visible=_advanced_bool(settings, "referenceLineVisible", True),
-        color=_advanced_color_text(settings, "referenceLineColor") or color,
-        style=_advanced_choice(settings, "referenceLineStyle", _LINE_STYLE_NAMES, style),
-        width=max(0.0, _advanced_number(settings, "referenceLineWidth", width)),
-    )
-
-
-def _advanced_axis_sides(settings: dict[str, Any] | None) -> dict[str, bool]:
-    return {
-        "left": _advanced_bool(settings, "axisLineLeft", True),
-        "right": _advanced_bool(settings, "axisLineRight", True),
-        "bottom": _advanced_bool(settings, "axisLineBottom", True),
-        "top": _advanced_bool(settings, "axisLineTop", True),
-    }
-
-
-def _advanced_map(settings: dict[str, Any] | None, key: str) -> dict[str, str]:
-    value = (settings or {}).get(key)
-    if not isinstance(value, dict):
-        return {}
-    output: dict[str, str] = {}
-    for raw_key, raw_value in value.items():
-        map_key = str(raw_key).strip()
-        map_value = str(raw_value).strip()
-        if map_key and map_value:
-            output[map_key] = map_value
-    return output
-
-
-def _advanced_lookup_key(value: str) -> str:
-    text = str(value).replace("\n", " ").strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    return text
-
-
-def _advanced_map_lookup(mapping: dict[str, str], *values: object) -> str | None:
-    normalized = {_advanced_lookup_key(key): val for key, val in mapping.items()}
-    for value in values:
-        if value is None:
-            continue
-        text = str(value)
-        candidates = [
-            text,
-            text.replace("\n", " "),
-            text.replace("_", " "),
-            text.replace(" ", "_"),
-        ]
-        for candidate in candidates:
-            if candidate in mapping:
-                return mapping[candidate]
-            match = normalized.get(_advanced_lookup_key(candidate))
-            if match is not None:
-                return match
-    return None
-
-
-def _advanced_element(settings: dict[str, Any] | None, key: str) -> dict[str, Any]:
-    value = (settings or {}).get(key)
-    return value if isinstance(value, dict) else {}
-
-
-def _advanced_element_text(
-    settings: dict[str, Any] | None,
-    element_key: str,
-    legacy_key: str,
-) -> str | None:
-    element = _advanced_element(settings, element_key)
-    text = element.get("text")
-    if text is not None:
-        clean = str(text).strip()
-        if clean:
-            return clean
-    return _advanced_text(settings, legacy_key)
-
-
-def _advanced_element_number(
-    settings: dict[str, Any] | None,
-    element_key: str,
-    element_number_key: str,
-    legacy_key: str | None = None,
-) -> float:
-    element = _advanced_element(settings, element_key)
-    value = element.get(element_number_key)
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return _advanced_number(settings, legacy_key, 0.0) if legacy_key else 0.0
-    return number if math.isfinite(number) else 0.0
-
-
-def _advanced_element_font_props(
-    settings: dict[str, Any] | None,
-    element_key: str,
-) -> dict[str, Any]:
-    element = _advanced_element(settings, element_key)
-    props: dict[str, Any] = {}
-    if element.get("bold"):
-        props["fontweight"] = "bold"
-    if element.get("italic"):
-        props["fontstyle"] = "italic"
-    colour = str(element.get("color") or "").strip()
-    if colour:
-        props["color"] = colour
-    return props
-
-
-def _advanced_label(value: str, settings: dict[str, Any] | None, key: str, *aliases: object) -> str:
-    labels = _advanced_map(settings, key)
-    value_text = str(value)
-    return _advanced_map_lookup(labels, value_text, *aliases) or value_text
-
-
-def _advanced_color(value: str, default: str, settings: dict[str, Any] | None) -> str:
-    colors = _advanced_map(settings, "conditionColors")
-    value_text = str(value)
-    display_text = _advanced_label(value_text, settings, "conditionLabels")
-    return _advanced_map_lookup(colors, value_text, display_text) or default
-
-
-def _rename_composite_sample_label(
-    label: str,
-    sample: str,
-    condition: str,
-    settings: dict[str, Any] | None,
-) -> str:
-    """A `Condition_1` tick label, with the condition part renamed.
-
-    These labels are built by pasting the condition name in front of a replicate
-    number, so they are invisible to the `conditionLabels` map -- it is keyed by
-    the condition, and the tick says `Control_1`. The result was a plot whose
-    legend read the new name while its x-axis still read the old one, which is
-    the same group under two names in one figure.
-
-    A `sampleLabels` override still wins: it names one sample, which is more
-    specific than renaming its whole group.
-    """
-    override = _advanced_label(label, settings, "sampleLabels", sample)
-    if override != label:
-        return override
-    renamed = _advanced_label(str(condition), settings, "conditionLabels")
-    if renamed == str(condition):
-        return label
-    # Rebuild rather than string-replace: a condition whose name occurs inside
-    # the replicate suffix would otherwise be substituted twice.
-    return str(label).replace(str(condition), renamed, 1)
-
-
-def _advanced_condition_colors(
-    kind: AnnotationKind,
-    plt,
-    conditions: list[str],
-    settings: dict[str, Any] | None,
-) -> dict[str, str]:
-    base = _condition_colors(kind, plt, conditions)
-    return {condition: _advanced_color(condition, color, settings) for condition, color in base.items()}
-
-
-def _fig_pixel_fraction(fig, pixels: float, axis: str) -> float:
-    try:
-        width_in, height_in = fig.get_size_inches()
-        dpi = float(fig.dpi)
-    except Exception:
-        width_in, height_in, dpi = 10.0, 6.0, 100.0
-    denominator = width_in * dpi if axis == "x" else height_in * dpi
-    return pixels / denominator if denominator else 0.0
-
-
-def _plotly_pixel_fraction(pixels: float, total_px: int) -> float:
-    return pixels / max(1, int(total_px))
-
-
-def _advanced_anchor(ax, settings: dict[str, Any] | None, x: float, y: float) -> tuple[float, float]:
-    return (
-        x + _fig_pixel_fraction(ax.figure, _advanced_number(settings, "legendXOffset", 0.0), "x"),
-        y + _fig_pixel_fraction(ax.figure, _advanced_number(settings, "legendYOffset", 0.0), "y"),
-    )
-
-
-def _advanced_text_position(settings: dict[str, Any] | None, x: float, y: float) -> tuple[float, float]:
-    return (
-        x + _advanced_number(settings, "textXOffset", 0.0),
-        y + _advanced_number(settings, "textYOffset", 0.0),
-    )
-
-
-def _style_legend(legend, settings: dict[str, Any] | None) -> None:
-    """Font, colour, frame and title of a legend that already exists.
-
-    Hiding one is handled by the caller, because a legend is removed rather than
-    restyled -- see `_apply_legend_visibility`.
-    """
-    if legend is None:
-        return
-    size = _advanced_number(settings, "legendFontSize", 0.0)
-    colour = _advanced_color_text(settings, "legendTextColor")
-    family = mpl_font_family(settings, "legend")
-    for text in legend.get_texts():
-        if size > 0:
-            text.set_fontsize(size)
-        if colour:
-            text.set_color(colour)
-        _set_font_family(text, family)
-
-    title_text = _advanced_text(settings, "legendTitle")
-    if title_text is not None:
-        legend.set_title(title_text)
-    title = legend.get_title()
-    if title is not None:
-        if size > 0:
-            title.set_fontsize(size)
-        if colour:
-            title.set_color(colour)
-        _set_font_family(title, family)
-
-    # A frame is drawn by default on matplotlib and not by every plot here, so
-    # the setting is tri-state: absent leaves whatever the plot chose.
-    frame = _advanced_optional_bool(settings, "legendFrame")
-    if frame is not None:
-        legend.set_frame_on(frame)
-
-
-def _advanced_optional_bool(settings: dict[str, Any] | None, key: str) -> bool | None:
-    """A boolean that can also be absent, so a plot's own choice survives."""
-    if not settings or key not in settings:
-        return None
-    value = settings.get(key)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"true", "1", "yes"}:
-        return True
-    if text in {"false", "0", "no"}:
-        return False
-    return None
-
-
-def _apply_legend_visibility(ax, settings: dict[str, Any] | None) -> None:
-    """Remove a legend the user has switched off.
-
-    Every plot decides for itself whether to build one, so this only ever takes
-    one away -- there is nothing to put back if the plot drew no handles.
-    """
-    if _advanced_optional_bool(settings, "legendVisible") is False:
-        legend = ax.get_legend()
-        if legend is not None:
-            legend.remove()
-
-
-_GRID_PLACEMENT_KEYS = ("gridLineVisible", "gridLineAxis")
-_FRAME_SIDE_KEYS = {
-    "top": "axisLineTop",
-    "right": "axisLineRight",
-    "bottom": "axisLineBottom",
-    "left": "axisLineLeft",
-}
-
-
-def _mpl_grid_is_on(axis) -> bool:
-    """Whether an axis currently draws grid lines, before anything is drawn."""
-    flag = getattr(axis, "_major_tick_kw", {}).get("gridOn")
-    if flag is not None:
-        return bool(flag)
-    return any(line.get_visible() for line in axis.get_gridlines())
-
-
-def _apply_mpl_grid_settings(
-    ax, settings: dict[str, Any], *, theme_grid_color: str | None = None
-) -> None:
-    """Apply the grid settings that are present, and only those.
-
-    Placement -- whether there is a grid and on which axes -- is one decision
-    and arrives as a pair from the panel. Colour, width and style are three
-    more, each on its own. The old code rebuilt the whole grid whenever any one
-    of the five was present, filling the other four with its own defaults, so a
-    colour change on a gridless plot switched a y grid on, and a colour change
-    on a plot with an x grid moved it to y.
-    """
-    present = {key for key in (*_GRID_PLACEMENT_KEYS, "gridLineColor", "gridLineWidth", "gridLineStyle") if key in settings}
-    if not present:
-        return
-    x_on, y_on = _mpl_grid_is_on(ax.xaxis), _mpl_grid_is_on(ax.yaxis)
-    was_on = {"x": x_on, "y": y_on}
-    if present & set(_GRID_PLACEMENT_KEYS):
-        visible = _advanced_bool(settings, "gridLineVisible", True)
-        where = _advanced_choice(settings, "gridLineAxis", {"x", "y", "both"}, "y")
-        x_on = visible and where in {"x", "both"}
-        y_on = visible and where in {"y", "both"}
-
-    style: dict[str, Any] = {}
-    if "gridLineColor" in present:
-        colour = _advanced_color_text(settings, "gridLineColor")
-        if colour:
-            style["color"] = colour
-    if "gridLineWidth" in present:
-        style["linewidth"] = max(0.0, _advanced_number(settings, "gridLineWidth", 0.8))
-    if "gridLineStyle" in present:
-        style["linestyle"] = _mpl_grid_line_style(settings)
-
-    for name, on in (("x", x_on), ("y", y_on)):
-        if not on:
-            if was_on[name]:
-                ax.grid(False, axis=name)
-            continue
-        kwargs = dict(style)
-        # A grid this edit switches on has no native look to keep. It is drawn
-        # as the panel shows it, for whatever the edit did not name.
-        if not was_on[name]:
-            kwargs.setdefault("color", theme_grid_color or "#d1d5db")
-            kwargs.setdefault("linewidth", 0.8)
-            kwargs.setdefault("linestyle", _mpl_grid_line_style(settings))
-        ax.grid(True, axis=name, **kwargs)
-
-
-def _apply_mpl_frame_settings(
-    ax, settings: dict[str, Any], *, theme_axis_color: str | None = None
-) -> None:
-    """Apply the frame settings that are present, and only those.
-
-    Which sides are drawn is one decision and arrives from the panel as all
-    four sides together; colour, width and style are each their own. A theme
-    that names an axis colour recolours the frame as a whole, because choosing a
-    theme is asking for a whole look.
-    """
-    if "axisLineVisible" in settings and not _advanced_bool(settings, "axisLineVisible", True):
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(axis="both", length=0)
-        return
-
-    for name, spine in ax.spines.items():
-        key = _FRAME_SIDE_KEYS.get(name)
-        if key and key in settings:
-            spine.set_visible(_advanced_bool(settings, key, True))
-
-    colour = _advanced_color_text(settings, "axisLineColor") if "axisLineColor" in settings else None
-    colour = colour or theme_axis_color
-    width = (
-        max(0.0, _advanced_number(settings, "axisLineWidth", 1.0))
-        if "axisLineWidth" in settings
-        else None
-    )
-    line_style = _mpl_axis_line_style(settings) if "axisLineStyle" in settings else None
-    for spine in ax.spines.values():
-        if not spine.get_visible():
-            continue
-        if colour:
-            spine.set_color(colour)
-        if width is not None:
-            spine.set_linewidth(width)
-        if line_style is not None:
-            spine.set_linestyle(line_style)
-    if colour:
-        ax.tick_params(axis="both", color=colour)
-
-
-def _apply_plotly_grid_settings(layout: dict[str, Any], settings: dict[str, Any]) -> None:
-    """The grid settings that are present, written into a Plotly layout.
-
-    Placement is a pair (visible, axis); colour, width and dash are each their
-    own. Nothing absent is written, so the template's grid -- white on the
-    default template, pale grey on `plotly_white` -- survives an edit that did
-    not name it.
-    """
-    axes = ("xaxis", "yaxis")
-    scene = ("xaxis", "yaxis", "zaxis")
-    if any(key in settings for key in _GRID_PLACEMENT_KEYS):
-        visible = _advanced_bool(settings, "gridLineVisible", True)
-        where = _advanced_choice(settings, "gridLineAxis", {"x", "y", "both"}, "y")
-        shown = {"xaxis": visible and where in {"x", "both"}, "yaxis": visible and where in {"y", "both"}}
-        for axis_key in axes:
-            layout.setdefault(axis_key, {})["showgrid"] = shown[axis_key]
-        for axis_key in scene:
-            layout.setdefault("scene", {}).setdefault(axis_key, {})["showgrid"] = visible
-    props: dict[str, Any] = {}
-    if "gridLineColor" in settings:
-        colour = _advanced_color_text(settings, "gridLineColor")
-        if colour:
-            props["gridcolor"] = colour
-    if "gridLineWidth" in settings:
-        props["gridwidth"] = max(0.0, _advanced_number(settings, "gridLineWidth", 0.8))
-    if "gridLineStyle" in settings:
-        props["griddash"] = _plotly_grid_line_style(settings)
-    if props:
-        for axis_key in axes:
-            layout.setdefault(axis_key, {}).update(props)
-        scene_props = {k: v for k, v in props.items() if k != "griddash"}
-        for axis_key in scene:
-            layout.setdefault("scene", {}).setdefault(axis_key, {}).update(scene_props)
-
-
-def _apply_plotly_frame_settings(layout: dict[str, Any], settings: dict[str, Any]) -> None:
-    """The frame settings that are present, written into a Plotly layout.
-
-    Plotly has no per-side line: an axis line is on or off, and `mirror`
-    repeats it on the opposite side. The four sides therefore arrive together
-    and are reduced to that. Tick marks come with a drawn frame and go with it,
-    which is the only property set here that the settings do not name.
-    """
-    sides_named = "axisLineVisible" in settings or any(key in settings for key in _FRAME_SIDE_KEYS.values())
-    if sides_named:
-        visible = _advanced_bool(settings, "axisLineVisible", True)
-        sides = _advanced_axis_sides(settings)
-        x_visible = visible and (sides["bottom"] or sides["top"])
-        y_visible = visible and (sides["left"] or sides["right"])
-        xaxis = layout.setdefault("xaxis", {})
-        xaxis["showline"] = x_visible
-        xaxis["ticks"] = "outside" if x_visible else ""
-        if sides["top"] and not sides["bottom"]:
-            xaxis["side"] = "top"
-        xaxis["mirror"] = bool(sides["top"] and sides["bottom"])
-        yaxis = layout.setdefault("yaxis", {})
-        yaxis["showline"] = y_visible
-        yaxis["ticks"] = "outside" if y_visible else ""
-        if sides["right"] and not sides["left"]:
-            yaxis["side"] = "right"
-        yaxis["mirror"] = bool(sides["right"] and sides["left"])
-        for axis_key in ("xaxis", "yaxis", "zaxis"):
-            layout.setdefault("scene", {}).setdefault(axis_key, {})["showline"] = visible and any(sides.values())
-    props: dict[str, Any] = {}
-    if "axisLineColor" in settings:
-        colour = _advanced_color_text(settings, "axisLineColor")
-        if colour:
-            props["linecolor"] = colour
-            props["tickcolor"] = colour
-    if "axisLineWidth" in settings:
-        props["linewidth"] = max(0.0, _advanced_number(settings, "axisLineWidth", 1.0))
-    if props:
-        for axis_key in ("xaxis", "yaxis"):
-            layout.setdefault(axis_key, {}).update(props)
-        for axis_key in ("xaxis", "yaxis", "zaxis"):
-            layout.setdefault("scene", {}).setdefault(axis_key, {}).update(props)
-
-
-def _apply_advanced_matplotlib_style(ax, settings: dict[str, Any] | None) -> None:
-    if not settings:
-        return
-    fig = ax.figure
-    theme = _advanced_theme(settings)
-    text_color = theme.get("text")
-    axis_color = theme.get("axis")
-    grid_color = theme.get("grid")
-    background = _advanced_color_text(settings, "backgroundColor")
-    transparent = _advanced_bool(settings, "transparentBackground", False)
-
-    if theme:
-        fig.patch.set_facecolor(theme.get("mpl_figure", "#ffffff"))
-        ax.set_facecolor(theme.get("mpl_axes", "#ffffff"))
-    if background:
-        fig.patch.set_facecolor(background)
-        ax.set_facecolor(background)
-    if transparent:
-        fig.patch.set_alpha(0.0)
-        ax.patch.set_alpha(0.0)
-        setattr(fig, "_copylot_transparent_background", True)
-    else:
-        setattr(fig, "_copylot_transparent_background", False)
-
-    if text_color:
-        ax.title.set_color(text_color)
-        ax.xaxis.label.set_color(text_color)
-        ax.yaxis.label.set_color(text_color)
-        for label in [*ax.get_xticklabels(), *ax.get_yticklabels()]:
-            label.set_color(text_color)
-        legend = ax.get_legend()
-        if legend is not None:
-            for text in legend.get_texts():
-                text.set_color(text_color)
-            legend.get_title().set_color(text_color)
-
-    if grid_color:
-        for line in [*ax.get_xgridlines(), *ax.get_ygridlines()]:
-            line.set_color(grid_color)
-
-    # A setting changes what it names and nothing else. Recolouring the grid
-    # does not switch it on; hiding the top of the frame does not recolour the
-    # other three sides. Anything the settings do not name stays exactly as the
-    # plot drew it, which is what makes an untouched panel the native figure.
-    _apply_mpl_grid_settings(ax, settings, theme_grid_color=grid_color)
-    _apply_mpl_frame_settings(ax, settings, theme_axis_color=axis_color)
-
-
-def _apply_advanced_axes(ax, settings: dict[str, Any] | None) -> None:
-    if not settings:
-        return
-    _apply_advanced_matplotlib_style(ax, settings)
-    title = _advanced_element_text(settings, "titleElement", "title")
-    x_label = _advanced_element_text(settings, "xLabelElement", "xLabel")
-    y_label = _advanced_element_text(settings, "yLabelElement", "yLabel")
-    title_size = _advanced_element_number(settings, "titleElement", "size", "titleSize")
-    x_axis_size = _advanced_element_number(settings, "xLabelElement", "size", "axisLabelSize")
-    y_axis_size = _advanced_element_number(settings, "yLabelElement", "size", "axisLabelSize")
-    legacy_tick_size = _advanced_number(settings, "tickLabelSize", 0.0)
-    x_tick_size = _advanced_number(settings, "xTickLabelSize", legacy_tick_size)
-    y_tick_size = _advanced_number(settings, "yTickLabelSize", legacy_tick_size)
-    x_tick_rotation = _advanced_optional_number(settings, "xTickLabelRotation")
-    y_tick_rotation = _advanced_optional_number(settings, "yTickLabelRotation")
-    title_props = _advanced_element_font_props(settings, "titleElement")
-    x_props = _advanced_element_font_props(settings, "xLabelElement")
-    y_props = _advanced_element_font_props(settings, "yLabelElement")
-
-    if title is not None:
-        ax.set_title(title)
-    # "Show title" lives here rather than as a per-plot `header` parameter, so
-    # one switch covers every plot instead of twenty checkboxes that each had to
-    # be wired through their own route.
-    if _advanced_optional_bool(settings, "titleVisible") is False:
-        ax.set_title("")
-    if x_label is not None:
-        ax.set_xlabel(x_label)
-    if y_label is not None:
-        ax.set_ylabel(y_label)
-
-    title_obj = ax.title
-    if title_size > 0:
-        title_obj.set_fontsize(title_size)
-    if "fontweight" in title_props:
-        title_obj.set_fontweight(title_props["fontweight"])
-    if "fontstyle" in title_props:
-        title_obj.set_fontstyle(title_props["fontstyle"])
-    if "fontweight" in x_props:
-        ax.xaxis.label.set_fontweight(x_props["fontweight"])
-    if "fontstyle" in x_props:
-        ax.xaxis.label.set_fontstyle(x_props["fontstyle"])
-    if "fontweight" in y_props:
-        ax.yaxis.label.set_fontweight(y_props["fontweight"])
-    if "fontstyle" in y_props:
-        ax.yaxis.label.set_fontstyle(y_props["fontstyle"])
-    if x_axis_size > 0:
-        ax.xaxis.label.set_fontsize(x_axis_size)
-    if y_axis_size > 0:
-        ax.yaxis.label.set_fontsize(y_axis_size)
-    if "color" in title_props:
-        title_obj.set_color(title_props["color"])
-    if "color" in x_props:
-        ax.xaxis.label.set_color(x_props["color"])
-    if "color" in y_props:
-        ax.yaxis.label.set_color(y_props["color"])
-    title_x = _advanced_element_number(settings, "titleElement", "xOffset")
-    title_y = _advanced_element_number(settings, "titleElement", "yOffset")
-    if title_x or title_y:
-        x_pos, y_pos = title_obj.get_position()
-        title_obj.set_position(
-            (
-                x_pos + _fig_pixel_fraction(ax.figure, title_x, "x"),
-                y_pos + _fig_pixel_fraction(ax.figure, title_y, "y"),
-            )
-        )
-    x_label_x = _advanced_element_number(settings, "xLabelElement", "xOffset")
-    x_label_y = _advanced_element_number(settings, "xLabelElement", "yOffset")
-    if x_label_x or x_label_y:
-        x_pos, y_pos = ax.xaxis.label.get_position()
-        ax.xaxis.set_label_coords(
-            x_pos + _fig_pixel_fraction(ax.figure, x_label_x, "x"),
-            y_pos + _fig_pixel_fraction(ax.figure, x_label_y, "y"),
-        )
-    y_label_x = _advanced_element_number(settings, "yLabelElement", "xOffset")
-    y_label_y = _advanced_element_number(settings, "yLabelElement", "yOffset")
-    if y_label_x or y_label_y:
-        x_pos, y_pos = ax.yaxis.label.get_position()
-        ax.yaxis.set_label_coords(
-            x_pos + _fig_pixel_fraction(ax.figure, y_label_x, "x"),
-            y_pos + _fig_pixel_fraction(ax.figure, y_label_y, "y"),
-        )
-    if x_tick_size > 0:
-        ax.tick_params(axis="x", labelsize=x_tick_size)
-    if y_tick_size > 0:
-        ax.tick_params(axis="y", labelsize=y_tick_size)
-    x_tick_color = _advanced_color_text(settings, "xTickLabelColor")
-    y_tick_color = _advanced_color_text(settings, "yTickLabelColor")
-    if x_tick_color:
-        ax.tick_params(axis="x", colors=x_tick_color)
-        # `colors` paints the tick marks as well, so the spine is restored to
-        # whatever the frame settings asked for rather than following the text.
-        ax.xaxis.label.set_color(x_props.get("color", ax.xaxis.label.get_color()))
-    if y_tick_color:
-        ax.tick_params(axis="y", colors=y_tick_color)
-        ax.yaxis.label.set_color(y_props.get("color", ax.yaxis.label.get_color()))
-    if x_tick_rotation is not None:
-        for label in ax.get_xticklabels():
-            label.set_rotation(x_tick_rotation)
-    if y_tick_rotation is not None:
-        for label in ax.get_yticklabels():
-            label.set_rotation(y_tick_rotation)
-
-    # The face, last, so it reaches artists the lines above may have replaced.
-    # `ax.texts` is every annotation the plot drew -- the numbers on bars and
-    # boxes, the r and N box on a correlation, the labels beside volcano hits --
-    # which is what makes "every text in the plot" true rather than nearly true.
-    _set_font_family(title_obj, mpl_font_family(settings, "title"))
-    _set_font_family(ax.xaxis.label, mpl_font_family(settings, "axisLabel"))
-    _set_font_family(ax.yaxis.label, mpl_font_family(settings, "axisLabel"))
-    tick_family = mpl_font_family(settings, "tick")
-    if tick_family is not None:
-        for label in (*ax.get_xticklabels(), *ax.get_yticklabels()):
-            _set_font_family(label, tick_family)
-    annotation_family = mpl_font_family(settings, "valueLabel")
-    if annotation_family is not None:
-        for text in ax.texts:
-            _set_font_family(text, annotation_family)
-
-    _apply_legend_visibility(ax, settings)
-    _style_legend(ax.get_legend(), settings)
 
 
 
@@ -1592,189 +175,6 @@ def ellipse_skip_message(groups: Sequence[str]) -> str:
         "samples share the same position -- so there is no enclosing ellipse to fit. "
         "The points themselves are unaffected."
     )
-
-
-def _advanced_plotly_layout(
-    settings: dict[str, Any] | None,
-    width_px: int = 960,
-    height_px: int = 540,
-) -> dict[str, Any]:
-    if not settings:
-        return {}
-    layout: dict[str, Any] = {}
-    theme = _advanced_theme(settings)
-    background = _advanced_color_text(settings, "backgroundColor")
-    transparent = _advanced_bool(settings, "transparentBackground", False)
-    title = _advanced_element_text(settings, "titleElement", "title")
-    x_label = _advanced_element_text(settings, "xLabelElement", "xLabel")
-    y_label = _advanced_element_text(settings, "yLabelElement", "yLabel")
-    title_size = _advanced_element_number(settings, "titleElement", "size", "titleSize")
-    x_axis_size = _advanced_element_number(settings, "xLabelElement", "size", "axisLabelSize")
-    y_axis_size = _advanced_element_number(settings, "yLabelElement", "size", "axisLabelSize")
-    legacy_tick_size = _advanced_number(settings, "tickLabelSize", 0.0)
-    x_tick_size = _advanced_number(settings, "xTickLabelSize", legacy_tick_size)
-    y_tick_size = _advanced_number(settings, "yTickLabelSize", legacy_tick_size)
-    x_tick_rotation = _advanced_optional_number(settings, "xTickLabelRotation")
-    y_tick_rotation = _advanced_optional_number(settings, "yTickLabelRotation")
-    legend_size = _advanced_number(settings, "legendFontSize", 0.0)
-    font: dict[str, Any] = {}
-    if theme:
-        layout["template"] = theme.get("plotly_template", "plotly_white")
-        layout["paper_bgcolor"] = theme.get("plotly_paper", "#ffffff")
-        layout["plot_bgcolor"] = theme.get("plotly_plot", "#ffffff")
-        if theme.get("text"):
-            font["color"] = theme["text"]
-    if background:
-        layout["paper_bgcolor"] = background
-        layout["plot_bgcolor"] = background
-    if transparent:
-        layout["paper_bgcolor"] = "rgba(0,0,0,0)"
-        layout["plot_bgcolor"] = "rgba(0,0,0,0)"
-    if title is not None:
-        layout["title"] = title
-    if x_label is not None:
-        layout["xaxis_title"] = x_label
-    if y_label is not None:
-        layout["yaxis_title"] = y_label
-    if title_size > 0:
-        layout.setdefault("title_font", {})["size"] = title_size
-    title_x = _advanced_element_number(settings, "titleElement", "xOffset")
-    title_y = _advanced_element_number(settings, "titleElement", "yOffset")
-    if title_x or title_y:
-        layout["title_x"] = 0.5 + _plotly_pixel_fraction(title_x, width_px)
-        layout["title_y"] = 1.0 + _plotly_pixel_fraction(title_y, height_px)
-    if x_axis_size > 0:
-        layout.setdefault("xaxis", {}).setdefault("title", {})["font"] = {"size": x_axis_size}
-    if y_axis_size > 0:
-        layout.setdefault("yaxis", {}).setdefault("title", {})["font"] = {"size": y_axis_size}
-    if x_tick_size > 0:
-        layout.setdefault("xaxis", {})["tickfont"] = {"size": x_tick_size}
-    if y_tick_size > 0:
-        layout.setdefault("yaxis", {})["tickfont"] = {"size": y_tick_size}
-    if x_tick_rotation is not None:
-        layout.setdefault("xaxis", {})["tickangle"] = x_tick_rotation
-    if y_tick_rotation is not None:
-        layout.setdefault("yaxis", {})["tickangle"] = y_tick_rotation
-
-    # The same element colours the static renderer applies, so one setting means
-    # one thing whichever renderer is on screen.
-    title_props = _advanced_element_font_props(settings, "titleElement")
-    x_props = _advanced_element_font_props(settings, "xLabelElement")
-    y_props = _advanced_element_font_props(settings, "yLabelElement")
-    if "color" in title_props:
-        layout.setdefault("title_font", {})["color"] = title_props["color"]
-    for axis_key, props in (("xaxis", x_props), ("yaxis", y_props)):
-        if "color" in props:
-            layout.setdefault(axis_key, {}).setdefault("title", {}).setdefault("font", {})[
-                "color"
-            ] = props["color"]
-    for axis_key, colour_key in (("xaxis", "xTickLabelColor"), ("yaxis", "yTickLabelColor")):
-        tick_colour = _advanced_color_text(settings, colour_key)
-        if tick_colour:
-            layout.setdefault(axis_key, {}).setdefault("tickfont", {})["color"] = tick_colour
-
-    if _advanced_optional_bool(settings, "titleVisible") is False:
-        layout["title"] = ""
-    if _advanced_optional_bool(settings, "legendVisible") is False:
-        layout["showlegend"] = False
-    legend_title = _advanced_text(settings, "legendTitle")
-    if legend_title is not None:
-        layout.setdefault("legend", {}).setdefault("title", {})["text"] = legend_title
-    legend_colour = _advanced_color_text(settings, "legendTextColor")
-    if legend_colour:
-        layout.setdefault("legend", {}).setdefault("font", {})["color"] = legend_colour
-    legend_frame = _advanced_optional_bool(settings, "legendFrame")
-    if legend_frame is not None:
-        legend = layout.setdefault("legend", {})
-        # Plotly has no frame switch: a frame is a border width and a
-        # background, so turning it off is width 0 and a transparent fill.
-        legend["borderwidth"] = 1 if legend_frame else 0
-        if not legend_frame:
-            legend["bgcolor"] = "rgba(0,0,0,0)"
-
-    if theme:
-        axis_color = theme.get("axis")
-        grid_color = theme.get("grid")
-        for axis_key in ("xaxis", "yaxis"):
-            axis = layout.setdefault(axis_key, {})
-            if axis_color:
-                axis["linecolor"] = axis_color
-                axis["tickcolor"] = axis_color
-                axis.setdefault("tickfont", {})["color"] = theme.get("text", axis_color)
-                axis.setdefault("title", {}).setdefault("font", {})["color"] = theme.get("text", axis_color)
-                axis["zerolinecolor"] = axis_color
-            if grid_color:
-                axis["gridcolor"] = grid_color
-    # Only what the settings name. The grid colour does not switch the grid on,
-    # a side of the frame does not recolour the others -- see the matplotlib
-    # counterparts, which follow the same rule for the same reason.
-    _apply_plotly_grid_settings(layout, settings)
-    _apply_plotly_frame_settings(layout, settings)
-    if theme or background or transparent:
-        scene_axis = {}
-        if theme.get("axis"):
-            scene_axis.update({"linecolor": theme["axis"], "tickcolor": theme["axis"]})
-        if theme.get("grid"):
-            scene_axis["gridcolor"] = theme["grid"]
-        scene_background = "rgba(0,0,0,0)" if transparent else background or theme.get("plotly_plot")
-        if scene_background:
-            scene_axis.update({"showbackground": True, "backgroundcolor": scene_background})
-        if scene_axis:
-            layout.setdefault("scene", {}).setdefault("xaxis", {}).update(scene_axis)
-            layout.setdefault("scene", {}).setdefault("yaxis", {}).update(scene_axis)
-            layout.setdefault("scene", {}).setdefault("zaxis", {}).update(scene_axis)
-    if legend_size > 0:
-        # `setdefault`, not assignment: this line used to replace the whole font
-        # dict and so quietly dropped the legend text colour set above it
-        # whenever a size was given as well.
-        layout.setdefault("legend", {}).setdefault("font", {})["size"] = legend_size
-    # Bold and italic used to be faked by swapping the family to "Arial Black"
-    # or "Arial Italic", which meant asking for a bold title silently changed its
-    # typeface -- and would have overwritten any face chosen below. Plotly has
-    # carried real `weight` and `style` since 5.23, so they are set as
-    # themselves and the family is left to say what face it is.
-    for element_key, target in (
-        ("titleElement", lambda: layout.setdefault("title_font", {})),
-        ("xLabelElement", lambda: layout.setdefault("xaxis", {}).setdefault("title", {}).setdefault("font", {})),
-        ("yLabelElement", lambda: layout.setdefault("yaxis", {}).setdefault("title", {}).setdefault("font", {})),
-    ):
-        element = _advanced_element(settings, element_key)
-        if element.get("bold"):
-            target()["weight"] = "bold"
-        if element.get("italic"):
-            target()["style"] = "italic"
-
-    # The face. The global one goes on `layout.font`, which every text in the
-    # figure inherits -- including the hover labels and the annotations a plot
-    # drew itself -- and the four elements that may disagree override it.
-    global_family = plotly_font_family(settings)
-    if global_family:
-        font["family"] = global_family
-    title_family = plotly_font_family(settings, "title")
-    if title_family:
-        layout.setdefault("title_font", {})["family"] = title_family
-    axis_family = plotly_font_family(settings, "axisLabel")
-    if axis_family:
-        for axis_key in ("xaxis", "yaxis"):
-            layout.setdefault(axis_key, {}).setdefault("title", {}).setdefault("font", {})[
-                "family"
-            ] = axis_family
-    tick_family = plotly_font_family(settings, "tick")
-    if tick_family:
-        for axis_key in ("xaxis", "yaxis"):
-            layout.setdefault(axis_key, {}).setdefault("tickfont", {})["family"] = tick_family
-    legend_family = plotly_font_family(settings, "legend")
-    if legend_family:
-        layout.setdefault("legend", {}).setdefault("font", {})["family"] = legend_family
-
-    if font:
-        layout["font"] = font
-    legend_x = _advanced_number(settings, "legendXOffset", 0.0)
-    legend_y = _advanced_number(settings, "legendYOffset", 0.0)
-    if legend_x or legend_y:
-        layout.setdefault("legend", {})["x"] = 1.02 + _plotly_pixel_fraction(legend_x, width_px)
-        layout.setdefault("legend", {})["y"] = 1.0 + _plotly_pixel_fraction(legend_y, height_px)
-    return layout
 
 
 def _feature_context(
@@ -1876,7 +276,7 @@ def imputation_before_plot(
     ax.set_title("Overall distribution of data with and without missing values")
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt)
 
 
@@ -1976,7 +376,7 @@ def imputation_overall_fit_plot(
     ax.set_title(f"Overall data distribution and norm fit ({method_label})")
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt)
 
 
@@ -2029,7 +429,7 @@ def imputation_after_plot(
     ax.set_title(f"Distribution of data after {method_label.lower()} imputation")
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt)
 
 
@@ -2080,7 +480,7 @@ def distribution_qqnorm_plot(
     advanced: dict[str, Any] | None = None,
 ) -> bytes:
     plt = _get_plt()
-    frame = _distribution_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -2111,7 +511,7 @@ def distribution_qqnorm_plot(
     ax.set_title("QQ Plot")
     ax.set_xlabel("Theoretical Quantiles")
     ax.set_ylabel("Sample Quantiles")
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt)
 
 
@@ -2137,7 +537,7 @@ def qc_coverage_plot(
     height instead of leaving room for a line that is not there.
     """
     plt = _get_plt()
-    frame = _coverage_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -2154,7 +554,7 @@ def qc_coverage_plot(
 
     title, y_label, red_line_value, _ = _feature_context(frame, sample_columns)
     conditions = meta["condition"].astype(str).dropna().unique().tolist()
-    color_map = _advanced_condition_colors(kind, plt, conditions, advanced)
+    color_map = advanced_condition_colors(kind, plt, conditions, advanced)
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
     if summary:
@@ -2189,7 +589,7 @@ def qc_coverage_plot(
         if text:
             for bar in bars:
                 height = float(bar.get_height())
-                x_pos, y_pos = _advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
+                x_pos, y_pos = advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
                 ax.text(
                     x_pos,
                     y_pos,
@@ -2204,7 +604,7 @@ def qc_coverage_plot(
 
         ax.set_xticks(positions)
         ax.set_xticklabels(
-            [_advanced_label(condition, advanced, "conditionLabels") for condition in condition_summary["condition"].tolist()],
+            [advanced_label(condition, advanced, "conditionLabels") for condition in condition_summary["condition"].tolist()],
             rotation=90,
             ha="center",
         )
@@ -2217,7 +617,7 @@ def qc_coverage_plot(
             bars = ax.bar(
                 positions[cond_idx],
                 meta.loc[cond_idx, "count"].values,
-                label=_advanced_label(cond, advanced, "conditionLabels"),
+                label=advanced_label(cond, advanced, "conditionLabels"),
                 color=color_map[cond],
             )
             if text:
@@ -2225,7 +625,7 @@ def qc_coverage_plot(
                     height = float(bar.get_height())
                     if height <= 0:
                         continue
-                    x_pos, y_pos = _advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
+                    x_pos, y_pos = advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
                     ax.text(
                         x_pos,
                         y_pos,
@@ -2240,7 +640,7 @@ def qc_coverage_plot(
         ax.set_xticks(positions)
         ax.set_xticklabels(
             [
-                _rename_composite_sample_label(label, sample, condition, advanced)
+                rename_composite_sample_label(label, sample, condition, advanced)
                 for label, sample, condition in zip(
                     meta["label"].tolist(),
                     meta["sample"].astype(str).tolist(),
@@ -2250,7 +650,7 @@ def qc_coverage_plot(
             rotation=90,
             fontsize=6,
         )
-        ax.set_xlabel("Condition")
+        ax.set_xlabel("Sample")
         ymax = float(meta["count"].max()) if not meta.empty else 0.0
 
     if red_line_value is not None and reference_line:
@@ -2266,14 +666,14 @@ def qc_coverage_plot(
         ax.set_title("")
 
     if legend and not summary:
-        ax.legend(title="Condition", bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
-        _apply_advanced_axes(ax, advanced)
+        ax.legend(title="Condition", bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
+        apply_advanced_axes(ax, advanced)
         plt.tight_layout(rect=[0, 0, 0.85, 1])
     else:
         legend_obj = ax.get_legend()
         if legend_obj is not None:
             legend_obj.remove()
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         plt.tight_layout()
 
     # 10 % headroom above whatever is tallest: the total line when it is drawn,
@@ -2298,7 +698,7 @@ def qc_intensity_histogram_plot(
     from scipy.stats import gaussian_kde
 
     plt = _get_plt()
-    frame = _log2_qc_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -2322,11 +722,11 @@ def qc_intensity_histogram_plot(
         xmin -= 1.0
         xmax += 1.0
     x_grid = np.linspace(xmin, xmax, 1000)
-    color_map = _advanced_condition_colors(kind, plt, [condition for condition, _ in mean_intensities], advanced)
+    color_map = advanced_condition_colors(kind, plt, [condition for condition, _ in mean_intensities], advanced)
 
     fig, ax = _make_fig(plt, width_cm, height_cm)
     for condition, vals in mean_intensities:
-        label = _advanced_label(condition, advanced, "conditionLabels")
+        label = advanced_label(condition, advanced, "conditionLabels")
         if vals.size < 2 or np.nanstd(vals) <= 0:
             ax.hist(vals, bins=20, density=True, histtype="step", color=color_map[condition], label=label)
             continue
@@ -2337,19 +737,19 @@ def qc_intensity_histogram_plot(
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     if header:
-        ax.set_title("Distribution of measured intensity (log2)")
+        ax.set_title("Distribution of mean intensity per condition (log2)")
     else:
         ax.set_title("")
 
     if legend:
-        ax.legend(title="Condition", bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
-        _apply_advanced_axes(ax, advanced)
+        ax.legend(title="Condition", bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
+        apply_advanced_axes(ax, advanced)
         plt.tight_layout(rect=[0, 0, 0.85, 1])
     else:
         legend_obj = ax.get_legend()
         if legend_obj is not None:
             legend_obj.remove()
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         plt.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi)
@@ -2398,7 +798,11 @@ def _peptide_coverage_summary(include_id=False, quantity_column=None, level="pep
     summary.columns = ["Sample", "Value"]
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=selected, ordered=True)
     summary = summary.sort_values("Sample")
-    peptides_count = int(pivot.shape[0])
+    # Reference line: features quantified in at least one selected sample -- the
+    # union of the bars, as on the protein coverage plot (_feature_context).
+    # The pivot row count also holds sequences that were identified but never
+    # quantified, or quantified only in runs outside the annotation.
+    peptides_count = int(data_filtered.notna().any(axis=1).sum())
 
     return summary, peptides_count, meta
 
@@ -2423,7 +827,7 @@ def qc_peptide_coverage_plot(
 
     conditions = meta["condition"].astype(str).dropna().tolist()
     ordered_conditions = list(dict.fromkeys(conditions))
-    color_map = _advanced_condition_colors("protein", plt, ordered_conditions, advanced)
+    color_map = advanced_condition_colors("protein", plt, ordered_conditions, advanced)
     sample_to_condition = dict(zip(meta["label"].astype(str), meta["condition"].astype(str)))
     bar_colors = [
         color_map.get(sample_to_condition.get(str(sample), ""), "#1f77b4")
@@ -2438,10 +842,11 @@ def qc_peptide_coverage_plot(
     if header:
         ax.set_title(f"{level.capitalize()}s per sample")
     ax.set_ylabel(f"Number of {level}s")
+    ax.set_xlabel("Sample")
     ax.set_xticks(range(len(summary)))
     ax.set_xticklabels(
         [
-            _advanced_label(sample, advanced, "sampleLabels", raw_sample)
+            advanced_label(sample, advanced, "sampleLabels", raw_sample)
             for sample, raw_sample in zip(summary["Sample"].astype(str).tolist(), selected)
         ],
         rotation=90,
@@ -2449,12 +854,24 @@ def qc_peptide_coverage_plot(
 
     if legend and ordered_conditions:
         handles = [Rectangle((0, 0), 1, 1, color=color_map[condition]) for condition in ordered_conditions]
-        labels = [_advanced_label(condition, advanced, "conditionLabels") for condition in ordered_conditions]
-        ax.legend(handles, labels, title="Condition", bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
+        labels = [advanced_label(condition, advanced, "conditionLabels") for condition in ordered_conditions]
+        ax.legend(handles, labels, title="Condition", bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
 
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     fig.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
+
+
+def _median_label_y(ax, median: float) -> float:
+    """Where the median's number goes: a fixed step above the line.
+
+    `median * 1.02` only worked for large positive values. Centred data has
+    medians near zero (the text sat on the line) or negative (the text moved
+    *down*, into the box). A step of 2 % of the axis span reads the same for
+    any value, and matches the R plot's `pos = 3`.
+    """
+    low, high = ax.get_ylim()
+    return float(median) + 0.02 * (high - low)
 
 
 def qc_boxplot_plot(
@@ -2474,7 +891,7 @@ def qc_boxplot_plot(
     from matplotlib.patches import Patch
 
     plt = _get_plt()
-    frame = _log2_qc_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -2482,12 +899,12 @@ def qc_boxplot_plot(
     numeric = frame[sample_columns].apply(pd.to_numeric, errors="coerce")
     meta = _metadata_for_kind(kind, frame, sample_columns).copy()
     conditions = meta["condition"].astype(str).dropna().unique().tolist()
-    color_map = _advanced_condition_colors(kind, plt, conditions, advanced)
-    box_border_color = _advanced_text(advanced, "boxBorderColor") or "black"
-    box_median_color = _advanced_text(advanced, "boxMedianColor") or "firebrick"
-    box_outlier_color = _advanced_text(advanced, "boxOutlierColor") or "red"
-    box_outlier_edge_color = _advanced_text(advanced, "boxOutlierEdgeColor") or "black"
-    box_outlier_size = max(1.0, _advanced_number(advanced, "boxOutlierSize", 5.0))
+    color_map = advanced_condition_colors(kind, plt, conditions, advanced)
+    box_border_color = advanced_text(advanced, "boxBorderColor") or "black"
+    box_median_color = advanced_text(advanced, "boxMedianColor") or "firebrick"
+    box_outlier_color = advanced_text(advanced, "boxOutlierColor") or "red"
+    box_outlier_edge_color = advanced_text(advanced, "boxOutlierEdgeColor") or "black"
+    box_outlier_size = max(1.0, advanced_number(advanced, "boxOutlierSize", 5.0))
     boxprops = dict(linewidth=1.5, color=box_border_color)
     whiskerprops = dict(linewidth=1.5, color=box_border_color)
     capprops = dict(linewidth=1.5, color=box_border_color)
@@ -2543,7 +960,7 @@ def qc_boxplot_plot(
             for i, median in enumerate(medians):
                 if np.isnan(median):
                     continue
-                x_pos, y_pos = _advanced_text_position(advanced, i + 1, median * 1.02)
+                x_pos, y_pos = advanced_text_position(advanced, i + 1, _median_label_y(ax, median))
                 ax.text(
                     x_pos,
                     y_pos,
@@ -2559,7 +976,7 @@ def qc_boxplot_plot(
         ax.set_xticks(range(1, len(samples) + 1))
         ax.set_xticklabels(
             [
-                _rename_composite_sample_label(sample, raw_sample, condition, advanced)
+                rename_composite_sample_label(sample, raw_sample, condition, advanced)
                 for sample, raw_sample, condition in zip(
                     samples,
                     meta["sample"].astype(str).tolist(),
@@ -2577,10 +994,10 @@ def qc_boxplot_plot(
 
         if legend:
             legend_handles = [
-                Patch(facecolor=color_map[c], edgecolor=box_border_color, label=_advanced_label(c, advanced, "conditionLabels"))
+                Patch(facecolor=color_map[c], edgecolor=box_border_color, label=advanced_label(c, advanced, "conditionLabels"))
                 for c in conditions
             ]
-            ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=_advanced_anchor(ax, advanced, 1, 0.5))
+            ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=advanced_anchor(ax, advanced, 1, 0.5))
             plt.subplots_adjust(right=0.8)
     else:
         mean_intensities: list[np.ndarray] = []
@@ -2618,7 +1035,7 @@ def qc_boxplot_plot(
 
         if text:
             for pos, med in zip(positions, medians):
-                x_pos, y_pos = _advanced_text_position(advanced, pos, med * 1.02)
+                x_pos, y_pos = advanced_text_position(advanced, pos, _median_label_y(ax, med))
                 ax.text(
                     x_pos,
                     y_pos,
@@ -2632,31 +1049,31 @@ def qc_boxplot_plot(
                 )
 
         ax.set_xticks(positions)
-        ax.set_xticklabels([_advanced_label(condition, advanced, "conditionLabels") for condition in valid_conditions])
+        ax.set_xticklabels([advanced_label(condition, advanced, "conditionLabels") for condition in valid_conditions])
         ax.set_xlabel("Condition")
         ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
         if header:
-            ax.set_title("Measured intensity values (log2)")
+            ax.set_title("Mean intensity per condition (log2)")
         else:
             ax.set_title("")
 
         if legend:
             legend_handles = [
-                Patch(facecolor=color_map[c], edgecolor=box_border_color, label=_advanced_label(c, advanced, "conditionLabels"))
+                Patch(facecolor=color_map[c], edgecolor=box_border_color, label=advanced_label(c, advanced, "conditionLabels"))
                 for c in valid_conditions
             ]
-            ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=_advanced_anchor(ax, advanced, 1, 0.5))
-            _apply_advanced_axes(ax, advanced)
+            ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=advanced_anchor(ax, advanced, 1, 0.5))
+            apply_advanced_axes(ax, advanced)
             plt.tight_layout(rect=[0, 0, 0.85, 1])
 
     if not legend:
         legend_obj = ax.get_legend()
         if legend_obj is not None:
             legend_obj.remove()
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         plt.tight_layout()
     elif str(mode).lower() == "single":
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
 
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -2676,7 +1093,7 @@ def qc_cv_plot(
     from matplotlib.patches import Patch
 
     plt = _get_plt()
-    frame = _original_scale_frame(kind)
+    frame = linear_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError(f"No sample columns found for {kind} dataset.")
@@ -2702,12 +1119,12 @@ def qc_cv_plot(
     if not cv_data:
         raise ValueError("No numeric values available for CV plot.")
 
-    color_map = _advanced_condition_colors(kind, plt, valid_conditions, advanced)
-    box_border_color = _advanced_text(advanced, "boxBorderColor") or "black"
-    box_median_color = _advanced_text(advanced, "boxMedianColor") or "firebrick"
-    box_outlier_color = _advanced_text(advanced, "boxOutlierColor") or "red"
-    box_outlier_edge_color = _advanced_text(advanced, "boxOutlierEdgeColor") or "black"
-    box_outlier_size = max(1.0, _advanced_number(advanced, "boxOutlierSize", 5.0))
+    color_map = advanced_condition_colors(kind, plt, valid_conditions, advanced)
+    box_border_color = advanced_text(advanced, "boxBorderColor") or "black"
+    box_median_color = advanced_text(advanced, "boxMedianColor") or "firebrick"
+    box_outlier_color = advanced_text(advanced, "boxOutlierColor") or "red"
+    box_outlier_edge_color = advanced_text(advanced, "boxOutlierEdgeColor") or "black"
+    box_outlier_size = max(1.0, advanced_number(advanced, "boxOutlierSize", 5.0))
     fig, ax = _make_fig(plt, width_cm, height_cm)
     boxprops = dict(linewidth=1.5, color=box_border_color)
     whiskerprops = dict(linewidth=1.5, color=box_border_color)
@@ -2744,11 +1161,11 @@ def qc_cv_plot(
     if text:
         for i, vals in enumerate(cv_data, start=1):
             med = float(np.median(vals))
-            x_pos, y_pos = _advanced_text_position(advanced, i, med)
+            x_pos, y_pos = advanced_text_position(advanced, i, med)
             ax.text(x_pos, y_pos, f"{med:.2f}", ha="center", va="bottom", fontsize=advanced_label_size(advanced, text_size), fontweight="bold", color="black")
 
     ax.set_xticks(positions)
-    ax.set_xticklabels([_advanced_label(condition, advanced, "conditionLabels") for condition in valid_conditions])
+    ax.set_xticklabels([advanced_label(condition, advanced, "conditionLabels") for condition in valid_conditions])
     ax.set_xlabel("Condition")
     ax.set_ylabel("Coefficient of Variation (%)")
     if header:
@@ -2758,16 +1175,16 @@ def qc_cv_plot(
 
     if legend:
         legend_handles = [
-            Patch(facecolor=color_map[c], edgecolor=box_border_color, label=_advanced_label(c, advanced, "conditionLabels"))
+            Patch(facecolor=color_map[c], edgecolor=box_border_color, label=advanced_label(c, advanced, "conditionLabels"))
             for c in valid_conditions
         ]
-        ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=_advanced_anchor(ax, advanced, 1, 0.5))
+        ax.legend(handles=legend_handles, title="Condition", loc="center left", bbox_to_anchor=advanced_anchor(ax, advanced, 1, 0.5))
     else:
         legend_obj = ax.get_legend()
         if legend_obj is not None:
             legend_obj.remove()
 
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -2801,7 +1218,7 @@ def qc_pca_feature_summary(
     color_by: str = "Condition",
     cluster_method: str = "None",
     cluster_count: int = 3,
-    dbscan_eps: float = 0.5,
+    dbscan_eps_factor: float = 0.5,
     dbscan_min_samples: int = 2,
     umap_n_neighbors: int = 15,
     umap_min_dist: float = 0.1,
@@ -2838,7 +1255,34 @@ def qc_pca_feature_summary(
     complete = int(numeric.dropna().shape[0])
     complete_matrix = numeric.dropna()
     variable = int((complete_matrix.var(axis=1) > 0).sum()) if not complete_matrix.empty else 0
+    dbscan: dict[str, float] | None = None
+    if resolve_cluster_method(cluster_method) == "dbscan":
+        try:
+            scores, _, axis_prefix = _pca_projection(
+                kind,
+                data_source=data_source,
+                plot_dim=plot_dim,
+                method=method,
+                umap_n_neighbors=int(umap_n_neighbors),
+                umap_min_dist=float(umap_min_dist),
+                tsne_perplexity=float(tsne_perplexity),
+                tsne_learning_rate=float(tsne_learning_rate),
+                random_state=int(random_state),
+                scaling=scaling,
+            )
+            component_cols = [f"{axis_prefix}{i + 1}" for i in range(n_components)]
+            eps, median = dbscan_effective_eps(
+                scores[component_cols].to_numpy(dtype=float), dbscan_eps_factor
+            )
+            dbscan = {
+                "epsFactor": float(max(1e-6, float(dbscan_eps_factor))),
+                "medianSampleDistance": float(median),
+                "epsEffective": float(eps),
+            }
+        except Exception:  # noqa: BLE001 - the notice must never break the summary
+            dbscan = None
     return {
+        "dbscan": dbscan,
         "ellipseSkippedGroups": (
             _groups_without_an_ellipse(
                 kind,
@@ -2849,7 +1293,7 @@ def qc_pca_feature_summary(
                 color_by=color_by,
                 cluster_method=cluster_method,
                 cluster_count=cluster_count,
-                dbscan_eps=dbscan_eps,
+                dbscan_eps_factor=dbscan_eps_factor,
                 dbscan_min_samples=dbscan_min_samples,
                 umap_n_neighbors=umap_n_neighbors,
                 umap_min_dist=umap_min_dist,
@@ -2983,12 +1427,45 @@ def resolve_cluster_method(cluster_method: str) -> str:
     return method_key
 
 
+def median_sample_distance(embedding: np.ndarray) -> float:
+    """Median Euclidean distance between all pairs of samples in the embedding."""
+    points = np.asarray(embedding, dtype=float)
+    if points.ndim != 2 or points.shape[0] < 2:
+        return 0.0
+    diffs = points[:, None, :] - points[None, :, :]
+    distances = np.sqrt((diffs**2).sum(axis=2))
+    upper = distances[np.triu_indices(points.shape[0], k=1)]
+    upper = upper[np.isfinite(upper)]
+    if upper.size == 0:
+        return 0.0
+    return float(np.median(upper))
+
+
+def dbscan_effective_eps(embedding: np.ndarray, factor: float) -> tuple[float, float]:
+    """The DBSCAN neighbourhood radius actually used, and the distance it scales.
+
+    `factor` is relative: eps = factor x median pairwise sample distance in the
+    projected coordinates. PC scores of a proteome span tens of log2 units,
+    UMAP a handful, t-SNE tens -- an absolute radius means something different
+    on each, and the old absolute default of 0.5 labelled every sample "Noise"
+    on any real projection. Half the typical inter-sample distance is a radius
+    the user can reason about before seeing the plot. When the median is zero
+    or undefined (fewer than two samples, all samples coincident) the factor is
+    used as an absolute radius so DBSCAN still runs.
+    """
+    factor_value = max(1e-6, float(factor))
+    median = median_sample_distance(embedding)
+    if not np.isfinite(median) or median <= 0:
+        return factor_value, 0.0
+    return factor_value * median, median
+
+
 def _compute_cluster_labels(
     embedding: np.ndarray,
     *,
     cluster_method: str = "None",
     cluster_count: int = 3,
-    dbscan_eps: float = 0.5,
+    dbscan_eps_factor: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
 ) -> np.ndarray | None:
@@ -3014,8 +1491,9 @@ def _compute_cluster_labels(
         model = AgglomerativeClustering(n_clusters=k)
         return model.fit_predict(embedding)
     if method_key == "dbscan":
+        eps, _median = dbscan_effective_eps(embedding, dbscan_eps_factor)
         model = DBSCAN(
-            eps=max(1e-6, float(dbscan_eps)),
+            eps=eps,
             min_samples=max(1, int(dbscan_min_samples)),
         )
         return model.fit_predict(embedding)
@@ -3039,7 +1517,7 @@ def _groups_without_an_ellipse(
     color_by: str,
     cluster_method: str,
     cluster_count: int,
-    dbscan_eps: float,
+    dbscan_eps_factor: float,
     dbscan_min_samples: int,
     umap_n_neighbors: float,
     umap_min_dist: float,
@@ -3073,7 +1551,7 @@ def _groups_without_an_ellipse(
             pca_scores[component_cols].to_numpy(dtype=float),
             cluster_method=cluster_method,
             cluster_count=cluster_count,
-            dbscan_eps=dbscan_eps,
+            dbscan_eps_factor=dbscan_eps_factor,
             dbscan_min_samples=dbscan_min_samples,
             random_state=random_state,
         )
@@ -3113,7 +1591,7 @@ def qc_pca_plot(
     umap_min_dist: float = 0.1,
     tsne_perplexity: float = 30.0,
     tsne_learning_rate: float = 200.0,
-    dbscan_eps: float = 0.5,
+    dbscan_eps_factor: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
     scaling: str = "auto",
@@ -3144,7 +1622,7 @@ def qc_pca_plot(
         pca_scores[component_cols].to_numpy(dtype=float),
         cluster_method=cluster_method,
         cluster_count=cluster_count,
-        dbscan_eps=dbscan_eps,
+        dbscan_eps_factor=dbscan_eps_factor,
         dbscan_min_samples=dbscan_min_samples,
         random_state=random_state,
     )
@@ -3159,7 +1637,7 @@ def qc_pca_plot(
     )
 
     groups = pca_scores[group_col].astype(str).dropna().unique().tolist()
-    color_map = _advanced_condition_colors(kind, plt, groups, advanced)
+    color_map = advanced_condition_colors(kind, plt, groups, advanced)
     method_name = "t-SNE" if str(method).strip().lower() in {"t-sne", "tsne", "t_sne"} else str(method).strip().upper()
 
     if n_components == 3:
@@ -3171,10 +1649,10 @@ def qc_pca_plot(
                 subset[component_cols[0]],
                 subset[component_cols[1]],
                 subset[component_cols[2]],
-                label=_advanced_label(group, advanced, "conditionLabels"),
+                label=advanced_label(group, advanced, "conditionLabels"),
                 **marker_style(
                     advanced,
-                    size=_pca_default_size(dot_size),
+                    size=pca_default_size(dot_size),
                     alpha=0.7,
                     group=group,
                     color=color_map[group],
@@ -3195,7 +1673,7 @@ def qc_pca_plot(
         if legend:
             ax.legend(
                 title="Cluster" if group_col == "cluster" else "Condition",
-                bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1),
+                bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1),
                 loc="upper left",
             )
     else:
@@ -3205,10 +1683,10 @@ def qc_pca_plot(
             ax.scatter(
                 subset[component_cols[0]],
                 subset[component_cols[1]],
-                label=_advanced_label(group, advanced, "conditionLabels"),
+                label=advanced_label(group, advanced, "conditionLabels"),
                 **marker_style(
                     advanced,
-                    size=_pca_default_size(dot_size),
+                    size=pca_default_size(dot_size),
                     alpha=0.7,
                     group=group,
                     color=color_map[group],
@@ -3246,7 +1724,7 @@ def qc_pca_plot(
         if legend:
             ax.legend(
                 title="Cluster" if group_col == "cluster" else "Condition",
-                bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1),
+                bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1),
                 loc="upper left",
             )
 
@@ -3255,7 +1733,7 @@ def qc_pca_plot(
         if legend_obj is not None:
             legend_obj.remove()
 
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -3276,7 +1754,7 @@ def qc_pca_interactive_html(
     umap_min_dist: float = 0.1,
     tsne_perplexity: float = 30.0,
     tsne_learning_rate: float = 200.0,
-    dbscan_eps: float = 0.5,
+    dbscan_eps_factor: float = 0.5,
     dbscan_min_samples: int = 2,
     random_state: int = 42,
     scaling: str = "auto",
@@ -3306,7 +1784,7 @@ def qc_pca_interactive_html(
         pca_scores[component_cols].to_numpy(dtype=float),
         cluster_method=cluster_method,
         cluster_count=cluster_count,
-        dbscan_eps=dbscan_eps,
+        dbscan_eps_factor=dbscan_eps_factor,
         dbscan_min_samples=dbscan_min_samples,
         random_state=random_state,
     )
@@ -3320,13 +1798,13 @@ def qc_pca_interactive_html(
         else "condition"
     )
     groups = pca_scores[color_col].astype(str).dropna().unique().tolist()
-    color_map = _advanced_condition_colors(kind, None, groups, advanced)
+    color_map = advanced_condition_colors(kind, None, groups, advanced)
     display_col = f"{color_col}_display"
     pca_scores[display_col] = pca_scores[color_col].astype(str).map(
-        lambda value: _advanced_label(value, advanced, "conditionLabels")
+        lambda value: advanced_label(value, advanced, "conditionLabels")
     )
     display_color_map = {
-        _advanced_label(group, advanced, "conditionLabels"): color_map[group]
+        advanced_label(group, advanced, "conditionLabels"): color_map[group]
         for group in groups
     }
     method_name = "t-SNE" if str(method).strip().lower() in {"t-sne", "tsne", "t_sne"} else str(method).strip().upper()
@@ -3349,10 +1827,10 @@ def qc_pca_interactive_html(
         apply_plotly_group_markers(
             fig,
             advanced,
-            size=_pca_default_size(dot_size),
+            size=pca_default_size(dot_size),
             alpha=0.85,
             display_to_group={
-                _advanced_label(group, advanced, "conditionLabels"): group
+                advanced_label(group, advanced, "conditionLabels"): group
                 for group in groups
             },
             colors=color_map,
@@ -3378,15 +1856,15 @@ def qc_pca_interactive_html(
             legend_title_text="Cluster" if color_col == "cluster" else "Condition",
         )
         scene_overrides: dict[str, Any] = {}
-        x_override = _advanced_text(advanced, "xLabel")
-        y_override = _advanced_text(advanced, "yLabel")
+        x_override = advanced_element_text(advanced, "xLabelElement")
+        y_override = advanced_element_text(advanced, "yLabelElement")
         if x_override is not None:
             scene_overrides["xaxis_title"] = x_override
         if y_override is not None:
             scene_overrides["yaxis_title"] = y_override
         if scene_overrides:
             fig.update_layout(scene=scene_overrides)
-        fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
+        fig.update_layout(**advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
         return _plotly_html(fig)
 
     fig = px.scatter(
@@ -3401,10 +1879,10 @@ def qc_pca_interactive_html(
     apply_plotly_group_markers(
         fig,
         advanced,
-        size=_pca_default_size(dot_size),
+        size=pca_default_size(dot_size),
         alpha=0.85,
         display_to_group={
-            _advanced_label(group, advanced, "conditionLabels"): group for group in groups
+            advanced_label(group, advanced, "conditionLabels"): group for group in groups
         },
         colors=color_map,
     )
@@ -3423,7 +1901,7 @@ def qc_pca_interactive_html(
         yaxis=dict(title=y_title, zeroline=False),
         legend_title_text="Cluster" if color_col == "cluster" else "Condition",
     )
-    fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
+    fig.update_layout(**advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
 
     if add_ellipses:
         for group in groups:
@@ -3479,7 +1957,7 @@ def _abundance_key_column(frame: pd.DataFrame, workflow: str, kind: AnnotationKi
 def _abundance_mean_intensities(
     kind: AnnotationKind,
 ) -> tuple[pd.DataFrame, list[str], str, str]:
-    frame = _original_scale_frame(kind)
+    frame = linear_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
         raise ValueError("No sample columns available for abundance plot.")
@@ -3559,7 +2037,7 @@ def qc_abundance_plot(
     plt = _get_plt()
     mean_intensities, unique_conditions, workflow, key_col = _abundance_mean_intensities(kind)
 
-    color_map = _advanced_condition_colors(kind, plt, unique_conditions, advanced)
+    color_map = advanced_condition_colors(kind, plt, unique_conditions, advanced)
     fig, ax = _make_fig(plt, width_cm, height_cm)
     if condition == "All Conditions":
         long_intensities = mean_intensities.melt(
@@ -3575,7 +2053,7 @@ def qc_abundance_plot(
             ax.scatter(
                 subset["Rank"],
                 subset["log10Intensity"],
-                label=_advanced_label(cond, advanced, "conditionLabels"),
+                label=advanced_label(cond, advanced, "conditionLabels"),
                 **marker_style(
                     advanced, size=2.3, alpha=1.0, group=cond, color=color_map[cond]
                 ),
@@ -3588,7 +2066,7 @@ def qc_abundance_plot(
         ax.scatter(
             ranks,
             values.values,
-            label=_advanced_label(condition, advanced, "conditionLabels"),
+            label=advanced_label(condition, advanced, "conditionLabels"),
             **marker_style(
                 advanced,
                 size=2.7,
@@ -3606,14 +2084,14 @@ def qc_abundance_plot(
         ax.set_title("")
 
     if legend:
-        ax.legend(title="Condition", bbox_to_anchor=_advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
-        _apply_advanced_axes(ax, advanced)
+        ax.legend(title="Condition", bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout(rect=[0, 0, 0.85, 1])
     else:
         legend_obj = ax.get_legend()
         if legend_obj is not None:
             legend_obj.remove()
-        _apply_advanced_axes(ax, advanced)
+        apply_advanced_axes(ax, advanced)
         fig.tight_layout()
 
     return _to_png_bytes(fig, plt, dpi=dpi)
@@ -3637,13 +2115,13 @@ def qc_abundance_interactive_html(
             raise ValueError(f"Condition '{condition}' not found.")
         long_intensities = long_intensities[long_intensities["Condition"] == condition]
     visible_conditions = long_intensities["Condition"].astype(str).dropna().unique().tolist()
-    color_map = _advanced_condition_colors(kind, None, visible_conditions, advanced)
+    color_map = advanced_condition_colors(kind, None, visible_conditions, advanced)
     long_intensities = long_intensities.copy()
     long_intensities["ConditionDisplay"] = long_intensities["Condition"].astype(str).map(
-        lambda value: _advanced_label(value, advanced, "conditionLabels")
+        lambda value: advanced_label(value, advanced, "conditionLabels")
     )
     display_color_map = {
-        _advanced_label(condition, advanced, "conditionLabels"): color_map[condition]
+        advanced_label(condition, advanced, "conditionLabels"): color_map[condition]
         for condition in visible_conditions
     }
 
@@ -3662,7 +2140,7 @@ def qc_abundance_interactive_html(
         size=6,
         alpha=0.85,
         display_to_group={
-            _advanced_label(condition, advanced, "conditionLabels"): condition
+            advanced_label(condition, advanced, "conditionLabels"): condition
             for condition in visible_conditions
         },
         colors=color_map,
@@ -3675,7 +2153,7 @@ def qc_abundance_interactive_html(
         xaxis_title=f"{workflow} Rank",
         yaxis_title=abundance_axis_label(workflow, _phosprot_values_are_centred(kind)),
     )
-    fig.update_layout(**_advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
+    fig.update_layout(**advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
     return _plotly_html(fig)
 
 
@@ -3700,7 +2178,7 @@ def qc_correlation_plot(
         has_scipy = False
 
     plt = _get_plt()
-    frame = _log2_qc_frame(kind)
+    frame = log2_qc_frame(kind)
     sample_columns = _get_sample_columns(kind, frame)
     if len(sample_columns) < 2:
         raise ValueError("At least two sample columns are required for correlation plot.")
@@ -3723,7 +2201,7 @@ def qc_correlation_plot(
     rename_map = dict(zip(meta["sample"], meta["new_sample"]))
     original_by_label = {str(label): str(sample) for sample, label in rename_map.items()}
     # The composite label a tick shows is `Condition_1`, so the condition rename
-    # has to be applied to it as well; see _rename_composite_sample_label.
+    # has to be applied to it as well; see rename_composite_sample_label.
     condition_by_label = {
         str(label): str(condition)
         for label, condition in zip(meta["new_sample"].tolist(), meta["condition"].astype(str).tolist())
@@ -3789,7 +2267,7 @@ def qc_correlation_plot(
     color_norm = plt.Normalize(vmin=vmin, vmax=vmax)
     method_normalized = str(method).strip().lower()
     x_labels = [
-        _rename_composite_sample_label(
+        rename_composite_sample_label(
             str(label),
             original_by_label.get(str(label), ""),
             condition_by_label.get(str(label), ""),
@@ -3798,7 +2276,7 @@ def qc_correlation_plot(
         for label in ordered_corr.columns.tolist()
     ]
     y_labels = [
-        _rename_composite_sample_label(
+        rename_composite_sample_label(
             str(label),
             original_by_label.get(str(label), ""),
             condition_by_label.get(str(label), ""),
@@ -3812,7 +2290,7 @@ def qc_correlation_plot(
         ax.set_yticks(range(len(ordered_corr.index)))
         ax.set_xticklabels(x_labels, rotation=90, ha="center", va="bottom", fontsize=7)
         ax.set_yticklabels(y_labels, fontsize=7)
-        fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
+        fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04, label="Pearson r (log2 intensities)")
     elif method_normalized == "ellipse":
         n = len(ordered_corr)
         ax.set_xlim(0, n)
@@ -3832,14 +2310,17 @@ def qc_correlation_plot(
                     (j + 0.5, i + 0.5),
                     width=0.9,
                     height=0.9 * (1 - abs(r)),
-                    angle=45 if r > 0 else -45,
+                    # The y axis is inverted above, so a +45 degree patch would
+                    # render as "\\"; -45 is what draws a positive correlation
+                    # rising left to right, as the scatter it stands for would.
+                    angle=-45 if r > 0 else 45,
                     facecolor=cmap(color_norm(r)),
                     alpha=0.6,
                 )
                 ax.add_patch(ellipse)
 
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=color_norm)
-        fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04, label="Pearson r (log2 intensities)")
     else:
         raise ValueError("method must be 'Matrix' or 'Ellipse'")
 
@@ -3849,6 +2330,37 @@ def qc_correlation_plot(
         ax.text(j + offset, i + offset, "NA", ha="center", va="center", fontsize=7, color="#666666")
     ax.set_xlabel("Samples" + ("\nNA: correlation unavailable; clustering skipped (metadata order)" if incomplete else ""))
     ax.set_ylabel("Samples")
-    _apply_advanced_axes(ax, advanced)
+    # A title so the exported figure says what it shows; the advanced panel's
+    # title switch and custom text still override it.
+    ax.set_title(
+        "Sample correlation (Pearson r, log2 intensities)"
+        + (" \u2014 ellipse tilt: / positive, \\ negative; narrower = stronger" if method_normalized == "ellipse" else ""),
+        fontsize=9,
+    )
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
+
+# Each module caches its own renderers, the way table_functions and
+# single_protein_tools already did. These were cached one layer up, by a facade
+# in functions.py that forwarded to them; the facade is gone and the cache
+# stays where the work is.
+apply_cached_wrappers(
+    globals(),
+    [
+        "imputation_before_plot",
+        "imputation_overall_fit_plot",
+        "imputation_after_plot",
+        "distribution_qqnorm_plot",
+        "qc_coverage_plot",
+        "qc_peptide_coverage_plot",
+        "qc_intensity_histogram_plot",
+        "qc_boxplot_plot",
+        "qc_cv_plot",
+        "qc_pca_plot",
+        "qc_pca_interactive_html",
+        "qc_abundance_plot",
+        "qc_abundance_interactive_html",
+        "qc_correlation_plot",
+    ],
+)

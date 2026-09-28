@@ -60,7 +60,7 @@ def clear_peptide_metadata(
         _package_state()[get_active_package()] = None
     else:
         _METADATA_BY_SESSION.pop(get_session_id(), None)
-    invalidate_runtime_cache("peptide-metadata:cleared")
+    invalidate_runtime_cache("peptide-metadata:cleared", all_sessions=all_sessions)
 
 
 def snapshot_peptide_metadata_session_state():

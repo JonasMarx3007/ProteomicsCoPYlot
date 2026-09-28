@@ -25,15 +25,9 @@ export type AdvancedTextElementSettings = {
 };
 
 export type AdvancedPlotSettings = {
-  title?: string;
-  xLabel?: string;
-  yLabel?: string;
   titleElement?: AdvancedTextElementSettings;
   xLabelElement?: AdvancedTextElementSettings;
   yLabelElement?: AdvancedTextElementSettings;
-  titleSize?: number;
-  axisLabelSize?: number;
-  tickLabelSize?: number;
   xTickLabelSize?: number;
   yTickLabelSize?: number;
   xTickLabelRotation?: number;
@@ -239,6 +233,20 @@ export type Log2DetectionRequest = {
   sampleColumns: string[];
 };
 
+/**
+ * A JSON value. An object member may be `undefined`: an unset optional field,
+ * which `JSON.stringify` leaves out, exactly as the request will carry it.
+ */
+export type ContextValue = string | number | boolean | null | ContextValue[] | { [key: string]: ContextValue | undefined };
+
+/**
+ * What the visible plot or panel shows: its data level, source, test and the
+ * selections that determine its result. The page that owns the view builds it;
+ * App keeps one per view and hands the active one to the assistant as
+ * `view.mode`. The backend reads it through `ai_functions._mode_fields`.
+ */
+export type ContextMode = { [key: string]: ContextValue | undefined };
+
 export type Log2DetectionResponse = {
   isLog2Transformed: boolean | null;
   sampleCount: number;
@@ -335,7 +343,11 @@ export type PeptideCoverageResponse = {
   protein: string;
   species: PeptideSpecies;
   coveragePercent: number;
+  /** Peptides of the group that occur in the selected sequence (what the coverage is built from). */
   matchingPeptideCount: number;
+  /** All peptides the report assigns to the protein group. */
+  assignedPeptideCount: number;
+  unmappedPeptides: string[];
   sequenceText: string;
   warnings: string[];
 };
@@ -513,6 +525,7 @@ export type CompletenessTablesResponse = {
   overallMissingPercent: number;
   outlierThreshold: number;
   outliers: string[];
+  excludedAllMissingCount: number;
   sampleSummary: Record<string, unknown>[];
   featureSummary: Record<string, unknown>[];
 };
@@ -573,6 +586,9 @@ export type QcPcaFeatureSummary = {
    * should carry no caption about how the tool drew it -- so this notice is
    * the only place the omission is stated. */
   ellipseSkippedGroups: string[];
+  /** Present when the cluster method is DBSCAN: the radius actually used,
+   * as factor x median pairwise sample distance in the projection. */
+  dbscan: { epsFactor: number; medianSampleDistance: number; epsEffective: number } | null;
 };
 
 export type QcPlotOptionsResponse = {
@@ -712,6 +728,8 @@ export type EnrichmentTerm = {
   name: string;
   termSize: number;
   intersectionSize: number;
+  querySize: number;
+  geneRatio: number;
   hitPercent: number;
   pValue: number;
   adjPValue: number;
@@ -921,24 +939,9 @@ export type SummarySectionInfo = {
   description: string;
 };
 
-export type SummaryOverviewResponse = {
-  tables: SummaryTableBlock[];
-  availableSections: SummarySectionInfo[];
-  warnings: string[];
-  suggestedFilename: string;
-};
-
 export type SummarySectionNote = {
   above: string;
   below: string;
-};
-
-export type SummaryLegacyReportRequest = {
-  title: string;
-  author: string;
-  introduction: string;
-  notes: Record<string, SummarySectionNote>;
-  includeMetadataTables: boolean;
 };
 
 export type PeptideCollapseRequest = {

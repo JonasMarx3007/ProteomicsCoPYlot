@@ -25,7 +25,7 @@ _METHOD_WORDING = {
     "benjamini_hochberg_fdr_control": "Benjamini–Hochberg false discovery rate correction",
     "sample_standard_deviation_ddof_1": "sample standard deviation, using one fewer than the number of observations as the variance divisor",
     "linear_intensity": "linear intensity",
-    "uploaded_intensities_before_normalization_and_imputation": "uploaded intensities before normalization and imputation",
+    "normalized_unfiltered_non_imputed_data_back_transformed_to_linear": "the normalized, unfiltered, non-imputed data back-transformed to the linear scale",
     "back_transformed_to_linear": "back-transformed to linear intensity",
     "outermost_observed_values_within_the_1.5_IQR_fences": "outermost observed values within the 1.5 × IQR fences",
     "observations_outside_the_fences": "observations outside the fences",
@@ -174,7 +174,7 @@ def _comparison(left: str, right: str, values: dict[str, str], evidence: list[Ev
     if a[:2] != b[:2] or a[5] != b[5] or a[3][0] != b[3][0] or a[3][1] == b[3][1] or any(a[2].get(key) != b[2].get(key) for key in qualifiers):
         raise ValueError("Compare the same metric and settings for two distinct subjects.")
     relation = "higher than" if a[4] > b[4] else "lower than" if a[4] < b[4] else "equal to"
-    metric = a[1].replace("_", " ")
+    metric = a[1].replace("_", " ").lower()
     item = evidence[a[0]]
     meaning = _field_meaning(a[5], a[1], item.context or evidence_context(item.text))
     if meaning:
@@ -201,14 +201,24 @@ def render_hypotheses(hypotheses: list[str]) -> list[str]:
     return result
 
 
-def evidence_qualifications(evidence: list[Evidence]) -> list[str]:
+def evidence_qualifications(evidence: list[Evidence], used: set[int] | None = None) -> list[str]:
+    """Caveats a person needs, for the evidence the answer actually used.
+
+    Round 34: a truncated tile made every canvas answer end with "Only part
+    of the available evidence is included; this is not an exhaustive
+    assessment." -- including answers that quoted nothing from the truncated
+    source, and conceptual answers that quoted no numbers at all. The caveat is
+    now tied to the sources the answer drew on and worded as a person would.
+    """
     qualifications = []
-    for item in evidence:
+    for index, item in enumerate(evidence):
+        if used is not None and index not in used:
+            continue
         for line in item.text.splitlines():
             if line.startswith(("Requested module uses default settings", "Entity lookup uses the application's data source")) or "default module settings (not current UI selections)" in line:
                 qualifications.append(line)
-    if any(item.status == "partial" for item in evidence):
-        qualifications.append("Only part of the available evidence is included; this is not an exhaustive assessment.")
-    if any(item.status == "unavailable" for item in evidence):
-        qualifications.append("Some requested evidence is unavailable for this workflow or selection.")
+        if item.status == "partial":
+            qualifications.append("I read part of the result here, not every row of it, so take this as a read of what is shown rather than a complete assessment.")
+        if item.status == "unavailable":
+            qualifications.append("Some of what you asked about is not available for this selection.")
     return list(dict.fromkeys(qualifications))

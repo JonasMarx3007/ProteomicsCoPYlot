@@ -2,6 +2,7 @@
 import hashlib
 import importlib
 import json
+import re
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -30,35 +31,41 @@ report = importlib.import_module('app.services.report_function')
 # (`referenceLine` in the coverage settings), so the report now forwards
 # `reference_line=True` to the two coverage renderers. Reverting just that
 # argument reproduces the previous hashes; it is the whole difference.
+# 2026-09-24: DBSCAN's radius became relative (`dbscan_eps_factor`, x median
+# sample distance) instead of an absolute `dbscan_eps`; the PCA renderer
+# argument was renamed accordingly. Later the same day the report's projection
+# became PCA-only: `method` is always "PCA" and the UMAP/t-SNE arguments are no
+# longer forwarded to the renderer. Those renderer arguments are the whole
+# difference.
 SNAPSHOTS = {
     'qc_custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'qc_custom:protein': 'cc2e315afea439d6a7cd515c8463437a5c5fef34141e7d6d996336d98db1515b',
-    'qc_custom:phospho': '5665da5297b8694a4818ed85e30f2705827f32815fd68cc48cadbde53194a7dd',
-    'qc_custom:peptide,protein,phospho': 'cb89e35ff052b1d2248fb0f5d2d67916f1021966bd9347e937fe96142ecaf3cb',
+    'qc_custom:protein': 'd4bb4d9263319cbf4318dba944eabdca396e8998003839612d953450eba68e6f',
+    'qc_custom:phospho': '1cff2a564e52e627c61ae50f6ec832e16f85f3b14389e158d182b70889a8e526',
+    'qc_custom:peptide,protein,phospho': '9edecfa9db40bf3ba294a618f57b832f76ba31fd2028a61b251ac0f8e143581c',
     'qc_invalid:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'qc_invalid:protein': 'd9ea4cdce061e79971e6fe44d0e6e800a418b93298d2610d1efd4ee5e9326af3',
-    'qc_invalid:phospho': 'ec5f19d6bec30d4b8c7643fb433624e7dc3ed7fc4ef66ad8fb13f984e185101d',
-    'qc_invalid:peptide,protein,phospho': 'ed88f3e3aa06c83aa5be0806d76b3b6a823a0f5cec9906574d42b779cc68d28d',
+    'qc_invalid:protein': '26ef7e6320670b3497461e27dd16a8defcf0ad20b9f21a6a437b5464c771dd9b',
+    'qc_invalid:phospho': '49bab6ac069fbcbafb06b4429e647b51aca0634294217d7646ee9e8eadb53243',
+    'qc_invalid:peptide,protein,phospho': '8f7fa836923616e322f67710abdd97c39e2697586039894827471bd5ac8f3a3a',
     'default:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
     # The three `default` snapshots below changed when advanced mode stopped
     # gating the appearance settings: the case's custom PCA title now reaches
     # the PCA renderer with the panel closed, as it reaches the plot on screen.
     # That forwarded title is the whole difference.
-    'default:protein': 'fb5bb3b1ea3327da2371a56e2351c167ae35e67842e5822ed02c98a6d2f2d34e',
-    'default:phospho': '118adddf0e0d811052cc61a9bc352bc888afbba7810fa6b5ea363a2a255094b1',
-    'default:peptide,protein,phospho': '726dc107ca4818929430365ed6551193041b74915854c6a8030a09b8b992ebea',
+    'default:protein': '1dafcc83b0a4f545a0c9f1577bd4cfdf6deb8ecc80f9dc1aac161524f531f712',
+    'default:phospho': '7d559d576ebe8c0f245508b557cfd04cc63b17311eb93f9ce64b1edaed4bc3fc',
+    'default:peptide,protein,phospho': 'be6d8308e0791286d3ab2db5fe848470a745601b63f4819d3fccdde283f2dfb0',
     'custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'custom:protein': '56c09da69fa15397cedcdf3b17c9b4b37e15ab890db170e5382e8062f011f54f',
-    'custom:phospho': '7c47a4dff5caa0e719ca8b99352fb07eec2e0317475f92b416f9cd7e915a551e',
-    'custom:peptide,protein,phospho': '543e5b8937c13381779de11edf11198c4823876575f9bada3382e884a4f866f9',
+    'custom:protein': '64a0a750e160b91c3ba0410b1b3223826f490fed2642d277c8e7bae86341707e',
+    'custom:phospho': '9cfec6587b2665686067ca354f32e56c667c7da1ee3553b36b3dcff19d2a5c4d',
+    'custom:peptide,protein,phospho': 'b92ef3643a69465904473f7997913e17b0ec0506cd1a92ca547cefa615cb46bd',
     'interactive:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'interactive:protein': 'a067a34210df5f79925ebb25e27ada2d5aa334a9a19f17a19cfdc91af91aa4e9',
-    'interactive:phospho': '3a0e271cd9b3e0fe3f88f2c487bbab5113a766d060b9ffd0821cfda5824d7b6a',
-    'interactive:peptide,protein,phospho': 'd61f48763e718c47c3f3bf03d0e0fe7ac7eff7a08de1a3e385116d3a5ba53e33',
+    'interactive:protein': 'aecccec804826debfc03563ea65235dc55955ce2efe1fd4a0853cb2cf502f9e5',
+    'interactive:phospho': '33d6fbeb0b3cccee1bc26904d05a66f67a1a2508f7199e495d8f56c582693408',
+    'interactive:peptide,protein,phospho': '60d4b066e04b9f6077a83c857dde8d969e2a5625fc894cff831047f1d0896b34',
     'failure:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'failure:protein': 'e41907b6ee2ac8ff1553e96a5027e82133923f961424d886082ce861b0dfad53',
-    'failure:phospho': '25e26eac47207662a331fabcf33730e53c2d2cc8a19ca8c3eaab0b58059a95b3',
-    'failure:peptide,protein,phospho': 'e9762520408c9e0c7f40f2fb0d3aa90725a455f1bdee55819ba672638bebd689',
+    'failure:protein': 'c38b0df3a997aa1ea9c394891cbfa491bb0b4101978b9682b05e19fddb1b5a55',
+    'failure:phospho': 'fef2705d84ee974fad103af62b6f80267f8442d5ac2e7f8ce7119f7b4406021d',
+    'failure:peptide,protein,phospho': '03aa537e37f34492ace116f120c8d333198f4c2c4949919840e2d9c320256ef7',
 }
 
 
@@ -106,7 +113,7 @@ def render_case(monkeypatch, kinds, mode, *, pca_scaling=None, selected_settings
         'header': False, 'legend': False, 'plotDim': '3D', 'method': 'UMAP', 'addEllipses': True,
         'dotSize': 90, 'clusterMethod': 'KMeans', 'clusterCount': 1, 'colorBy': 'Sample',
         'umapNNeighbors': 999, 'umapMinDist': -1, 'tsnePerplexity': 2000, 'tsneLearningRate': 1,
-        'dbscanEps': 0, 'dbscanMinSamples': 999, 'randomState': 123, 'widthCm': 90, 'heightCm': 2, 'dpi': 50,
+        'dbscanEpsFactor': 0, 'dbscanMinSamples': 999, 'randomState': 123, 'widthCm': 90, 'heightCm': 2, 'dpi': 50,
     }
     if pca_scaling is not None:
         settings['scaling'] = pca_scaling
@@ -153,11 +160,23 @@ def test_report_output_and_renderer_arguments_are_unchanged(monkeypatch, kinds, 
     # R7 intentionally changes only these sentences in this probe harness.
     # Their exact presence/meaning is checked by test_report_processing_provenance.
     # Removing them here proves all remaining HTML and renderer calls are unchanged.
-    result.html = result.html.replace(
-        '<p>QC plots use unfiltered, non-imputed data unless another data source is stated. '
-        'Filtering and imputation apply to clustering and statistical plots according to '
-        'the selected data source; PCA also uses its stated data source.</p>', ''
-    ).replace('Not applied to this plot. Configured filtering: ', '')
+    result.html = re.sub(
+        r'<p>QC plots use the (?:normalized, )?unfiltered, non-imputed data unless another data source is stated. '
+        r'Filtering and imputation apply to clustering and statistical plots according to '
+        r'the selected data source; PCA also uses its stated data source.</p>', '', result.html
+    )
+    # 2026-09-24: normalization moved onto its own labelled line and a plot on
+    # the unfiltered source now states the row counts instead of the filter
+    # recipe. Both are wording checked by test_report_normalization_line; they
+    # are removed here so the hashes keep proving the rest is unchanged.
+    result.html = re.sub(r'<p><strong>Normalization:</strong>[^<]*</p>', '', result.html)
+    result.html = re.sub(
+        r'<p><strong>Filtering:</strong>[^<]*</p>', '<p><strong>Filtering:</strong></p>', result.html
+    )
+    # 2026-09-24: the PCA section states its parameters on a Projection line;
+    # its wording is checked by test_report_pca_is_always_pca, so it is removed
+    # here as the Normalization line is.
+    result.html = re.sub(r'<p><strong>Projection:</strong>[^<]*</p>', '', result.html)
     key = mode + ':' + ','.join(kinds)
     actual = json.dumps([result.model_dump(), calls], sort_keys=True).encode()
     assert hashlib.sha256(actual).hexdigest() == SNAPSHOTS[key]

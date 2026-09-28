@@ -17,42 +17,18 @@ from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import raw_zero_to_nan
 from app.services.plot_images import (
-    _advanced_label,
-    _apply_advanced_axes,
-    advanced_label_size,
-    advanced_color,
+    _peptide_file_column,
+    _peptide_quantity_column,
+    _peptide_sequence_column,
 )
-
-
-def _get_plt():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        return plt
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "matplotlib is required for plot rendering. Install it with: "
-            "pip install matplotlib"
-        ) from exc
-
-
-def _get_sns():
-    try:
-        import seaborn as sns
-
-        return sns
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "seaborn is required for heatmap rendering. Install it with: "
-            "pip install seaborn"
-        ) from exc
-
-
-
-
+from app.services.plot_styling import (
+    advanced_label,
+    apply_advanced_axes,
+    advanced_color,
+    advanced_label_size,
+)
+from app.services.runtime_cache import apply_cached_wrappers
+from app.services.plotting_common import get_plt as _get_plt, get_sns as _get_sns
 
 
 def _feature_label(frame: pd.DataFrame) -> str:
@@ -65,26 +41,6 @@ def _feature_label(frame: pd.DataFrame) -> str:
     return "Feature"
 
 
-def _peptide_file_column(frame: pd.DataFrame) -> str:
-    if "File.Name" in frame.columns:
-        return "File.Name"
-    for column in frame.columns:
-        normalized = str(column).strip().lower()
-        if "file" in normalized and "name" in normalized:
-            return str(column)
-    raise ValueError("Peptide dataset is missing a file-name column.")
-
-
-def _peptide_sequence_column(frame: pd.DataFrame) -> str:
-    if "Stripped.Sequence" in frame.columns:
-        return "Stripped.Sequence"
-    for column in frame.columns:
-        normalized = str(column).strip().lower()
-        if "stripped" in normalized and "sequence" in normalized:
-            return str(column)
-    raise ValueError("Peptide dataset is missing a stripped-sequence column.")
-
-
 def _peptide_precursor_column(frame: pd.DataFrame) -> str:
     if "Precursor.Id" in frame.columns:
         return "Precursor.Id"
@@ -93,12 +49,6 @@ def _peptide_precursor_column(frame: pd.DataFrame) -> str:
         if "precursor" in normalized and "id" in normalized:
             return str(column)
     raise ValueError("Peptide dataset is missing a precursor-id column.")
-
-
-def _peptide_quantity_column(frame: pd.DataFrame, requested: str | None = None) -> str:
-    from app.services.peptide_quantity import resolve_peptide_quantity_column
-
-    return resolve_peptide_quantity_column(frame, requested=requested)
 
 
 def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
@@ -192,7 +142,7 @@ def _missing_value_plot_from_matrix(
 
     ax.tick_params(axis="x", rotation=0)
     ax.grid(axis="y", linestyle="--", alpha=0.7)
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
 
@@ -244,14 +194,39 @@ def _renamed_meta(meta: pd.DataFrame, include_id: bool = True) -> pd.DataFrame:
     return renamed
 
 
-def _filtered_data(frame: pd.DataFrame, meta: pd.DataFrame, include_id: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _selected_matrix(
+    frame: pd.DataFrame, meta: pd.DataFrame, include_id: bool = True
+) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """The annotated sample columns, without features missing in all of them.
+
+    A row with no value in any selected sample says nothing about the
+    completeness of those samples (it was identified elsewhere, or never
+    quantified), so it is excluded once here for the missing-value plot, the
+    heatmap and the summary tables alike -- the same rule the coverage plots
+    apply to their reference line. The number of excluded rows is returned so
+    the page and the report can state it.
+    """
     renamed_meta = _renamed_meta(meta, include_id=include_id)
     rename_map = dict(zip(renamed_meta["sample"], renamed_meta["new_sample"]))
     filtered = frame.rename(columns=rename_map)
     columns = [c for c in renamed_meta["new_sample"].tolist() if c in filtered.columns]
     if not columns:
         raise ValueError("No metadata sample columns are present in the dataset.")
-    return filtered[columns], renamed_meta
+    matrix = filtered[columns]
+    present = matrix.notna().any(axis=1)
+    excluded = int((~present).sum())
+    return matrix[present], renamed_meta, excluded
+
+
+def _filtered_data(frame: pd.DataFrame, meta: pd.DataFrame, include_id: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    matrix, renamed_meta, _excluded = _selected_matrix(frame, meta, include_id=include_id)
+    return matrix, renamed_meta
+
+
+def completeness_excluded_feature_count(kind: AnnotationKind, include_id: bool = True) -> int:
+    """Features with no value in any selected sample (excluded from the page)."""
+    frame, meta = _frame_and_meta(kind)
+    return _selected_matrix(frame, meta, include_id=include_id)[2]
 
 
 def completeness_missing_value_plot(
@@ -402,11 +377,11 @@ def completeness_missing_value_heatmap(
     if header:
         ax.set_title("Missing Values Heatmap")
     ax.set_xlabel("Sample")
-    ax.set_ylabel("Protein Numbers")
+    ax.set_ylabel(f"{_feature_label(frame)}s")
     ax.tick_params(axis="x", rotation=90, labelsize=7)
     ax.set_xticklabels(
         [
-            _advanced_label(
+            advanced_label(
                 label.get_text(),
                 advanced,
                 "sampleLabels",
@@ -416,7 +391,7 @@ def completeness_missing_value_heatmap(
         ],
         rotation=90,
     )
-    _apply_advanced_axes(ax, advanced)
+    apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=True)
 
@@ -462,7 +437,7 @@ def completeness_tables(
     feature_summary = completeness_feature_summary_table(kind, include_id=include_id)
 
     frame, meta = _frame_and_meta(kind)
-    data_filtered, _ = _filtered_data(frame, meta, include_id=include_id)
+    data_filtered, _, excluded = _selected_matrix(frame, meta, include_id=include_id)
     total_values = max(1, int(data_filtered.size))
     missing_values = int(data_filtered.isna().sum().sum())
     overall_missing = round((missing_values / total_values) * 100.0, 2)
@@ -475,6 +450,22 @@ def completeness_tables(
         overallMissingPercent=overall_missing,
         outlierThreshold=float(outlier_threshold),
         outliers=outliers,
+        excludedAllMissingCount=excluded,
         sampleSummary=sample_summary.where(pd.notna(sample_summary), None).to_dict(orient="records"),
         featureSummary=feature_summary.where(pd.notna(feature_summary), None).to_dict(orient="records"),
     )
+
+# Each module caches its own renderers, the way table_functions and
+# single_protein_tools already did. These were cached one layer up, by a facade
+# in functions.py that forwarded to them; the facade is gone and the cache
+# stays where the work is.
+apply_cached_wrappers(
+    globals(),
+    [
+        "completeness_missing_value_plot",
+        "completeness_missing_value_plot_peptide",
+        "completeness_missing_value_plot_precursor",
+        "completeness_missing_value_heatmap",
+        "completeness_tables",
+    ],
+)

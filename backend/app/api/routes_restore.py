@@ -19,7 +19,6 @@ from app.services.restore_state import (
     describe_restore_version_warning,
     export_state_blob,
     inspect_missing_files,
-    migrate_restore_ui_state,
     parse_replacements_manifest,
     restore_upload_max_bytes,
 )
@@ -99,7 +98,7 @@ async def import_restore_state(
         LOGGER.exception("Failed to parse restore state")
         raise HTTPException(status_code=400, detail="Failed to parse restore state.") from exc
 
-    ui_state, ui_migration_warnings = migrate_restore_ui_state(state.get("uiState"))
+    ui_state = state.get("uiState")
     if missing:
         payload = RestoreImportResponse(
             ok=False,
@@ -107,7 +106,6 @@ async def import_restore_state(
             warnings=[
                 RESTORE_COMPATIBILITY_NOTICE,
                 *([version_warning] if version_warning else []),
-                *ui_migration_warnings,
             ],
             missingFiles=[
                 RestoreMissingFile(
@@ -140,7 +138,6 @@ async def import_restore_state(
         warnings=[
             RESTORE_COMPATIBILITY_NOTICE,
             *([version_warning] if version_warning else []),
-            *ui_migration_warnings,
             *restored.warnings,
         ],
         missingFiles=[],

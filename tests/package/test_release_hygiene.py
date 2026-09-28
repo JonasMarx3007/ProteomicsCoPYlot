@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -9,6 +12,25 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = ROOT / "packaging" / "python" / "build_pip_package.py"
+
+
+def test_application_version_is_consistent_across_release_metadata():
+    from proteomicscopylot import __version__
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    expected = re.search(r'^version = "([^"]+)"$', project, re.M).group(1)
+    frontend = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
+    citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    versions = {
+        "public package version": __version__,
+        "backend": runpy.run_path(str(ROOT / "backend/app/app_version.py"))["APP_VERSION"],
+        "python package": runpy.run_path(str(ROOT / "proteomicscopylot/_version.py"))["__version__"],
+        "frontend": frontend["version"],
+        "lockfile": lock["version"],
+        "lockfile root package": lock["packages"][""]["version"],
+        "citation": re.search(r'^version: "([^"]+)"$', citation, re.M).group(1),
+    }
+    assert all(value == expected for value in versions.values()), versions
 
 
 def _load_build_script():
@@ -45,6 +67,10 @@ def test_secret_and_local_artifact_ignore_contract() -> None:
     ]
     assert all(_ignored(path) for path in ignored)
     assert not any(_ignored(path) for path in visible)
+
+
+def test_default_test_discovery_excludes_local_scratch(pytestconfig) -> None:
+    assert pytestconfig.getini("testpaths") == ["tests"]
 
 
 def test_release_artifact_set_is_exact_and_versioned(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 import { compactAdvancedPlotSettings } from "./lib/plotSerialization";
+import { CONTEXT_SLOTS, activeContextSlot, contextText, keepOnly, withContextMode, type ContextModes, type ContextSlot } from "./lib/contextModes";
+import type { ContextMode } from "./lib/types";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
-import { AssistantSurface } from "./components/AssistantFields";
+import { AssistantAppearanceMount, AssistantSurface } from "./components/AssistantFields";
 import { usePlotLabels } from "./lib/usePlotLabels";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
@@ -117,7 +119,7 @@ const statsTabs: { key: StatsTab; label: string }[] = [
   { key: "anova", label: "ANOVA" },
   { key: "ora", label: "GO Enrichment (ORA)" },
   { key: "pathwayHeatmap", label: "Pathway Heatmap" },
-  { key: "simulation", label: "Simulation" },
+  { key: "simulation", label: "Replicate & Variance Projection" },
 ];
 
 const peptideTabs: { key: PeptideTab; label: string }[] = [
@@ -215,23 +217,16 @@ export default function App() {
     () => getAdvancedPlotSettingsByKey()
   );
   const [qcWorkflowScope, setQcWorkflowScope] = useState<string>("");
-  const [qcBoxplotMode, setQcBoxplotMode] = useState<string>("");
-  const [qcPcaContextMode, setQcPcaContextMode] = useState<string>("");
-  const [qcAbundanceContextMode, setQcAbundanceContextMode] = useState<string>("");
-  const [qcCoverageContextMode, setQcCoverageContextMode] = useState<string>("");
-  const [completenessContextMode, setCompletenessContextMode] = useState<string>("");
-  const [statsVolcanoContextMode, setStatsVolcanoContextMode] = useState<string>("");
-  const [statsAnovaContextMode, setStatsAnovaContextMode] = useState<string>("");
-  const [statsOraContextMode, setStatsOraContextMode] = useState<string>("");
-  const [statsPathwayHeatmapContextMode, setStatsPathwayHeatmapContextMode] = useState<string>("");
-  const [peptideContextMode, setPeptideContextMode] = useState<string>("");
-  const [singleProteinBoxplotContextMode, setSingleProteinBoxplotContextMode] = useState<string>("");
-  const [comparisonPearsonContextMode, setComparisonPearsonContextMode] = useState<string>("");
-  const [phosphoContextMode, setPhosphoContextMode] = useState<string>("");
-  const [simulationContextMode, setSimulationContextMode] = useState("");
-  const [distributionContextMode, setDistributionContextMode] = useState("");
-  const [kseaContextMode, setKseaContextMode] = useState("");
-  const [canvasContextMode, setCanvasContextMode] = useState("");
+  // What each view reports about its selections, keyed by the view. Only the
+  // view on screen keeps an entry (see the effect beside `activeContextSlot`).
+  const [contextModes, setContextModes] = useState<ContextModes>({});
+  const reportContextMode = useMemo(
+    () => Object.fromEntries(CONTEXT_SLOTS.map((slot) => [
+      slot,
+      (mode: ContextMode | null) => setContextModes((current) => withContextMode(current, slot, mode)),
+    ])) as Record<ContextSlot, (mode: ContextMode | null) => void>,
+    []
+  );
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [metadataSwitchTarget, setMetadataSwitchTarget] = useState<string | null>(null);
@@ -302,15 +297,15 @@ export default function App() {
       case "stats:volcano": {
         // Two renderers, two natives: the static figure keeps only its left and
         // bottom spines, the interactive one is Plotly's default template.
-        const isInteractive = !statsVolcanoContextMode.toLowerCase().includes("type=normal");
+        const isInteractive = contextText(contextModes["stats:volcano"], "type") !== "normal";
         return isInteractive ? PLOTLY_DEFAULT_TEMPLATE_CONTROLS : MATPLOTLIB_LEFT_BOTTOM_CONTROLS;
       }
       case "peptide:rtPlot": {
-        const isInteractive = peptideContextMode.toLowerCase().includes("type=interactive");
+        const isInteractive = contextText(contextModes.peptide, "type") === "interactive";
         return isInteractive ? PLOTLY_WHITE_TEMPLATE_CONTROLS : MATPLOTLIB_CONTROLS;
       }
       case "comparison:pearson": {
-        const isInteractive = comparisonPearsonContextMode.toLowerCase().includes("type=interactive");
+        const isInteractive = contextText(contextModes.comparison, "type") === "interactive";
         return isInteractive ? PLOTLY_WHITE_TEMPLATE_CONTROLS : MATPLOTLIB_BOTH_GRID_CONTROLS;
       }
       case "phospho:phosprotRegulation":
@@ -327,7 +322,7 @@ export default function App() {
       default:
         return MATPLOTLIB_CONTROLS;
     }
-  }, [activeAdvancedPlotKey, statsVolcanoContextMode, peptideContextMode, comparisonPearsonContextMode]);
+  }, [activeAdvancedPlotKey, contextModes]);
 
   useEffect(() => {
     setAdvancedPlotSettingsByKey(advancedByKey);
@@ -413,76 +408,6 @@ export default function App() {
     if (activeSection === "qc") return;
     setQcWorkflowScope("");
   }, [activeSection]);
-
-  useEffect(() => {
-    if (activeSection === "qc" && activeQcTab === "boxplot") return;
-    setQcBoxplotMode("");
-  }, [activeSection, activeQcTab]);
-
-  useEffect(() => {
-    if (activeSection === "qc" && activeQcTab === "pca") return;
-    setQcPcaContextMode("");
-  }, [activeSection, activeQcTab]);
-
-  useEffect(() => {
-    if (
-      activeSection === "completeness" &&
-      (activeCompletenessTab === "missingPlot" || activeCompletenessTab === "heatmap" || activeCompletenessTab === "tables")
-    ) return;
-    setCompletenessContextMode("");
-  }, [activeSection, activeCompletenessTab]);
-
-  useEffect(() => {
-    if (activeSection === "stats" && activeStatsTab === "volcano") return;
-    setStatsVolcanoContextMode("");
-  }, [activeSection, activeStatsTab]);
-
-  useEffect(() => {
-    if (activeSection === "stats" && activeStatsTab === "anova") return;
-    setStatsAnovaContextMode("");
-  }, [activeSection, activeStatsTab]);
-
-  useEffect(() => {
-    if (activeSection === "stats" && activeStatsTab === "ora") return;
-    setStatsOraContextMode("");
-  }, [activeSection, activeStatsTab]);
-
-  useEffect(() => {
-    if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") return;
-    setStatsPathwayHeatmapContextMode("");
-  }, [activeSection, activeStatsTab]);
-
-  useEffect(() => {
-    if (activeSection === "peptide") return;
-    setPeptideContextMode("");
-  }, [activeSection]);
-
-  useEffect(() => {
-    if (
-      activeSection === "singleProtein" &&
-      (activeSingleProteinTab === "boxplot" || activeSingleProteinTab === "lineplot" || activeSingleProteinTab === "heatmap")
-    ) return;
-    setSingleProteinBoxplotContextMode("");
-  }, [activeSection, activeSingleProteinTab]);
-
-  useEffect(() => {
-    if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) return;
-    setComparisonPearsonContextMode("");
-  }, [activeSection, activeComparisonTab]);
-
-  useEffect(() => {
-    if (
-      activeSection === "phospho" &&
-      (
-        activePhosphoTab === "phosphositePlot" ||
-        activePhosphoTab === "coverage" ||
-        activePhosphoTab === "distribution" ||
-        activePhosphoTab === "sty" ||
-        activePhosphoTab === "phosprotRegulation"
-      )
-    ) return;
-    setPhosphoContextMode("");
-  }, [activeSection, activePhosphoTab]);
 
   const visibleDataTabs = useMemo(
     () => (IS_VIEWER_MODE ? viewerDataTabs : dataTabs),
@@ -705,9 +630,9 @@ export default function App() {
       return activeSingleProteinTab === "heatmap" ? "phosphosite" : "protein";
     }
     if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) {
-      const mode = comparisonPearsonContextMode.trim().toLowerCase();
-      if (mode.includes("kind=phospho")) return "phosphosite";
-      if (mode.includes("kind=phosprot")) return "phosphoprotein";
+      const kind = contextText(contextModes.comparison, "kind");
+      if (kind === "phospho") return "phosphosite";
+      if (kind === "phosprot") return "phosphoprotein";
       return "protein";
     }
 
@@ -724,103 +649,25 @@ export default function App() {
     activePhosphoTab,
     activeSingleProteinTab,
     activeComparisonTab,
-    comparisonPearsonContextMode,
+    contextModes,
     datasets,
     qcWorkflowScope,
   ]);
 
-  const activeContextMode = useMemo(() => {
-    if (activeSection === "analysis") return canvasContextMode;
-    if (activeSection === "data" && activeDataTab === "distribution") return distributionContextMode;
-    if (activeSection === "phospho" && activePhosphoTab === "ksea") return kseaContextMode;
-    if (activeSection === "stats" && activeStatsTab === "simulation") return simulationContextMode;
-    if (activeSection === "stats" && activeStatsTab === "volcano") {
-      return statsVolcanoContextMode.trim();
-    }
-    if (activeSection === "stats" && activeStatsTab === "anova") {
-      return statsAnovaContextMode.trim();
-    }
-    if (activeSection === "stats" && activeStatsTab === "ora") {
-      return statsOraContextMode.trim();
-    }
-    if (activeSection === "stats" && activeStatsTab === "pathwayHeatmap") {
-      return statsPathwayHeatmapContextMode.trim();
-    }
-    if (
-      activeSection === "completeness" &&
-      (activeCompletenessTab === "missingPlot" || activeCompletenessTab === "heatmap" || activeCompletenessTab === "tables")
-    ) {
-      return completenessContextMode.trim();
-    }
-    if (activeSection === "qc" && activeQcTab === "boxplot") {
-      return qcBoxplotMode.trim();
-    }
-    if (activeSection === "qc" && activeQcTab === "pca") {
-      return qcPcaContextMode.trim();
-    }
-    if (activeSection === "qc" && activeQcTab === "abundance") {
-      return qcAbundanceContextMode.trim();
-    }
-    if (activeSection === "qc" && activeQcTab === "coverage") {
-      return qcCoverageContextMode.trim();
-    }
-    if (
-      activeSection === "peptide" &&
-      (
-        activePeptideTab === "rtPlot" ||
-        activePeptideTab === "modification" ||
-        activePeptideTab === "missedCleavage" ||
-        activePeptideTab === "sequenceCoverage"
-      )
-    ) {
-      return peptideContextMode.trim();
-    }
-    if (
-      activeSection === "singleProtein" &&
-      (activeSingleProteinTab === "boxplot" || activeSingleProteinTab === "lineplot" || activeSingleProteinTab === "heatmap")
-    ) {
-      return singleProteinBoxplotContextMode.trim();
-    }
-    if (activeSection === "comparison" && (activeComparisonTab === "pearson" || activeComparisonTab === "venn")) {
-      return comparisonPearsonContextMode.trim();
-    }
-    if (
-      activeSection === "phospho" &&
-      (
-        activePhosphoTab === "phosphositePlot" ||
-        activePhosphoTab === "coverage" ||
-        activePhosphoTab === "distribution" ||
-        activePhosphoTab === "sty" ||
-        activePhosphoTab === "phosprotRegulation"
-      )
-    ) {
-      return phosphoContextMode.trim();
-    }
-    return "";
-  }, [
-    activeSection,
-    activeStatsTab,
-    activeCompletenessTab,
-    activeQcTab,
-    activePeptideTab,
-    activeSingleProteinTab,
-    activeComparisonTab,
-    activePhosphoTab,
-    statsVolcanoContextMode,
-    statsAnovaContextMode,
-    statsOraContextMode,
-    statsPathwayHeatmapContextMode,
-    completenessContextMode,
-    qcBoxplotMode,
-    qcPcaContextMode,
-    qcAbundanceContextMode,
-    qcCoverageContextMode,
-    peptideContextMode,
-    singleProteinBoxplotContextMode,
-    comparisonPearsonContextMode,
-    phosphoContextMode,
-    activeDataTab, simulationContextMode, distributionContextMode, kseaContextMode, canvasContextMode,
-  ]);
+  // The viewer has no simulation panel; its statistics page shows the volcano there.
+  const effectiveStatsTab = IS_VIEWER_MODE && activeStatsTab === "simulation" ? "volcano" : activeStatsTab;
+  const activeSlot = activeContextSlot({
+    section: activeSection, dataTab: activeDataTab, qcTab: activeQcTab, statsTab: effectiveStatsTab,
+    completenessTab: activeCompletenessTab, peptideTab: activePeptideTab,
+    singleProteinTab: activeSingleProteinTab, comparisonTab: activeComparisonTab, phosphoTab: activePhosphoTab,
+  });
+  // A view's selections belong to it while it is on screen. Leaving drops them,
+  // so coming back never shows the last visit's selections before the page has
+  // reported its current ones.
+  useEffect(() => {
+    setContextModes((current) => keepOnly(current, activeSlot));
+  }, [activeSlot]);
+  const activeContextMode = activeSlot ? contextModes[activeSlot] ?? null : null;
 
   const selectorBar = showTopSelector ? (
     <div className="border-b border-slate-200 bg-white px-4 py-2 sm:px-6">
@@ -1083,7 +930,7 @@ export default function App() {
     if (matchesSavedFile) unsavedAnalysis.markSaved(unsavedAnalysis.capture(payload));
     const appState = payload?.app;
     const advancedPlotState = payload?.advancedPlot;
-    const localStorageState = payload?.localStorageState ?? payload?.reportLocalStorage;
+    const localStorageState = payload?.localStorageState;
     const sessionStorageState = payload?.sessionStorageState;
     applyCopylotSessionStorageState({
       ...(localStorageState && typeof localStorageState === "object" ? localStorageState : {}),
@@ -1290,7 +1137,7 @@ export default function App() {
       return (
         <CompletenessPage
           activeTab={activeCompletenessTab}
-          onContextModeChange={setCompletenessContextMode}
+          onContextModeChange={reportContextMode.completeness}
         />
       );
     }
@@ -1300,27 +1147,16 @@ export default function App() {
         <QCPipelinePage
           activeTab={activeQcTab}
           onWorkflowScopeChange={setQcWorkflowScope}
-          onBoxplotModeChange={setQcBoxplotMode}
-          onPcaContextModeChange={setQcPcaContextMode}
-          onAbundanceContextModeChange={setQcAbundanceContextMode}
-          onCoverageContextModeChange={setQcCoverageContextMode}
+          onBoxplotContextModeChange={reportContextMode["qc:boxplot"]}
+          onPcaContextModeChange={reportContextMode["qc:pca"]}
+          onAbundanceContextModeChange={reportContextMode["qc:abundance"]}
+          onCoverageContextModeChange={reportContextMode["qc:coverage"]}
         />
       );
     }
 
     if (activeSection === "stats") {
-      const effectiveStatsTab = IS_VIEWER_MODE && activeStatsTab === "simulation"
-        ? "volcano"
-        : activeStatsTab;
-      const onContextModeChange = effectiveStatsTab === "volcano"
-        ? setStatsVolcanoContextMode
-        : effectiveStatsTab === "anova"
-          ? setStatsAnovaContextMode
-          : effectiveStatsTab === "ora"
-            ? setStatsOraContextMode
-            : effectiveStatsTab === "pathwayHeatmap"
-              ? setStatsPathwayHeatmapContextMode
-              : setSimulationContextMode;
+      const onContextModeChange = reportContextMode[`stats:${effectiveStatsTab}`];
       return (
         <StatisticalAnalysisPage
           activeTab={effectiveStatsTab}
@@ -1337,7 +1173,7 @@ export default function App() {
       return (
         <PeptideLevelPage
           activeTab={effectivePeptideTab}
-          onContextModeChange={setPeptideContextMode}
+          onContextModeChange={reportContextMode.peptide}
           advancedPlotOptions={activeAdvancedPlotOptionsPanel}
         />
       );
@@ -1353,7 +1189,7 @@ export default function App() {
       return (
         <SingleProteinPage
           activeTab={effectiveSingleProteinTab}
-          onContextModeChange={setSingleProteinBoxplotContextMode}
+          onContextModeChange={reportContextMode.singleProtein}
           advancedPlotOptions={activeAdvancedPlotOptionsPanel}
         />
       );
@@ -1364,12 +1200,12 @@ export default function App() {
         if (IS_VIEWER_MODE) {
           return <PhosphoSpecificPage activeTab="phosphositePlot" advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
         }
-        return <KseaPage onContextModeChange={setKseaContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+        return <KseaPage onContextModeChange={reportContextMode["phospho:ksea"]} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
       return (
         <PhosphoSpecificPage
           activeTab={activePhosphoTab}
-          onContextModeChange={setPhosphoContextMode}
+          onContextModeChange={reportContextMode.phospho}
           advancedPlotOptions={activeAdvancedPlotOptionsPanel}
         />
       );
@@ -1379,7 +1215,7 @@ export default function App() {
       return (
         <ComparisonPipelinePage
           activeTab={activeComparisonTab}
-          onContextModeChange={setComparisonPearsonContextMode}
+          onContextModeChange={reportContextMode.comparison}
           advancedPlotOptions={activeAdvancedPlotOptionsPanel}
         />
       );
@@ -1429,7 +1265,7 @@ export default function App() {
       }
 
       if (activeDataTab === "distribution") {
-        return <DistributionPage onContextModeChange={setDistributionContextMode} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+        return <DistributionPage onContextModeChange={reportContextMode["data:distribution"]} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
       }
 
       if (activeDataTab === "translator") {
@@ -1457,7 +1293,7 @@ export default function App() {
     if (activeSection === "analysis") {
       return (
         <AnalysisPage
-          onContextModeChange={setCanvasContextMode}
+          onContextModeChange={reportContextMode.analysis}
           rightPanel={rightPanel}
           onRightPanelChange={setRightPanel}
           aiEnabled={IS_AI_MODE}
@@ -1520,10 +1356,9 @@ export default function App() {
       case "comparison:pearson":
         return {
           markerStyle: true,
-          // The regression fit is drawn by `pearson_correlation_html` only; the
-          // static `pearson_correlation_png` plots the points and stops, so the
-          // card belongs to the interactive renderer.
-          referenceLineColor: comparisonPearsonContextMode.toLowerCase().includes("type=interactive"),
+          // Both renderers draw the regression fit under this setting (the
+          // static PNG since 2026-09-25), so the card applies to either type.
+          referenceLineColor: true,
           legendControls: false,
           conditionLabels: false,
           sampleLabels: false,
@@ -1624,7 +1459,7 @@ export default function App() {
         // The cluster heatmaps name their rows when "Show feature names" is on;
         // the Row labels card styles them and is only there while they are.
         return {
-          rowLabels: statsAnovaContextMode.includes('"showRowLabels":"true"'),
+          rowLabels: contextModes["stats:anova"]?.showRowLabels === true,
         };
       case "stats:ora":
         return {
@@ -1645,10 +1480,11 @@ export default function App() {
       default:
         return {};
     }
-  }, [activeAdvancedPlotKey, comparisonPearsonContextMode, statsAnovaContextMode]);
+  }, [activeAdvancedPlotKey, contextModes]);
 
-  const plotLabels = usePlotLabels(activeWorkflowScope, activeContextMode, advancedModeEnabled && Boolean(activeAdvancedPlotKey));
-  const activeAdvancedPlotOptionsPanel = advancedModeEnabled && activeAdvancedPlotKey ? (
+  const plotLabels = usePlotLabels(activeWorkflowScope, activeContextMode, Boolean(activeAdvancedPlotKey));
+  const activeAdvancedPlotOptionsPanel = activeAdvancedPlotKey ? (
+    <AssistantAppearanceMount visible={advancedModeEnabled}>
     <AdvancedPlotOptions
       key={activeAdvancedPlotKey}
       value={activeAdvancedSettings}
@@ -1662,6 +1498,7 @@ export default function App() {
         setAdvancedByKey((prev) => ({ ...prev, [activeAdvancedPlotKey]: next }));
       }}
     />
+    </AssistantAppearanceMount>
   ) : null;
 
   const assistantTabs: [SidebarSection, { key: string; label: string }[], (key: string) => void][] = [

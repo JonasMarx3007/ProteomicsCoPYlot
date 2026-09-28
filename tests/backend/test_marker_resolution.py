@@ -28,7 +28,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from app.services.plot_images import (
+from app.services.plot_styling import (
     DEFAULT_MARKER_SHAPE,
     MARKER_SHAPES,
     advanced_color_map,

@@ -22,7 +22,7 @@ def test_qc_correlation_plot_uses_log2_qc_frame(monkeypatch) -> None:
 
     monkeypatch.setattr(
         plot_images,
-        "_log2_qc_frame",
+        "log2_qc_frame",
         lambda kind: log2_frame.copy(),
     )
 
@@ -31,7 +31,7 @@ def test_qc_correlation_plot_uses_log2_qc_frame(monkeypatch) -> None:
 
     monkeypatch.setattr(
         plot_images,
-        "_original_scale_frame",
+        "linear_qc_frame",
         fail_if_linear_source_is_used,
     )
     monkeypatch.setattr(
@@ -76,7 +76,7 @@ def test_chat_correlation_context_uses_the_same_log2_frame_as_the_plot(monkeypat
         {"sample": ["sample_a", "sample_b"], "condition": ["A", "A"]}
     )
 
-    monkeypatch.setattr(plot_images, "_log2_qc_frame", lambda kind: log2_frame.copy())
+    monkeypatch.setattr(plot_images, "log2_qc_frame", lambda kind: log2_frame.copy())
     monkeypatch.setattr(
         plot_images, "_get_sample_columns", lambda kind, frame: ["sample_a", "sample_b"]
     )
@@ -89,7 +89,7 @@ def test_chat_correlation_context_uses_the_same_log2_frame_as_the_plot(monkeypat
             "The chat correlation context must not use reconstructed linear data."
         )
 
-    monkeypatch.setattr(plot_images, "_original_scale_frame", fail_if_linear_source_is_used)
+    monkeypatch.setattr(plot_images, "linear_qc_frame", fail_if_linear_source_is_used)
 
     lines = ai_functions._correlation_data_lines("protein")
 

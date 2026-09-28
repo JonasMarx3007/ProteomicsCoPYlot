@@ -72,11 +72,14 @@ def test_project_versions_agree() -> None:
     for relative, name in (
         ("backend/app/app_version.py", "APP_VERSION"),
         ("proteomicscopylot/_version.py", "__version__"),
-        ("proteomicscopylot/__init__.py", "__version__"),
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         declared = re.search(rf'^\s*{name}\s*=\s*"([^"]+)"', source, re.M).group(1)
         assert declared == version, relative
+
+    from proteomicscopylot import __version__
+
+    assert __version__ == version
 
     package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
     lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))

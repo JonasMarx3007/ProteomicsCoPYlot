@@ -26,8 +26,12 @@ services:
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
       COPYLOT_SESSION_COOKIE_NAME: "copylot_viewer_session_id"
-      COPYLOT_TRUSTED_PROXY_IPS: "${COPYLOT_TRUSTED_PROXY_IPS:-}"
-      COPYLOT_ALLOWED_HOSTS: "${COPYLOT_ALLOWED_HOSTS:-proteomics-data.de,www.proteomics-data.de}"
+      # The reverse proxy on the host reaches the container from the Docker bridge
+      # gateway; trusting that range lets the login limiter see the real client
+      # behind X-Forwarded-For instead of locking every client out together.
+      # The port is bound to 127.0.0.1, so only host-local processes can set it.
+      COPYLOT_TRUSTED_PROXY_IPS: "${COPYLOT_TRUSTED_PROXY_IPS:-172.16.0.0/12}"
+      COPYLOT_ALLOWED_HOSTS: "${COPYLOT_ALLOWED_HOSTS:-localhost,127.0.0.1}"
       COPYLOT_HEAVY_MAX_CONCURRENCY: "${COPYLOT_HEAVY_MAX_CONCURRENCY:-2}"
       COPYLOT_HEAVY_MAX_QUEUE: "${COPYLOT_HEAVY_MAX_QUEUE:-8}"
       COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS: "${COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS:-20}"
@@ -76,8 +80,12 @@ services:
       COPYLOT_RESET_ON_BROWSER_LOAD: "1"
       COPYLOT_SESSION_COOKIE_SECURE: "1"
       COPYLOT_SESSION_COOKIE_NAME: "copylot_viewer_ai_session_id"
-      COPYLOT_TRUSTED_PROXY_IPS: "${COPYLOT_TRUSTED_PROXY_IPS:-}"
-      COPYLOT_ALLOWED_HOSTS: "${COPYLOT_ALLOWED_HOSTS:-proteomics-data.de,www.proteomics-data.de}"
+      # The reverse proxy on the host reaches the container from the Docker bridge
+      # gateway; trusting that range lets the login limiter see the real client
+      # behind X-Forwarded-For instead of locking every client out together.
+      # The port is bound to 127.0.0.1, so only host-local processes can set it.
+      COPYLOT_TRUSTED_PROXY_IPS: "${COPYLOT_TRUSTED_PROXY_IPS:-172.16.0.0/12}"
+      COPYLOT_ALLOWED_HOSTS: "${COPYLOT_ALLOWED_HOSTS:-localhost,127.0.0.1}"
       COPYLOT_HEAVY_MAX_CONCURRENCY: "${COPYLOT_HEAVY_MAX_CONCURRENCY:-2}"
       COPYLOT_HEAVY_MAX_QUEUE: "${COPYLOT_HEAVY_MAX_QUEUE:-8}"
       COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS: "${COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS:-20}"
