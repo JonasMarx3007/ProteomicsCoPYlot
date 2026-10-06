@@ -17,7 +17,8 @@ jobs:
   backend:
     name: backend (py${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Full notebook replay with coverage exceeded 30 minutes on hosted runners.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
