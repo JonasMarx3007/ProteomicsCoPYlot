@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "frontend" / "src" / "lib" / "generated" / "openapi.json"
@@ -48,3 +53,29 @@ def test_the_committed_plot_limits_match_the_backend() -> None:
         "frontend/src/lib/generated/plotLimits.json is stale; run "
         "`npm --prefix frontend run generate:api`"
     )
+
+
+@pytest.mark.parametrize("frontend_built", [False, True])
+def test_schema_is_independent_of_frontend_build(tmp_path, frontend_built):
+    """A clean backend checkout and a packaged app expose the same API."""
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    if frontend_built:
+        (frontend / "index.html").write_text("<!doctype html><title>Fixture</title>", encoding="utf-8")
+    code = """
+import runpy
+from pathlib import Path
+from unittest.mock import patch
+is_file = Path.is_file
+def frontend_file(path):
+    if path.name == 'index.html' and not FRONTEND_BUILT:
+        return False
+    return is_file(path)
+with patch.object(Path, 'is_file', frontend_file):
+    module = runpy.run_path('tools/export_openapi.py')
+    print(module['render']())
+""".replace("FRONTEND_BUILT", repr(frontend_built))
+    env = {**os.environ, "COPYLOT_FRONTEND_DIST": str(frontend)}
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
+                            capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == json.loads(GENERATED.read_text(encoding="utf-8"))

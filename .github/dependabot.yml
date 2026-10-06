@@ -11,6 +11,9 @@ updates:
       # Compiler major upgrades need a coordinated lint/compiler API migration.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
+      # Keep runtime types aligned with Node 24 in CI and the build tooling.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

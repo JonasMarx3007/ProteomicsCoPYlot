@@ -674,12 +674,14 @@ test_that("imputed-value counts match the backend", {
   })
 })
 
-test_that("phosphosite imputed mask", {
+test_that("phosphoprotein contributions distinguish measured, full, partial and unknown", {
   expect_no_error({
     imp_phosprot <- data.frame(s1 = c(1, 2, NA), s2 = c(1, 2, 3),
-      site_observed__s1 = c(0, 2, 0), site_observed__s2 = c(1, 0, 1), check.names = FALSE)
+      site_observed__s1 = c(0, 2, 0), site_observed__s2 = c(1, 0, 1),
+      site_supplied__s1 = c(2, 2, 0), site_supplied__s2 = c(2, 2, 1), check.names = FALSE)
     stopifnot(identical(unname(site_observed_imputed_mask(imp_phosprot, c("s1", "s2"))),
-      matrix(c(TRUE, FALSE, FALSE, FALSE, TRUE, FALSE), ncol = 2)))
+      matrix(c(1L, 0L, -1L, 2L, 1L, 0L), ncol = 2)))
+    stopifnot(is.null(site_observed_imputed_mask(imp_phosprot[, 1:4], c("s1", "s2"))))
   })
 })
 

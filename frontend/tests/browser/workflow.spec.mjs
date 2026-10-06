@@ -846,7 +846,7 @@ test('volcano lists the rows it could not test and offers them for download', as
   await tab(page, 'Statistical Analysis').click();
   await tab(page, 'Volcano Plot').click();
   await field(page, 'Condition 2').selectOption('B');
-  await expect(page.getByText('2 of 24 rows were not tested because a compared condition has fewer than 2 values in them.')).toBeVisible();
+  await expect(page.getByText('2 of 24 rows were not tested: fewer than 2 values in a compared condition or, for paired tests, fewer than 2 complete pairs.')).toBeVisible();
   const section = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Rows not tested', exact: true }) });
   await expect(section).toBeVisible();
   await expect(section.getByText('fewer than 2 values in A').first()).toBeVisible();
