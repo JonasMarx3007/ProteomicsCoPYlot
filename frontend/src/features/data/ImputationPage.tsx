@@ -2,12 +2,6 @@ import SummaryCard from "../../components/SummaryCard";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, downloadImputationCsv, getCurrentAnnotation, isAbortError, runImputation } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
-import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
-  type PlotDownloadFormat,
-  withPlotDownloadFilename,
-  withPlotDownloadFormat,
-} from "../../lib/plotDownload";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import type {
   AnnotationImputationInfo,
@@ -83,7 +77,6 @@ export default function ImputationPage() {
   // reload, and replaced when the button runs.
   const [applied, setApplied] = useState<AppliedImputation | null>(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
   const [settingsReady, setSettingsReady] = useState(false);
 
   // Applying is a deliberate act. This call does not preview: it imputes and
@@ -397,17 +390,11 @@ export default function ImputationPage() {
           <PlotSection
             alt="Before: With vs Without Missing Values"
             imageUrl={beforePlotUrl}
-            filename={`imputation_before_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
           />
 
           <PlotSection
             alt="Overall Distribution with Normal Fit"
             imageUrl={overallPlotUrl}
-            filename={`imputation_fit_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
             controls={
               <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                 <input
@@ -423,9 +410,6 @@ export default function ImputationPage() {
           <PlotSection
             alt="After: Non-Imputed vs Imputed Values"
             imageUrl={afterPlotUrl}
-            filename={`imputation_after_${kind}.png`}
-            downloadFormat={downloadFormat}
-            setDownloadFormat={setDownloadFormat}
             controls={
               <div className="min-w-56">
                 <select
@@ -531,46 +515,16 @@ function describeSettings(settings: {
 function PlotSection({
   alt,
   imageUrl,
-  filename,
-  downloadFormat,
-  setDownloadFormat,
   controls,
 }: {
   alt: string;
   imageUrl: string;
-  filename: string;
-  downloadFormat: PlotDownloadFormat;
-  setDownloadFormat: (value: PlotDownloadFormat) => void;
   controls?: ReactNode;
 }) {
-  const downloadUrl = withPlotDownloadFormat(imageUrl, downloadFormat);
-  const downloadFilename = withPlotDownloadFilename(filename, downloadFormat);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>{controls}</div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={downloadFormat}
-            onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-            className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-          >
-            {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <a
-            href={downloadUrl}
-            download={downloadFilename}
-            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-          >
-            Download Plot
-          </a>
-        </div>
-      </div>
-      <div className="mt-4">
+      {controls ? <div className="mb-4">{controls}</div> : null}
+      <div>
         <img key={imageUrl} src={imageUrl} alt={alt} className="w-full rounded-xl border border-slate-200" />
       </div>
     </section>

@@ -1,13 +1,5 @@
 const ANALYSIS_STORAGE_PREFIXES = ["pcopylot.report.", "pcopylot.ui.", "copylot:advanced"] as const;
 
-export type AppUiStateSnapshot = {
-  version: 1 | 2;
-  app?: Record<string, unknown>;
-  advancedPlot?: Record<string, unknown>;
-  localStorageState?: Record<string, string | null>;
-  sessionStorageState?: Record<string, string | null>;
-};
-
 function removeCopylotKeys(storage: Storage): void {
   const keysToRemove: string[] = [];
   for (let index = 0; index < storage.length; index += 1) {

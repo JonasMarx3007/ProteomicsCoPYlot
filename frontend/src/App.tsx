@@ -1,6 +1,7 @@
 import { compactAdvancedPlotSettings } from "./lib/plotSerialization";
 import { CONTEXT_SLOTS, activeContextSlot, contextText, keepOnly, withContextMode, type ContextModes, type ContextSlot } from "./lib/contextModes";
 import type { ContextMode } from "./lib/types";
+import type { CompletenessNotebook } from "./features/completeness/CompletenessPage";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AppShell from "./components/AppShell";
 import { AssistantAppearanceMount, AssistantSurface } from "./components/AssistantFields";
@@ -27,8 +28,23 @@ import type {
   StatsTab,
   AdvancedPlotSettings,
 } from "./lib/types";
+import {
+  dataTabs,
+  qcTabs,
+  completenessTabs,
+  statsTabs,
+  peptideTabs,
+  singleProteinTabs,
+  phosphoTabs,
+  comparisonTabs,
+  externalTabs,
+  summaryTabs,
+  viewerDataTabs,
+} from "./lib/navigationTabs";
 import { useCurrentDatasetsSnapshot } from "./lib/datasetAvailability";
 import { IS_AI_MODE, IS_VIEWER_MODE } from "./lib/appMode";
+import { useGlobalShortcuts } from "./lib/globalShortcuts";
+import { advancedPlotKey, advancedVisibleControls } from "./lib/advancedPanelRules";
 import { downloadRestoreState } from "./lib/api";
 import { unsavedAnalysis, warnBeforeUnload } from "./lib/unsavedAnalysis";
 import {
@@ -46,6 +62,7 @@ import {
   type SaveStateFileHandle,
 } from "./lib/saveStateFile";
 import { withBasePath } from "./lib/basePath";
+import LocalizationCutoffField from "./components/LocalizationCutoffField";
 import {
   MATPLOTLIB_BOTH_GRID_CONTROLS,
   MATPLOTLIB_CONTROLS,
@@ -88,82 +105,6 @@ const TablesPage = lazy(() => import("./features/summary/TablesPage"));
 const TextPage = lazy(() => import("./features/summary/TextPage"));
 const ReportPage = lazy(() => import("./features/summary/ReportPage"));
 
-const dataTabs: { key: DataTab; label: string }[] = [
-  { key: "upload", label: "Upload" },
-  { key: "annotation", label: "Annotation" },
-  { key: "imputation", label: "Imputation" },
-  { key: "distribution", label: "Distribution" },
-  { key: "translator", label: "ID Translator" },
-  { key: "conditionPalette", label: "Colors" },
-  { key: "restore", label: "Restore" },
-];
-
-const qcTabs: { key: QcTab; label: string }[] = [
-  { key: "coverage", label: "Coverage Plot" },
-  { key: "histogram", label: "Histogram Intensity" },
-  { key: "boxplot", label: "Boxplot Intensity" },
-  { key: "cv", label: "Cov Plot" },
-  { key: "pca", label: "Principal Component Analysis" },
-  { key: "abundance", label: "Abundance Plot" },
-  { key: "correlation", label: "Correlation Plot" },
-];
-
-const completenessTabs: { key: CompletenessTab; label: string }[] = [
-  { key: "missingPlot", label: "Missing Value Plot" },
-  { key: "heatmap", label: "Missing Value Heatmap" },
-  { key: "tables", label: "Tables" },
-];
-
-const statsTabs: { key: StatsTab; label: string }[] = [
-  { key: "volcano", label: "Volcano Plot" },
-  { key: "anova", label: "ANOVA" },
-  { key: "ora", label: "GO Enrichment (ORA)" },
-  { key: "pathwayHeatmap", label: "Pathway Heatmap" },
-  { key: "simulation", label: "Replicate & Variance Projection" },
-];
-
-const peptideTabs: { key: PeptideTab; label: string }[] = [
-  { key: "rtPlot", label: "RT Plot" },
-  { key: "modification", label: "Modification Plot" },
-  { key: "missedCleavage", label: "Missed Cleavage Plot" },
-  { key: "sequenceCoverage", label: "Sequence Coverage" },
-];
-
-const singleProteinTabs: { key: SingleProteinTab; label: string }[] = [
-  { key: "boxplot", label: "Protein Boxplot" },
-  { key: "lineplot", label: "Protein Lineplot" },
-  { key: "heatmap", label: "Phosphosites on Protein Heatmap" },
-];
-
-const phosphoTabs: { key: PhosphoTab; label: string }[] = [
-  { key: "phosphositePlot", label: "Phosphosite Plot" },
-  { key: "coverage", label: "Phosphosite Coverage Plot" },
-  { key: "ksea", label: "KSEA" },
-  { key: "distribution", label: "Phosphosite Distribution" },
-  { key: "sty", label: "STY Plot" },
-  { key: "phosprotRegulation", label: "Phosprot Regulation" },
-];
-
-const comparisonTabs: { key: ComparisonTab; label: string }[] = [
-  { key: "pearson", label: "Pearson Correlation" },
-  { key: "venn", label: "Venn Diagram" },
-];
-
-const externalTabs: { key: ExternalTab; label: string }[] = [
-  { key: "peptideCollapse", label: "Peptide Collapse" },
-  { key: "gonetView", label: "GONetView" },
-];
-
-const summaryTabs: { key: SummaryTab; label: string }[] = [
-  { key: "tables", label: "Tables" },
-  { key: "text", label: "Text" },
-  { key: "report", label: "Report" },
-];
-
-const viewerDataTabs: { key: DataTab; label: string }[] = dataTabs.filter(
-  (tab) => tab.key === "upload" || tab.key === "annotation"
-);
-
 const allSidebarSections: SidebarSection[] = [
   "data",
   "analysis",
@@ -205,6 +146,7 @@ export default function App() {
   const [activeDataTab, setActiveDataTab] = useState<DataTab>("upload");
   const [activeQcTab, setActiveQcTab] = useState<QcTab>("coverage");
   const [activeCompletenessTab, setActiveCompletenessTab] = useState<CompletenessTab>("missingPlot");
+  const [completenessNotebook, setCompletenessNotebook] = useState<CompletenessNotebook | null>(null);
   const [activeStatsTab, setActiveStatsTab] = useState<StatsTab>("volcano");
   const [activePeptideTab, setActivePeptideTab] = useState<PeptideTab>("rtPlot");
   const [activeSingleProteinTab, setActiveSingleProteinTab] = useState<SingleProteinTab>("boxplot");
@@ -260,31 +202,14 @@ export default function App() {
     },
     [activeMetadataProfile, setMetadataProfile]
   );
-  const activeAdvancedPlotKey = useMemo(() => {
-    if (activeSection === "data" && activeDataTab === "distribution") {
-      return "data:distribution";
-    }
-    if (activeSection === "stats") {
-      return activeStatsTab === "simulation" ? null : `stats:${activeStatsTab}`;
-    }
-    if (activeSection === "peptide") {
-      // Sequence coverage is an HTML coverage map and a text download, not a
-      // figure, so there is nothing for the plot panel to style.
-      return activePeptideTab === "sequenceCoverage" ? null : `peptide:${activePeptideTab}`;
-    }
-    if (activeSection === "singleProtein") return `singleProtein:${activeSingleProteinTab}`;
-    if (activeSection === "phospho") return `phospho:${activePhosphoTab}`;
-    if (activeSection === "comparison") return `comparison:${activeComparisonTab}`;
-    return null;
-  }, [
-    activeSection,
-    activeDataTab,
-    activeStatsTab,
-    activePeptideTab,
-    activeSingleProteinTab,
-    activePhosphoTab,
-    activeComparisonTab,
-  ]);
+  const activeAdvancedPlotKey = useMemo(
+    () => advancedPlotKey({
+      activeSection, activeDataTab, activeStatsTab, activePeptideTab,
+      activeSingleProteinTab, activePhosphoTab, activeComparisonTab,
+    }),
+    [activeSection, activeDataTab, activeStatsTab, activePeptideTab,
+      activeSingleProteinTab, activePhosphoTab, activeComparisonTab]
+  );
   const activeAdvancedSettings = activeAdvancedPlotKey
     ? advancedByKey[activeAdvancedPlotKey] ?? EMPTY_ADVANCED_PLOT_SETTINGS
     : EMPTY_ADVANCED_PLOT_SETTINGS;
@@ -1101,46 +1026,18 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.repeat) return;
-      if (event.altKey) return;
-      if (!(event.ctrlKey || event.metaKey)) return;
-      // `event.code` is the physical key, so these fire the same on a QWERTZ or
-      // AZERTY keyboard, where `event.key` for the same key is a different
-      // letter. Shift is part of the identity of a shortcut, not a modifier to
-      // ignore: Ctrl+Shift+S is the browser's own, and taking it silently is
-      // how a user loses a screenshot they meant to take.
-      // Quick save is an analysis-mode act: it exports the whole session, which
-      // a viewer neither needs nor should be able to take. The advanced plot
-      // toggle below stays, so a collaborator can style a publication-ready
-      // figure from a published project.
-      if (event.code === "KeyS" && !event.shiftKey && !IS_VIEWER_MODE) {
-        event.preventDefault();
-        void handleQuickSaveRef.current(false).catch(() => {
-          // Status is already surfaced through the shared save-state banner.
-        });
-        return;
-      }
-      // E, not A: Ctrl/Cmd+Shift+A is Chrome's tab search, and a shortcut the
-      // browser answers first is a shortcut this app does not have.
-      if (event.code === "KeyE" && event.shiftKey) {
-        event.preventDefault();
-        // Same switch as Settings > Advanced plot options: the setter
-        // broadcasts, so every page listening picks the change up at once.
-        setAdvancedPlotMode(!getAdvancedPlotMode());
-      }
-    }
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  useGlobalShortcuts(
+    useCallback(() => handleQuickSaveRef.current(false), []),
+    { viewerMode: IS_VIEWER_MODE }
+  );
 
   function renderContent() {
     if (activeSection === "completeness") {
       return (
         <CompletenessPage
           activeTab={activeCompletenessTab}
+          notebook={completenessNotebook}
+          onNotebookChange={setCompletenessNotebook}
           onContextModeChange={reportContextMode.completeness}
         />
       );
@@ -1200,18 +1097,38 @@ export default function App() {
     }
 
     if (activeSection === "phospho") {
+      // One localization probability cutoff heads the whole module; every tab
+      // below, the Kinase Library included, uses the sites that pass it.
+      const cutoffHeader = (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <LocalizationCutoffField className="max-w-xs" />
+        </section>
+      );
       if (activePhosphoTab === "ksea") {
         if (IS_VIEWER_MODE) {
-          return <PhosphoSpecificPage activeTab="phosphositePlot" advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+          return (
+            <div className="space-y-6">
+              {cutoffHeader}
+              <PhosphoSpecificPage activeTab="phosphositePlot" advancedPlotOptions={activeAdvancedPlotOptionsPanel} />
+            </div>
+          );
         }
-        return <KseaPage onContextModeChange={reportContextMode["phospho:ksea"]} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />;
+        return (
+          <div className="space-y-6">
+            {cutoffHeader}
+            <KseaPage onContextModeChange={reportContextMode["phospho:ksea"]} advancedPlotOptions={activeAdvancedPlotOptionsPanel} />
+          </div>
+        );
       }
       return (
-        <PhosphoSpecificPage
-          activeTab={activePhosphoTab}
-          onContextModeChange={reportContextMode.phospho}
-          advancedPlotOptions={activeAdvancedPlotOptionsPanel}
-        />
+        <div className="space-y-6">
+          {cutoffHeader}
+          <PhosphoSpecificPage
+            activeTab={activePhosphoTab}
+            onContextModeChange={reportContextMode.phospho}
+            advancedPlotOptions={activeAdvancedPlotOptionsPanel}
+          />
+        </div>
       );
     }
 
@@ -1322,169 +1239,10 @@ export default function App() {
   // classes are read differently; the single-protein boxplot gets both its
   // jittered data points and its outlier fliers, which are separate marks that
   // used to share no control at all.
-  const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
-    switch (activeAdvancedPlotKey) {
-      // A card is shown when the plot's renderer reads the keys it writes.
-      // `conditionLabels`, `sampleLabels`, `conditionColors`, `legendControls`,
-      // `backgroundControls` and `axisLineControls` default to shown, so a plot
-      // that does not use them has to say so -- otherwise the panel offers, for
-      // example, a legend card on a Venn diagram that draws no legend, and
-      // sample-name rows on a figure with no samples on it. Checked against the
-      // renderers in backend/app/services on 2026-09-17.
-      case "stats:volcano":
-        return {
-          volcanoMarkers: true,
-          referenceLineColor: true,
-          // Both renderers build their title and fold-change axis label
-          // through `_volcano_condition_texts`, so a rename reaches them (the
-          // sign convention is still `comparison_contrast`'s).
-          conditionLabels: true,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "singleProtein:boxplot":
-        return {
-          boxplotStyle: true,
-          boxplotOutliers: true,
-          boxplotPoints: true,
-          // The jittered points are drawn one condition at a time.
-          conditionMarkers: true,
-          sampleLabels: false,
-        };
-      case "singleProtein:lineplot":
-        // `single_protein_lineplot_plot` draws `marker="o"` on every line and
-        // reads none of the marker keys, and its x axis is the sample list from
-        // the annotation, which no condition rename passes through -- the
-        // renaming there is the boxplot's, not this plot's.
-        return { conditionLabels: false, sampleLabels: false, conditionColors: false };
-      case "comparison:pearson":
-        return {
-          markerStyle: true,
-          // Both renderers draw the regression fit under this setting (the
-          // static PNG since 2026-09-25), so the card applies to either type.
-          referenceLineColor: true,
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "comparison:venn":
-        return {
-          vennColors: true,
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "data:distribution":
-      case "peptide:rtPlot":
-        return {
-          markerStyle: true,
-          // The Q-Q fit and the retention-time identity line.
-          referenceLineColor: true,
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "phospho:ksea":
-        return {
-          markerStyle: true,
-          // `ksea_plot_png` draws the two fold-change thresholds and the
-          // p-value line.
-          referenceLineColor: true,
-          // It draws one scatter per significance class, each handed its own
-          // colour, and a colour passed by the plot wins over `markerColor`.
-          markerColor: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "phospho:phosprotRegulation":
-        // The tab is `phosprotRegulation` (lib/types.ts PhosphoTab), so the old
-        // "phospho:regulation" label never matched: the phosphoprotein
-        // regulation plot showed no Points card while its renderer reads
-        // markerSize, markerAlpha and the outline keys.
-        return {
-          markerStyle: true,
-          // Both renderers colour the points from `color_val` through a colour
-          // scale and pass `use_color=False`, so a dot colour is read and
-          // thrown away. Neither draws a threshold line over the figure.
-          markerColor: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "singleProtein:heatmap":
-        return {
-          correlationGradient: true,
-          legendControls: false,
-          conditionColors: false,
-        };
-      case "stats:pathwayHeatmap":
-        return {
-          correlationGradient: true,
-          legendControls: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "phospho:coverage":
-        // `phospho_coverage_png` prints no number on any bar, in either mode.
-        return { phosphoClassColors: true, sampleLabels: false };
-      case "phospho:phosphositePlot":
-      case "phospho:distribution":
-        return {
-          barColor: true,
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-          // The phosphosite plot clears its x ticks, so tick styling has
-          // nothing to style.
-          tickControls: activeAdvancedPlotKey !== "phospho:phosphositePlot",
-        };
-      case "peptide:missedCleavage":
-        // The only one of the two that writes on its bars: the percentage of
-        // sequences with at least one missed cleavage, at `advanced_label_size`.
-        return {
-          valueLabels: true,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "peptide:modification":
-        // `peptide_modification_plot` draws its grouped bars and stops.
-        return {
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "stats:anova":
-        // The cluster heatmaps name their rows when "Show feature names" is on;
-        // the Row labels card styles them and is only there while they are.
-        return {
-          rowLabels: contextModes["stats:anova"]?.showRowLabels === true,
-        };
-      case "stats:ora":
-        return {
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      case "phospho:sty":
-        // `phospho_sty_png` draws S, T and Y each in its own fixed colour and
-        // never reads `barColor`; one bar colour would have to overwrite three.
-        return {
-          legendControls: false,
-          conditionLabels: false,
-          sampleLabels: false,
-          conditionColors: false,
-        };
-      default:
-        return {};
-    }
-  }, [activeAdvancedPlotKey, contextModes]);
+  const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(
+    () => advancedVisibleControls(activeAdvancedPlotKey, contextModes),
+    [activeAdvancedPlotKey, contextModes]
+  );
 
   const plotLabels = usePlotLabels(activeWorkflowScope, activeContextMode, Boolean(activeAdvancedPlotKey));
   const activeAdvancedPlotOptionsPanel = activeAdvancedPlotKey ? (

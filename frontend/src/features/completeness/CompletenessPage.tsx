@@ -1,12 +1,14 @@
 import { AssistantAppearanceMount, AssistantSelect } from "../../components/AssistantFields";
 import PlotImage from "../../components/PlotImage";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { MATPLOTLIB_CONTROLS, MATPLOTLIB_NO_FRAME_CONTROLS, MATPLOTLIB_Y_DASHED_GRID_CONTROLS } from "../../lib/plotControlDefaults";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
-import { compactAdvancedPlotSettings as compactAdvancedSettings } from "../../lib/plotSerialization";
+import { compactAdvancedPlotSettings as compactAdvancedSettings, migrateAdvancedSettingsMap } from "../../lib/plotSerialization";
 import SummaryCard from "../../components/SummaryCard";
 import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { fetchPlot } from "../../lib/fetchPlot";
 import { buildPlotUrl, getCompletenessTables, getPeptideQuantityOptions, getQcPlotOptions, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -32,11 +34,16 @@ import type {
 import SelectField from "../../components/SelectField";
 import PreviewTable from "../../components/PreviewTable";
 import type { ContextMode } from "../../lib/types";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 type Props = {
   activeTab: CompletenessTab;
   onContextModeChange?: (mode: ContextMode | null) => void;
+  notebook?: CompletenessNotebook | null;
+  onNotebookChange?: (value: CompletenessNotebook) => void;
 };
+
+export type CompletenessNotebook = RenderedNotebook & { tab: "missingPlot" | "heatmap" };
 
 type CompletenessKind = AnnotationKind | "peptide" | "precursor";
 type AdvancedPlotState = Partial<Record<CompletenessTab, AdvancedPlotSettings>>;
@@ -59,7 +66,7 @@ function withAdvancedParams(
   return { ...params, advanced };
 }
 
-export default function CompletenessPage({ activeTab, onContextModeChange }: Props) {
+export default function CompletenessPage({ activeTab, onContextModeChange, notebook, onNotebookChange }: Props) {
   const fieldId = useId();
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("completeness.v1", {}),
@@ -69,7 +76,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const persistedHeatmap = (persisted.heatmap as Record<string, unknown>) ?? {};
   const persistedTables = (persisted.tables as Record<string, unknown>) ?? {};
   // Versioned for the same reason as the QC page's.
-  const persistedAdvanced = IS_VIEWER_MODE ? {} : (persisted.advancedV2 as AdvancedPlotState) ?? {};
+  const persistedAdvanced: AdvancedPlotState = migrateAdvancedSettingsMap(IS_VIEWER_MODE ? {} : (persisted.advancedV2 as AdvancedPlotState) ?? {});
   const [kind, setKind] = useState<CompletenessKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
@@ -82,7 +89,11 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   const [peptideQuantityColumns, setPeptideQuantityColumns] = useState<string[]>([]);
   const [peptideQuantityRequiresSelection, setPeptideQuantityRequiresSelection] = useState(false);
   const [peptideQuantityError, setPeptideQuantityError] = useState<string | null>(null);
-  const [tableData, setTableData] = useState<CompletenessTablesResponse | null>(null);
+  const [tableResult, setTableData] = useState<CompletenessTablesResponse | null>(null);
+  const [tableResultUrl, setTableResultUrl] = useState("");
+  const [tableNotebook, setTableNotebook] = useState<RenderedNotebook | null>(null);
+  const tableRequest = useRef<AbortController | null>(null);
+  const renderedNotebook = notebook ?? null;
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
@@ -114,6 +125,15 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     includeId: Boolean(persistedTables.includeId ?? true),
     outlierThreshold: Number(persistedTables.outlierThreshold ?? 50),
   });
+
+  const replayTab = activeTab === "tables" ? notebook?.tab ?? "missingPlot" : activeTab;
+  const replayUrl = buildPlotUrl(
+    `/api/plots/completeness/${kind}/${replayTab === "heatmap" ? "missing-heatmap" : "missing-value"}.png`,
+    withAdvancedParams({ ...(replayTab === "heatmap" ? heatmap : missingPlot),
+      tableIncludeId: tables.includeId, outlierThreshold: tables.outlierThreshold },
+    advancedParam(advancedRenderByTab[replayTab] ?? {}))
+  );
+  const tableData = tableResultUrl === replayUrl ? tableResult : null;
 
   useEffect(() => {
     const nextState: Record<string, unknown> = {
@@ -158,32 +178,55 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     return options;
   }, [activeTab, kindOptions, datasets]);
 
-  const loadTables = useCallback(async (signal?: AbortSignal) => {
+  const loadTables = useCallback(async (signal?: AbortSignal, refresh = false) => {
+    tableRequest.current?.abort();
     if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
       setTableData(null);
+      setTableLoading(false);
       setTableError("Please upload a protein, phospho, or phosphoprotein dataset first.");
       return;
     }
+    const controller = new AbortController();
+    tableRequest.current = controller;
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
     try {
       setTableLoading(true);
       setTableError(null);
+      setTableData(null);
+      setTableNotebook(null);
+      let token = !refresh && renderedNotebook?.url === replayUrl ? renderedNotebook.token : null;
+      if (!token) {
+        const response = await fetchPlot(replayUrl, controller.signal);
+        await response.arrayBuffer();
+        const candidate = response.ok ? response.headers.get("X-CoPYlot-Notebook") ?? "" : "";
+        token = /^[A-Za-z0-9_-]{32}$/.test(candidate) ? candidate : null;
+      }
       const data = await getCompletenessTables(
         kind,
         {
           includeId: tables.includeId,
           outlierThreshold: tables.outlierThreshold,
+          ...(token ? { snapshot: token } : {}),
         },
-        { signal }
+        { signal: controller.signal }
       );
+      if (controller.signal.aborted) return;
       setTableData(data);
+      setTableResultUrl(replayUrl);
+      setTableNotebook({ url: replayUrl, token });
     } catch (err) {
-      if (isAbortError(err)) return;
+      if (controller.signal.aborted || isAbortError(err)) return;
       setTableData(null);
       setTableError(err instanceof Error ? err.message : "Failed to load completeness tables");
     } finally {
-      if (!signal?.aborted) setTableLoading(false);
+      signal?.removeEventListener("abort", abort);
+      if (!controller.signal.aborted) setTableLoading(false);
     }
-  }, [availableKinds, kind, tables.includeId, tables.outlierThreshold]);
+  }, [availableKinds, kind, tables.includeId, tables.outlierThreshold, replayUrl, renderedNotebook]);
+
+  useEffect(() => () => tableRequest.current?.abort(), []);
 
   useEffect(() => {
     if (activeKindOptions.length === 0) {
@@ -276,10 +319,6 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
   }, [activeTab, kind, availableKinds, loadTables]);
 
   const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
-  const activeAdvancedRenderSettings = useMemo(
-    () => advancedRenderByTab[activeTab] ?? {},
-    [activeTab, advancedRenderByTab]
-  );
   const activeSampleDisplayLabels = useMemo(() => {
     const rawLabels = Object.fromEntries(sampleOptions.map((sample) => [sample, sample]));
     if (activeTab === "heatmap") {
@@ -287,10 +326,6 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
     }
     return rawLabels;
   }, [activeTab, heatmap.includeId, sampleDisplayLabels, sampleDisplayLabelsWithId, sampleOptions]);
-  const activeAdvancedParam = useMemo(
-    () => advancedParam(activeAdvancedRenderSettings),
-    [activeAdvancedRenderSettings]
-  );
   const activeAdvancedVisibleControls = useMemo<AdvancedPlotVisibleControls>(() => {
     if (activeTab === "missingPlot") {
       return {
@@ -331,24 +366,18 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
       return {
         title: "Missing Value Plot",
         filename: `completeness_missing_plot_${kind}.png`,
-        url: buildPlotUrl(
-          `/api/plots/completeness/${kind}/missing-value.png`,
-          withAdvancedParams(missingPlot, activeAdvancedParam)
-        ),
+        url: replayUrl,
       };
     }
     if (activeTab === "heatmap") {
       return {
         title: "Missing Value Heatmap",
         filename: `completeness_missing_heatmap_${kind}.png`,
-        url: buildPlotUrl(
-          `/api/plots/completeness/${kind}/missing-heatmap.png`,
-          withAdvancedParams(heatmap, activeAdvancedParam)
-        ),
+        url: replayUrl,
       };
     }
     return null;
-  }, [activeTab, kind, missingPlot, heatmap, activeAdvancedParam, peptideQuantityError]);
+  }, [activeTab, kind, missingPlot.quantityColumn, replayUrl, peptideQuantityError]);
   const plotDownloadUrl = useMemo(() => {
     if (!plotView) return "";
     return withPlotDownloadFormat(plotView.url, downloadFormat);
@@ -401,6 +430,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
               )}
             </AssistantSelect>
           </div>
+          <LocalizationCutoffField kind={kind} />
         </div>
       </section>
 
@@ -464,10 +494,14 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
               >
                 Download Plot
               </a>
+              <NotebookDownload plotUrl={plotView.url} rendered={renderedNotebook} />
             </div>
           </div>
           <div className="mt-4">
-            <PlotImage url={plotView.url} alt={plotView.title} />
+            <PlotImage url={plotView.url} alt={plotView.title}
+              onRendered={(url, token) => {
+                if (activeTab !== "tables") onNotebookChange?.({ url, token, tab: activeTab });
+              }} />
           </div>
         </section>
       ) : null}
@@ -478,7 +512,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
             <h3 className="text-lg font-semibold text-slate-900">Missing Value Tables</h3>
             <button
               type="button"
-              onClick={() => void loadTables()}
+              onClick={() => void loadTables(undefined, true)}
               disabled={tableLoading}
               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -510,6 +544,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
               <section>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <h4 className="text-base font-semibold text-slate-900">Sample-level Missing Values</h4>
+                  <div className="flex flex-wrap items-center gap-2">
                   {sampleCsvUrl ? (
                     <a
                       href={sampleCsvUrl}
@@ -519,6 +554,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                       Download CSV
                     </a>
                   ) : null}
+                  <NotebookDownload plotUrl={replayUrl} rendered={tableNotebook} />
+                  </div>
                 </div>
                 <PreviewTable rows={tableData.sampleSummary} emptyText="No sample summary rows available." />
               </section>
@@ -526,6 +563,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
               <section>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <h4 className="text-base font-semibold text-slate-900">Outliers by Missing Value %</h4>
+                  <div className="flex flex-wrap items-center gap-2">
                   {outlierCsvUrl ? (
                     <a
                       href={outlierCsvUrl}
@@ -535,6 +573,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                       Download CSV
                     </a>
                   ) : null}
+                  <NotebookDownload plotUrl={replayUrl} rendered={tableNotebook} />
+                  </div>
                 </div>
                 {tableData.outliers.length > 0 ? (
                   <PreviewTable
@@ -551,6 +591,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
               <section>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <h4 className="text-base font-semibold text-slate-900">Feature-level Missing Value Distribution</h4>
+                  <div className="flex flex-wrap items-center gap-2">
                   {featureCsvUrl ? (
                     <a
                       href={featureCsvUrl}
@@ -560,6 +601,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange }: Pro
                       Download CSV
                     </a>
                   ) : null}
+                  <NotebookDownload plotUrl={replayUrl} rendered={tableNotebook} />
+                  </div>
                 </div>
                 <PreviewTable rows={tableData.featureSummary} emptyText="No feature summary rows available." />
               </section>

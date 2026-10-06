@@ -492,36 +492,36 @@ def _volcano_ranked_rows(
     subset = frame.copy()
     subset[label_column] = subset[label_column].astype(str)
     subset["abs_log2FC"] = pd.to_numeric(subset["log2FC"], errors="coerce").fillna(0.0).astype(float).abs()
-    subset["abs_neg_log10_adj_pval"] = (
-        pd.to_numeric(subset["neg_log10_adj_pval"], errors="coerce").fillna(0.0).astype(float).abs()
+    subset["abs_neg_log10_selected_pval"] = (
+        pd.to_numeric(subset["neg_log10_selected_pval"], errors="coerce").fillna(0.0).astype(float).abs()
     )
     if strategy == "fold_change_priority":
         subset["rank_score"] = subset["abs_log2FC"]
     else:
-        subset["rank_score"] = subset["abs_log2FC"] * subset["abs_neg_log10_adj_pval"]
+        subset["rank_score"] = subset["abs_log2FC"] * subset["abs_neg_log10_selected_pval"]
 
     if group == "up":
         subset = subset[subset["log2FC"] > 0].copy()
         if strategy == "fold_change_priority":
             subset = subset.sort_values(
-                ["abs_log2FC", "log2FC", "abs_neg_log10_adj_pval", "adj_pval"],
+                ["abs_log2FC", "log2FC", "abs_neg_log10_selected_pval", "selected_pval"],
                 ascending=[False, False, False, True],
             )
         else:
             subset = subset.sort_values(
-                ["rank_score", "abs_neg_log10_adj_pval", "log2FC"],
+                ["rank_score", "abs_neg_log10_selected_pval", "log2FC"],
                 ascending=[False, False, False],
             )
     else:
         subset = subset[subset["log2FC"] < 0].copy()
         if strategy == "fold_change_priority":
             subset = subset.sort_values(
-                ["abs_log2FC", "log2FC", "abs_neg_log10_adj_pval", "adj_pval"],
+                ["abs_log2FC", "log2FC", "abs_neg_log10_selected_pval", "selected_pval"],
                 ascending=[False, True, False, True],
             )
         else:
             subset = subset.sort_values(
-                ["rank_score", "abs_neg_log10_adj_pval", "log2FC"],
+                ["rank_score", "abs_neg_log10_selected_pval", "log2FC"],
                 ascending=[False, False, True],
             )
     if subset.empty:
@@ -734,11 +734,6 @@ def _histogram_data_lines(workflow: str) -> list[str]:
     lines.append(
         "histogram_inference_rule|summary_statistics_support_location_spread_and_skew_comparisons_but_do_not_by_themselves_prove_normality"
     )
-    lines.append(
-        "histogram_response_rule|when_asked_about_normality_or_similarity_report_each_condition_mean_median_sd_and_skewness|"
-        "state_that_normality_and_full_shape_similarity_cannot_be_determined_from_these_summaries|"
-        "do_not_classify_skewness_as_small_or_large_without_a_defined_criterion|answer_in_at_most_90_words"
-    )
     return lines
 
 
@@ -757,7 +752,7 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5, condition: str = "Al
     # not abundances; saying "intensity" here would put that in the answer.
     centred = _phosprot_values_are_centred(kind)
     value_label = (
-        "log10_of_mean_ratio_to_site_median_plus_1"
+        "log10_of_mean_ratio_to_site_median"
         if centred
         else "log10_of_mean_linear_intensity"
     )
@@ -1079,12 +1074,6 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: ContextMode | None = N
     lines.append(
         "boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=outermost_observed_values_within_the_1.5_IQR_fences|fences=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=observations_outside_the_fences"
     )
-    lines.append(
-        "boxplot_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
-    )
-    lines.append(
-        "boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
 
     if mode_key == "Single":
         lines.append(
@@ -1231,12 +1220,6 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     lines.append(
         "cov_boxplot_definition|median=50th_percentile|IQR=Q3-Q1|whiskers=outermost_observed_values_within_the_1.5_IQR_fences|fences=Q1-1.5xIQR_to_Q3+1.5xIQR|outliers=observations_outside_the_fences"
     )
-    lines.append(
-        "cov_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
-    )
-    lines.append(
-        "cov_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
 
     if table.empty:
         lines.append("cov_data|status=empty")
@@ -1327,12 +1310,6 @@ def qc_pca_plot(workflow: str = "protein", mode: ContextMode | None = None) -> d
         "pca_reproducibility|PCA_is_deterministic|UMAP_tSNE_and_KMeans_use_the_exposed_request_local_random_state"
     )
     lines.append(
-        "pca_quality_rule|coordinates_and_geometry_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "pca_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
-    lines.append(
         "pca_quality_guidance|type=checklist_only_not_findings|check=inspect_within_condition_replicate_compactness"
     )
     lines.append(
@@ -1347,7 +1324,6 @@ def qc_pca_plot(workflow: str = "protein", mode: ContextMode | None = None) -> d
     lines.append(
         "pca_usage|supports=identify_outliers_assess_condition_separation_evaluate_overall_dataset_structure"
     )
-    lines.append("pca_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping")
     lines.extend(
         _pca_variance_lines(
             workflow_key,
@@ -1403,12 +1379,6 @@ def qc_abundance_plot(
         "abundance_special_case|phosphoprotein_context=optional_truncation_of_extended_ptm_text_for_readability"
     )
     lines.append(
-        "abundance_quality_rule|ranked_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "abundance_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
-    lines.append(
         "abundance_quality_guidance|type=checklist_only_not_findings|check=inspect_curve_smoothness_and_gradual_intensity_decay"
     )
     lines.append(
@@ -1420,20 +1390,12 @@ def qc_abundance_plot(
     lines.append(
         "abundance_quality_guidance|ranked_entities_and_values_may_be_reported_descriptively|curve_shape_or_quality_claims_require_matching_evidence_and_a_defined_rule"
     )
-    lines.append(
-        "abundance_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
     lines.extend(
         _abundance_data_lines(
             workflow_key,
             condition=_mode_fields(mode).get("condition", "All Conditions"),
             limit=6,
         )
-    )
-    lines.append(
-        "abundance_response_rule|ranked_rows_are_supporting_evidence_not_a_required_output_list|"
-        "when_asked_only_which_or_most_abundant_report_rank_1_per_condition|"
-        "report_more_ranks_only_when_the_user_requests_a_count_rank_or_longer_list"
     )
 
     return _text_payload("qc_abundance_plot", "\n".join(lines))
@@ -1486,12 +1448,6 @@ def qc_correlation_plot(
         "correlation_usage|supports=global_sample_relationship_review_and_detection_of_possible_batch_or_labeling_issues"
     )
     lines.append(
-        "correlation_quality_rule|coefficients_and_group_summaries_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "correlation_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
-    lines.append(
         "correlation_quality_guidance|type=checklist_only_not_findings|check=inspect_within_group_similarity_patterns"
     )
     lines.append(
@@ -1502,9 +1458,6 @@ def qc_correlation_plot(
     )
     lines.append(
         "correlation_quality_guidance|pairwise_coefficients_and_group_summaries_may_be_reported_descriptively|quality_or_outlier_labels_require_a_defined_rule"
-    )
-    lines.append(
-        "correlation_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
     lines.extend(
         _correlation_data_lines(
@@ -1604,12 +1557,6 @@ def peptide_rt_plot(workflow: str = "peptide", mode: ContextMode | None = None) 
         f"predicted_min={_fmt_value(predicted_vals.min())}|predicted_max={_fmt_value(predicted_vals.max())}|predicted_mean={_fmt_value(predicted_vals.mean())}|predicted_median={_fmt_value(predicted_vals.median())}|"
         f"actual_min={_fmt_value(actual_vals.min())}|actual_max={_fmt_value(actual_vals.max())}|actual_mean={_fmt_value(actual_vals.mean())}|actual_median={_fmt_value(actual_vals.median())}|"
         f"pearson_r={_fmt_value(correlation) if pd.notna(correlation) else 'na'}"
-    )
-    lines.append(
-        "peptide_rt_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
-    )
-    lines.append(
-        "peptide_rt_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
     return _text_payload("peptide_rt_plot", "\n".join(lines))
 
@@ -1767,12 +1714,6 @@ def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | Non
             f"unique_tracked_modified_peptides_sample_sum={int(subset['UniqueTrackedModifiedPeptides'].sum())}"
         )
 
-    lines.append(
-        "peptide_modification_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
-    )
-    lines.append(
-        "peptide_modification_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("peptide_modification_plot", "\n".join(lines))
 
 
@@ -1937,12 +1878,6 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | 
             f"peptide_missed_cleavage_global_bin|count={int(count)}|percentage={_fmt_value(float(percent))}"
         )
 
-    lines.append(
-        "peptide_missed_cleavage_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
-    )
-    lines.append(
-        "peptide_missed_cleavage_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
 
 
@@ -2036,12 +1971,6 @@ def peptide_sequence_coverage(workflow: str = "peptide", mode: ContextMode | Non
     lines.append(
         f"peptide_sequence_coverage_sequence_preview|line_count={len(sequence_preview)}|preview_truncated={'true' if sequence_preview_truncated else 'false'}|lines={_safe_context_text(' || '.join(sequence_preview))}"
     )
-    lines.append(
-        "peptide_sequence_coverage_quality_rule|scope=data_descriptive_only_without_threshold_assessment|do_not_make_quality_claims_without_explicit_cutoffs"
-    )
-    lines.append(
-        "peptide_sequence_coverage_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("peptide_sequence_coverage", "\n".join(lines))
 
 
@@ -2106,12 +2035,6 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: ContextMode
             )
 
     lines.append(
-        "missing_quality_rule|missingness_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "missing_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
-    lines.append(
         "missing_quality_guidance|type=checklist_only_not_findings|check=inspect_where_mass_of_distribution_sits_across_missing_value_bins"
     )
     lines.append(
@@ -2119,9 +2042,6 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: ContextMode
     )
     lines.append(
         "missing_quality_guidance|hard_claim_gate=do_not_state_any_of_the_above_as_observed_dataset_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
-    )
-    lines.append(
-        "missing_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
 
     return _text_payload("completeness_missing_value_plot", "\n".join(lines))
@@ -2188,12 +2108,6 @@ def completeness_missing_value_heatmap(workflow: str = "protein", mode: ContextM
         "missing_heatmap_scope|aggregated_sample_findings_are_data_specific|visual_row_and_block_patterns_are_not_available_in_context"
     )
     lines.append(
-        "missing_heatmap_quality_rule|sample_missingness_values_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "missing_heatmap_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
-    )
-    lines.append(
         "missing_heatmap_quality_guidance|type=checklist_only_not_findings|check=inspect_for_column_wise_missingness_patterns"
     )
     lines.append(
@@ -2201,9 +2115,6 @@ def completeness_missing_value_heatmap(workflow: str = "protein", mode: ContextM
     )
     lines.append(
         "missing_heatmap_quality_guidance|sample_missingness_values_may_be_reported_descriptively|quality_or_outlier_labels_require_a_defined_rule"
-    )
-    lines.append(
-        "missing_heatmap_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
 
     return _text_payload("completeness_missing_value_heatmap", "\n".join(lines))
@@ -2301,17 +2212,7 @@ def completeness_missing_value_tables(workflow: str = "protein", mode: ContextMo
             )
 
     lines.append(
-        "missing_tables_quality_rule|configured_outlier_rule_and_descriptive_values_may_be_reported=true|broader_quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
         "missing_tables_quality_guidance|hard_claim_gate=do_not_state_unqualified_quality_findings_without_explicit_numeric_evidence_and_defined_cutoff_rules"
-    )
-    lines.append(
-        "missing_tables_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
-    lines.append(
-        "missing_tables_response_rule|if_outlier_count_is_zero_state_that_no_samples_exceed_the_threshold|"
-        "never_call_below_threshold_samples_high_or_outliers|do_not_list_below_threshold_samples_when_the_user_asks_only_for_exceeding_samples"
     )
 
     return _text_payload("completeness_missing_value_tables", "\n".join(lines))
@@ -2345,8 +2246,8 @@ def stats_simulation_plot(workflow: str = "protein", mode: ContextMode | None = 
              "simulation_answer_summary|" + "|".join(f"{k}={_safe_context_text(v)}" for k, v in result.model_dump(exclude={"rows", "warnings"}).items()),
              "simulation_inference_rule|observed_mean_fold_changes_held_fixed|variance_and_sample_size_assumptions_change_pvalues|not_new_observations_or_validated_power_predictions"]
     for row in result.rows[:5]:
-        fields = {"term": row.get(result.labelColumn), **{k: row.get(k) for k in ("log2FC", "pval", "adj_pval", "significance", "effective_n_condition1", "effective_n_condition2")}}
-        fields["adj_pval_meaning"] = metric
+        fields = {"term": row.get(result.labelColumn), **{k: row.get(k) for k in ("log2FC", "pval", "adj_pval", "selected_pval", "significance", "effective_n_condition1", "effective_n_condition2")}}
+        fields["selected_pval_meaning"] = metric
         lines.append("simulation_term|" + "|".join(f"{k}={_safe_context_text(v) if v is not None else 'NA'}" for k, v in fields.items()))
     if len(result.rows) > 5:
         lines.append("simulation_data|status=partial|reason=first_five_rows_only")
@@ -2356,20 +2257,22 @@ def stats_simulation_plot(workflow: str = "protein", mode: ContextMode | None = 
 
 def phospho_ksea_export(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     if workflow != "phosphosite":
-        raise ValueError("KSEA export requires phosphosite data.")
+        raise ValueError("Kinase Library export requires phosphosite data.")
     pairs = _mode_fields(mode)
     names = {"condition1": "condition1", "condition2": "condition2", "source": "source",
              "dataSource": "data_source", "condition1Control": "condition1_control", "condition2Control": "condition2_control",
-             "pValueThreshold": "p_value_threshold", "log2fcThreshold": "log2fc_threshold", "testType": "test_type", "useUncorrected": "use_uncorrected"}
+             "pValueThreshold": "p_value_threshold", "log2fcThreshold": "log2fc_threshold", "testType": "test_type", "useUncorrected": "use_uncorrected",
+             "organism": "organism"}
     # Reuse the validated differential-analysis contract for shared settings.
     from app.schemas.stats import VolcanoRequest, VolcanoControlRequest
     source = pairs.get("source", "volcano")
     if source not in {"volcano", "volcano_control"}:
-        raise ValueError("Unsupported KSEA source.")
+        raise ValueError("Unsupported Kinase Library source.")
     request_class = VolcanoControlRequest if source == "volcano_control" else VolcanoRequest
     request = request_class(kind="phospho", **{k: pairs[k.lower()] for k in request_class.model_fields if k != "kind" and k.lower() in pairs})
     settings = {key: getattr(request, key, None) for key in names}
     settings["source"] = source
+    settings["organism"] = pairs.get("organism", "human")
     table = _phospho_tools.ksea_table(**{target: settings[key] for key, target in names.items()})
     metric = "raw_p_value" if request.useUncorrected else "BH_adjusted_p_value"
     lines = [f"ksea_overview|workflow=phosphosite|selected_p_metric={metric}|scope=external_tool_input_not_kinase_activity_results",
@@ -2378,7 +2281,7 @@ def phospho_ksea_export(workflow: str = "phosphosite", mode: ContextMode | None 
              "ksea_inference_rule|export_contains_site_fold_changes_not_kinase_activity|kinase_scores_substrate_counts_and_external_significance_not_available|uploaded_external_plot_not_parsed_by_this_adapter"]
     lines.append(f"ksea_external_view|browser_reports_plot_present={_safe_context_text(pairs.get('externalplotpresent', 'unknown'))}|external_result_values_not_supplied=true")
     for row in table.head(5).to_dict(orient="records"):
-        lines.append("ksea_export_row|" + "|".join(f"{k}={_safe_context_text(row[k])}" for k in ("UPD_seq", "log2FC", "pval", "adj_pval", "significance") if k in row))
+        lines.append("ksea_export_row|" + "|".join(f"{k}={_safe_context_text(row[k])}" for k in ("UPD_seq", "Site", "window_source", "log2FC", "pval", "adj_pval", "significance") if k in row))
     if len(table) > 5:
         lines.append("ksea_data|status=partial|reason=first_five_export_rows_only")
     return _text_payload("phospho_ksea_export", "\n".join(lines))
@@ -2439,7 +2342,7 @@ def stats_anova_plot(workflow: str = "protein", mode: ContextMode | None = None)
         lines.append("anova_term|"
                      f"term={_safe_context_text(row.get(result.labelColumn, ''))}|"
                      f"f_statistic={f_statistic}|raw_p_value={_fmt_probability(row['pval'])}|"
-                     f"selected_p_value={_fmt_probability(row['adj_pval'])}|selected_p_metric={p_metric}|"
+                     f"selected_p_value={_fmt_probability(row['selected_pval'])}|selected_p_metric={p_metric}|"
                      f"significance={_safe_context_text(row['significance'])}")
     lines.append(f"anova_evidence_limit|reported_rows={min(5, len(selected_rows))}|selected_view_rows={len(selected_rows)}|"
                  "row_order=application_table_order|no_heatmap_pattern_or_pairwise_claims_without_supporting_evidence")
@@ -2549,15 +2452,12 @@ def stats_volcano_plot(
     lines.append(
         "volcano_axes|x=log2FC|y=negative_log10_of_selected_p_metric"
     )
-    lines.append(
-        "volcano_presentation_rule|do_not_quote_internal_group_keys_or_context_field_names_in_user_facing_answers"
-    )
 
     lines.append(
         f"volcano_parameters|source={source}|identifier={identifier}|test_type={test_type}|data_source={data_source}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}"
     )
     lines.append(
-        f"volcano_selected_p_metric|for_significance={'pval' if use_uncorrected else 'adj_pval'}|for_y_axis={'neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval'}"
+        f"volcano_selected_p_metric|for_significance={'pval' if use_uncorrected else 'adj_pval'}|for_y_axis=neg_log10_selected_pval"
     )
     lines.append(
         f"volcano_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
@@ -2595,7 +2495,8 @@ def stats_volcano_plot(
     frame["log2FC"] = pd.to_numeric(frame["log2FC"], errors="coerce")
     frame["pval"] = pd.to_numeric(frame["pval"], errors="coerce")
     frame["adj_pval"] = pd.to_numeric(frame["adj_pval"], errors="coerce")
-    frame["neg_log10_adj_pval"] = pd.to_numeric(frame["neg_log10_adj_pval"], errors="coerce")
+    frame["selected_pval"] = pd.to_numeric(frame["selected_pval"], errors="coerce")
+    frame["neg_log10_selected_pval"] = pd.to_numeric(frame["neg_log10_selected_pval"], errors="coerce")
 
     total = int(frame.shape[0])
     up_count = int((frame["significance"] == "Upregulated").sum())
@@ -2643,24 +2544,8 @@ def stats_volcano_plot(
         lines.append(
             f"volcano_ranked_terms|type=significant|max_per_group={max_ranked_per_group}|rank_method=balanced_effect_and_significance|up_rows={int(up_ranked.shape[0])}|down_rows={int(down_ranked.shape[0])}|up_truncated={'true' if up_truncated else 'false'}|down_truncated={'true' if down_truncated else 'false'}"
         )
-        for rank, (_, row) in enumerate(up_ranked.iterrows(), start=1):
-            lines.append(
-                "volcano_term|"
-                f"group=upregulated|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
-                f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
-                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
-                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
-            )
-        for rank, (_, row) in enumerate(down_ranked.iterrows(), start=1):
-            lines.append(
-                "volcano_term|"
-                f"group=downregulated|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
-                f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
-                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
-                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
-            )
+        lines.extend(_volcano_term_lines(up_ranked, label_column, "upregulated"))
+        lines.extend(_volcano_term_lines(down_ranked, label_column, "downregulated"))
     else:
         lines.append(
             "volcano_disclaimer|message=no_features_passed_the_significance_and_fold_change_thresholds_the_following_terms_are_ranked_as_most_interesting_but_not_significant"
@@ -2682,37 +2567,23 @@ def stats_volcano_plot(
         lines.append(
             f"volcano_ranked_terms|type=not_significant_fallback|rank_method=fold_change_priority_pvalue_tiebreak|up_rows={int(up_top.shape[0])}|down_rows={int(down_top.shape[0])}"
         )
-        for rank, (_, row) in enumerate(up_top.iterrows(), start=1):
-            lines.append(
-                "volcano_term|"
-                f"group=upregulated_candidate_not_significant|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
-                f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
-                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
-                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
-            )
-        for rank, (_, row) in enumerate(down_top.iterrows(), start=1):
-            lines.append(
-                "volcano_term|"
-                f"group=downregulated_candidate_not_significant|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
-                f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
-                f"selected_p_value={_fmt_probability(float(row.get('pval' if use_uncorrected else 'adj_pval', 1.0)))}|"
-                f"minus_log10_selected_p={_fmt_value(float(row.get('neg_log10_pval' if use_uncorrected else 'neg_log10_adj_pval', 0.0)))}|"
-                f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
-            )
+        lines.extend(_volcano_term_lines(up_top, label_column, "upregulated_candidate_not_significant"))
+        lines.extend(_volcano_term_lines(down_top, label_column, "downregulated_candidate_not_significant"))
 
-    lines.append(
-        "volcano_quality_rule|scope=data_driven_with_explicit_thresholds|claims_allowed_only_when_reporting_the_explicit_metrics_and_thresholds_used"
-    )
-    lines.append(
-        "volcano_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
-    lines.append(
-        "volcano_response_rule|for_strongest_targets_report_at_most_the_two_ranked_entities_per_direction|"
-        "include_log2fc_selected_p_value_and_minus_log10_selected_p|do_not_replace_small_p_values_with_rounded_zero|"
-        "use_plain_paragraphs_or_simple_hyphen_bullets_without_nested_lists"
-    )
     return _text_payload("stats_volcano_plot", "\n".join(lines))
+
+
+def _volcano_term_lines(ranked: pd.DataFrame, label_column: str, group: str) -> list[str]:
+    """One evidence line per ranked volcano feature, the same for every group."""
+    return [
+        "volcano_term|"
+        f"group={group}|rank={rank}|term={_primary_term_label(row.get(label_column, ''))}|"
+        f"log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
+        f"selected_p_value={_fmt_probability(float(row['selected_pval']))}|"
+        f"minus_log10_selected_p={_fmt_value(float(row['neg_log10_selected_pval']))}|"
+        f"rank_score={_fmt_value(float(row.get('rank_score', 0.0)))}"
+        for rank, (_, row) in enumerate(ranked.iterrows(), start=1)
+    ]
 
 
 def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
@@ -2955,12 +2826,6 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
             lines.append(
                 f"ora_warnings|count={len(result.warnings)}|messages={_safe_context_text(' || '.join(result.warnings))}"
             )
-        lines.append(
-            "ora_quality_rule|scope=data_driven_with_explicit_thresholds_and_background|claims_allowed_only_when_reporting_the_explicit_metrics_filters_and_background_used"
-        )
-        lines.append(
-            "ora_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-        )
         return _text_payload("stats_ora_plot", "\n".join(lines))
 
     up_genes = [str(value) for value in result.upGenes]
@@ -3021,12 +2886,6 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
             f"ora_warnings|count={len(result.warnings)}|messages={_safe_context_text(' || '.join(result.warnings))}"
         )
 
-    lines.append(
-        "ora_quality_rule|scope=data_driven_with_explicit_thresholds_and_background|claims_allowed_only_when_reporting_the_explicit_metrics_filters_and_background_used"
-    )
-    lines.append(
-        "ora_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
 
     return _text_payload("stats_ora_plot", "\n".join(lines))
 
@@ -3190,12 +3049,6 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: ContextMode | No
         lines.append(
             f"pathway_heatmap_warnings|count={len(warnings)}|messages={_safe_context_text(' || '.join(warnings))}"
         )
-    lines.append(
-        "pathway_heatmap_quality_rule|scope=data_driven_with_explicit_selection_and_counts|claims_allowed_only_when_reporting_explicit_values_from_context"
-    )
-    lines.append(
-        "pathway_heatmap_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("stats_pathway_heatmap_plot", "\n".join(lines))
 
 
@@ -3335,12 +3188,6 @@ def comparison_pearson_correlation(workflow: str = "protein", mode: ContextMode 
 
     lines.append(
         "comparison_pearson_reference|pearson_r_source=summary_table_metric_PearsonR"
-    )
-    lines.append(
-        "comparison_pearson_quality_rule|scope=data_descriptive_only|do_not_make_quality_or_outlier_claims_without_explicit_thresholds_or_cutoffs"
-    )
-    lines.append(
-        "comparison_pearson_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
 
     return _text_payload("comparison_pearson_correlation", "\n".join(lines))
@@ -3489,25 +3336,16 @@ def comparison_venn_diagram(workflow: str = "protein", mode: ContextMode | None 
     lines.append(
         "comparison_venn_interpretation_scope|supports=identify_shared_entities_unique_entities_and_coverage_differences_across_selected_sets"
     )
-    lines.append(
-        "comparison_venn_quality_rule|scope=data_descriptive_only|do_not_make_reproducibility_or_quality_claims_without_explicit_thresholds_or_cutoffs"
-    )
-    lines.append(
-        "comparison_venn_color_rule|color_information_included_for_selected_sets"
-    )
 
     return _text_payload("comparison_venn_diagram", "\n".join(lines))
 
 
 def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
-    mode_pairs = _mode_fields(mode)
-    cutoff = _float_from_mode(
-        mode_pairs,
-        "cutoff",
-        default=0.0,
-        minimum=0.0,
-    )
+    from app.services.phospho_localization import get_localization_cutoff
+
+    # The session-wide localization cutoff, the one the plot was drawn with.
+    cutoff = get_localization_cutoff()
 
     lines: list[str] = []
     lines.append(
@@ -3517,7 +3355,7 @@ def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: ContextMode | 
         f"phosphosite_summary_cutoff|ptm_localization_probability_min={_fmt_value(cutoff)}"
     )
     lines.append(
-        "phosphosite_summary_cutoff_rule|filter=retain_rows_where_PTM_localization_is_greater_than_or_equal_to_cutoff"
+        "phosphosite_summary_cutoff_rule|filter=retain_rows_where_PTM_localization_is_greater_than_or_equal_to_cutoff|missing_probability_excluded_when_cutoff_above_zero|shared_by_every_phosphosite_module"
     )
     lines.append(
         "phosphosite_summary_entities|phosphoproteins=distinct_protein_groups_with_at_least_one_site_passing_cutoff|phosphopeptides=unique_modified_peptide_sequences|phosphosites=unique_PTM_collapse_keys"
@@ -3533,7 +3371,7 @@ def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: ContextMode | 
     )
 
     try:
-        table = _phospho_tools.phosphosite_plot_table(cutoff=float(cutoff)).copy()
+        table = _phospho_tools.phosphosite_plot_table().copy()
     except Exception as exc:
         lines.append(f"phosphosite_summary_data|status=error|detail={_safe_context_text(exc)}")
         return _text_payload("phospho_phosphosite_plot", "\n".join(lines))
@@ -3577,12 +3415,6 @@ def phospho_phosphosite_plot(workflow: str = "phosphosite", mode: ContextMode | 
 
     lines.append(
         f"phosphosite_summary_under_cutoff|cutoff={_fmt_value(cutoff)}|phosphosites={phosphosites_count if phosphosites_count is not None else 'unknown'}|phosphopeptides={phosphopeptides_count if phosphopeptides_count is not None else 'unknown'}|phosphoproteins={phosphoproteins_count if phosphoproteins_count is not None else 'unknown'}"
-    )
-    lines.append(
-        "phosphosite_summary_quality_rule|data_specific_counts_at_selected_cutoff_are_allowed|broader_quality_claims_require_explicit_comparison_rules_or_additional_thresholds"
-    )
-    lines.append(
-        "phosphosite_summary_color_rule|never_report_colors_unless_user_explicitly_requests_color_mapping"
     )
 
     return _text_payload("phospho_phosphosite_plot", "\n".join(lines))
@@ -3751,12 +3583,6 @@ def phospho_phosphosite_coverage_plot(workflow: str = "phosphosite", mode: Conte
                     f"condition={_safe_context_text(condition)}|n_replicates={int(subset.shape[0])}|values={sample_values}"
                 )
 
-    lines.append(
-        "phospho_coverage_quality_rule|scope=data_descriptive_with_explicit_class_definition|broader_quality_claims_require_explicit_cutoff_rules_or_multi_cutoff_comparison"
-    )
-    lines.append(
-        "phospho_coverage_color_rule|do_not_report_specific_color_values_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("phospho_phosphosite_coverage_plot", "\n".join(lines))
 
 
@@ -3846,12 +3672,6 @@ def phospho_phosphosite_distribution_plot(workflow: str = "phosphosite", mode: C
     lines.append(
         "phospho_distribution_general_pattern|broad_or_multimodal_patterns_can_reflect_complex_signaling_or_dataset_specific_characteristics"
     )
-    lines.append(
-        "phospho_distribution_quality_rule|data_specific_frequency_reporting_is_allowed|broader_quality_or_bias_claims_require_explicit_cutoffs_or_comparison_rules"
-    )
-    lines.append(
-        "phospho_distribution_color_rule|do_not_report_color_information_unless_user_explicitly_requests_color_mapping"
-    )
     return _text_payload("phospho_phosphosite_distribution_plot", "\n".join(lines))
 
 
@@ -3918,12 +3738,6 @@ def phospho_sty_plot(workflow: str = "phosphosite", mode: ContextMode | None = N
             f"residue={_safe_context_text(row['Residue'])}|count={int(row['Count'])}|percentage={_fmt_value(float(row['Percentage']))}"
         )
 
-    lines.append(
-        "phospho_sty_quality_rule|report_exact_counts_and_percentages_from_table|do_not_make_additional_quality_claims_without_explicit_threshold_rules"
-    )
-    lines.append(
-        "phospho_sty_color_rule|do_not_report_color_mapping_unless_user_explicitly_requests_it"
-    )
     return _text_payload("phospho_sty_plot", "\n".join(lines))
 
 
@@ -3999,12 +3813,6 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: Con
     lines.append(
         "phosprot_regulation_interpretation_scope|supports_descriptive_comparison_of_cumulative_significant_up_and_down_site_effects|does_not_estimate_a_protein_level_fold_change_or_adjust_for_parent_protein_abundance"
     )
-    lines.append(
-        "phosprot_regulation_quality_rule|general_not_data_specific_for_this_context_do_not_make_dataset_specific_claims_without_explicit_numeric_output_context"
-    )
-    lines.append(
-        "phosprot_regulation_color_rule|do_not_report_color_gradient_or_mapping_unless_user_explicitly_requests_color_details"
-    )
 
     return _text_payload("phospho_phosprot_regulation_plot", "\n".join(lines))
 
@@ -4055,12 +3863,6 @@ def single_protein_boxplot(workflow: str = "protein", mode: ContextMode | None =
     )
     lines.append(
         f"single_protein_boxplot_labels|entity_terms={entity_singular}/{entity_plural}"
-    )
-    lines.append(
-        "single_protein_boxplot_quality_rule|descriptive_statistics=may be reported without quality thresholds|quality_labels=require explicit criteria; do not invent cutoffs"
-    )
-    lines.append(
-        "single_protein_boxplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
     )
 
     if not selected_protein:
@@ -4164,6 +3966,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
     selected_proteins = _split_mode_list(mode_pairs.get("proteins", ""))
     selected_conditions = _split_mode_list(mode_pairs.get("conditions", ""))
     include_id = _bool_from_mode(mode_pairs, "includeid", "include_id", default=False)
+    show_na_low = _bool_from_mode(mode_pairs, "shownalow", "show_na_low", default=False)
     header = _bool_from_mode(mode_pairs, "header", default=True)
     legend = _bool_from_mode(mode_pairs, "legend", default=True)
     max_item_preview = int(
@@ -4201,19 +4004,15 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
         "single_protein_lineplot_general|sample_ordering=samples_follow_user_selected_condition_sequence_for_consistent_experimental_alignment"
     )
     lines.append(
-        "single_protein_lineplot_general|missing_values=NA_markers_are_omitted_while_lines_remain_connected_across_missing_positions"
+        "single_protein_lineplot_general|missing_values=" + (
+            "NA_positions_have_display_only_log2_0_vertices_without_markers_not_measurements_or_imputation"
+            if show_na_low else "NA_markers_are_omitted_while_lines_remain_connected_across_missing_positions")
     )
     lines.append(
         "single_protein_lineplot_general|interpretation_scope=evaluate_condition_or_temporal_trends_replicate_variation_and_sample_level_shifts"
     )
     lines.append(
         f"single_protein_lineplot_labels|entity_terms={entity_singular}/{entity_plural}"
-    )
-    lines.append(
-        "single_protein_lineplot_quality_rule|descriptive_statistics_may_be_reported=true|quality_assessment_requires_defined_thresholds_or_cutoffs=true"
-    )
-    lines.append(
-        "single_protein_lineplot_quality_rule|if_no_cutoffs_defined=do_not_make_quality_claims_for_current_dataset"
     )
 
     if not selected_proteins:
@@ -4278,6 +4077,22 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
     lines.append(
         f"single_protein_lineplot_entities|count={entity_count}|preview_count={len(feature_preview)}|preview_truncated={'true' if feature_truncated else 'false'}|values={_safe_context_text(';'.join(feature_preview))}"
     )
+    # Names that match no row are left out of the plot; the page says so under
+    # it, and so does this. A JSON list, because a name may hold ";" or ",".
+    try:
+        not_found = _single_protein_tools.unmatched_lineplot_names(
+            kind,  # type: ignore[arg-type]
+            selected_proteins,
+            identifier=identifier,
+            data_source=data_source,
+        )
+    except ValueError:
+        not_found = []
+    if not_found:
+        not_found_preview, not_found_truncated = _preview_items(not_found, max_item_preview)
+        lines.append(
+            f"single_protein_lineplot_not_found|count={len(not_found)}|preview_truncated={'true' if not_found_truncated else 'false'}|values={_safe_context_text(json.dumps(not_found_preview, ensure_ascii=False))}|not_plotted=true"
+        )
     lines.append(
         "single_protein_lineplot_focus|answer_entity_questions_using_only_per_entity_min_max_mean_median_and_plot_structure_explanation"
     )
@@ -4355,12 +4170,6 @@ def single_protein_phosphosite_heatmap(workflow: str = "phosphosite", mode: Cont
     )
     lines.append(
         "single_protein_heatmap_general|description=heatmap_shows_selected_protein_with_site_rows_listed_in_context_across_samples"
-    )
-    lines.append(
-        "single_protein_heatmap_response_rule|if_exact_site_names_are_available_use_them_directly_and_do_not_use_placeholder_patterns_like_S_xxx_T_xxx_Y_xxx"
-    )
-    lines.append(
-        "single_protein_heatmap_quality_rule|scope=structure_only_not_data_specific|do_not_make_dataset_quality_claims_without_explicit_cutoffs"
     )
 
     if not selected_protein:

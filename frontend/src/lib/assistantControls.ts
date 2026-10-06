@@ -16,6 +16,58 @@ type Binding = { read: () => AssistantControl | null; apply: (value: ControlValu
 const controls = new Map<string, Binding>();
 const buttons = new Map<string, { read: () => AssistantControl | null; activate: () => string }>();
 export const AssistantControlScope = createContext(false);
+
+/** One control the assistant changed: what it was, and what it became. */
+export type AssistantChange = {
+  id: number; at: string; module: string; target: string; label: string; before: ControlValue; after: ControlValue;
+};
+// Kept for the session so a person can see what the assistant changed and take
+// the last change back. Replaced, never mutated, so React can subscribe to it.
+let changeLog: readonly AssistantChange[] = [];
+let nextChangeId = 1;
+const changeListeners = new Set<() => void>();
+const CHANGE_LOG_LIMIT = 50;
+function publishChanges(next: readonly AssistantChange[]) {
+  changeLog = next;
+  changeListeners.forEach(listener => listener());
+}
+export function subscribeAssistantChanges(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => { changeListeners.delete(listener); };
+}
+export function assistantChanges(): readonly AssistantChange[] { return changeLog; }
+function recordAssistantChange(change: Omit<AssistantChange, "id" | "at" | "module">) {
+  const entry = { ...change, id: nextChangeId++, at: new Date().toISOString(), module: surfaceModule };
+  publishChanges([...changeLog, entry].slice(-CHANGE_LOG_LIMIT));
+}
+
+/**
+ * Put the control the assistant changed last back to its earlier value.
+ *
+ * Refused rather than guessed when it cannot be done safely: the control is not
+ * on screen (another page is open), or its value is no longer the one the
+ * assistant set (someone changed it since). The entry stays in the log then.
+ */
+export function undoLastAssistantChange(): string {
+  const last = changeLog[changeLog.length - 1];
+  if (!last) throw new Error("There is no assistant change to undo.");
+  const binding = controls.get(last.target);
+  const control = binding?.read();
+  if (!binding || !control) {
+    throw new Error(`${last.label} is not on screen. Open the page where the assistant changed it, then undo.`);
+  }
+  if (JSON.stringify(control.value) !== JSON.stringify(last.after)) {
+    throw new Error(`${last.label} has been changed since the assistant set it, so it was not undone.`);
+  }
+  flushSync(() => binding.apply(last.before));
+  flushSync(() => controls.get(last.target)?.commit());
+  const actual = controls.get(last.target)?.read();
+  if (!actual || JSON.stringify(actual.value) !== JSON.stringify(last.before)) {
+    throw new Error(`${last.label} did not accept its earlier value. Check the plot controls.`);
+  }
+  publishChanges(changeLog.slice(0, -1));
+  return `Set ${last.label} back to ${JSON.stringify(last.before)}.`;
+}
 let surfaceModule = "";
 export function assistantSurfaceReady(module: string) { return surfaceModule === module; }
 export function useAssistantSurface(module: string) {
@@ -291,6 +343,7 @@ export function applyAssistantControls(actions: AssistantAction[], onApplied: (r
     flushSync(() => controls.get(action.target)?.commit());
     const actual = controls.get(action.target)?.read();
     if (actual && JSON.stringify(actual.value) !== JSON.stringify(control.value)) {
+      recordAssistantChange({ target: action.target, label: control.label, before: control.value, after: actual.value });
       const receipt = `Set ${control.label} to ${JSON.stringify(actual.value)}.`;
       receipts.push(receipt);
       onApplied(receipt);

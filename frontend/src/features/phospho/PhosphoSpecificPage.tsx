@@ -1,4 +1,6 @@
 import PlotImage from "../../components/PlotImage";
+import InteractivePlot from "../../components/InteractivePlot";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { AssistantSelect } from "../../components/AssistantFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
@@ -24,6 +26,7 @@ import { dataSourceOptions, type DataSource, type PhosphoOptionsResponse, type P
 import PreviewTable from "../../components/PaginatedTable";
 import SelectField from "../../components/SelectField";
 import type { ContextMode } from "../../lib/types";
+import { saveQcReportSettings } from "../../lib/reportState";
 
 type Props = {
   activeTab: PhosphoTab;
@@ -57,10 +60,11 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   const { datasets } = useCurrentDatasetsSnapshot();
   const hasPhosphoDataset = Boolean(datasets?.phospho);
   const [options, setOptions] = useState<PhosphoOptionsResponse | null>(null);
-  // The data source for Phosprot Regulation: the same choice the phospho
+  // The data source for Phosphoprotein Regulation: the same choice the phospho
   // volcano offers, so the sites it sums are the sites that volcano shows.
   const {
     dataSource,
+    ready: dataSourceReady,
     applyChoices: applyDataSourceChoices,
     chooseDataSource,
   } = useDataSourceChoice(persisted.dataSource);
@@ -70,12 +74,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [notebook, setNotebook] = useState<RenderedNotebook | null>(null);
+  const [tableSnapshot, setTableSnapshot] = useState<string | null>(null);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
     coercePlotDownloadFormat(persisted.downloadFormat)
   );
 
+  // The localization cutoff is the session-wide one (LocalizationCutoffField at
+  // the top of the Phospho-specific module), not a setting of this plot.
   const [phosphositePlot, setPhosphositePlot] = useState({
-    cutoff: Number(persistedPhosphositePlot.cutoff ?? 0),
     color: String(persistedPhosphositePlot.color ?? "#87CEEB"),
     widthCm: restorePlotDimensionCm(persistedPhosphositePlot.widthCm, 15),
     heightCm: restorePlotDimensionCm(persistedPhosphositePlot.heightCm, 10),
@@ -133,7 +140,12 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   const debouncedCoverage = useDebouncedValue(coverage, 650);
   const debouncedDistribution = useDebouncedValue(distribution, 650);
   const debouncedSty = useDebouncedValue(sty, 650);
-  const debouncedDataSource = useDebouncedValue(dataSource, 650);
+  // The matrix the regulation plot, its table and the assistant are given:
+  // nothing until the choice is known. It was debounced like the typed fields,
+  // so on a project whose default is not "data" the first requests went out for
+  // the placeholder "data" and were sent again 650 ms later. A list choice
+  // needs no debounce.
+  const debouncedDataSource = dataSourceReady ? dataSource : null;
   const debouncedPhosprotRegulation = useDebouncedValue(phosprotRegulation, 650);
   const phosprotPairingReady =
     debouncedPhosprotRegulation.testType !== "paired" ||
@@ -155,6 +167,20 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       phosprotRegulation,
     });
   }, [downloadFormat, dataSource, phosphositePlot, coverage, distribution, sty, phosprotRegulation]);
+
+  // The report redraws the coverage plots with the settings shown here
+  // (report_function reads them as qcSettings.phospho.phosphoCoverage).
+  useEffect(() => {
+    saveQcReportSettings("phospho", {
+      phosphoCoverage: {
+        includeId: coverage.includeId,
+        conditions: coverage.conditions,
+        colorClassI: coverage.colorClassI,
+        colorNotClassI: coverage.colorNotClassI,
+        randomSeed: coverage.randomSeed,
+      },
+    });
+  }, [coverage.includeId, coverage.conditions, coverage.colorClassI, coverage.colorNotClassI, coverage.randomSeed]);
 
   useEffect(() => {
     if (!hasPhosphoDataset) {
@@ -222,7 +248,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
         filename: "phosphosite_plot.png",
         type: "image",
         url: buildPlotUrl("/api/plots/phospho/phosphosite-plot.png", {
-          cutoff: debouncedPhosphositePlot.cutoff,
           color: debouncedPhosphositePlot.color,
           widthCm: debouncedPhosphositePlot.widthCm,
           heightCm: debouncedPhosphositePlot.heightCm,
@@ -269,11 +294,12 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     }
 
     if (activeTab === "phosprotRegulation") {
+      if (!debouncedDataSource) return null;
       if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
       if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
       if (!phosprotPairingReady) return null;
       return {
-        title: "Phosprot Regulation",
+        title: "Phosphoprotein Regulation",
         filename: "phosprot_regulation.html",
         type: "html",
         url: buildPlotUrl("/api/plots/phospho/phosprot-regulation.html", {
@@ -325,14 +351,16 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     return withPlotDownloadFilename(plotView.filename, downloadFormat);
   }, [plotView, downloadFormat]);
 
+  const notebookSupported = ['phosphositePlot', 'coverage', 'distribution', 'sty', 'phosprotRegulation'].includes(activeTab);
+  const plotToken = notebookSupported && notebook?.url === plotView?.url ? notebook?.token : null;
   const tableRequest = useMemo<TableRequest>(() => {
+    // Rebuilt when the localization cutoff changes (part of the plot signal).
+    void advancedPlotSignal;
     if (activeTab === "phosphositePlot") {
-      const params: Record<string, string | number | boolean> = {
-        cutoff: debouncedPhosphositePlot.cutoff,
-      };
+      const params: Record<string, string | number | boolean> = {};
       return {
         tab: "phosphositePlot",
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
@@ -344,7 +372,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       };
       return {
         tab: "coverage",
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
@@ -354,11 +382,12 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       };
       return {
         tab: "distribution",
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
     if (activeTab === "phosprotRegulation") {
+      if (!debouncedDataSource) return null;
       if (!debouncedPhosprotRegulation.condition1 || !debouncedPhosprotRegulation.condition2) return null;
       if (debouncedPhosprotRegulation.condition1 === debouncedPhosprotRegulation.condition2) return null;
       if (!phosprotPairingReady) return null;
@@ -375,14 +404,15 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       };
       return {
         tab: "phosprotRegulation",
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
-    return { tab: "sty" };
+    return { tab: "sty", params: plotToken ? { snapshot: plotToken } : undefined };
   }, [
+    advancedPlotSignal,
+    plotToken,
     activeTab,
-    debouncedPhosphositePlot.cutoff,
     debouncedCoverage.includeId,
     debouncedCoverage.mode,
     debouncedCoverage.conditions,
@@ -411,7 +441,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     setTableError(null);
     getPhosphoTable(tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setTableRows(payload.rows ?? []);
+        setTableSnapshot(typeof tableRequest.params?.snapshot === 'string' ? tableRequest.params.snapshot : null);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -447,7 +479,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       activeTab === "phosphositePlot"
         ? {
             tab: "phosphositePlot",
-            cutoff: debouncedPhosphositePlot.cutoff,
           }
         : activeTab === "distribution"
         ? {
@@ -481,7 +512,6 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     onContextModeChange,
     hasPhosphoDataset,
     activeTab,
-    debouncedPhosphositePlot.cutoff,
     debouncedDistribution.cutoff,
     debouncedDataSource,
     debouncedPhosprotRegulation.condition1,
@@ -552,8 +582,10 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               >
                 Download Plot
               </a>
+              {notebookSupported ? <NotebookDownload plotUrl={plotView.url} rendered={notebook} /> : null}
             </div>
           ) : hasPhosphoDataset && plotView ? (
+            <div className="flex items-center gap-2">
             <a
               href={plotView.url}
               target="_blank"
@@ -562,6 +594,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             >
               Open Plot
             </a>
+            <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
+            </div>
           ) : null}
         </div>
 
@@ -576,15 +610,11 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
         ) : plotView ? (
           <div className="mt-4">
             {plotView.type === "html" ? (
-              <iframe
-                sandbox="allow-scripts allow-downloads"
-                key={plotView.url}
-                src={plotView.url}
-                title={plotView.title}
-                className="h-[40rem] w-full rounded-xl border border-slate-200"
-              />
+              <InteractivePlot url={plotView.url} title={plotView.title} height="40rem"
+                onRendered={(url, token) => setNotebook({ url, token })} />
             ) : (
-              <PlotImage url={plotView.url} alt={plotView.title} />
+              <PlotImage url={plotView.url} alt={plotView.title}
+                onRendered={notebookSupported ? (url, token) => setNotebook({ url, token }) : undefined} />
             )}
           </div>
         ) : (
@@ -599,6 +629,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>
           {hasPhosphoDataset && tableCsvUrl ? (
+            <div className="flex flex-wrap items-center gap-2">
             <a
               href={tableCsvUrl}
               download={`phospho_${activeTab}.csv`}
@@ -606,6 +637,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             >
               Download CSV
             </a>
+            {notebookSupported && plotView ? <NotebookDownload plotUrl={plotView.url}
+              rendered={!tableLoading && !tableError && tableSnapshot === plotToken ? notebook : null} /> : null}
+            </div>
           ) : null}
         </div>
         <div className="mt-4">
@@ -639,14 +673,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     if (activeTab === "phosphositePlot") {
       return (
         <OptionsLayout
-          fields={[
-            <NumericField
-              key="cutoff"
-              label="Cutoff"
-              value={phosphositePlot.cutoff}
-              onChange={(value) => setPhosphositePlot({ ...phosphositePlot, cutoff: Math.max(0, value) })}
-            />,
-          ]}
+          fields={[]}
           sizeRow={
             <SizeRow
               widthCm={phosphositePlot.widthCm}
@@ -715,7 +742,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           fields={[
             <NumericField
               key="cutoff"
-              label="Cutoff"
+              label="Upper-tail trim (fraction of proteins)"
               value={distribution.cutoff}
               onChange={(value) => setDistribution({ ...distribution, cutoff: Math.max(0, Math.min(1, value)) })}
             />,
@@ -854,7 +881,7 @@ function plotTitle(tab: PhosphoTab): string {
   if (tab === "phosphositePlot") return "Phosphosite Plot";
   if (tab === "coverage") return "Phosphosite Coverage Plot";
   if (tab === "distribution") return "Phosphosite Distribution";
-  if (tab === "phosprotRegulation") return "Phosprot Regulation";
+  if (tab === "phosprotRegulation") return "Phosphoprotein Regulation";
   return "STY Plot";
 }
 

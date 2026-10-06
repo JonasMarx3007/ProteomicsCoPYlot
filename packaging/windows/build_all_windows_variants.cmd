@@ -130,12 +130,5 @@ if errorlevel 1 (
   endlocal & exit /b 1
 )
 
-powershell -NoProfile -Command "$path = [System.IO.Path]::Combine('%FRONTEND_DIR%','dist','.copylot_mode.txt'); Set-Content -Path $path -Value '%MODE%' -NoNewline"
-if errorlevel 1 (
-  popd >nul
-  echo Error: failed to write frontend mode marker.
-  endlocal & exit /b 1
-)
-
 popd >nul
 endlocal & exit /b 0

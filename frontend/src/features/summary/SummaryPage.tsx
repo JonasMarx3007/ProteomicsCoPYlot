@@ -1,5 +1,6 @@
 import { collectColumns } from "../../lib/tableData";
-import { useEffect, useMemo, useState } from "react";
+import NotebookDownload from "../../components/NotebookDownload";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   downloadCurrentAnnotationMetadataData,
   generateSummaryReport,
@@ -102,6 +103,9 @@ function asTextPosition(value: unknown): TextPosition {
 }
 
 export default function SummaryPage({ activeTab }: Props) {
+  const plotFieldId = useId();
+  const positionLabelId = useId();
+  const textFieldId = useId();
   const persisted = useMemo(
     () => readPersistedUiState<SummaryEditorState>(SUMMARY_EDITOR_STATE_KEY, {}),
     []
@@ -299,8 +303,9 @@ export default function SummaryPage({ activeTab }: Props) {
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Select Plot</label>
+                <label htmlFor={plotFieldId} className="mb-2 block text-sm font-medium text-slate-700">Select Plot</label>
                 <select
+                  id={plotFieldId}
                   value={selectedPlot}
                   onChange={(event) => setSelectedPlot(event.target.value)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
@@ -314,8 +319,9 @@ export default function SummaryPage({ activeTab }: Props) {
               </div>
               {selectedPlot !== "Introduction" ? (
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Position</label>
-                  <div className="flex gap-2">
+                  {/* A pair of buttons, not a field: named as a group. */}
+                  <span id={positionLabelId} className="mb-2 block text-sm font-medium text-slate-700">Position</span>
+                  <div role="group" aria-labelledby={positionLabelId} className="flex gap-2">
                     <TabButton
                       label="Above"
                       active={position === "Above"}
@@ -332,10 +338,11 @@ export default function SummaryPage({ activeTab }: Props) {
             </div>
 
             <div className="mt-4">
-              <label className="mb-2 block text-sm font-medium text-slate-700">
+              <label htmlFor={textFieldId} className="mb-2 block text-sm font-medium text-slate-700">
                 {selectedPlot === "Introduction" ? "Introduction Text" : "Text"}
               </label>
               <textarea
+                id={textFieldId}
                 value={editorValue}
                 onChange={(event) => setEditorValue(event.target.value)}
                 rows={8}
@@ -421,15 +428,27 @@ export default function SummaryPage({ activeTab }: Props) {
                 {reportLoading ? "Generating..." : "Generate HTML Report"}
               </button>
               {downloadHref && reportResult ? (
-                <a
-                  href={downloadHref}
-                  download={reportResult.fileName}
-                  className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-                >
-                  Download HTML Report
-                </a>
+                <>
+                  <a
+                    href={downloadHref}
+                    download={reportResult.fileName}
+                    className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+                  >
+                    Download HTML Report
+                  </a>
+                  <NotebookDownload key={reportResult.notebookToken ?? 'unavailable'} plotUrl={downloadHref} outputLabel="report"
+                    rendered={{ url: downloadHref, token: reportResult.notebookToken ?? null }} />
+                </>
               ) : null}
             </div>
+            {reportResult?.notebookError ? (
+              <p role="alert" className="mt-3 text-sm text-amber-700">{reportResult.notebookError}</p>
+            ) : null}
+            {reportResult?.notebookToken && reportResult.notebookOmitted?.length ? (
+              <p role="status" className="mt-3 text-sm text-amber-700">
+                The notebook leaves out {reportResult.notebookOmitted.join("; ")}: their export could not be prepared.
+              </p>
+            ) : null}
 
             {reportError ? (
               <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

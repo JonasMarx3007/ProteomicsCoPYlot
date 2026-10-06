@@ -2,11 +2,14 @@ import { AssistantAppearanceMount, AssistantSelect } from "../../components/Assi
 import { MATPLOTLIB_CONTROLS, PLOTLY_DEFAULT_TEMPLATE_CONTROLS } from "../../lib/plotControlDefaults";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import PlotImage from "../../components/PlotImage";
+import InteractivePlot from "../../components/InteractivePlot";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { withoutStaticSize } from "../../lib/plotRenderType";
 import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
-import { compactAdvancedPlotSettings as compactAdvancedSettings } from "../../lib/plotSerialization";
+import { compactAdvancedPlotSettings as compactAdvancedSettings, migrateAdvancedSettingsMap } from "../../lib/plotSerialization";
+import { methodDefaultScaling, pcaMethodLabel, SCALING_LABELS, scalingLabel, scalingValue } from "./pcaScaling";
 import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildPlotUrl, getPeptideQuantityOptions, getQcPcaFeatures, getQcPlotOptions, getQcTable, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
@@ -46,6 +49,8 @@ import {
 import SelectField from "../../components/SelectField";
 import PreviewTable from "../../components/PreviewTable";
 import type { ContextMode } from "../../lib/types";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
+import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 
 type Props = {
   activeTab: QcTab;
@@ -97,6 +102,9 @@ export default function QCPipelinePage({
   onAbundanceContextModeChange,
   onCoverageContextModeChange,
 }: Props) {
+  const kindFieldId = useId();
+  const [renderedNotebook, setRenderedNotebook] = useState<RenderedNotebook | null>(null);
+  const [tableSnapshotToken, setTableSnapshotToken] = useState<string | null>(null);
   const persisted = useMemo(
     () => readPersistedUiState<Record<string, unknown>>("qc.pipeline.v1", {}),
     []
@@ -110,15 +118,17 @@ export default function QCPipelinePage({
   const persistedCorrelation = (persisted.correlation as Record<string, unknown>) ?? {};
   // Versioned: settings saved before v2 carry the frame and grid defaults the
   // panel used to add to every first edit, and would now apply for good.
-  const persistedAdvanced = IS_VIEWER_MODE
+  const persistedAdvanced: AdvancedPlotState = migrateAdvancedSettingsMap(IS_VIEWER_MODE
     ? readPersistedSessionUiState<AdvancedPlotState>("qc.advanced.v2", {})
-    : (persisted.advancedV2 as AdvancedPlotState) ?? {};
+    : (persisted.advancedV2 as AdvancedPlotState) ?? {});
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
     if (value === "protein" || value === "phospho" || value === "phosprot" || value === "peptide" || value === "precursor") return value;
     return "protein";
   });
   const { datasets, availableKinds, kindOptions } = useCurrentDatasetsSnapshot();
+  // Rebuilds plot and table requests when the phosphosite localization cutoff changes.
+  const plotSignal = useAdvancedPlotSignal();
   const [conditionOptions, setConditionOptions] = useState<string[]>([]);
   const [sampleOptions, setSampleOptions] = useState<string[]>([]);
   const [sampleDisplayLabels, setSampleDisplayLabels] = useState<Record<string, string>>({});
@@ -516,6 +526,7 @@ export default function QCPipelinePage({
   }, [conditionOptions]);
 
   const tableRequest = useMemo<QcTableRequest | null>(() => {
+    void plotSignal;
     if (!isAnnotationKind(kind)) return null;
     if (activeTab === "coverage") {
       const params: Record<string, string | number | boolean> = {
@@ -542,44 +553,8 @@ export default function QCPipelinePage({
       };
     }
     return null;
-  }, [kind, activeTab, coverage.summary, box.mode]);
+  }, [kind, activeTab, coverage.summary, box.mode, plotSignal]);
 
-  useEffect(() => {
-    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
-      setTableRows([]);
-      setTableError(null);
-      setTableLoading(false);
-      return;
-    }
-    if (!tableRequest) {
-      setTableRows([]);
-      setTableError(null);
-      setTableLoading(false);
-      return;
-    }
-
-    const controller = new AbortController();
-    setTableLoading(true);
-    setTableError(null);
-
-    getQcTable(kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
-      .then((response) => {
-        setTableRows(response.rows ?? []);
-      })
-      .catch((err) => {
-        if (isAbortError(err)) return;
-        setTableRows([]);
-        setTableError(err instanceof Error ? err.message : "Failed to load table");
-      })
-      .finally(() => {
-        if (controller.signal.aborted) return;
-        setTableLoading(false);
-      });
-
-    return () => {
-      controller.abort();
-    };
-  }, [kind, tableRequest, availableKinds]);
 
   const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
   const activeAdvancedRenderSettings = useMemo(
@@ -741,6 +716,7 @@ export default function QCPipelinePage({
   );
 
   const plotView = useMemo(() => {
+    void plotSignal;
     if (!activeKindOptions.some((option) => option.value === kind)) return null;
     if (activeTab === "coverage") {
       if ((kind === "peptide" || kind === "precursor") && (!coverage.quantityColumn || peptideQuantityError)) return null;
@@ -806,6 +782,7 @@ export default function QCPipelinePage({
     activeKindOptions,
     activeAdvancedParam,
     peptideQuantityError,
+    plotSignal,
   ]);
 
   const plotDownloadUrl = useMemo(() => {
@@ -828,12 +805,62 @@ export default function QCPipelinePage({
     return tabTitle(activeTab);
   }, [activeTab, pca.method]);
 
+  const pairedNotebook = (["coverage", "boxplot", "cv", "histogram", "abundance", "correlation"].includes(activeTab)
+    || activeTab === "pca")
+    && (plotView?.mode === "image" || activeTab === "abundance" || activeTab === "pca")
+    && (kind === "protein" || kind === "phospho" || kind === "phosprot"
+      || (activeTab === "coverage" && (kind === "peptide" || kind === "precursor")));
+  const notebookToken = pairedNotebook && renderedNotebook?.url === plotView?.url
+    ? renderedNotebook?.token : null;
+
+  useEffect(() => {
+    if (!isAnnotationKind(kind) || !availableKinds.includes(kind)) {
+      setTableRows([]);
+      setTableError(null);
+      setTableLoading(false);
+      return;
+    }
+    if (!tableRequest) {
+      setTableRows([]);
+      setTableError(null);
+      setTableLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setTableLoading(true);
+    setTableRows([]);
+    setTableError(null);
+
+    getQcTable(kind, tableRequest.tab, { ...tableRequest.params, ...(notebookToken ? { snapshot: notebookToken } : {}) }, { signal: controller.signal })
+      .then((response) => {
+        if (!controller.signal.aborted) {
+          setTableRows(response.rows ?? []);
+          setTableSnapshotToken(notebookToken ?? null);
+        }
+      })
+      .catch((err) => {
+        if (isAbortError(err)) return;
+        setTableRows([]);
+        setTableError(err instanceof Error ? err.message : "Failed to load table");
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        setTableLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [kind, tableRequest, availableKinds, pairedNotebook, notebookToken]);
+
   const tableCsvUrl = useMemo(() => {
+    if (tableLoading || tableError || (notebookToken && tableSnapshotToken !== notebookToken)) return null;
     if (!tableRequest || tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
     if (columns.length === 0) return null;
     return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
-  }, [tableRequest, tableRows]);
+  }, [tableRequest, tableRows, tableLoading, tableError, notebookToken, tableSnapshotToken]);
 
 
   return (
@@ -841,8 +868,9 @@ export default function QCPipelinePage({
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">QC Pipeline</h2>
         <div className="mt-4 max-w-xs">
-            <label className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
+            <label htmlFor={kindFieldId} className="mb-2 block text-sm font-medium text-slate-700">Dataset level</label>
             <AssistantSelect
+            id={kindFieldId}
             value={activeKindOptions.length === 0 ? "" : kind}
             onChange={(e) => setKind(e.target.value as QcKind)}
             disabled={activeKindOptions.length === 0}
@@ -859,6 +887,7 @@ export default function QCPipelinePage({
             )}
           </AssistantSelect>
         </div>
+        <LocalizationCutoffField kind={kind} className="mt-4 max-w-xs" />
       </section>
 
       {activeKindOptions.length === 0 ? (
@@ -919,8 +948,12 @@ export default function QCPipelinePage({
               >
                 Download Plot
               </a>
+              {pairedNotebook ? (
+                <NotebookDownload key={plotView.url} plotUrl={plotView.url} rendered={renderedNotebook} />
+              ) : null}
             </div>
           ) : plotView ? (
+            <div className="flex flex-wrap items-center gap-2">
             <a
               href={plotView.url}
               target="_blank"
@@ -929,11 +962,17 @@ export default function QCPipelinePage({
             >
               Open Interactive Plot
             </a>
+            {pairedNotebook ? <NotebookDownload key={plotView.url} plotUrl={plotView.url} rendered={renderedNotebook} /> : null}
+            </div>
           ) : null}
         </div>
         <div className="mt-4">
           {plotView?.mode === "image" && plotView.url ? (
-            <PlotImage url={plotView.url} alt={activePlotTitle} />
+            <PlotImage url={plotView.url} alt={activePlotTitle}
+              onRendered={(url, token) => setRenderedNotebook({ url, token })} />
+          ) : plotView && pairedNotebook ? (
+            <InteractivePlot url={plotView.url} title={`${activePlotTitle} interactive plot`} height={interactiveHeightPx}
+              onRendered={(url, token) => setRenderedNotebook({ url, token })} />
           ) : plotView ? (
             <iframe
               sandbox="allow-scripts allow-downloads"
@@ -959,6 +998,7 @@ export default function QCPipelinePage({
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>
+            <div className="flex flex-wrap items-center gap-2">
             {tableCsvUrl ? (
               <a
                 href={tableCsvUrl}
@@ -968,6 +1008,11 @@ export default function QCPipelinePage({
                 Download CSV
               </a>
             ) : null}
+            {pairedNotebook && plotView ? (
+              <NotebookDownload key={plotView.url} plotUrl={plotView.url}
+                rendered={!tableLoading && !tableError && tableSnapshotToken === notebookToken ? renderedNotebook : null} />
+            ) : null}
+            </div>
           </div>
           <div className="mt-4">
             {tableLoading ? (
@@ -1355,6 +1400,12 @@ export default function QCPipelinePage({
     }
 
     return (
+      <div className="space-y-4">
+        {/* Pairwise-complete Pearson: each cell can rest on a different feature set. */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600" role="note">
+          Each correlation uses only the features measured in both samples, so with missing values
+          the cells can rest on different sets of features.
+        </div>
       <OptionsLayout
         toggles={[
           <Checkbox key="id" label="Toggle IDs" checked={correlation.includeId} onChange={(v) => setCorrelation({ ...correlation, includeId: v })} />,
@@ -1380,6 +1431,7 @@ export default function QCPipelinePage({
           />
         }
       />
+      </div>
     );
   }
 }
@@ -1465,6 +1517,11 @@ function PcaFeatureNotice({
           the minimum number of neighbours within that radius.
         </div>
       ) : null}
+      {summary.smallSampleNotice ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {summary.smallSampleNotice}
+        </div>
+      ) : null}
       {skipped.length > 0 ? (
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <span className="font-medium">
@@ -1518,37 +1575,6 @@ function tabTitle(tab: QcTab): string {
       return "Correlation Plot";
   }
 }
-
-function pcaMethodLabel(method: string): string {
-  const key = String(method || "").trim().toLowerCase();
-  if (key === "umap") return "UMAP";
-  if (key === "t-sne" || key === "tsne" || key === "t_sne") return "t-SNE";
-  return "PCA";
-}
-
-// Two scalings exist and they answer different questions, so both are named:
-// centred weights a feature by its variance, unit variance gives every feature
-// equal weight. `auto` is still what the API takes and what older saved states
-// hold, but it is never shown -- for PCA it *is* centred and for UMAP/t-SNE it
-// *is* unit variance, so offering it put the same scaling in the list twice
-// under two names.
-const SCALING_LABELS = ["Centred", "Unit variance"] as const;
-
-function methodDefaultScaling(method: string): string {
-  return pcaMethodLabel(method) === "PCA" ? "centered" : "unit_variance";
-}
-
-function scalingLabel(scaling: string, method: string): string {
-  const key = String(scaling || "auto").trim().toLowerCase();
-  if (key === "centered" || key === "centred") return "Centred";
-  if (key === "unit_variance" || key === "scaled") return "Unit variance";
-  return scalingLabel(methodDefaultScaling(method), method);
-}
-
-function scalingValue(label: string): string {
-  return label === "Unit variance" ? "unit_variance" : "centered";
-}
-
 
 function cmToIframeHeight(heightCm: number): number {
   const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (10 * 96) / 2.54;

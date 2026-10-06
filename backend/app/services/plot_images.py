@@ -42,7 +42,6 @@ from app.services.plot_styling import (
     advanced_number,
     advanced_plotly_layout,
     advanced_text,
-    advanced_text_position,
     apply_advanced_axes,
     pca_default_size,
     rename_composite_sample_label,
@@ -136,8 +135,15 @@ def _sample_label(sample: str, condition: str, index: int, include_id: bool) -> 
 
 
 def fitted_group_ellipse(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
-    """Fit an enclosing ellipse only when the group reliably spans the plane."""
-    array = np.asarray(points, dtype=float)
+    """Fit an enclosing ellipse only when the group reliably spans the plane.
+
+    The points are copied into one row-major array first. The same values held
+    column-major -- as a pandas selection can hand them over -- take another
+    path through the linear algebra and can land on an ellipse that differs in
+    the last bit, so the app and its exported notebook would draw different
+    outlines from identical scores.
+    """
+    array = np.ascontiguousarray(points, dtype=float)
     if array.ndim != 2 or array.shape[0] < 3 or array.shape[1] != 2 or not np.isfinite(array).all():
         return None
     try:
@@ -589,7 +595,7 @@ def qc_coverage_plot(
         if text:
             for bar in bars:
                 height = float(bar.get_height())
-                x_pos, y_pos = advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
+                x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height * 0.02
                 ax.text(
                     x_pos,
                     y_pos,
@@ -625,7 +631,7 @@ def qc_coverage_plot(
                     height = float(bar.get_height())
                     if height <= 0:
                         continue
-                    x_pos, y_pos = advanced_text_position(advanced, bar.get_x() + bar.get_width() / 2, height * 0.02)
+                    x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height * 0.02
                     ax.text(
                         x_pos,
                         y_pos,
@@ -755,7 +761,7 @@ def qc_intensity_histogram_plot(
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
-def _peptide_coverage_summary(include_id=False, quantity_column=None, level="peptide"):
+def _peptide_coverage_data(include_id=False, quantity_column=None, level="peptide"):
     from app.services.peptide_tools import (
         _sample_rename_map,
         get_peptide_frame,
@@ -794,6 +800,13 @@ def _peptide_coverage_summary(include_id=False, quantity_column=None, level="pep
         raise ValueError("Peptide metadata does not match peptide sample columns.")
 
     data_filtered = pivot[selected].copy()
+    data_filtered.attrs["quantity_column"] = quantity_col
+    data_filtered.attrs["feature_column"] = seq_col
+    return data_filtered, meta
+
+
+def summarize_peptide_coverage(data_filtered, meta):
+    selected = list(data_filtered.columns)
     summary = data_filtered.notna().sum(axis=0).reset_index()
     summary.columns = ["Sample", "Value"]
     summary["Sample"] = pd.Categorical(summary["Sample"], categories=selected, ordered=True)
@@ -805,6 +818,10 @@ def _peptide_coverage_summary(include_id=False, quantity_column=None, level="pep
     peptides_count = int(data_filtered.notna().any(axis=1).sum())
 
     return summary, peptides_count, meta
+
+
+def _peptide_coverage_summary(include_id=False, quantity_column=None, level="peptide"):
+    return summarize_peptide_coverage(*_peptide_coverage_data(include_id, quantity_column, level))
 
 
 def qc_peptide_coverage_plot(
@@ -960,7 +977,7 @@ def qc_boxplot_plot(
             for i, median in enumerate(medians):
                 if np.isnan(median):
                     continue
-                x_pos, y_pos = advanced_text_position(advanced, i + 1, _median_label_y(ax, median))
+                x_pos, y_pos = i + 1, _median_label_y(ax, median)
                 ax.text(
                     x_pos,
                     y_pos,
@@ -1035,7 +1052,7 @@ def qc_boxplot_plot(
 
         if text:
             for pos, med in zip(positions, medians):
-                x_pos, y_pos = advanced_text_position(advanced, pos, _median_label_y(ax, med))
+                x_pos, y_pos = pos, _median_label_y(ax, med)
                 ax.text(
                     x_pos,
                     y_pos,
@@ -1161,7 +1178,7 @@ def qc_cv_plot(
     if text:
         for i, vals in enumerate(cv_data, start=1):
             med = float(np.median(vals))
-            x_pos, y_pos = advanced_text_position(advanced, i, med)
+            x_pos, y_pos = i, med
             ax.text(x_pos, y_pos, f"{med:.2f}", ha="center", va="bottom", fontsize=advanced_label_size(advanced, text_size), fontweight="bold", color="black")
 
     ax.set_xticks(positions)
@@ -1205,6 +1222,29 @@ def _pca_feature_matrix(numeric: pd.DataFrame, *, n_components: int) -> pd.DataF
             "in the PCA controls, or impute the matrix before calling a PCA function."
         )
     return complete
+
+
+def _small_sample_notice(method: str, samples: int, umap_n_neighbors: float, tsne_perplexity: float) -> str | None:
+    """Say when UMAP or t-SNE settings exceed what this many samples can support.
+
+    Both methods describe local neighbourhoods. UMAP with n_neighbors at or
+    above the sample count treats every sample as a neighbour of every other,
+    and t-SNE's perplexity has to be lowered below the sample count, so with a
+    handful of samples their layouts carry little beyond what PCA shows.
+    """
+    key = str(method or "PCA").strip().lower()
+    if key == "umap" and int(umap_n_neighbors) >= samples:
+        return (
+            f"UMAP n_neighbors is {int(umap_n_neighbors)} but there are only {samples} samples, so every "
+            "sample counts as a neighbour of every other and the layout says little about local structure. "
+            f"Use n_neighbors of at most {samples - 1}, or PCA."
+        )
+    if key in {"t-sne", "tsne", "t_sne"} and float(tsne_perplexity) > samples - 1:
+        return (
+            f"t-SNE perplexity {float(tsne_perplexity):g} was lowered to {max(1, samples - 1)} because there "
+            f"are only {samples} samples. With so few samples the layout carries little beyond what PCA shows."
+        )
+    return None
 
 
 def qc_pca_feature_summary(
@@ -1283,6 +1323,9 @@ def qc_pca_feature_summary(
             dbscan = None
     return {
         "dbscan": dbscan,
+        "smallSampleNotice": _small_sample_notice(
+            method, len(sample_columns), umap_n_neighbors, tsne_perplexity
+        ),
         "ellipseSkippedGroups": (
             _groups_without_an_ellipse(
                 kind,
@@ -1346,8 +1389,11 @@ def _pca_projection(
         raise ValueError(f"Need at least {n_components} non-constant features for {n_components}D PCA.")
     x = transposed_expr.values.astype(float)
     x_centered = x - x.mean(axis=0, keepdims=True)
-    x_std = x_centered.std(axis=0, keepdims=True)
-    x_std[x_std == 0] = 1.0
+    # Sample SD (n-1), as R's prcomp(scale. = TRUE) and the heatmap z-scores use.
+    # Until 2026-10-02 this was the n SD, so scaled scores differed from R by
+    # sqrt(n / (n - 1)); the shape and explained variance were the same.
+    x_std = x_centered.std(axis=0, ddof=1, keepdims=True) if x.shape[0] > 1 else np.ones((1, x.shape[1]))
+    x_std[~np.isfinite(x_std) | (x_std == 0)] = 1.0
     resolved_scaling = resolve_feature_scaling(scaling, method=method_key)
     projection_input = x_centered if resolved_scaling == "centered" else x_centered / x_std
 
@@ -2157,6 +2203,36 @@ def qc_abundance_interactive_html(
     return _plotly_html(fig)
 
 
+
+def correlation_matrix_mesh(ax, matrix, cmap, vmin, vmax):
+    """The correlation matrix as one rectangle per cell, laid out as `matshow` lays it out.
+
+    `matshow` draws the matrix as an image, so an SVG or PDF download held a
+    bitmap: blurred when scaled, and not one shape per cell to edit. A mesh is
+    vector in those formats and the same picture in a PNG. Row 0 is at the top,
+    the cells are square and the column ticks are on top, as before.
+    """
+    values = np.ma.masked_invalid(np.asarray(matrix, dtype=float))
+    rows, cols = values.shape
+    mesh = ax.pcolormesh(
+        np.arange(cols + 1) - 0.5,
+        np.arange(rows + 1) - 0.5,
+        values,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        shading="flat",
+        # Each cell's edge in its own colour: without it a vector viewer shows
+        # hairline gaps between neighbouring cells.
+        edgecolors="face",
+        linewidth=0.0,
+    )
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(rows - 0.5, -0.5)
+    ax.set_aspect("equal")
+    ax.xaxis.tick_top()
+    return mesh
+
 def qc_correlation_plot(
     kind: AnnotationKind,
     method: str = "Matrix",
@@ -2262,8 +2338,7 @@ def qc_correlation_plot(
     cmap_name = advanced_color_map(advanced, "coolwarm")
     if cmap_name not in color_map_options:
         cmap_name = "coolwarm"
-    cmap = plt.get_cmap(cmap_name).copy()
-    cmap.set_bad("#eeeeee")
+    cmap = plt.get_cmap(cmap_name).with_extremes(bad="#eeeeee")
     color_norm = plt.Normalize(vmin=vmin, vmax=vmax)
     method_normalized = str(method).strip().lower()
     x_labels = [
@@ -2285,7 +2360,7 @@ def qc_correlation_plot(
         for label in ordered_corr.index.tolist()
     ]
     if method_normalized == "matrix":
-        cax = ax.matshow(ordered_corr, cmap=cmap, vmin=vmin, vmax=vmax)
+        cax = correlation_matrix_mesh(ax, ordered_corr, cmap, vmin, vmax)
         ax.set_xticks(range(len(ordered_corr.columns)))
         ax.set_yticks(range(len(ordered_corr.index)))
         ax.set_xticklabels(x_labels, rotation=90, ha="center", va="bottom", fontsize=7)

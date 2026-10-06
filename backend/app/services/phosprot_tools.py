@@ -16,8 +16,10 @@ from app.schemas.annotation import (
 from app.services.annotation_store import StoredAnnotation, clear_annotation, get_annotation, store_prepared_annotation
 from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
+from app.services.phospho_localization import localization_cutoff_description, validate_localization_cutoff
 from app.services.functions import (
-    select_matrix,
+    _select_matrix_all_rows,
+    filter_localization,
     choose_best_source,
     filter_data,
     inverse_log2_transform_data,
@@ -290,6 +292,18 @@ def transform_phosprot(
             aggregated = aggregated.mask(aggregated <= 0)
         values[sample_columns] = np.log2(aggregated)
 
+    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_index]
+    supplied = supplied_source[sample_columns].notna().assign(
+        Protein_group=supplied_source['Protein_group'].to_numpy()
+    ).groupby('Protein_group')[sample_columns].sum().reindex(diagnostics['Protein_group'], fill_value=0)
+    for sample in sample_columns:
+        diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
+    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_index]
+    supplied = supplied_source[sample_columns].notna().assign(
+        Protein_group=supplied_source['Protein_group'].to_numpy()
+    ).groupby('Protein_group')[sample_columns].sum().reindex(diagnostics['Protein_group'], fill_value=0)
+    for sample in sample_columns:
+        diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
     phosprot = annotations.merge(values, on="Protein_group", how="left")
     phosprot = phosprot.merge(diagnostics, on="Protein_group", how="left")
     phosprot = phosprot.rename(
@@ -339,6 +353,7 @@ def _store_phosprot_annotation(
     warning_prefix: str,
     upstream_normalization: str | None = None,
     aggregation: str | None = None,
+    lineage=None,
 ) -> object:
     phospho_annotation = _shared_phospho_annotation()
     metadata = phospho_annotation.metadata.copy()
@@ -403,11 +418,13 @@ def _store_phosprot_annotation(
         warnings=warnings,
         log2_auto_detected=log2_auto_detected,
         phosprot_aggregation=aggregation,
+        phosprot_lineage=lineage.model_copy(deep=True) if lineage else None,
         imputation=None,
         imputed_data=pd.DataFrame(),
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    save_table_dataset(filename=filename, kind="phosprot", frame=frame, phosprot_aggregation=aggregation)
+    save_table_dataset(filename=filename, kind="phosprot", frame=frame, phosprot_aggregation=aggregation,
+                       phosprot_lineage=lineage)
     clear_annotation("phosprot", clear_all_profiles=True)
     return store_prepared_annotation(stored)
 
@@ -415,7 +432,10 @@ def _store_phosprot_annotation(
 def aggregate_from_phospho(
     mode: PhosprotAggregationMode,
     source: PhosprotAggregationSource = "non_imputed",
+    localization_cutoff: float = 0.0,
 ) -> object:
+    from app.schemas.annotation import PhosprotLineage
+    from app.app_version import APP_VERSION
     phospho_annotation = _shared_phospho_annotation()
     sample_columns = phospho_annotation.metadata["sample"].astype(str).tolist()
     filtered_source = getattr(phospho_annotation, "filtered_data", None)
@@ -438,8 +458,22 @@ def aggregate_from_phospho(
 
     coverage_source = log2_source.copy()
     if source == "imputed":
-        _, log2_source, _ = select_matrix("phospho", "imputed")
+        # All sites here; the collapse applies its own localization cutoff below.
+        _, log2_source, _ = _select_matrix_all_rows("phospho", "imputed")
         source_label = "stored, verified imputed phospho data"
+
+    # Only sites at or above the collapse's own localization cutoff are collapsed.
+    # It is chosen with the collapse and recorded in the lineage, because the
+    # phosphoprotein table outlives any later change of the session-wide cutoff.
+    localization_cutoff = validate_localization_cutoff(localization_cutoff)
+    if localization_cutoff > 0:
+        log2_source = filter_localization(log2_source, localization_cutoff)
+        coverage_source = coverage_source.loc[coverage_source.index.isin(log2_source.index)]
+        if log2_source.empty:
+            raise ValueError(
+                f"No phosphosite has a localization probability of at least {localization_cutoff:.2f}; "
+                "nothing to collapse."
+            )
 
     phosprot = transform_phosprot(
         log2_source,
@@ -492,10 +526,21 @@ def aggregate_from_phospho(
         warning_prefix=(
             "Phosphoprotein dataset was aggregated from "
             f"{source_label} using aggregation mode '{mode}'."
+            f" {localization_cutoff_description(localization_cutoff)}"
             f"{non_positive_warning}{method_note}"
         ),
         upstream_normalization=upstream_normalization,
         aggregation=str(mode),
+        lineage=PhosprotLineage(
+            toolVersion=APP_VERSION, aggregation=mode,
+            source="imputed" if source == "imputed" else selected_source,
+            coverageSource=selected_source, filter=phospho_annotation.filter_config.model_copy(deep=True),
+            imputation=phospho_annotation.imputation.model_copy(deep=True)
+                if source == "imputed" and phospho_annotation.imputation else None,
+            siteCount=len(log2_source), sampleCount=len(sample_columns),
+            robustMinFraction=ROBUST_SITE_MIN_FRACTION if mode == "robust_site_median" else None,
+            localizationCutoff=localization_cutoff,
+        ),
     )
 
 

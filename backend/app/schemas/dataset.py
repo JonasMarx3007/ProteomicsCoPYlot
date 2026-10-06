@@ -72,11 +72,6 @@ class DatasetPackageRenameRequest(BaseModel):
     newName: str
 
 
-class DatasetPackagesResponse(BaseModel):
-    activePackage: str
-    availablePackages: list[str]
-
-
 class ActiveMetadataProfileRequest(BaseModel):
     profileName: str
 
@@ -92,8 +87,3 @@ class MetadataProfileRenameRequest(BaseModel):
 
 class MetadataProfileDeleteRequest(BaseModel):
     profileName: str
-
-
-class MetadataProfilesResponse(BaseModel):
-    activeMetadataProfile: str
-    availableMetadataProfiles: list[str]

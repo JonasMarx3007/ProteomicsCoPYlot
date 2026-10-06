@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import io
-import os
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -25,6 +24,7 @@ from app.services.restore_state import (
 from app.services.annotation_store import reset_all_annotations
 from app.services.request_security import local_path_access_allowed
 from app.services.condition_palette_store import reset_condition_palettes
+from app.services.phospho_localization import reset_localization_cutoff
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.peptide_metadata_store import clear_peptide_metadata
@@ -34,21 +34,19 @@ from app.services.viewer_portal import (
     viewer_session_authenticated,
 )
 from app.services.viewer_bootstrap import bootstrap_current_viewer_session, viewer_mode_enabled
+from app.services.env_settings import env_flag
+from app.api.download_headers import attachment_disposition
 
 LOGGER = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/restore", tags=["restore"])
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
 def _reset_on_browser_load_enabled() -> bool:
     if viewer_mode_enabled():
         return False
-    raw = str(os.getenv("COPYLOT_RESET_ON_BROWSER_LOAD", "")).strip().lower()
-    if raw:
-        return raw in TRUTHY_VALUES
-    return True
+    return env_flag("COPYLOT_RESET_ON_BROWSER_LOAD", True)
 
 
 @router.post("/export")
@@ -65,7 +63,7 @@ def export_restore_state(payload: RestoreExportRequest) -> StreamingResponse:
     return StreamingResponse(
         io.BytesIO(blob),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": attachment_disposition(filename)},
     )
 
 
@@ -150,10 +148,14 @@ async def import_restore_state(
 def browser_session_reset() -> dict[str, bool]:
     enabled = _reset_on_browser_load_enabled()
     if enabled:
+        from app.services.notebook_snapshots import forget_session
+        from app.services.session_context import get_session_id
+        forget_session(get_session_id())
         reset_all_annotations()
         reset_all_uploaded_metadata()
         reset_all_datasets()
         reset_condition_palettes()
+        reset_localization_cutoff()
         clear_peptide_metadata()
         if viewer_portal_enabled() and viewer_session_authenticated():
             try:

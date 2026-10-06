@@ -48,7 +48,7 @@ def resolve_reference_db(filename: str, description: str) -> Path:
     """The first candidate that exists.
 
     The searched paths carry the user's account name, so they go to the log and
-    never into the response (``tests/backend/test_error_disclosure.py``).
+    never into the response (``tests/unit/security/test_error_disclosure.py``).
     """
     candidates = reference_db_candidates(filename)
     for candidate in candidates:

@@ -7,11 +7,13 @@ from app.services.plot_export import (
 )
 
 import re
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
 from app.services.annotation_store import get_annotation
+from app.services.phospho_localization import apply_session_localization_cutoff
 from app.schemas.annotation import DataSource
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
@@ -39,6 +41,9 @@ def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     raw = _get_current_frame("phospho")
     annotation = get_annotation("phospho")
     frame = annotation.source_data.copy() if annotation is not None and not annotation.source_data.empty else raw.copy()
+    # Every Phospho-specific plot shows the sites that pass the session's
+    # localization probability cutoff (services/phospho_localization.py).
+    frame = apply_session_localization_cutoff(frame)
 
     if annotation is not None and not annotation.metadata.empty:
         meta = annotation.metadata.copy()
@@ -69,7 +74,7 @@ def _ksea_context(
     meta["sample"] = meta["sample"].astype(str)
     meta["condition"] = meta["condition"].astype(str)
     if not sample_columns:
-        raise ValueError("No phospho sample columns available for KSEA.")
+        raise ValueError("No phospho sample columns available for Kinase Library.")
     return frame, meta, sample_columns
 
 
@@ -123,8 +128,8 @@ def phospho_options() -> dict[str, object]:
         .astype(str)
         .str.strip()
         .loc[lambda series: series != ""]
+        # In the order the metadata lists them, as every plot draws them.
         .drop_duplicates()
-        .sort_values()
         .tolist()
     )
     has_localization = "PTM_localization" in frame.columns
@@ -157,12 +162,9 @@ def phospho_options() -> dict[str, object]:
     }
 
 
-def phosphosite_plot_table(cutoff: float = 0.0) -> pd.DataFrame:
-    frame, _, _ = _phospho_context()
-    if "PTM_localization" in frame.columns:
-        filtered = frame[frame["PTM_localization"].apply(pd.to_numeric, errors="coerce") >= float(cutoff)].copy()
-    else:
-        filtered = frame.copy()
+def phosphosite_plot_table() -> pd.DataFrame:
+    # The localization cutoff is the session-wide one, applied in _phospho_context.
+    filtered, _, _ = _phospho_context()
 
     if filtered.empty:
         return pd.DataFrame({"Term": [], "Count": []})
@@ -188,7 +190,6 @@ def phosphosite_plot_table(cutoff: float = 0.0) -> pd.DataFrame:
 
 
 def phosphosite_plot_png(
-    cutoff: float = 0.0,
     color: str = "#87CEEB",
     width_cm: float = 15,
     height_cm: float = 10,
@@ -196,7 +197,7 @@ def phosphosite_plot_png(
     advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
-    summary = phosphosite_plot_table(cutoff=cutoff)
+    summary = phosphosite_plot_table()
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
 
     if summary.empty:
@@ -523,8 +524,134 @@ def _convert_to_centered(seq: object) -> str:
     return f"{left_tail}{mod_residue}{right_tail}"
 
 
+# Kinase motif windows ------------------------------------------------------
+#
+# The Kinase Library scores a 15-residue window (7 + site + 7) and reads "_" as
+# "beyond the protein terminus". A window cut from the peptide alone pads with
+# "_" wherever the peptide ends, which presents real flanking residues as
+# absent -- and because trypsin cleaves after R/K, the -3 position of basophilic
+# R-x-x-S/T motifs is lost systematically. Windows are therefore read from the
+# protein sequence at the site position named in PTM_Collapse_key, and the
+# peptide window is kept only as a fallback, with the source reported per row.
+
+KSEA_ORGANISMS = ("human", "mouse", "none")
+KSEA_WINDOW_FLANK = 7
+_SITE_KEY_PATTERN = re.compile(
+    r"^(?P<proteins>[^~]*)~(?P<gene>.*)_(?P<residue>[A-Za-z])(?P<position>\d+)_M\d+$"
+)
+
+
+def _parse_site_key(key: object) -> tuple[list[str], str, str, int] | None:
+    """(accessions, gene, residue, 1-based position) from a PTM_Collapse_key."""
+    if not isinstance(key, str):
+        return None
+    match = _SITE_KEY_PATTERN.match(key.strip())
+    if match is None:
+        return None
+    accessions = [part.strip() for part in match.group("proteins").split(";") if part.strip()]
+    if not accessions:
+        return None
+    return accessions, match.group("gene"), match.group("residue").upper(), int(match.group("position"))
+
+
+def _protein_window(sequence: str, position: int, flank: int = KSEA_WINDOW_FLANK) -> str:
+    """The window centred on 1-based `position`, "_" only past the protein ends."""
+    centre = position - 1
+    start, end = centre - flank, centre + flank + 1
+    core = sequence[max(start, 0):min(end, len(sequence))].upper()
+    return "_" * max(0, -start) + core + "_" * max(0, end - len(sequence))
+
+
+def _windows_agree(protein_window: str, peptide_window: str) -> bool:
+    """Every residue the peptide does cover must match the protein window."""
+    if len(peptide_window) != len(protein_window):
+        return True  # no centred peptide window to compare against
+    return all(pep == "_" or pep == prot for pep, prot in zip(peptide_window, protein_window))
+
+
+def site_motif_window(key: object, peptide_sequence: object, sequences: dict[str, str] | None) -> dict[str, str]:
+    """Motif window for one site plus the provenance the export reports.
+
+    `window_source` is "protein" when the window was read from the FASTA
+    sequence (the residue at the reported position must be the modified one and
+    every residue the peptide covers must agree), otherwise "peptide".
+    """
+    peptide_window = _convert_to_centered(peptide_sequence)
+    parsed = _parse_site_key(key)
+    protein, gene, site = "", "", ""
+    if parsed is not None:
+        accessions, gene, residue, position = parsed
+        protein, site = accessions[0], f"{residue}{position}"
+        for accession in accessions if sequences else []:
+            sequence = sequences.get(accession)
+            if not sequence or not 1 <= position <= len(sequence):
+                continue
+            if sequence[position - 1].upper() != residue:
+                continue
+            window = _protein_window(sequence, position)
+            if _windows_agree(window, peptide_window):
+                return {"UPD_seq": window, "Protein": accession, "Gene": gene, "Site": site, "window_source": "protein"}
+    return {"UPD_seq": peptide_window, "Protein": protein, "Gene": gene, "Site": site, "window_source": "peptide"}
+
+
+def _resolve_ksea_organism(organism: object) -> str:
+    key = str(organism if organism is not None else "human").strip().lower() or "human"
+    if key not in KSEA_ORGANISMS:
+        raise ValueError(
+            f"Unsupported organism '{organism}' for motif windows. Choose one of: {', '.join(KSEA_ORGANISMS)}."
+        )
+    return key
+
+
+def _ksea_protein_sequences(organism: str) -> dict[str, str] | None:
+    """Accession -> sequence from the bundled reference proteome, or None."""
+    if organism == "none":
+        return None
+    from app.services.peptide_tools import _fasta_path
+
+    path = _fasta_path(organism)
+    return _fasta_sequence_map(str(path), path.stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=2)
+def _fasta_sequence_map(path_str: str, modified_ns: int) -> dict[str, str]:
+    from app.services.peptide_tools import _load_fasta_dataframe_cached
+
+    frame = _load_fasta_dataframe_cached(path_str, modified_ns)
+    return dict(zip(frame["accession"].astype(str), frame["V1"].astype(str)))
+
+
+KSEA_EXPORT_COLUMNS = ("PTM_Collapse_key", "Protein", "Gene", "Site", "window_source")
+
+
+def _ksea_format(frame: pd.DataFrame, organism: str) -> pd.DataFrame:
+    """The Kinase Library upload table: motif window, statistics, then provenance."""
+    columns = ["UPD_seq", "log2FC", "pval", "adj_pval", "selected_pval", "significance"]
+    if "n_pairs" in frame.columns:
+        columns.append("n_pairs")
+    columns.append("neg_log10_selected_pval")
+    result = frame[columns].copy()
+    sequences = _ksea_protein_sequences(organism)
+    keys = frame["PTM_Collapse_key"].tolist() if "PTM_Collapse_key" in frame.columns else [None] * len(frame)
+    windows = pd.DataFrame(
+        [site_motif_window(key, peptide, sequences) for key, peptide in zip(keys, frame["UPD_seq"].tolist())],
+        index=frame.index,
+        columns=["UPD_seq", *KSEA_EXPORT_COLUMNS[1:]],
+    )
+    result["UPD_seq"] = windows["UPD_seq"]
+    result["PTM_Collapse_key"] = keys
+    for column in KSEA_EXPORT_COLUMNS[1:]:
+        result[column] = windows[column]
+    # Present only when the volcano ran on imputed values (see stats_tools).
+    for column in frame.columns:
+        if column.startswith(("n_imputed__", "n_measured__", "n_fully_imputed__", "n_partially_imputed__")) or column == "imputed_values":
+            result[column] = frame[column].to_numpy()
+    return result
+
+
 def _ksea_control_table(
     *,
+    organism: str = "human",
     condition1: str,
     condition2: str,
     condition1_control: str,
@@ -535,7 +662,7 @@ def _ksea_control_table(
     test_type: str,
     use_uncorrected: bool,
 ) -> pd.DataFrame:
-    """Format the exact corrected Control Volcano result for KSEA upload."""
+    """Format the exact corrected Control Volcano result for Kinase Library upload."""
     from app.schemas.stats import VolcanoControlRequest
     from app.services.stats_tools import run_volcano_control
 
@@ -555,26 +682,19 @@ def _ksea_control_table(
         )
     )
     frame = pd.DataFrame(volcano.rows)
-    required = {"UPD_seq", "log2FC", "pval", "adj_pval", "significance"}
+    required = {"UPD_seq", "log2FC", "pval", "adj_pval", "selected_pval", "significance"}
     missing = sorted(required.difference(frame.columns))
     if missing:
         raise ValueError(
-            "Control Volcano output is missing KSEA columns: " + ", ".join(missing)
+            "Control Volcano output is missing Kinase Library columns: " + ", ".join(missing)
         )
 
-    columns = ["UPD_seq", "log2FC", "pval", "adj_pval", "significance"]
-    if "n_pairs" in frame.columns:
-        columns.append("n_pairs")
-    columns.append("neg_log10_adj_pval")
-    result = frame[columns].copy()
-    result["UPD_seq"] = [
-        _convert_to_centered(value) for value in result["UPD_seq"].tolist()
-    ]
-    return result
+    return _ksea_format(frame, organism)
 
 
 def _ksea_standard_table(
     *,
+    organism: str = "human",
     condition1: str,
     condition2: str,
     data_source: str,
@@ -583,7 +703,7 @@ def _ksea_standard_table(
     test_type: str,
     use_uncorrected: bool,
 ) -> pd.DataFrame:
-    """Format the exact standard Volcano result for KSEA upload."""
+    """Format the exact standard Volcano result for Kinase Library upload."""
     from app.services.stats_tools import _volcano_dataframe
 
     source_frame, source_metadata, _ = _ksea_context(data_source=data_source)
@@ -600,20 +720,12 @@ def _ksea_standard_table(
         frame_override=source_frame,
         metadata_override=source_metadata,
     )
-    required = {"UPD_seq", "log2FC", "pval", "adj_pval", "significance"}
+    required = {"UPD_seq", "log2FC", "pval", "adj_pval", "selected_pval", "significance"}
     missing = sorted(required.difference(frame.columns))
     if missing:
-        raise ValueError("Volcano output is missing KSEA columns: " + ", ".join(missing))
+        raise ValueError("Volcano output is missing Kinase Library columns: " + ", ".join(missing))
 
-    columns = ["UPD_seq", "log2FC", "pval", "adj_pval", "significance"]
-    if "n_pairs" in frame.columns:
-        columns.append("n_pairs")
-    columns.append("neg_log10_adj_pval")
-    result = frame[columns].copy()
-    result["UPD_seq"] = [
-        _convert_to_centered(value) for value in result["UPD_seq"].tolist()
-    ]
-    return result
+    return _ksea_format(frame, organism)
 
 
 def ksea_table(
@@ -628,13 +740,15 @@ def ksea_table(
     log2fc_threshold: float = 1.0,
     test_type: str = "unpaired",
     use_uncorrected: bool = False,
+    organism: str = "human",
 ) -> pd.DataFrame:
+    organism = _resolve_ksea_organism(organism)
     source_mode = str(source).strip().lower()
     if source_mode not in {"volcano", "volcano_control"}:
-        raise ValueError("Unsupported KSEA source. Choose 'volcano' or 'volcano_control'.")
+        raise ValueError("Unsupported Kinase Library source. Choose 'volcano' or 'volcano_control'.")
     data_mode = str(data_source).strip().lower()
     if data_mode not in DATA_SOURCES:
-        raise ValueError("Unsupported KSEA data source. Choose 'data', 'filtered', or 'imputed'.")
+        raise ValueError("Unsupported Kinase Library data source. Choose 'data', 'filtered', or 'imputed'.")
 
     if source_mode == "volcano_control":
         if not condition1_control or not condition2_control:
@@ -648,6 +762,7 @@ def ksea_table(
         if len([value for value in unique_conditions if value]) < 4:
             raise ValueError("Volcano Control source requires four different conditions.")
         return _ksea_control_table(
+            organism=organism,
             condition1=condition1,
             condition2=condition2,
             condition1_control=condition1_control,
@@ -660,6 +775,7 @@ def ksea_table(
         )
 
     return _ksea_standard_table(
+        organism=organism,
         condition1=condition1,
         condition2=condition2,
         data_source=data_mode,
@@ -670,99 +786,6 @@ def ksea_table(
     )
 
 
-def ksea_plot_png(
-    *,
-    condition1: str,
-    condition2: str,
-    source: str = "volcano",
-    data_source: str = "data",
-    condition1_control: str | None = None,
-    condition2_control: str | None = None,
-    p_value_threshold: float = 0.05,
-    log2fc_threshold: float = 1.0,
-    test_type: str = "unpaired",
-    use_uncorrected: bool = False,
-    header: bool = True,
-    width_cm: float = 20,
-    height_cm: float = 12,
-    dpi: int = 220,
-    advanced: dict | None = None,
-) -> bytes:
-    plt, _ = _get_plt()
-    table = ksea_table(
-        condition1=condition1,
-        condition2=condition2,
-        source=source,
-        data_source=data_source,
-        condition1_control=condition1_control,
-        condition2_control=condition2_control,
-        p_value_threshold=p_value_threshold,
-        log2fc_threshold=log2fc_threshold,
-        test_type=test_type,
-        use_uncorrected=use_uncorrected,
-    )
-    fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
-    color_map = {
-        "Downregulated": "#2563eb",
-        "Not significant": "#94a3b8",
-        "Upregulated": "#dc2626",
-    }
-
-    for significance, color in color_map.items():
-        subset = table[table["significance"] == significance]
-        if subset.empty:
-            continue
-        ax.scatter(
-            subset["log2FC"].to_numpy(dtype=float),
-            subset["neg_log10_adj_pval"].to_numpy(dtype=float),
-            label=significance,
-            **marker_style(advanced, size=3.5, alpha=0.85, color=color),
-        )
-
-    y_line = float(-np.log10(max(p_value_threshold, 1e-300)))
-    max_y = max(y_line, float(table["neg_log10_adj_pval"].max()) if not table.empty else y_line)
-    threshold_line = resolve_reference_line(advanced, color="black", width=1.0)
-    if threshold_line.visible:
-        style = threshold_line.matplotlib()
-        ax.axvline(float(log2fc_threshold), **style)
-        ax.axvline(float(-log2fc_threshold), **style)
-        ax.hlines(
-            y_line,
-            xmin=float(table["log2FC"].min()),
-            xmax=float(table["log2FC"].max()),
-            colors=style["color"],
-            linestyles=style["linestyle"],
-            linewidth=style["linewidth"],
-        )
-    ax.set_ylim(bottom=0, top=max_y * 1.05 if max_y > 0 else 1)
-    # Through the shared helper, not spelled out here. Written by hand this read
-    # "(cond2 - cond2ctrl) - (cond1 - cond1ctrl)" while the computation is the
-    # other way round, so every point on the control plot carried the wrong sign.
-    ax.set_xlabel(
-        "log2 fold change ("
-        + comparison_contrast(
-            condition1,
-            condition2,
-            condition1_control if str(source).strip().lower() == "volcano_control" else None,
-            condition2_control if str(source).strip().lower() == "volcano_control" else None,
-        )
-        + ")"
-    )
-    ax.set_ylabel("-log10 adj. p-value" if not use_uncorrected else "-log10 p-value")
-    if header:
-        if str(source).strip().lower() == "volcano_control" and condition1_control and condition2_control:
-            ax.set_title(
-                f"KSEA Volcano Control Plot: {condition1} vs {condition2} "
-                f"(controls: {condition1_control} vs {condition2_control})"
-            )
-        else:
-            ax.set_title(f"KSEA Volcano Plot: {condition1} vs {condition2}")
-    ax.legend(loc="best")
-    apply_advanced_axes(ax, advanced)
-    fig.tight_layout()
-    return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
-
-
 def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
     frame = pd.DataFrame(index=data.index)
     names = {
@@ -770,7 +793,7 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
         for column in data.columns
     }
     if not data.columns.is_unique:
-        raise ValueError("KSEA result column names must be unique.")
+        raise ValueError("Kinase Library result column names must be unique.")
 
     def numeric_field(aliases, *, effect=False):
         result = pd.Series(np.nan, index=data.index, dtype=float)
@@ -782,7 +805,7 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
             supplied = data[column].notna() & data[column].astype(str).str.strip().ne("")
             values = pd.to_numeric(data[column], errors="coerce")
             if (supplied & ~np.isfinite(values)).any():
-                raise ValueError(f"KSEA column '{column}' must contain finite numeric values.")
+                raise ValueError(f"Kinase Library column '{column}' must contain finite numeric values.")
             if effect and name == "frequencyfactor":
                 if (supplied & (values <= 0)).any():
                     raise ValueError("Raw Frequency Factor values must be positive.")
@@ -791,10 +814,10 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
                 raise ValueError("Adjusted p-values must be between 0 and 1.")
             conflict = supplied & result.notna() & ~np.isclose(result, values, rtol=1e-10, atol=1e-12)
             if conflict.any():
-                raise ValueError("Conflicting KSEA result columns; provide consistent values.")
+                raise ValueError("Conflicting Kinase Library result columns; provide consistent values.")
             result = result.where(result.notna(), values.where(supplied))
         if not found or result.isna().any():
-            raise ValueError("Each KSEA row requires a frequency factor and adjusted p-value.")
+            raise ValueError("Each Kinase Library row requires a frequency factor and adjusted p-value.")
         return result
 
     if data.empty:
@@ -822,6 +845,11 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+# Classes of the uploaded Kinase Library results; see ksea_uploaded_volcano_html.
+KINASE_ENRICHED_UP = "Enriched in up-regulated sites"
+KINASE_ENRICHED_DOWN = "Enriched in down-regulated sites"
+
+
 def ksea_uploaded_volcano_html(
     *,
     st_results: pd.DataFrame,
@@ -838,21 +866,25 @@ def ksea_uploaded_volcano_html(
 ) -> str:
     go = _get_plotly_go()
     if not 0 < p_value_threshold <= 1:
-        raise ValueError("KSEA adjusted p-value threshold must be between zero and one.")
+        raise ValueError("Kinase Library adjusted p-value threshold must be between zero and one.")
     df = pd.concat([_normalize_ksea_results(st_results).assign(result_group="S/T"),
                     _normalize_ksea_results(tnc_results).assign(result_group="Y")], ignore_index=True)
     if df.empty:
-        raise ValueError("Uploaded KSEA result files are empty.")
+        raise ValueError("Uploaded Kinase Library result files are empty.")
 
     frame = df.rename(columns={"Kinase": "kinase", "Log2(Frequency Factor)": "log2ff", "Adjusted p-value": "adj_pval"})
     frame["neg_log10_pval"] = -np.log10(frame["adj_pval"].clip(lower=1e-300))
 
+    # The Kinase Library frequency factor compares a kinase's motif frequency
+    # among up- and down-regulated sites. A significant positive value means the
+    # motif is enriched among sites higher in condition 1 -- motif enrichment,
+    # not a measured change in kinase activity -- and the classes say so.
     def classify(row: pd.Series) -> str:
         if float(row["adj_pval"]) < p_value_threshold:
             if float(row["log2ff"]) > 0:
-                return "Upregulated"
+                return KINASE_ENRICHED_UP
             if float(row["log2ff"]) < 0:
-                return "Downregulated"
+                return KINASE_ENRICHED_DOWN
         return "Not significant"
 
     frame["regulation"] = frame.apply(classify, axis=1)
@@ -864,13 +896,13 @@ def ksea_uploaded_volcano_html(
             "rows": frame.head(10).astype(object).where(pd.notna(frame.head(10)), None).to_dict(orient="records"),
             "limitations": "Uploaded external results; adjustment procedure is not independently verified. Substrate counts are included only when explicitly supplied; absent counts are unknown. Frequency factor is not a direct activity measurement."})
     color_map = {
-        "Upregulated": "red",
-        "Downregulated": "blue",
+        KINASE_ENRICHED_UP: "red",
+        KINASE_ENRICHED_DOWN: "blue",
         "Not significant": "lightgrey",
     }
 
     fig = go.Figure()
-    for regulation in ["Upregulated", "Downregulated", "Not significant"]:
+    for regulation in [KINASE_ENRICHED_UP, KINASE_ENRICHED_DOWN, "Not significant"]:
         subset = frame[frame["regulation"] == regulation]
         if subset.empty:
             continue
@@ -879,10 +911,16 @@ def ksea_uploaded_volcano_html(
                 x=subset["log2ff"],
                 y=subset["neg_log10_pval"],
                 mode="markers",
-                marker=dict(
-                    color=color_map[regulation],
+                # The Points card: size, opacity, outline and shape. The class
+                # keeps its own colour, which is why the card has no colour
+                # field on this plot.
+                marker=plotly_marker(
+                    advanced,
                     size=10,
-                    line=dict(color="black", width=0.5),
+                    alpha=1.0,
+                    color=color_map[regulation],
+                    edge_width_default=0.5,
+                    edge_color_default="black",
                 ),
                 name=regulation,
                 text=subset["kinase"],
@@ -917,11 +955,11 @@ def ksea_uploaded_volcano_html(
     title = ""
     if header:
         if condition1 and condition2:
-            title = f"KSEA Volcano Plot: {condition1} vs. {condition2}"
+            title = f"Kinase Library Motif Enrichment: {condition1} vs. {condition2}"
             if condition1_control and condition2_control:
                 title += f" (controls: {condition1_control} vs {condition2_control})"
         else:
-            title = "KSEA Volcano Plot"
+            title = "Kinase Library Motif Enrichment"
 
     x_label = "Log2(Frequency Factor)"
     if condition1 and condition2:
@@ -1232,7 +1270,6 @@ apply_cached_wrappers(
         "phospho_sty_table",
         "phospho_sty_png",
         "ksea_table",
-        "ksea_plot_png",
         "phosprot_regulation_table",
         "phosprot_regulation_png",
         "phosprot_regulation_html",

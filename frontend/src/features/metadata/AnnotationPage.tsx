@@ -36,8 +36,9 @@ import type {
   PhosprotAggregationMode,
   PhosprotAggregationSource,
 } from "../../lib/types";
-import { NORMALIZATION_LABELS } from "../../lib/types";
+import { NORMALIZATION_LABELS, normalizationOptions } from "../../lib/types";
 import PreviewTable from "../../components/PreviewTable";
+import { usePhosphoLocalizationCutoff } from "../../lib/phosphoLocalization";
 
 type ConditionDraft = {
   id: number;
@@ -79,8 +80,17 @@ export default function AnnotationPage() {
   ]);
   const [isLog2Transformed, setIsLog2Transformed] = useState(true);
   const scaleChosen = useRef(false);
+  // A note under the log2 checkbox when the values look like log10, ln or count
+  // data. It describes the data, so it stays after the user ticks the box by hand.
+  // Kept with the dataset it describes, so switching datasets hides it at once.
+  const [scaleHint, setScaleHint] = useState<{ key: string; text: string | null } | null>(null);
   const scaleRequest = useRef(0);
   const [filterConfig, setFilterConfig] = useState<AnnotationFilterConfig>(DEFAULT_FILTER);
+  const filterChosen = useRef(false);
+  const editFilterConfig = (update: (prev: AnnotationFilterConfig) => AnnotationFilterConfig) => {
+    filterChosen.current = true;
+    setFilterConfig(update);
+  };
   // VSN is delegated to Bioconductor `vsn` via Rscript, so it is only offered
   // when R and the package are actually present rather than failing at run time.
   const [normalizationCapability, setNormalizationCapability] =
@@ -116,6 +126,13 @@ export default function AnnotationPage() {
   const [phosprotSource, setPhosprotSource] =
     useState<PhosprotAggregationSource>("non_imputed");
   const [phosprotBusy, setPhosprotBusy] = useState(false);
+  // Sites below this localization probability are left out of the collapse. It
+  // starts at the session-wide cutoff and is recorded with the phosphoprotein table.
+  const { cutoff: sharedLocalizationCutoff, available: localizationAvailable } = usePhosphoLocalizationCutoff();
+  const [phosprotCutoffDraft, setPhosprotCutoffDraft] = useState<string | null>(null);
+  const phosprotCutoffText = phosprotCutoffDraft ?? sharedLocalizationCutoff.toFixed(2);
+  const phosprotCutoff = Number(phosprotCutoffText.trim().replace(",", "."));
+  const phosprotCutoffValid = Number.isFinite(phosprotCutoff) && phosprotCutoff >= 0 && phosprotCutoff <= 1;
   const [downloadBusyKey, setDownloadBusyKey] = useState<string | null>(null);
   const [metadataProfileBusy, setMetadataProfileBusy] = useState(false);
   const [newMetadataProfileName, setNewMetadataProfileName] = useState("");
@@ -245,6 +262,7 @@ export default function AnnotationPage() {
 
   useEffect(() => {
     scaleChosen.current = false;
+    filterChosen.current = false;
     scaleRequest.current += 1;
     return () => { scaleRequest.current += 1; };
   }, [kind, activeDataset?.filename, activeDatasetSource, currentDatasets?.activePackage]);
@@ -267,7 +285,9 @@ export default function AnnotationPage() {
           scaleChosen.current = true;
           setIsLog2Transformed(stored.isLog2Transformed);
         }
-        if (stored.filter) {
+        // The stored settings fill the form only until the user edits it: a
+        // value typed while this request was in flight is theirs to keep.
+        if (stored.filter && !filterChosen.current) {
           setFilterConfig({ ...DEFAULT_FILTER, ...stored.filter });
         }
       })
@@ -350,12 +370,17 @@ export default function AnnotationPage() {
     applyDetectedLog2State(sampleColumns);
   }
 
+  const scaleHintKey = [kind, activeDataset?.filename ?? "", activeDatasetSource ?? "",
+    currentDatasets?.activePackage ?? ""].join("|");
+
   async function applyDetectedLog2State(sampleColumns: string[]) {
-    if (!activeDataset || kind === "peptide" || scaleChosen.current) return;
+    if (!activeDataset || kind === "peptide") return;
     const request = ++scaleRequest.current;
     try {
       const detection = await detectAnnotationLog2Scale({ kind, sampleColumns });
-      if (request === scaleRequest.current && !scaleChosen.current && typeof detection.isLog2Transformed === "boolean") {
+      if (request !== scaleRequest.current) return;
+      setScaleHint({ key: scaleHintKey, text: detection.scaleHint ?? null });
+      if (!scaleChosen.current && typeof detection.isLog2Transformed === "boolean") {
         setIsLog2Transformed(detection.isLog2Transformed);
       }
     } catch {
@@ -444,7 +469,7 @@ export default function AnnotationPage() {
     try {
       setPhosprotBusy(true);
       setError(null);
-      const generated = await aggregatePhosprot(phosprotMode, phosprotSource);
+      const generated = await aggregatePhosprot(phosprotMode, phosprotSource, phosprotCutoffValid ? phosprotCutoff : 0);
       setPhosprotResult(generated);
       await refreshCurrent();
     } catch (err) {
@@ -750,6 +775,11 @@ export default function AnnotationPage() {
               />
               Dataset is already log2 transformed
             </label>
+            {isLog2Transformed && scaleHint?.key === scaleHintKey && scaleHint.text ? (
+              <p className="mt-2 text-sm text-amber-800" role="note">
+                {scaleHint.text}
+              </p>
+            ) : null}
           </div>
         ) : (
           <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
@@ -945,7 +975,7 @@ export default function AnnotationPage() {
             <select id="annotation-filter-method"
               value={filterConfig.method}
               onChange={(e) =>
-                setFilterConfig((prev) => ({
+                editFilterConfig((prev) => ({
                   ...prev,
                   method: e.target.value as AnnotationFilterConfig["method"],
                 }))
@@ -972,7 +1002,7 @@ export default function AnnotationPage() {
                 value={String(filterConfig.minPercentage)}
                 onChange={(e) => {
                   const value = Number(e.target.value.replace(",", "."));
-                  setFilterConfig((prev) => ({
+                  editFilterConfig((prev) => ({
                     ...prev,
                     minPercentage: Number.isFinite(value)
                       ? Math.min(100, Math.max(0, value))
@@ -989,7 +1019,7 @@ export default function AnnotationPage() {
                 id="annotation-minimum"
                 value={String(filterConfig.minPresent)}
                 onChange={(e) =>
-                  setFilterConfig((prev) => ({
+                  editFilterConfig((prev) => ({
                     ...prev,
                     minPresent: Math.max(0, Math.floor(Number(e.target.value) || 0)),
                   }))
@@ -1006,7 +1036,7 @@ export default function AnnotationPage() {
             <select id="annotation-filter-scope"
               value={filterConfig.mode}
               onChange={(e) =>
-                setFilterConfig((prev) => ({
+                editFilterConfig((prev) => ({
                   ...prev,
                   mode: e.target.value as AnnotationFilterConfig["mode"],
                 }))
@@ -1018,12 +1048,7 @@ export default function AnnotationPage() {
               <option value="overall">Overall</option>
             </select>
           </div>
-          {kind === "phosprot" ? (
-            <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-              Phosphoprotein values retain the normalization applied at phosphosite level
-              before collapse. No second normalization is applied here.
-            </div>
-          ) : (
+          {kind === "phosprot" ? null : (
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-normalization">
                 Normalization
@@ -1031,19 +1056,16 @@ export default function AnnotationPage() {
               <select id="annotation-normalization"
                 value={filterConfig.normalization ?? "none"}
                 onChange={(e) =>
-                  setFilterConfig((prev) => ({
+                  editFilterConfig((prev) => ({
                     ...prev,
                     normalization: e.target.value as AnnotationFilterConfig["normalization"],
                   }))
                 }
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
               >
-                <option value="none">{NORMALIZATION_LABELS.none}</option>
-                <option value="median">{NORMALIZATION_LABELS.median}</option>
-                <option value="quantile">{NORMALIZATION_LABELS.quantile}</option>
-                {normalizationCapability?.vsnAvailable ? (
-                  <option value="vsn">{NORMALIZATION_LABELS.vsn}</option>
-                ) : null}
+                {normalizationOptions(Boolean(normalizationCapability?.vsnAvailable)).map((method) => (
+                  <option key={method} value={method}>{NORMALIZATION_LABELS[method]}</option>
+                ))}
               </select>
             </div>
           )}
@@ -1198,11 +1220,30 @@ export default function AnnotationPage() {
                           ) : null}
                         </select>
                       </div>
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-aggregation-cutoff">
+                          Site localization probability cutoff
+                        </label>
+                        <input id="annotation-aggregation-cutoff"
+                          type="text"
+                          inputMode="decimal"
+                          value={phosprotCutoffText}
+                          disabled={!localizationAvailable}
+                          onChange={(e) => setPhosprotCutoffDraft(e.target.value)}
+                          aria-invalid={!phosprotCutoffValid}
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100"
+                        />
+                        <p className={`mt-2 text-xs leading-5 ${phosprotCutoffValid ? "text-slate-500" : "text-red-700"}`}>
+                          {phosprotCutoffValid
+                            ? "Only sites at or above it are collapsed; sites without a probability are left out above 0."
+                            : "Enter a value between 0.00 and 1.00."}
+                        </p>
+                      </div>
                     </div>
                     <button
                       type="button"
                       onClick={handleAggregatePhosprot}
-                      disabled={!currentDatasets?.phospho || phosprotBusy}
+                      disabled={!currentDatasets?.phospho || phosprotBusy || !phosprotCutoffValid}
                       className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {phosprotBusy ? "Aggregating..." : "Aggregate to Phosphoprotein"}

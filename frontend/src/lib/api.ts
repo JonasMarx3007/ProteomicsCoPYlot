@@ -32,7 +32,6 @@ import type {
   MetadataAnnotationKind,
   PairingUpdateRequest,
   PathwayOptionsResponse,
-  PeptideCollapseRequest,
   PhosphoOptionsResponse,
   PhosphoTableResponse,
   PeptideCoverageResponse,
@@ -125,7 +124,6 @@ const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? ""}${TAB_API_PREFIX}`;
 
 export type AssistantView = {
   module: string; workflow: string; mode: ContextMode;
-  advancedOptions?: boolean;
   controls: import("./assistantControls").AssistantControl[];
   destinations: Record<string, string>;
 };
@@ -374,6 +372,16 @@ export async function saveTableDatasetPath(
 
 function resolveDownloadFilename(response: Response, fallback: string): string {
   const disposition = response.headers.get("content-disposition") || "";
+  // The real name, when it is not plain ASCII, is in filename* (RFC 5987).
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded?.[1]) {
+    try {
+      const decoded = decodeURIComponent(encoded[1].trim());
+      if (decoded) return decoded;
+    } catch {
+      // fall through to the ASCII name
+    }
+  }
   const match = disposition.match(/filename="?([^";]+)"?/i);
   if (!match || !match[1]) return fallback;
   return match[1].trim() || fallback;
@@ -874,11 +882,12 @@ export async function downloadIdTranslation(
 
 export async function aggregatePhosprot(
   mode: PhosprotAggregationMode,
-  source: PhosprotAggregationSource
+  source: PhosprotAggregationSource,
+  localizationCutoff = 0
 ): Promise<AnnotationResultResponse> {
   const data = await request(`/api/annotations/phosprot/aggregate`, {
     method: "POST",
-    json: { mode, source },
+    json: { mode, source, localizationCutoff },
     fallback: "Failed to aggregate phosphoprotein dataset",
   });
   // Every matrix downstream of this call is different now, so the plot and
@@ -1022,6 +1031,7 @@ export async function getQcPcaFeatures(
     ellipseSkippedGroups: Array.isArray(payload.ellipseSkippedGroups)
       ? payload.ellipseSkippedGroups.map((group) => String(group))
       : [],
+    smallSampleNotice: typeof payload.smallSampleNotice === "string" ? payload.smallSampleNotice : null,
     dbscan:
       payload.dbscan && typeof payload.dbscan === "object"
         ? {
@@ -1084,6 +1094,24 @@ export async function getStatisticalOptions(
       : [],
     warnings: Array.isArray(payloadRaw.warnings) ? payloadRaw.warnings : [],
   };
+}
+
+export async function getVolcanoNotebookTable(kind: AnnotationKind, snapshot: string, signal: AbortSignal): Promise<VolcanoResultResponse> {
+  return await requestUrl(buildPlotUrl(`/api/plots/stats/${kind}/volcano-table`, { snapshot }), {
+    signal, fallback: "Failed to load the captured volcano table",
+  }) as VolcanoResultResponse;
+}
+
+export async function getAnovaNotebookTables(kind: AnnotationKind, snapshot: string, signal: AbortSignal): Promise<AnovaResultResponse> {
+  return await requestUrl(buildPlotUrl(`/api/plots/stats/${kind}/anova-tables`, { snapshot }), {
+    signal, fallback: "Failed to load the captured ANOVA tables",
+  }) as AnovaResultResponse;
+}
+
+export async function getOraNotebookTables(kind: AnnotationKind, direction: string, snapshot: string, signal: AbortSignal): Promise<EnrichmentResultResponse> {
+  return await requestUrl(buildPlotUrl(`/api/plots/stats/${kind}/ora/${direction}/tables`, { snapshot }), {
+    signal, fallback: "Failed to load the captured ORA tables",
+  }) as EnrichmentResultResponse;
 }
 
 export async function runVolcanoAnalysis(
@@ -1231,6 +1259,15 @@ export async function getOllamaGpuStatus(endpoint?: string): Promise<OllamaGpuSt
   };
 }
 
+/** The server's default model per cloud provider: one list, kept on the backend. */
+export async function getProviderDefaultModels(): Promise<Record<string, string>> {
+  const data = await requestUrl(`${API_BASE}/api/chat/provider-defaults`, { fallback: "Failed to load default models" });
+  const models = (data && typeof data === "object" ? (data as Record<string, unknown>).models : null) ?? {};
+  return Object.fromEntries(
+    Object.entries(models as Record<string, unknown>).map(([provider, model]) => [provider, String(model ?? "")]),
+  );
+}
+
 export async function getOllamaModels(endpoint?: string): Promise<OllamaModelsResponse> {
   const url = endpoint?.trim()
     ? `${API_BASE}/api/chat/models?endpoint=${encodeURIComponent(endpoint.trim())}`
@@ -1330,6 +1367,19 @@ export async function getSingleProteinTable(
   return data as SingleProteinTableResponse;
 }
 
+/** What the lineplot says under itself about selected names that match no row. */
+export async function getLineplotUnmatchedNotice(
+  kind: AnnotationKind,
+  params: { proteins: string; identifier: string; dataSource: string },
+  requestOptions: ApiRequestOptions = {}
+): Promise<string> {
+  const data = await requestUrl(buildPlotUrl(`/api/plots/single-protein/${kind}/lineplot-unmatched`, params), {
+    signal: requestOptions.signal,
+    fallback: "Failed to check the lineplot selection",
+  });
+  return typeof (data as { notice?: unknown })?.notice === "string" ? (data as { notice: string }).notice : "";
+}
+
 export async function getPhosphoOptions(
   requestOptions: ApiRequestOptions = {}
 ): Promise<PhosphoOptionsResponse> {
@@ -1415,12 +1465,19 @@ export async function renderKseaVolcanoFromFiles(payload: {
   });
   const text = await response.text();
   if (!response.ok) {
+    // Parsed apart from the throw: a `catch` around both used to swallow the
+    // readable message it had just built and show the raw `{"detail": ...}`.
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(text) as unknown;
-      throw new Error(apiErrorMessage(parsed, "Failed to generate KSEA volcano"));
+      parsed = JSON.parse(text) as unknown;
     } catch {
-      throw new Error(text || "Failed to generate KSEA volcano");
+      parsed = null;
     }
+    throw new Error(
+      parsed === null
+        ? text || "Failed to generate Kinase Library volcano"
+        : apiErrorMessage(parsed, "Failed to generate Kinase Library volcano")
+    );
   }
   return { html: text, evidenceToken: response.headers.get("X-Copylot-Evidence") ?? "" };
 }
@@ -1499,7 +1556,7 @@ export async function getModelCapability(
 
 export async function runPeptideCollapseFile(
   file: File,
-  options: Pick<PeptideCollapseRequest, "cutoff">
+  options: { cutoff: number }
 ): Promise<{ blob: Blob; filename: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -1554,4 +1611,28 @@ export function buildPlotUrl(path: string, params?: Record<string, string | numb
 
   const suffix = query.toString();
   return suffix ? `${base}?${suffix}` : base;
+}
+
+export type PhosphoLocalizationCutoff = { cutoff: number; available: boolean };
+
+// The session-wide phosphosite localization probability cutoff. Every
+// phosphosite module reads its matrix through the backend with this cutoff
+// applied, so changing it is a dataset-state change: plot URLs get a new
+// scope nonce and every page that listens for dataset changes reloads.
+export async function getPhosphoLocalizationCutoff(): Promise<PhosphoLocalizationCutoff> {
+  const data = await request(`/api/data-tools/phospho-localization-cutoff`, {
+    fallback: "Failed to load the localization probability cutoff",
+  });
+  return data as PhosphoLocalizationCutoff;
+}
+
+export async function setPhosphoLocalizationCutoff(cutoff: number): Promise<PhosphoLocalizationCutoff> {
+  const data = await request(`/api/data-tools/phospho-localization-cutoff`, {
+    method: "POST",
+    json: { cutoff },
+    fallback: "Failed to set the localization probability cutoff",
+  });
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged();
+  return data as PhosphoLocalizationCutoff;
 }

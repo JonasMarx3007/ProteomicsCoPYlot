@@ -4,7 +4,7 @@ Benjamini-Hochberg, the pooled two-sample standard error, Welch-Satterthwaite
 for a sum of independent group means, and the two-sided t p-value. The
 volcano, the control volcano, the replicate & variance projection and the
 paired test all used to carry their own copy of these lines; one copy means
-one place to verify against scipy/statsmodels (tests/backend/test_stats_core.py).
+one place to verify against scipy/statsmodels (tests/reference/test_stats_core.py).
 
 The pip package (`proteomicscopylot/notebook_functions.py`) keeps its own
 implementation on purpose: it must install and run without the backend, and

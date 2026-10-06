@@ -6,6 +6,8 @@ import { useMemo } from "react";
 import { collectColumns, rowsToQuotedCsv } from "../../lib/tableData";
 import PaginatedTable from "../../components/PaginatedTable";
 import PlotImage from "../../components/PlotImage";
+import InteractivePlot from "../../components/InteractivePlot";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 
 export function Notice({ error, warnings }: { error: string | null; warnings?: string[] }) {
   if (!error && (!warnings || warnings.length === 0)) return null;
@@ -33,17 +35,24 @@ export function SummarySection({ items, warnings }: { items: { label: string; va
   );
 }
 
-export function PlotFrame({ title, url, height }: { title: string; url: string; height: number }) {
+export function PlotFrame({ title, url, height, notebook, onRendered }: {
+  title: string; url: string; height: number; notebook?: RenderedNotebook | null;
+  onRendered?: (url: string, token: string | null) => void;
+}) {
   const resolvedHeight = Math.max(height, 760);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
-          Open Plot
-        </a>
+        <div className="flex flex-wrap items-center gap-2">
+          <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
+            Open Plot
+          </a>
+          {onRendered ? <NotebookDownload plotUrl={url} rendered={notebook ?? null} /> : null}
+        </div>
       </div>
-      <iframe sandbox="allow-scripts allow-downloads" src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height: resolvedHeight }} />
+      {onRendered ? <InteractivePlot url={url} title={title} height={resolvedHeight} onRendered={onRendered} /> :
+        <iframe sandbox="allow-scripts allow-downloads" src={url} title={title} className="w-full rounded-xl border border-slate-200 bg-white" style={{ height: resolvedHeight }} />}
     </section>
   );
 }
@@ -57,9 +66,13 @@ export function ImageSection({
   title,
   url,
   download,
+  notebook,
+  onRendered,
 }: {
   title: string;
   url: string;
+  notebook?: RenderedNotebook | null;
+  onRendered?: (url: string, token: string | null) => void;
   download?: {
     filename: string;
     format: PlotDownloadFormat;
@@ -97,14 +110,18 @@ export function ImageSection({
           <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
             Open Image
           </a>
+          {onRendered ? <NotebookDownload plotUrl={url} rendered={notebook ?? null} /> : null}
         </div>
       </div>
-      <PlotImage url={url} alt={title} />
+      <PlotImage url={url} alt={title} onRendered={onRendered} />
     </section>
   );
 }
 
-export function TableSection({ title, rows, filename }: { title: string; rows: Record<string, unknown>[]; filename: string }) {
+export function TableSection({ title, rows, filename, notebook, plotUrl }: {
+  title: string; rows: Record<string, unknown>[]; filename: string;
+  notebook?: RenderedNotebook | null; plotUrl?: string;
+}) {
   const csvUrl = useMemo(() => {
     if (!rows.length) return null;
     const csv = rowsToQuotedCsv(rows, collectColumns(rows));
@@ -115,7 +132,10 @@ export function TableSection({ title, rows, filename }: { title: string; rows: R
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        {csvUrl ? <a href={csvUrl} download={filename} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">Download CSV</a> : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {csvUrl ? <a href={csvUrl} download={filename} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">Download CSV</a> : null}
+          {plotUrl ? <NotebookDownload plotUrl={plotUrl} rendered={notebook ?? null} /> : null}
+        </div>
       </div>
       <StatsResultTable rows={rows} />
     </section>

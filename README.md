@@ -110,6 +110,8 @@ Install the optional R packages used by the complete R helper:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
+# VSN normalization (optional) comes from Bioconductor:
+install.packages("BiocManager"); BiocManager::install("vsn")
 ```
 
 Examples:
@@ -154,8 +156,8 @@ Viewer portal credential template:
   "credentials": [
     {
       "password_pbkdf2_sha256": "GENERATED_VALUE",
-      "project": "example_project",
-      "label": "Example Project"
+      "project": "HEK293",
+      "label": "HEK293 example"
     }
   ]
 }

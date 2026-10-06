@@ -485,13 +485,26 @@ def _feature_set_from_sample(frame: pd.DataFrame, id_col: str, sample: str) -> s
     return set(frame.loc[mask, id_col].dropna().astype(str).tolist())
 
 
-def _feature_set_from_condition(frame: pd.DataFrame, meta: pd.DataFrame, id_col: str, condition: str) -> set[str]:
+def _feature_set_from_condition(
+    frame: pd.DataFrame, meta: pd.DataFrame, id_col: str, condition: str, min_present: int = 1
+) -> set[str]:
+    """Features measured in at least `min_present` samples of the condition.
+
+    The default of 1 counts a feature present when any replicate has a value,
+    which makes conditions look alike when detection is patchy; a higher
+    minimum asks for reproducible detection.
+    """
     columns = meta.loc[meta["condition"] == condition, "sample"].astype(str).tolist()
     columns = [col for col in columns if col in frame.columns]
     if not columns:
         raise ValueError(f"Condition '{condition}' has no available sample columns.")
+    if min_present > len(columns):
+        raise ValueError(
+            f"Condition '{condition}' has {len(columns)} samples, fewer than the minimum of {min_present} "
+            "values per condition."
+        )
     values = frame[columns].apply(pd.to_numeric, errors="coerce")
-    mask = values.notna().any(axis=1)
+    mask = values.notna().sum(axis=1) >= min_present
     return set(frame.loc[mask, id_col].dropna().astype(str).tolist())
 
 
@@ -501,6 +514,7 @@ def _venn_sets(
     first: str,
     second: str,
     third: str = "",
+    min_present: int = 1,
 ) -> tuple[set[str], set[str], set[str] | None]:
     frame, meta, _ = _analysis_context(kind)
     id_col = _id_column(kind, frame)
@@ -518,9 +532,12 @@ def _venn_sets(
         set3 = _feature_set_from_sample(frame, id_col, third) if third else None
         return set1, set2, set3
     if mode_norm == "condition":
-        set1 = _feature_set_from_condition(frame, meta, id_col, first)
-        set2 = _feature_set_from_condition(frame, meta, id_col, second)
-        set3 = _feature_set_from_condition(frame, meta, id_col, third) if third else None
+        if not np.isfinite(min_present) or int(min_present) != min_present or min_present < 1:
+            raise ValueError("The minimum number of values per condition must be a positive integer.")
+        minimum = int(min_present)
+        set1 = _feature_set_from_condition(frame, meta, id_col, first, minimum)
+        set2 = _feature_set_from_condition(frame, meta, id_col, second, minimum)
+        set3 = _feature_set_from_condition(frame, meta, id_col, third, minimum) if third else None
         return set1, set2, set3
     raise ValueError("Mode must be 'Single' or 'Condition'.")
 
@@ -534,6 +551,7 @@ def venn_table(
     alias1: str = "",
     alias2: str = "",
     alias3: str = "",
+    min_present: int = 1,
 ) -> pd.DataFrame:
     set1, set2, set3 = _venn_sets(
         kind=kind,
@@ -541,6 +559,7 @@ def venn_table(
         first=first,
         second=second,
         third=third,
+        min_present=min_present,
     )
     label1 = alias1.strip() or first
     label2 = alias2.strip() or second
@@ -590,6 +609,7 @@ def venn_png(
     height_cm: float = 12,
     dpi: int = 300,
     advanced: dict | None = None,
+    min_present: int = 1,
 ) -> bytes:
     plt = _get_plt()
     venn2, venn3 = _get_venn()
@@ -599,6 +619,7 @@ def venn_png(
         first=first,
         second=second,
         third=third,
+        min_present=min_present,
     )
     label1 = alias1.strip() or _rename_if_condition(first, mode, advanced)
     label2 = alias2.strip() or _rename_if_condition(second, mode, advanced)

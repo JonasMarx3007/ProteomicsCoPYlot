@@ -9,7 +9,9 @@ from app.schemas.summary import (
     SummaryReportResponse,
     SummaryTablesResponse,
 )
+from app.services.plot_export import RENDER_LOCK
 from app.services.report_function import report_function
+from app.services.notebook_report import report_with_notebook
 from app.services.summary_tools import summary_tables
 
 LOGGER = logging.getLogger(__name__)
@@ -30,7 +32,10 @@ def summary_tables_route() -> SummaryTablesResponse:
 @router.post("/report", response_model=SummaryReportResponse)
 def summary_report_route(payload: SummaryReportRequest) -> SummaryReportResponse:
     try:
-        return report_function(payload)
+        # A report draws many figures; they are drawn one at a time like any
+        # other plot (RENDER_LOCK in plot_export.py).
+        with RENDER_LOCK:
+            return report_with_notebook(report_function, payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

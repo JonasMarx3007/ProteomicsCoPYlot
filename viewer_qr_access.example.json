@@ -2,8 +2,8 @@
   "tokens": [
     {
       "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "project": "example_project",
-      "label": "Example Project"
+      "project": "HEK293",
+      "label": "HEK293 example"
     }
   ]
 }

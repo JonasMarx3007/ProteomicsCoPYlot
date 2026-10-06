@@ -10,11 +10,13 @@ import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, An
 import { dataSourceOptions } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import SelectField from "../../components/SelectField";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
-import { ImageSection, InfoSection, Notice, SummarySection, TableSection } from "./statsShared";
-import { ANOVA_CLUSTER_METHOD_OPTIONS, conditionOptions, removeSourceUsageWarnings, restoreClusterCount, restoreClusterMethod, restorePValueThreshold, sanitizeFilenamePart } from "./statsHelpers";
+import { InfoSection, Notice, SummarySection } from "./statsShared";
+import AnovaOutput from "./AnovaOutput";
+import { ANOVA_CLUSTER_METHOD_OPTIONS, conditionOptions, removeSourceUsageWarnings, restoreClusterCount, restoreClusterMethod, restorePValueThreshold } from "./statsHelpers";
 
 export function AnovaPanel({
   kindOptions,
@@ -165,10 +167,6 @@ export function AnovaPanel({
     ],
     [availableClusters, clusterSizes]
   );
-  const selectedClusterRows = useMemo(() => {
-    if (displayedSelectedCluster === "none" || !result?.clusterRows.length) return [];
-    return result.clusterRows.filter((row) => String(row.cluster ?? "") === displayedSelectedCluster);
-  }, [result, displayedSelectedCluster]);
 
   useEffect(() => {
     if (!kindAvailable) return;
@@ -255,6 +253,8 @@ export function AnovaPanel({
     ...(sourceMode === "anova_cluster" ? { showRowLabels } : {}),
     nClusters: Math.max(1, Math.round(nClusters)),
     clusterMethod,
+    postHoc,
+    ...(postHoc === "tukey" && postHocPairValid ? { postHocCondition1, postHocCondition2 } : {}),
   });
   const selectedClusterPlotUrl =
     sourceMode === "anova_cluster" && displayedSelectedCluster !== "none"
@@ -270,6 +270,8 @@ export function AnovaPanel({
           nClusters: Math.max(1, Math.round(nClusters)),
           clusterMethod,
           selectedCluster: displayedSelectedCluster,
+          postHoc,
+          ...(postHoc === "tukey" && postHocPairValid ? { postHocCondition1, postHocCondition2 } : {}),
         })
       : null;
 
@@ -297,6 +299,7 @@ export function AnovaPanel({
       <SectionCard title="ANOVA">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+          <LocalizationCutoffField kind={kind} />
         </div>
       </SectionCard>
 
@@ -414,34 +417,10 @@ export function AnovaPanel({
             ]}
             warnings={removeSourceUsageWarnings(result.warnings)}
           />
-          {result.significantCount === 0 ? (
-            <InfoSection message="No rows passed the selected ANOVA threshold, so no significant-row heatmap or clusters were generated." />
-          ) : (
-            <>
-              <ImageSection title={sourceMode === "anova_cluster" ? "ANOVA Cluster Heatmap" : "ANOVA Heatmap"} url={plotUrl} />
-            </>
-          )}
+          <AnovaOutput key={plotUrl} result={result} plotUrl={plotUrl} />
           {selectedClusterPlotUrl ? (
-            <>
-              <ImageSection title={`Cluster ${displayedSelectedCluster} Heatmap`} url={selectedClusterPlotUrl} />
-            </>
-          ) : null}
-          <TableSection title="Result Table" rows={result.rows} filename={`anova_${sourceMode}_${kind}.csv`} />
-          {selectedClusterRows.length > 0 ? (
-            <TableSection title={`Cluster ${displayedSelectedCluster} Result Table`} rows={selectedClusterRows} filename={`anova_${sourceMode}_${kind}_cluster_${displayedSelectedCluster}.csv`} />
-          ) : null}
-          {postHoc === "tukey" && result.postHocRows.length > 0 ? (
-            <TableSection
-              title={`Post-hoc: ${result.postHocMethod ?? "Tukey HSD"}${
-                result.postHocComparison ? ` — ${result.postHocComparison}` : ""
-              } (${result.postHocSignificantCount} significant of ${result.postHocRows.length} comparisons, ANOVA-significant rows only)`}
-              rows={result.postHocRows}
-              filename={`anova_${sourceMode}_${kind}_tukey${
-                result.postHocComparison
-                  ? `_${sanitizeFilenamePart(result.postHocComparison.replace(/\s+vs\s+/, "_vs_"))}`
-                  : ""
-              }.csv`}
-            />
+            <AnovaOutput key={selectedClusterPlotUrl} result={result} plotUrl={selectedClusterPlotUrl}
+              selectedCluster={displayedSelectedCluster} />
           ) : null}
         </>
       ) : null}

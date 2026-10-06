@@ -4,9 +4,9 @@ import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
 import { collectColumns } from "../../lib/tableData";
 import { rowsToCsv } from "../../lib/tableData";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable, isAbortError } from "../../lib/api";
-import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
+import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import {
   PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
@@ -28,8 +28,10 @@ import {
 } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import PreviewTable from "../../components/PreviewTable";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import SelectField from "../../components/SelectField";
 import type { ContextMode } from "../../lib/types";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 type Props = {
   activeTab: SingleProteinTab;
@@ -76,6 +78,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [notebook, setNotebook] = useState<RenderedNotebook | null>(null);
+  const [tableSnapshot, setTableSnapshot] = useState<string | null>(null);
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
     coercePlotDownloadFormat(persisted.downloadFormat)
   );
@@ -99,6 +103,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     proteins: Array.isArray(persistedLine.proteins) ? persistedLine.proteins.map((value) => String(value ?? "")) : ([] as string[]),
     conditions: Array.isArray(persistedLine.conditions) ? persistedLine.conditions.map((value) => String(value ?? "")) : ([] as string[]),
     includeId: Boolean(persistedLine.includeId ?? false),
+    showNaLow: Boolean(persistedLine.showNaLow ?? false),
     header: true,
     legend: true,
     widthCm: restorePlotDimensionCm(persistedLine.widthCm, 20),
@@ -273,6 +278,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           proteins: JSON.stringify(line.proteins),
           conditions: JSON.stringify(line.conditions),
           includeId: line.includeId,
+          showNaLow: line.showNaLow,
           header: line.header,
           legend: line.legend,
           widthCm: line.widthCm,
@@ -313,6 +319,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     return withPlotDownloadFilename(plotView.filename, downloadFormat);
   }, [plotView, downloadFormat]);
 
+  const plotToken = notebook?.url === plotView?.url ? notebook?.token : null;
   const tableRequest = useMemo<TableRequest | null>(() => {
     if (options?.dataSource !== dataSource) return null;
     if (activeTab === "boxplot") {
@@ -326,7 +333,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       return {
         kind: effectiveKind,
         tab: "boxplot" as const,
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
@@ -342,7 +349,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
       return {
         kind: effectiveKind,
         tab: "lineplot" as const,
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
 
@@ -361,27 +368,45 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     return {
       kind: "phospho" as AnnotationKind,
       tab: "heatmap" as const,
-      params,
+      params: plotToken ? { ...params, snapshot: plotToken } : params,
     };
-  }, [activeTab, effectiveKind, dataSource, options?.dataSource,
+  }, [activeTab, effectiveKind, dataSource, options?.dataSource, plotToken,
     box.identifier, box.protein, box.conditions,
     line.identifier, line.proteins, line.conditions, line.includeId,
     heatmap.identifier, heatmap.protein, heatmap.conditions, heatmap.includeId,
     heatmap.filterM1, heatmap.clusterRows, heatmap.clusterCols, heatmap.valueType]);
 
+  // The table depends on the data parameters, not on how the figure is drawn.
+  // A new width, height or DPI draws a new figure under a new snapshot, but the
+  // snapshot's table holds the same rows, so the rows already shown are kept and
+  // only attributed to the new snapshot. A change to the dataset still reloads.
+  const datasetRevision = useDatasetRevision();
+  const loadedTableKey = useRef<string | null>(null);
   useEffect(() => {
     if (!tableRequest) {
+      loadedTableKey.current = null;
       setTableRows([]);
       setTableLoading(false);
       setTableError(null);
       return;
     }
+    const { snapshot, ...dataParams } = tableRequest.params;
+    const snapshotToken = typeof snapshot === "string" ? snapshot : null;
+    const dataKey = JSON.stringify([tableRequest.kind, tableRequest.tab, dataParams, datasetRevision]);
+    if (loadedTableKey.current === dataKey) {
+      if (snapshotToken) setTableSnapshot(snapshotToken);
+      return;
+    }
+    loadedTableKey.current = null;
     const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
     getSingleProteinTable(tableRequest.kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
+        if (controller.signal.aborted) return;
+        loadedTableKey.current = dataKey;
         setTableRows(payload.rows ?? []);
+        setTableSnapshot(snapshotToken);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -395,7 +420,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     return () => {
       controller.abort();
     };
-  }, [tableRequest]);
+  }, [tableRequest, datasetRevision]);
 
   useEffect(() => {
     if (!onContextModeChange) return;
@@ -428,6 +453,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             proteins: line.proteins,
             conditions: line.conditions,
             includeId: line.includeId,
+            showNaLow: line.showNaLow,
             header: line.header,
             legend: line.legend,
           }
@@ -464,6 +490,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     line.proteins,
     line.conditions,
     line.includeId,
+    line.showNaLow,
     line.header,
     line.legend,
     heatmap.identifier,
@@ -529,6 +556,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               <span className="mt-2 block text-xs text-slate-500">Heatmap uses phospho dataset level.</span>
             ) : null}
           </label>
+          <LocalizationCutoffField kind={activeTab === "heatmap" ? "phospho" : kind} />
           <label className="block text-sm">
             <span className="mb-2 block font-medium text-slate-700">Data source</span>
             <AssistantSelect
@@ -603,13 +631,15 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               >
                 Download Plot
               </a>
+              <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
             </div>
           ) : null}
         </div>
 
         {plotView ? (
           <div className="mt-4">
-            <PlotImage url={plotView.url} alt={plotView.title} />
+            <PlotImage url={plotView.url} alt={plotView.title}
+              onRendered={(url, token) => setNotebook({ url, token })} />
           </div>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -633,13 +663,17 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>
           {tableCsvUrl ? (
-            <a
-              href={tableCsvUrl}
-              download={`single_protein_${activeTab}_${effectiveKind}.csv`}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-            >
-              Download CSV
-            </a>
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={tableCsvUrl}
+                download={`single_protein_${activeTab}_${effectiveKind}.csv`}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
+              >
+                Download CSV
+              </a>
+              {plotView ? <NotebookDownload plotUrl={plotView.url}
+                rendered={!tableLoading && !tableError && tableSnapshot === plotToken ? notebook : null} /> : null}
+            </div>
           ) : null}
         </div>
         <div className="mt-4">
@@ -758,6 +792,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           ]}
           toggles={[
             <Checkbox key="id" label="Toggle ID" checked={line.includeId} onChange={(value) => setLine({ ...line, includeId: value })} />,
+            <Checkbox key="na-low" label="Show NA as low" checked={line.showNaLow} onChange={(value) => setLine({ ...line, showNaLow: value })} />,
           ]}
           sizeRow={
             <SizeRow

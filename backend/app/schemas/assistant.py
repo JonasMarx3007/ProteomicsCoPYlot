@@ -39,7 +39,6 @@ class AssistantView(StrictModel):
     mode: ContextMode = Field(default_factory=dict)
     controls: list[UiControl] = Field(default_factory=list, max_length=250)
     destinations: dict[str, str] = Field(default_factory=dict, max_length=80)
-    advancedOptions: bool = False
 
     @field_validator("mode")
     @classmethod

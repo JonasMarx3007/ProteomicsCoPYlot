@@ -33,13 +33,27 @@ build_frontend() {
   (
     cd "$FRONTEND_DIR"
     VITE_APP_MODE="$mode" VITE_AI_ENABLED="$ai_enabled" npm run build
-    printf "%s" "$mode" > "$FRONTEND_DIR/dist/.copylot_mode.txt"
   )
 }
 
 build_binary() {
   local name="$1"
   local entry_point="$2"
+  local notebook_source_args=()
+  local notebook_source
+  while IFS= read -r notebook_source || [[ -n "$notebook_source" ]]; do
+    notebook_source="${notebook_source%%$'\r'}"
+    [[ -z "${notebook_source// }" || "$notebook_source" == \#* ]] && continue
+    notebook_source_args+=(--add-data "backend/app/services/$notebook_source:notebook_sources")
+  done < "$ROOT_DIR/packaging/notebook_sources.txt"
+  # Version metadata of every distribution a notebook export pins.
+  local notebook_metadata_args=()
+  local notebook_distribution
+  while IFS= read -r notebook_distribution || [[ -n "$notebook_distribution" ]]; do
+    notebook_distribution="${notebook_distribution%%$'\r'}"
+    [[ -z "${notebook_distribution// }" || "$notebook_distribution" == \#* ]] && continue
+    notebook_metadata_args+=(--copy-metadata "$notebook_distribution")
+  done < "$ROOT_DIR/packaging/notebook_distributions.txt"
 
   (
     cd "$ROOT_DIR"
@@ -72,6 +86,10 @@ build_binary() {
       --add-data "data/report:data/report" \
       --add-data "proteomicscopylot/example_data:proteomicscopylot/example_data" \
       --add-data "viewer_config.json:." \
+      --add-data "proteomicscopylot/notebook_functions.py:notebook_sources" \
+      "${notebook_source_args[@]}" \
+      "${notebook_metadata_args[@]}" \
+      --add-data "LICENSE:notebook_sources" \
       "$entry_point"
   )
 }

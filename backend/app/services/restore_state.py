@@ -33,6 +33,13 @@ from app.services.annotation_store import (
     save_annotation,
     snapshot_annotation_session_state,
 )
+from app.services.phospho_localization import (
+    get_localization_cutoff,
+    reset_localization_cutoff,
+    restore_localization_cutoff_session_state,
+    set_localization_cutoff,
+    snapshot_localization_cutoff_session_state,
+)
 from app.services.condition_palette_store import (
     get_condition_palette,
     reset_condition_palettes,
@@ -342,6 +349,16 @@ def _coerce_filter_config(
     )  # type: ignore[arg-type]
 
 
+def _coerce_phosprot_lineage(payload):
+    from app.schemas.annotation import PhosprotLineage
+    if payload is None:
+        return None
+    try:
+        return PhosprotLineage.model_validate(payload)
+    except ValueError:
+        return None  # Legacy/invalid history must not be invented; exports remain unavailable.
+
+
 def _coerce_phosprot_aggregation(payload: Any) -> str | None:
     """Accept only a known aggregation mode from a restored state file.
 
@@ -575,6 +592,8 @@ def export_state_blob(
                 "filename": str(getattr(stored, "filename", "") or ""),
                 "path": None if portable else _ensure_exportable_table_path(stored),
                 "phosprotAggregation": getattr(stored, "phosprot_aggregation", None),
+                "phosprotLineage": stored.phosprot_lineage.model_dump() if getattr(stored, "phosprot_lineage", None) else None,
+                "idTranslations": [step.model_dump() for step in stored.id_translations],
             }
             fingerprint_path = entry["path"] or _optional_text(getattr(stored, "source_path", None))
             if fingerprint_path:
@@ -671,6 +690,8 @@ def export_state_blob(
                         "phosprotAggregation": getattr(
                             stored_annotation, "phosprot_aggregation", None
                         ),
+                        "phosprotLineage": stored_annotation.phosprot_lineage.model_dump()
+                            if getattr(stored_annotation, "phosprot_lineage", None) else None,
                         "imputedFrame": (
                             _frame_to_payload(stored_annotation.imputed_data)
                             if isinstance(
@@ -719,6 +740,7 @@ def export_state_blob(
                 "phospho": get_condition_palette("phospho"),
                 "phosprot": get_condition_palette("phosprot"),
             },
+            "phosphoLocalizationCutoff": get_localization_cutoff(),
         },
     }
     return _serialize_state_payload(payload)
@@ -1091,6 +1113,7 @@ def _apply_prepared_restore_state(
     reset_all_uploaded_metadata()
     reset_all_datasets()
     reset_condition_palettes()
+    reset_localization_cutoff()
     clear_peptide_metadata()
 
     restored_datasets: list[str] = []
@@ -1127,6 +1150,7 @@ def _apply_prepared_restore_state(
             if prepared_entry is None:
                 continue
             frame, filename, source_path = prepared_entry
+            from app.schemas.annotation import IdentifierTranslationStep
             save_table_dataset(
                 filename=filename,
                 kind=kind,
@@ -1134,6 +1158,9 @@ def _apply_prepared_restore_state(
                 package_name=package_name,
                 source_path=source_path,
                 phosprot_aggregation=_coerce_phosprot_aggregation(datasets[kind].get("phosprotAggregation")) if kind == "phosprot" else None,
+                phosprot_lineage=_coerce_phosprot_lineage(datasets[kind].get("phosprotLineage")) if kind == "phosprot" else None,
+                id_translations=[IdentifierTranslationStep.model_validate(step)
+                    for step in datasets[kind].get("idTranslations", [])],
             )
             restored_datasets.append(f"{package_name}:{kind}")
 
@@ -1371,6 +1398,8 @@ def _apply_prepared_restore_state(
                         phosprot_aggregation=_coerce_phosprot_aggregation(
                             annotation_entry.get("phosprotAggregation")
                         ),
+                        phosprot_lineage=_coerce_phosprot_lineage(annotation_entry.get("phosprotLineage"))
+                            if kind == "phosprot" else None,
                     )
                     restored_annotations.append(f"{package_name}:{profile_name}:{kind}")
                 except Exception as exc:
@@ -1406,6 +1435,13 @@ def _apply_prepared_restore_state(
             if isinstance(palette_value, dict):
                 set_condition_palette(kind, {str(key): str(value) for key, value in palette_value.items()})
 
+    cutoff_payload = backend.get("phosphoLocalizationCutoff")
+    if cutoff_payload is not None:
+        try:
+            set_localization_cutoff(cutoff_payload)
+        except ValueError:
+            warnings.append("The saved phosphosite localization cutoff was invalid and was reset to 0.")
+
     active_package = str(backend.get("activePackage", "")).strip()
     if active_package and active_package in package_names:
         set_active_package(active_package)
@@ -1439,6 +1475,7 @@ def apply_restore_state(
             snapshot_annotation_session_state(),
             snapshot_condition_palette_session_state(),
             snapshot_peptide_metadata_session_state(),
+            snapshot_localization_cutoff_session_state(),
         )
         try:
             return _apply_prepared_restore_state(state, prepared)
@@ -1448,6 +1485,7 @@ def apply_restore_state(
             restore_annotation_session_state(snapshots[2])
             restore_condition_palette_session_state(snapshots[3])
             restore_peptide_metadata_session_state(snapshots[4])
+            restore_localization_cutoff_session_state(snapshots[5])
             LOGGER.exception("Restore failed; the previous session state was rolled back")
             raise
 

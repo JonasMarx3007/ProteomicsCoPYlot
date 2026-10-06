@@ -10,13 +10,6 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
-from scipy.cluster.hierarchy import leaves_list, linkage
-
-from app.services.clustering_tools import (
-    completeness_message,
-    drop_incomplete_features,
-    row_zscore,
-)
 
 
 def parse_selection_list(raw: str, *, accept_semicolons: bool = False) -> list[str]:
@@ -35,16 +28,6 @@ def parse_selection_list(raw: str, *, accept_semicolons: bool = False) -> list[s
     if accept_semicolons:
         text = text.replace(";", ",")
     return [value.strip() for value in text.split(",") if value.strip()]
-
-from app.services.stats_core import bh_adjust as _bh_adjust
-
-
-def multipletests(pvals, alpha=0.05, method="fdr_bh"):
-    """Benjamini-Hochberg only, in the statsmodels return shape, from one shared implementation."""
-    if method != "fdr_bh":
-        raise ValueError("Only method='fdr_bh' is supported here.")
-    adjusted = _bh_adjust(np.asarray(pvals, dtype=float))
-    return adjusted <= alpha, adjusted, None, None
 
 
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
@@ -157,7 +140,7 @@ def sample_label_frame(metadata: pd.DataFrame) -> pd.DataFrame:
     Ordering note: the protein/phospho plot paths sort by condition before
     numbering, the peptide path does not. The sort is stable and grouping by
     condition preserves each condition's internal order either way, so the
-    number a sample receives is identical. `tests/backend/test_sample_mapping.py`
+    number a sample receives is identical. `tests/unit/data/test_sample_mapping.py`
     holds the two to that.
 
     Returns the columns ``sample``, ``condition``, ``label`` and ``pair_id``
@@ -318,8 +301,6 @@ def paired_test_enabled(value) -> bool:
 
 def variance_model(value) -> str:
     return resolve_test_type(value)[1]
-
-
 
 
 def paired_t_test(differences: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -588,6 +569,95 @@ def normalize_data(
     return out
 
 
+MISSINGNESS_GAP = 0.10
+MISSINGNESS_MIN_COMPLETE = 20
+_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization"}
+
+
+def missingness_imbalance(
+    data: pd.DataFrame,
+    meta: "pd.DataFrame | pd.Series | list[str]",
+    min_gap: float = MISSINGNESS_GAP,
+    min_complete: int = MISSINGNESS_MIN_COMPLETE,
+) -> pd.DataFrame:
+    """Per-sample missingness, and how far each sample sits on the complete features.
+
+    Median and quantile normalization use every observed value of a sample.
+    Missing values are mostly low-abundance, so a sample with many more of them
+    has a higher observed median and is shifted down. A sample is flagged when
+    its share of missing values is at least `min_gap` above the most complete
+    sample. `complete_offset` is the sample's median distance from the row
+    median over the features measured in every sample: after normalization it
+    shows the shift those features carry. It is NaN when fewer than
+    `min_complete` features are complete. Pass the normalized matrix to see the
+    shift the normalization left; missing positions are the same before and after.
+    """
+    present = _normalization_sample_columns(data, meta)
+    numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.where(np.isfinite(numeric))
+    missing = numeric.isna().mean(axis=0) if len(numeric) else pd.Series(0.0, index=present)
+    reference = float(missing.min()) if len(missing) else 0.0
+    complete = numeric.dropna(axis=0, how="any")
+    if len(complete) >= int(min_complete):
+        offsets = complete.sub(complete.median(axis=1), axis=0).median(axis=0)
+    else:
+        offsets = pd.Series(np.nan, index=present)
+    conditions = pd.Series(np.nan, index=present, dtype=object)
+    if isinstance(meta, pd.DataFrame) and "condition" in meta.columns:
+        lookup = dict(zip(meta["sample"].astype(str), meta["condition"]))
+        conditions = pd.Series([lookup.get(str(sample)) for sample in present], index=present, dtype=object)
+    return pd.DataFrame({
+        "sample": present,
+        "condition": conditions.to_numpy(),
+        "missing_fraction": missing.reindex(present).to_numpy(dtype=float),
+        "reference_missing_fraction": reference,
+        "flagged": (missing.reindex(present).to_numpy(dtype=float) - reference) >= float(min_gap) - 1e-12,
+        "complete_features": int(len(complete)),
+        "complete_offset": offsets.reindex(present).to_numpy(dtype=float),
+    })
+
+
+def missingness_imbalance_warning(
+    table: pd.DataFrame,
+    method: str,
+    min_gap: float = MISSINGNESS_GAP,
+) -> str | None:
+    """The warning for `missingness_imbalance`, or None when there is nothing to say.
+
+    Only median centering and quantile normalization are concerned: both are
+    computed from each sample's observed values.
+    """
+    label = _MISSINGNESS_METHOD_LABELS.get(str(method or "none").strip().lower())
+    if label is None or table.empty or not bool(table["flagged"].any()):
+        return None
+    flagged = table[table["flagged"]].sort_values("missing_fraction", ascending=False, kind="mergesort")
+    others = table[~table["flagged"]]
+    listed = [f"{sample} ({fraction * 100:.0f}%)"
+              for sample, fraction in zip(flagged["sample"].head(6), flagged["missing_fraction"].head(6))]
+    if len(flagged) > 6:
+        listed.append(f"and {len(flagged) - 6} more")
+    message = (
+        f"Missing values differ strongly between samples: {len(flagged)} of {len(table)} samples have at "
+        f"least {min_gap * 100:.0f} percentage points more missing values than the most complete sample "
+        f"({float(table['reference_missing_fraction'].iloc[0]) * 100:.0f}%): {', '.join(listed)}. "
+        f"{label} uses each sample's observed values, and missing values are mostly low-abundance, "
+        "so these samples can be shifted down."
+    )
+    if flagged["complete_offset"].notna().all() and len(others) and others["complete_offset"].notna().all():
+        shift = float(flagged["complete_offset"].mean() - others["complete_offset"].mean())
+        message += (
+            f" On the {int(table['complete_features'].iloc[0]):,} features measured in every sample, they sit "
+            f"{abs(shift):.2f} log2 {'below' if shift < 0 else 'above'} the other samples after normalization."
+        )
+    conditions = flagged["condition"].dropna().astype(str).unique().tolist()
+    if len(conditions) == 1 and flagged["condition"].notna().all():
+        message += (
+            f" All of them are in condition {conditions[0]}, so fold changes involving "
+            f"{conditions[0]} may carry this shift."
+        )
+    return message + " Check these samples before interpreting fold changes."
+
+
 def _validate_filter_thresholds(
     min_present: int,
     method: str,
@@ -660,9 +730,9 @@ def filter_data(
     method = str(method or "at_least_n").strip().lower()
     if method not in {"at_least_n", "percentage"}:
         raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
-    # The notebook package accepts "per group" and "per_group" alike; accepting only
-    # one spelling here meant the same call worked in a notebook and failed in the
-    # web app. Normalise, then validate.
+    # All three implementations spell it `per_group` and still read the older
+    # "per group"; accepting only one spelling here once meant the same call
+    # worked in a notebook and failed in the web app. Normalise, then validate.
     mode = str(mode or "").strip().lower().replace(" ", "_")
     if mode not in {"per_group", "in_at_least_one_group", "overall"}:
         raise ValueError("Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'.")
@@ -886,8 +956,63 @@ def data_source_options(kind) -> dict[str, object]:
     }
 
 
+LOCALIZATION_COLUMN = "PTM_localization"
+
+
+def filter_localization(frame, cutoff=0.0, column=LOCALIZATION_COLUMN):
+    """Rows whose localization probability is at least `cutoff`.
+
+    A cutoff of 0 keeps every row, including rows without a probability. Above
+    0 a row without a probability (missing, non-numeric or outside 0..1) is
+    dropped: it cannot be shown to pass. A table without the column cannot be
+    filtered, so a positive cutoff on it is an error rather than a silent no-op.
+    Mirrored by `filter_localization` in the pip package and the R helpers.
+    """
+    cutoff = float(cutoff)
+    if not 0.0 <= cutoff <= 1.0:
+        raise ValueError("The localization probability cutoff must be between 0 and 1.")
+    if cutoff <= 0.0:
+        return frame.copy()
+    if column not in frame.columns:
+        raise ValueError(
+            f"A localization probability cutoff of {cutoff:.2f} needs a '{column}' column, "
+            "which this phosphosite table does not have."
+        )
+    probability = pd.to_numeric(frame[column], errors="coerce")
+    probability = probability.where(probability.between(0.0, 1.0))
+    return frame.loc[probability >= cutoff].copy()
+
+
 def select_matrix(kind, data_source="data") -> tuple[str, pd.DataFrame, pd.DataFrame]:
     """The matrix an analysis runs on. The only way to get one.
+
+    Phosphosite matrices are narrowed to the sites that pass this session's
+    localization probability cutoff (see services/phospho_localization.py), so
+    every module that reads through here analyses the same sites.
+    """
+    source, frame, metadata = _select_matrix_all_rows(kind, data_source)
+    if kind == "phospho":
+        from app.services.phospho_localization import get_localization_cutoff
+
+        cutoff = get_localization_cutoff()
+        if cutoff > 0 and LOCALIZATION_COLUMN in frame.columns:
+            kept = filter_localization(frame, cutoff)
+            if kept.empty and not frame.empty:
+                raise ValueError(
+                    f"No phosphosite has a localization probability of at least {cutoff:.2f}. "
+                    "Lower the localization probability cutoff."
+                )
+            frame = kept
+        elif cutoff > 0:
+            raise ValueError(
+                f"A localization probability cutoff of {cutoff:.2f} is set, but this phosphosite "
+                f"table has no '{LOCALIZATION_COLUMN}' column. Set the cutoff to 0."
+            )
+    return source, frame, metadata
+
+
+def _select_matrix_all_rows(kind, data_source="data") -> tuple[str, pd.DataFrame, pd.DataFrame]:
+    """The matrix an analysis runs on, before the phosphosite cutoff.
 
     Returns the resolved name, the frame and the metadata. Every unavailable or
     unrecognised request raises with a message naming what to do about it --
@@ -1011,170 +1136,70 @@ def imputed_data_available(kind):
     return len(sample_columns) == len(annotation.metadata)
 
 
-def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
-    if workflow == "Protein":
-        label_col = "ProteinNames"
-    elif workflow == "Phosphosite":
-        label_col = "PTM_Collapse_key"
-    elif workflow == "Phosphoprotein":
-        label_col = "Phosphoprotein"
-    else:
-        raise ValueError("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'")
-
-    if conditions is None:
-        conditions = meta["condition"].dropna().unique().tolist()
-    if len(conditions) < 2:
-        raise ValueError("ANOVA needs at least two conditions.")
-
-    condition_cols = {
-        condition: [col for col in meta.loc[meta["condition"] == condition, "sample"].tolist() if col in data.columns]
-        for condition in conditions
-    }
-    too_few = [condition for condition, cols in condition_cols.items() if len(cols) < 2]
-    if too_few:
-        raise ValueError("Each ANOVA condition needs at least two sample columns. Missing: " + ", ".join(map(str, too_few)))
-
-    sample_cols = [col for cols in condition_cols.values() for col in cols]
-    cols_to_use = [label_col] + sample_cols
-
-    if workflow == "Phosphoprotein":
-        # The gene column first, then the site provenance -- the same set both
-        # notebook packages carry. This copy used to omit the gene column, so a
-        # Phosphoprotein ANOVA here returned a narrower table than the same call
-        # in the pip or R package.
-        extra_cols = [
-            column
-            for column in ("Gene_group", "GeneNames")
-            if column in data.columns
-        ][:1]
-        extra_cols += [
-            column
-            for column in ("site_num", "PTM_Collapse_keys")
-            if column in data.columns
-        ]
-        cols_to_use += extra_cols
-
-    df = data[cols_to_use].copy()
-    df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
-
-    valid = np.ones(len(df), dtype=bool)
-    groups = []
-    for cols in condition_cols.values():
-        group = df[cols].to_numpy(dtype=float)
-        valid &= np.sum(~np.isnan(group), axis=1) >= 2
-        groups.append(group)
-
-    df = df.loc[valid].copy()
-    groups = [group[valid] for group in groups]
-    if df.empty:
-        # Raise rather than return an empty frame, matching both notebook
-        # packages: an empty result reads downstream as "nothing was
-        # significant" when in fact nothing could be tested.
-        raise ValueError("No rows have enough replicate values for ANOVA.")
-
-    try:
-        f_stat, pvals = stats.f_oneway(*groups, axis=1, nan_policy="omit")
-    except TypeError:
-        f_stat = np.empty(len(df), dtype=float)
-        pvals = np.empty(len(df), dtype=float)
-        for i in range(len(df)):
-            row_groups = [group[i][~np.isnan(group[i])] for group in groups]
-            f_stat[i], pvals[i] = stats.f_oneway(*row_groups)
-
-    finite = np.isfinite(pvals)
-    df = df.loc[finite].copy()
-    groups = [group[finite] for group in groups]
-    f_stat = f_stat[finite]
-    pvals = pvals[finite]
-
-    means = pd.DataFrame({
-        condition: np.nanmean(group, axis=1)
-        for condition, group in zip(condition_cols.keys(), groups)
-    }, index=df.index)
-
-    out = df[cols_to_use].copy()
-    out["f_statistic"] = f_stat
-    out["pval"] = pvals
-    out["adj_pval"] = pvals if uncorrected else multipletests(pvals, method="fdr_bh")[1]
-    out["significance"] = np.where(out["adj_pval"] < in_pval, "Significant", "Not significant")
-    out["neg_log10_adj_pval"] = -np.log10(np.clip(out["adj_pval"], np.finfo(float).tiny, None))
-
-    for condition in means.columns:
-        out[f"mean_{condition}"] = means[condition].to_numpy()
-
-    # Benjamini-Hochberg ties many features to the same adjusted p, so sorting on
-    # it alone leaves the order within those groups to whichever sort the
-    # language happens to use -- the R package returned a different one. Raw p
-    # then the label makes the order identical across all three pipelines.
-    try:
-        sort_keys = ["adj_pval", "pval", _auto_label_col(out)]
-    except ValueError:
-        sort_keys = ["adj_pval", "pval"]
-    return out.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
+IMPUTED_COUNT_PREFIX = "n_imputed__"
+IMPUTED_TOTAL_COLUMN = "imputed_values"
 
 
+def imputed_cell_mask(values, observed=None):
+    """Classify cells: -1 missing, 0 measured, 1 fully imputed, 2 partially imputed.
 
-def _warn_dropped_features(completeness, *, purpose: str = "clustering") -> None:
-    """Report dropped features where a notebook user will see them.
-
-    The web app returns this as a field and renders it beneath the plot. A
-    notebook has no such surface, so the equivalent is a warning printed under
-    the cell that produced the figure.
+    Ordinary intensities are measured or fully imputed. Collapsed values use
+    site_observed_imputed_mask to distinguish mixed contributions. None means
+    provenance is unavailable, not that nothing was imputed.
     """
-    message = completeness_message(completeness, purpose=purpose)
-    if message:
-        warnings.warn(message, RuntimeWarning, stacklevel=3)
+    present = values.apply(pd.to_numeric, errors="coerce").notna()
+    if observed is not None:
+        before = observed.reindex(index=values.index, columns=values.columns)
+        before = before.apply(pd.to_numeric, errors="coerce")
+        # -1: missing, 0: measured, 1: fully imputed, 2: partially imputed.
+        return before.isna().astype(int).where(present, -1)
+    return None
 
 
-def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True, only_significant=True, cluster_method="average", cluster_metric="euclidean", cluster_col="cluster"):
-    from scipy.cluster.hierarchy import fcluster
+def site_observed_imputed_mask(frame, sample_columns):
+    """Classify direct per-sample site contributions, not cross-sample centering effects.
 
-    if n_clusters < 1:
-        raise ValueError("n_clusters must be at least 1.")
+    Both observed and supplied site counts are required. Without them provenance
+    is unknown, not evidence of no imputation. Missing/unknown cells are -1.
+    """
+    columns = [f"site_observed__{sample}" for sample in sample_columns]
+    supplied_columns = [f"site_supplied__{sample}" for sample in sample_columns]
+    if not all(column in frame.columns for column in columns + supplied_columns):
+        return None
+    present = frame[sample_columns].apply(pd.to_numeric, errors="coerce").notna()
+    measured = frame[columns].apply(pd.to_numeric, errors="coerce").to_numpy()
+    supplied = frame[supplied_columns].apply(pd.to_numeric, errors="coerce").to_numpy()
+    known = np.isfinite(measured) & np.isfinite(supplied) & (supplied > 0) & (measured >= 0) & (measured <= supplied)
+    states = np.where(measured == 0, 1, np.where(measured < supplied, 2, 0))
+    return pd.DataFrame(states, index=frame.index, columns=sample_columns).where(present & known, -1)
 
-    sample_cols = [col for col in meta["sample"].astype(str).tolist() if col in anova_df.columns]
-    if not sample_cols:
-        raise ValueError("No sample columns from meta were found in anova_df.")
 
-    if only_significant and "adj_pval" in anova_df.columns:
-        cluster_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
-    else:
-        cluster_df = anova_df.copy()
+def imputed_value_counts(mask, groups):
+    """Count measured, fully imputed and partially imputed values per condition.
 
-    if cluster_df.empty:
-        cluster_df.insert(1, cluster_col, pd.Series(index=cluster_df.index, dtype="int64"))
-        return cluster_df.reset_index(drop=True)
+    n_imputed__<group> and imputed_values include both imputed categories.
+    Missing/unknown cells are not counted as measured. Statistical calculations
+    are unchanged; imputed values still enter tests as observations.
+    """
+    counts = pd.DataFrame(index=mask.index)
+    total = np.zeros(len(mask), dtype=int)
+    for group, columns in groups.items():
+        values = mask[list(columns)]
+        for state, name in ((0, "measured"), (1, "fully_imputed"), (2, "partially_imputed")):
+            counts[f"n_{name}__{group}"] = values.eq(state).sum(axis=1).astype(int).to_numpy()
+        column_count = values.isin([1, 2]).sum(axis=1).astype(int).to_numpy()
+        counts[f"{IMPUTED_COUNT_PREFIX}{group}"] = column_count
+        total = total + column_count
+    counts[IMPUTED_TOTAL_COLUMN] = total
+    return counts
 
-    matrix = cluster_df[sample_cols].to_numpy(dtype=float)
-    if matrix.shape[0] > 1:
-        matrix, completeness = drop_incomplete_features(matrix, context="ANOVA clustering")
-        cluster_df = cluster_df.loc[completeness.kept]
-        _warn_dropped_features(completeness, purpose="clustering")
-    if z_score:
-        matrix = row_zscore(matrix)
 
-    if matrix.shape[0] <= 1:
-        cluster_df[cluster_col] = 1
-        return cluster_df.reset_index(drop=True)
-
-    row_linkage = linkage(matrix, method=cluster_method, metric=cluster_metric)
-    row_order = leaves_list(row_linkage)
-    raw_clusters = fcluster(row_linkage, t=n_clusters, criterion="maxclust")
-    ordered_clusters = raw_clusters[row_order]
-
-    cluster_map = {}
-    relabeled_clusters = []
-    for cluster_id in ordered_clusters:
-        if cluster_id not in cluster_map:
-            cluster_map[cluster_id] = len(cluster_map) + 1
-        relabeled_clusters.append(cluster_map[cluster_id])
-
-    cluster_df = cluster_df.iloc[row_order].copy()
-    if cluster_col in cluster_df.columns:
-        cluster_df = cluster_df.drop(columns=[cluster_col])
-    cluster_df.insert(1, cluster_col, relabeled_clusters)
-    return cluster_df.reset_index(drop=True)
-
+def _significance_pval_column(table):
+    """The p-value column significance is called on: `selected_pval`, or `adj_pval` in older tables."""
+    for column in ("selected_pval", "adj_pval"):
+        if column in table.columns:
+            return column
+    return None
 
 
 def constant_within_group(values):
@@ -1264,8 +1289,8 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
     if len(condition_cols) < 3:
         return pd.DataFrame()
 
-    if only_significant and "adj_pval" in anova_df.columns:
-        posthoc_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
+    if only_significant and _significance_pval_column(anova_df):
+        posthoc_df = anova_df[anova_df[_significance_pval_column(anova_df)] < in_pval].copy()
     else:
         posthoc_df = anova_df.copy()
     if posthoc_df.empty:
@@ -1403,291 +1428,6 @@ def _auto_label_col(frame: pd.DataFrame) -> str:
         return "GeneNames"
     raise ValueError("No supported label column was found.")
 
-
-def anova_plot(
-    anova_df,
-    meta,
-    in_pval=0.05,
-    z_score=True,
-    cluster_rows=True,
-    cluster_samples=True,
-    cluster_method="average",
-    cluster_metric="euclidean",
-    show_gene_names=False,
-    show_condition_legend=False,
-    show_dendrograms=True,
-    width=12,
-    height=10,
-    dpi=150,
-):
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-    from scipy.cluster.hierarchy import dendrogram, leaves_list, linkage
-
-    if anova_df.empty:
-        fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-        ax.set_axis_off()
-        ax.set_title("ANOVA heatmap")
-        return fig
-
-    label_col = _auto_label_col(anova_df)
-    meta_plot = meta.copy()
-    meta_plot["sample"] = meta_plot["sample"].astype(str)
-    meta_plot["condition"] = meta_plot["condition"].astype(str)
-    if "new_sample" in meta_plot.columns:
-        meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
-    else:
-        meta_plot["plot_sample"] = condition_sample_labels(meta_plot)
-
-    sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_df.columns]
-    if not sample_cols:
-        raise ValueError("No sample columns from meta were found in anova_df.")
-
-    plot_df = anova_df[anova_df["adj_pval"] < in_pval].copy() if "adj_pval" in anova_df.columns else anova_df.copy()
-    if plot_df.empty:
-        plot_df = anova_df.copy()
-
-    raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
-    if (cluster_rows and raw_matrix.shape[0] > 1) or (
-        cluster_samples and raw_matrix.shape[1] > 1
-    ):
-        _, completeness = drop_incomplete_features(raw_matrix, context="ANOVA heatmap")
-        plot_df = plot_df.loc[completeness.kept]
-        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
-        _warn_dropped_features(completeness, purpose="clustering")
-    missing_mask = ~np.isfinite(raw_matrix)
-    matrix = raw_matrix.copy()
-    labels = plot_df[label_col].astype(str).tolist()
-
-    if z_score:
-        matrix = row_zscore(matrix)
-        cmap = "RdBu_r"
-        color_label = "row z-score"
-        vmin, vmax = -2.5, 2.5
-    else:
-        cmap = "viridis"
-        color_label = "intensity"
-        vmin = vmax = None
-
-    display_mask = missing_mask | ~np.isfinite(matrix)
-    display_matrix = np.ma.array(matrix, mask=display_mask)
-    cluster_matrix = matrix.copy()
-    row_linkage = None
-    col_linkage = None
-
-    if cluster_rows and matrix.shape[0] > 1:
-        row_linkage = linkage(cluster_matrix, method=cluster_method, metric=cluster_metric)
-        row_order = leaves_list(row_linkage)
-        display_matrix = display_matrix[row_order]
-        cluster_matrix = cluster_matrix[row_order]
-        labels = [labels[i] for i in row_order]
-        plot_df = plot_df.iloc[row_order]
-
-    if cluster_samples and matrix.shape[1] > 1:
-        col_linkage = linkage(cluster_matrix.T, method=cluster_method, metric=cluster_metric)
-        col_order = leaves_list(col_linkage)
-        display_matrix = display_matrix[:, col_order]
-        sample_cols = [sample_cols[i] for i in col_order]
-
-    sample_to_condition = dict(zip(meta_plot["sample"], meta_plot["condition"]))
-    sample_to_label = dict(zip(meta_plot["sample"], meta_plot["plot_sample"]))
-    conditions = [sample_to_condition.get(sample, "") for sample in sample_cols]
-    x_labels = [sample_to_label.get(sample, sample) for sample in sample_cols]
-
-    unique_conditions = list(dict.fromkeys(conditions))
-    palette = plt.cm.tab20(np.linspace(0, 1, max(len(unique_conditions), 1)))
-    condition_colors = {condition: palette[i % len(palette)] for i, condition in enumerate(unique_conditions)}
-    condition_strip = np.array([[condition_colors[condition] for condition in conditions]])
-
-    fig = plt.figure(figsize=(width, height), dpi=dpi)
-    grid = fig.add_gridspec(3, 3, height_ratios=[0.16, 0.025, 1.0], width_ratios=[0.10, 1.0, 0.035], hspace=0.02, wspace=0.03)
-    ax_corner = fig.add_subplot(grid[0, 0])
-    ax_col_dendrogram = fig.add_subplot(grid[0, 1])
-    ax_top_blank = fig.add_subplot(grid[0, 2])
-    ax_strip_left = fig.add_subplot(grid[1, 0])
-    ax_strip = fig.add_subplot(grid[1, 1])
-    ax_strip_right = fig.add_subplot(grid[1, 2])
-    ax_row_dendrogram = fig.add_subplot(grid[2, 0])
-    ax = fig.add_subplot(grid[2, 1])
-    cax = fig.add_subplot(grid[2, 2])
-
-    for blank_ax in [ax_corner, ax_top_blank, ax_strip_left, ax_strip_right]:
-        blank_ax.set_axis_off()
-
-    if show_dendrograms and col_linkage is not None:
-        dendrogram(col_linkage, ax=ax_col_dendrogram, no_labels=True, color_threshold=0, above_threshold_color="black", link_color_func=lambda _: "black")
-    ax_col_dendrogram.set_axis_off()
-
-    if show_dendrograms and row_linkage is not None:
-        dendrogram(row_linkage, ax=ax_row_dendrogram, orientation="left", no_labels=True, color_threshold=0, above_threshold_color="black", link_color_func=lambda _: "black")
-        # scipy draws leaf 0 at the bottom of a left-oriented dendrogram while
-        # imshow draws row 0 at the top; flip the axis so branches meet their rows.
-        ax_row_dendrogram.invert_yaxis()
-    ax_row_dendrogram.set_axis_off()
-
-    ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
-    ax_strip.set_axis_off()
-
-    plot_cmap = plt.get_cmap(cmap).copy()
-    plot_cmap.set_bad("#d8d8d8")
-    image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=plot_cmap, vmin=vmin, vmax=vmax)
-    ax.set_xlabel("samples")
-    ax.set_ylabel("")
-    ax.set_xticks(np.arange(len(sample_cols)))
-    ax.set_xticklabels(x_labels, rotation=90, fontsize=5)
-    if show_gene_names:
-        ax.set_yticks(np.arange(len(labels)))
-        ax.set_yticklabels(labels, fontsize=5)
-    else:
-        ax.set_yticks([])
-
-    colorbar = fig.colorbar(image, cax=cax)
-    colorbar.set_label(color_label)
-
-    legend_handles = [Patch(facecolor=condition_colors[condition], label=condition) for condition in unique_conditions]
-    if show_condition_legend and legend_handles:
-        ax_top_blank.legend(handles=legend_handles, loc="upper left", frameon=False, fontsize=7, borderaxespad=0)
-
-    fig.suptitle(f"ANOVA heatmap ({len(plot_df)} rows)", y=0.965)
-    fig.subplots_adjust(left=0.04, right=0.90, top=0.91, bottom=0.16)
-    return fig
-
-
-def anova_plot_cluster(
-    anova_cluster_df,
-    meta,
-    cluster_col="cluster",
-    z_score=True,
-    cluster_samples=True,
-    cluster_method="average",
-    cluster_metric="euclidean",
-    show_gene_names=False,
-    show_condition_legend=False,
-    show_cluster_legend=True,
-    max_cluster_legend=12,
-    show_dendrogram=True,
-    width=12,
-    height=10,
-    dpi=150,
-):
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-    from scipy.cluster.hierarchy import dendrogram, leaves_list, linkage
-
-    if cluster_col not in anova_cluster_df.columns:
-        raise ValueError(f"anova_cluster_df must contain a '{cluster_col}' column from anova_cluster_data().")
-    if anova_cluster_df.empty:
-        fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
-        ax.set_axis_off()
-        ax.set_title("ANOVA cluster heatmap")
-        return fig
-
-    label_col = _auto_label_col(anova_cluster_df)
-    meta_plot = meta.copy()
-    meta_plot["sample"] = meta_plot["sample"].astype(str)
-    meta_plot["condition"] = meta_plot["condition"].astype(str)
-    if "new_sample" in meta_plot.columns:
-        meta_plot["plot_sample"] = meta_plot["new_sample"].astype(str)
-    else:
-        meta_plot["plot_sample"] = condition_sample_labels(meta_plot)
-
-    sample_cols = [col for col in meta_plot["sample"].tolist() if col in anova_cluster_df.columns]
-    if not sample_cols:
-        raise ValueError("anova_cluster_df must contain the original sample columns from anova_data_f().")
-
-    plot_df = anova_cluster_df.copy()
-    raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
-    if cluster_samples and raw_matrix.shape[1] > 1:
-        _, completeness = drop_incomplete_features(
-            raw_matrix, context="ANOVA cluster heatmap"
-        )
-        plot_df = plot_df.loc[completeness.kept]
-        raw_matrix = plot_df[sample_cols].to_numpy(dtype=float)
-        _warn_dropped_features(completeness, purpose="clustering")
-    missing_mask = ~np.isfinite(raw_matrix)
-    matrix = raw_matrix.copy()
-    labels = plot_df[label_col].astype(str).tolist()
-
-    if z_score:
-        matrix = row_zscore(matrix)
-        cmap = "RdBu_r"
-        color_label = "row z-score"
-        vmin, vmax = -2.5, 2.5
-    else:
-        cmap = "viridis"
-        color_label = "intensity"
-        vmin = vmax = None
-
-    display_matrix = np.ma.array(matrix, mask=missing_mask | ~np.isfinite(matrix))
-    cluster_matrix = matrix.copy()
-    col_linkage = None
-    if cluster_samples and matrix.shape[1] > 1:
-        col_linkage = linkage(cluster_matrix.T, method=cluster_method, metric=cluster_metric)
-        col_order = leaves_list(col_linkage)
-        display_matrix = display_matrix[:, col_order]
-        sample_cols = [sample_cols[i] for i in col_order]
-
-    sample_to_condition = dict(zip(meta_plot["sample"], meta_plot["condition"]))
-    sample_to_label = dict(zip(meta_plot["sample"], meta_plot["plot_sample"]))
-    conditions = [sample_to_condition.get(sample, "") for sample in sample_cols]
-    x_labels = [sample_to_label.get(sample, sample) for sample in sample_cols]
-
-    unique_conditions = list(dict.fromkeys(conditions))
-    condition_palette = plt.cm.tab20(np.linspace(0, 1, max(len(unique_conditions), 1)))
-    condition_colors = {condition: condition_palette[i % len(condition_palette)] for i, condition in enumerate(unique_conditions)}
-    condition_strip = np.array([[condition_colors[condition] for condition in conditions]])
-
-    cluster_values = plot_df[cluster_col].tolist()
-    unique_clusters = list(dict.fromkeys(cluster_values))
-    cluster_palette = plt.cm.tab20b(np.linspace(0, 1, max(len(unique_clusters), 1)))
-    cluster_colors = {cluster: cluster_palette[i % len(cluster_palette)] for i, cluster in enumerate(unique_clusters)}
-    cluster_strip = np.array([[cluster_colors[cluster]] for cluster in cluster_values])
-
-    fig = plt.figure(figsize=(width, height), dpi=dpi)
-    grid = fig.add_gridspec(3, 4, height_ratios=[0.16, 0.025, 1.0], width_ratios=[0.025, 1.0, 0.035, 0.12], hspace=0.02, wspace=0.04)
-    ax_col_dendrogram = fig.add_subplot(grid[0, 1])
-    ax_strip = fig.add_subplot(grid[1, 1])
-    ax_cluster = fig.add_subplot(grid[2, 0])
-    ax = fig.add_subplot(grid[2, 1])
-    cax = fig.add_subplot(grid[2, 2])
-    ax_legend = fig.add_subplot(grid[:, 3])
-    ax_legend.set_axis_off()
-
-    if show_dendrogram and col_linkage is not None:
-        dendrogram(col_linkage, ax=ax_col_dendrogram, no_labels=True, color_threshold=0, above_threshold_color="black", link_color_func=lambda _: "black")
-    ax_col_dendrogram.set_axis_off()
-    ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
-    ax_strip.set_axis_off()
-    ax_cluster.imshow(cluster_strip, aspect="auto", interpolation="nearest")
-    ax_cluster.set_axis_off()
-
-    plot_cmap = plt.get_cmap(cmap).copy()
-    plot_cmap.set_bad("#d8d8d8")
-    image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=plot_cmap, vmin=vmin, vmax=vmax)
-    ax.set_xlabel("samples")
-    ax.set_ylabel("")
-    ax.set_xticks(np.arange(len(sample_cols)))
-    ax.set_xticklabels(x_labels, rotation=90, fontsize=5)
-    if show_gene_names:
-        ax.set_yticks(np.arange(len(labels)))
-        ax.set_yticklabels(labels, fontsize=5)
-    else:
-        ax.set_yticks([])
-
-    colorbar = fig.colorbar(image, cax=cax)
-    colorbar.set_label(color_label)
-
-    legend_handles = []
-    if show_cluster_legend:
-        legend_handles.extend([Patch(facecolor=cluster_colors[cluster], label=f"cluster {cluster}") for cluster in unique_clusters[:max_cluster_legend]])
-    if show_condition_legend:
-        legend_handles.extend([Patch(facecolor=condition_colors[condition], label=condition) for condition in unique_conditions])
-    if legend_handles:
-        ax_legend.legend(handles=legend_handles, loc="upper left", frameon=False, fontsize=7, borderaxespad=0)
-
-    fig.suptitle(f"ANOVA cluster heatmap ({len(plot_df)} rows)", y=0.965)
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.91, bottom=0.16)
-    return fig
 
 def histogram(values: np.ndarray, bins: int = 30) -> list[tuple[float, float, int]]:
     clean = values[~np.isnan(values)]

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 
-import os
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -19,7 +18,6 @@ from app.schemas.dataset import (
     DatasetPackageCreateRequest,
     DatasetPackageRenameRequest,
     DatasetPreviewResponse,
-    DatasetPackagesResponse,
     MetadataProfileCreateRequest,
     MetadataProfileDeleteRequest,
     MetadataProfileRenameRequest,
@@ -65,16 +63,16 @@ from app.services.metadata_upload_store import (
 )
 from app.services.peptide_metadata_store import clear_peptide_metadata
 from app.services.upload_limits import ensure_upload_size
+from app.services.env_settings import env_flag
 
 LOGGER = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
 def _viewer_mode_enabled() -> bool:
-    return str(os.getenv("COPYLOT_VIEWER_MODE", "")).strip().lower() in TRUTHY_VALUES
+    return env_flag("COPYLOT_VIEWER_MODE")
 
 
 def _include_empty_packages() -> bool:
@@ -395,14 +393,6 @@ def upload_peptide_file(
 @router.get("/current", response_model=CurrentDatasetsResponse)
 def get_current_datasets() -> CurrentDatasetsResponse:
     return _current_datasets_response()
-
-
-@router.get("/packages", response_model=DatasetPackagesResponse)
-def get_dataset_packages() -> DatasetPackagesResponse:
-    return DatasetPackagesResponse(
-        activePackage=get_active_package(),
-        availablePackages=list_packages(include_empty=_include_empty_packages()),
-    )
 
 
 @router.post("/packages/create", response_model=CurrentDatasetsResponse)

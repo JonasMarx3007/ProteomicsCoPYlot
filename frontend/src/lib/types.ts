@@ -33,10 +33,6 @@ export type AdvancedPlotSettings = {
   xTickLabelRotation?: number;
   yTickLabelRotation?: number;
   legendFontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  textXOffset?: number;
-  textYOffset?: number;
   legendXOffset?: number;
   legendYOffset?: number;
   // The legend as an element rather than just a font size. `legendVisible` and
@@ -123,7 +119,6 @@ export type AdvancedPlotSettings = {
   backgroundColor?: string;
   transparentBackground?: boolean;
   plotTheme?: string;
-  axisLineVisible?: boolean;
   axisLineColor?: string;
   axisLineWidth?: number;
   axisLineStyle?: string;
@@ -174,11 +169,6 @@ export type CurrentDatasetsResponse = {
   phospho: DatasetPreviewResponse | null;
   phosprot: DatasetPreviewResponse | null;
   peptide: PeptidePathResponse | null;
-};
-
-export type DatasetPackagesResponse = {
-  activePackage: string;
-  availablePackages: string[];
 };
 
 export type ConditionAssignment = {
@@ -251,6 +241,7 @@ export type Log2DetectionResponse = {
   isLog2Transformed: boolean | null;
   sampleCount: number;
   reason: string;
+  scaleHint?: string | null;
 };
 
 export type AnnotationImputationInfo = {
@@ -340,6 +331,7 @@ export type PeptideQuantityOptionsResponse = {
 export type PeptideSpecies = "human" | "mouse";
 
 export type PeptideCoverageResponse = {
+  notebookToken?: string | null;
   protein: string;
   species: PeptideSpecies;
   coveragePercent: number;
@@ -369,6 +361,11 @@ export const NORMALIZATION_LABELS: Record<NormalizationMethod, string> = {
   quantile: "Quantile normalization",
   vsn: "VSN",
 };
+
+/** The normalizations the annotation page offers; VSN only where R can run it. */
+export function normalizationOptions(vsnAvailable: boolean): NormalizationMethod[] {
+  return vsnAvailable ? ["none", "median", "quantile", "vsn"] : ["none", "median", "quantile"];
+}
 
 export const DATA_SOURCE_LABELS: Record<DataSource, string> = {
   data: "Data",
@@ -530,47 +527,6 @@ export type CompletenessTablesResponse = {
   featureSummary: Record<string, unknown>[];
 };
 
-export type SampleMetricPoint = {
-  sample: string;
-  value: number;
-};
-
-export type BoxplotPoint = {
-  sample: string;
-  min: number;
-  q1: number;
-  median: number;
-  q3: number;
-  max: number;
-};
-
-/**
- * Replicate CV for one condition, summarised across features. CV is computed
- * per feature across a condition's replicates on the linear intensity scale;
- * it is deliberately per-condition rather than per-sample, because a single
- * sample has no replicates to vary across.
- */
-export type ConditionCvPoint = {
-  condition: string;
-  mean: number;
-  median: number;
-  q1: number;
-  q3: number;
-  lowerWhisker: number;
-  upperWhisker: number;
-};
-
-export type QcSummaryResponse = {
-  kind: AnnotationKind;
-  sourceUsed: ResolvedSource;
-  sampleColumns: string[];
-  coverage: SampleMetricPoint[];
-  intensityHistogram: HistogramBin[];
-  boxplot: BoxplotPoint[];
-  cv: ConditionCvPoint[];
-  warnings: string[];
-};
-
 /**
  * How many features the PCA projection is actually built from. Dimensionality
  * reduction drops any feature with a missing value, so the projection can rest
@@ -586,6 +542,8 @@ export type QcPcaFeatureSummary = {
    * should carry no caption about how the tool drew it -- so this notice is
    * the only place the omission is stated. */
   ellipseSkippedGroups: string[];
+  /** Set when UMAP or t-SNE settings exceed what the number of samples supports. */
+  smallSampleNotice?: string | null;
   /** Present when the cluster method is DBSCAN: the radius actually used,
    * as factor x median pairwise sample distance in the projection. */
   dbscan: { epsFactor: number; medianSampleDistance: number; epsEffective: number } | null;
@@ -626,7 +584,7 @@ export type SimulationTestType = "unpaired" | "unpaired_welch";
 export type AnovaSource = "anova" | "anova_cluster";
 export type AnovaPostHoc = "none" | "tukey";
 // Mirrors AnovaClusterMethod in backend/app/schemas/stats.py; the union and the
-// selector options are held to it by tests/repository/test_frontend_backend_enums.py.
+// selector options are held to it by tests/contracts/test_frontend_backend_enums.py.
 export type AnovaClusterMethod =
   | "average"
   | "ward"
@@ -687,6 +645,8 @@ export type VolcanoResultResponse = {
   notSignificantCount: number;
   rows: Record<string, unknown>[];
   warnings: string[];
+  /** Rows the t-test could not use (fewer than 2 values in a compared condition). */
+  untestedRows?: Record<string, unknown>[];
 };
 
 /** Which Gene Ontology database the query is matched against. One entry today;
@@ -903,6 +863,7 @@ export type PhosphoOptionsResponse = {
 
 export type PhosphoTableResponse = {
   rows: Record<string, unknown>[];
+  notebookToken?: string | null;
 };
 
 export type ComparisonTab = "pearson" | "venn";
@@ -922,46 +883,6 @@ export type ComparisonTableResponse = {
 };
 
 export type ExternalTab = "peptideCollapse" | "gonetView";
-
-export type SummaryTableBlock = {
-  key: string;
-  title: string;
-  rows: Record<string, unknown>[];
-  rowCount: number;
-  available: boolean;
-  message: string | null;
-};
-
-export type SummarySectionInfo = {
-  key: string;
-  title: string;
-  group: string;
-  description: string;
-};
-
-export type SummarySectionNote = {
-  above: string;
-  below: string;
-};
-
-export type PeptideCollapseRequest = {
-  inputPath: string;
-  outputPath: string | null;
-  cutoff: number;
-};
-
-export type PeptideCollapseResponse = {
-  success: boolean;
-  inputPath: string;
-  outputPath: string | null;
-  cutoff: number;
-  rows: number | null;
-  columns: number | null;
-  columnNames: string[];
-  preview: Record<string, unknown>[];
-  logs: string;
-  error: string | null;
-};
 
 export type SummaryMetadataTable = {
   kind: AnnotationKind;
@@ -988,6 +909,9 @@ export type SummaryReportResponse = {
   fileName: string;
   html: string;
   warnings: string[];
+  notebookToken?: string | null;
+  notebookError?: string | null;
+  notebookOmitted?: string[];
 };
 
 export type ConditionPaletteResponse = {

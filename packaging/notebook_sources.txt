@@ -1,0 +1,31 @@
+# Backend modules bundled into the desktop builds as "notebook_sources".
+# The notebook export reads function source text from these files at run time
+# (notebook_qc._source and friends), so a frozen build needs them as data.
+# Read by packaging/windows/build_exe_windows.ps1 and
+# packaging/macos/build_all_macos_variants.sh; one file name per line, from
+# backend/app/services/. proteomicscopylot/notebook_functions.py and LICENSE
+# are added by the scripts themselves.
+plot_images.py
+plot_styling.py
+plot_export.py
+plotting_common.py
+table_functions.py
+functions.py
+plot_webgl.py
+html_security.py
+completeness_tools.py
+stats_tools.py
+stats_core.py
+clustering_tools.py
+peptide_tools.py
+single_protein_tools.py
+phospho_tools.py
+comparison_tools.py
+dataset_reader.py
+id_translation.py
+annotation_processor.py
+phosprot_tools.py
+r_vsn.py
+notebook_preprocessing.py
+notebook_report.py
+notebook_peptide_preprocessing.py

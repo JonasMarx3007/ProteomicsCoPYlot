@@ -70,3 +70,7 @@ class SummaryReportResponse(BaseModel):
     fileName: str
     html: str
     warnings: list[str] = Field(default_factory=list)
+    notebookToken: str | None = None
+    notebookError: str | None = None
+    # Report sections the notebook leaves out because their export could not be prepared.
+    notebookOmitted: list[str] = Field(default_factory=list)

@@ -10,7 +10,7 @@
  * figure's size either -- otherwise a width typed for the print figure would
  * quietly change the interactive one, through a control that is not on screen.
  *
- * `frontend/tests/plot-render-type-rule.test.mjs` holds every pair to this.
+ * `frontend/tests/unit/plot-render-type-rule.test.tsx` holds every pair to this.
  */
 
 export const STATIC_SIZE_KEYS = ["widthCm", "heightCm", "dpi"] as const;

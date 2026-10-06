@@ -20,7 +20,8 @@ $DataDbDir = Join-Path $RootDir "data\db"
 $DataReportDir = Join-Path $RootDir "data\report"
 $PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $IconPath = Join-Path $FrontendDir "public\favicon.ico"
-$FrontendModeMarker = Join-Path $FrontendDir "dist\.copylot_mode.txt"
+# Written by the Vite build (frontend/vite.config.ts); launch.py reads the same file.
+$FrontendModeMarker = Join-Path $FrontendDir "dist\build-mode.json"
 $SpecDir = Join-Path $RootDir "build\specs"
 $ViewerBundleRoot = Join-Path $RootDir "build\viewer_bundle"
 $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
@@ -108,8 +109,6 @@ if (-not $SkipFrontendBuild) {
   finally {
     Pop-Location
   }
-
-  Set-Content -Path $FrontendModeMarker -Value $FrontendTargetMode -NoNewline
 }
 
 $FrontendIndex = Join-Path $FrontendDir "dist\index.html"
@@ -121,7 +120,8 @@ if (-not (Test-Path $FrontendModeMarker)) {
   throw "Frontend mode marker missing. Rebuild frontend without -SkipFrontendBuild."
 }
 
-$CurrentFrontendMode = (Get-Content -Path $FrontendModeMarker -Raw).Trim().ToLowerInvariant()
+$CurrentFrontendMode = [string]((Get-Content -Path $FrontendModeMarker -Raw | ConvertFrom-Json).appMode)
+$CurrentFrontendMode = $CurrentFrontendMode.Trim().ToLowerInvariant()
 if ($CurrentFrontendMode -ne $FrontendTargetMode) {
   throw "Frontend dist was built for mode '$CurrentFrontendMode' but target '$Target' requires '$FrontendTargetMode'. Rebuild without -SkipFrontendBuild."
 }
@@ -181,6 +181,20 @@ function Invoke-PyInstallerBuild {
   foreach ($viewerDataSpec in $ViewerDataAddData) {
     $pyInstallerArgs += @("--add-data", $viewerDataSpec)
   }
+  $notebookSources = Get-Content -Path (Join-Path $RootDir "packaging\notebook_sources.txt") |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith("#") }
+  foreach ($notebookSource in $notebookSources) {
+    $pyInstallerArgs += @("--add-data", "$(Join-Path $BackendDir "app\services\$notebookSource");notebook_sources")
+  }
+  $notebookDistributions = Get-Content -Path (Join-Path $RootDir "packaging\notebook_distributions.txt") |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith("#") }
+  foreach ($notebookDistribution in $notebookDistributions) {
+    $pyInstallerArgs += @("--copy-metadata", $notebookDistribution)
+  }
+  $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "proteomicscopylot\notebook_functions.py");notebook_sources")
+  $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "LICENSE");notebook_sources")
   $pyInstallerArgs += $EntryPoint
 
   & $PythonExe -m PyInstaller @pyInstallerArgs

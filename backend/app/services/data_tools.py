@@ -156,7 +156,9 @@ def _persist_imputation_result(
     annotation = get_annotation(payload.kind)
     if annotation is None:
         return
+    from app.app_version import APP_VERSION
     imputation_info = AnnotationImputationInfo(
+        toolVersion=APP_VERSION,
         mode=payload.method,
         applied=True,
         qValue=payload.qValue,
@@ -185,6 +187,7 @@ def _persist_imputation_result(
         imputation=imputation_info,
         imputed_data=imputed_data,
         phosprot_aggregation=getattr(annotation, "phosprot_aggregation", None),
+        phosprot_lineage=getattr(annotation, "phosprot_lineage", None),
     )
 
 

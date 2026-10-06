@@ -156,6 +156,11 @@ def _frame_and_meta(kind: AnnotationKind) -> tuple[pd.DataFrame, pd.DataFrame]:
     annotation = get_annotation(kind)
     if annotation is not None and not annotation.source_data.empty:
         frame = annotation.source_data.copy()
+    if kind == "phospho":
+        # The same sites every other phosphosite module sees.
+        from app.services.phospho_localization import apply_session_localization_cutoff
+
+        frame = apply_session_localization_cutoff(frame)
 
     sample_columns = _get_sample_columns(kind, frame)
     if not sample_columns:
@@ -258,6 +263,24 @@ def completeness_missing_value_plot(
     )
 
 
+def completeness_peptide_matrix(level: str, quantity_column: str | None = None) -> pd.DataFrame:
+    from app.services.peptide_tools import get_peptide_frame
+
+    if level not in {"peptide", "precursor"}:
+        raise ValueError("Choose peptide or precursor completeness.")
+    frame = get_peptide_frame()
+    file_col = _peptide_file_column(frame)
+    feature_col = _peptide_sequence_column(frame) if level == "peptide" else _peptide_precursor_column(frame)
+    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
+    pivot = frame.pivot_table(index=feature_col, columns=file_col, values=quantity_col, aggfunc="max")
+    sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
+    if not sample_cols:
+        raise ValueError("Selected peptide samples have no usable quantity values.")
+    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols)
+    matrix.attrs.update(feature_column=feature_col, quantity_column=quantity_col)
+    return matrix
+
+
 def completeness_missing_value_plot_peptide(
     *,
     bin_count: int = 0,
@@ -271,22 +294,7 @@ def completeness_missing_value_plot_peptide(
     advanced: dict | None = None,
     quantity_column: str | None = None,
 ) -> bytes:
-    from app.services.peptide_tools import get_peptide_frame
-
-    frame = get_peptide_frame()
-    file_col = _peptide_file_column(frame)
-    seq_col = _peptide_sequence_column(frame)
-    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
-    pivot = frame.pivot_table(
-        index=seq_col,
-        columns=file_col,
-        values=quantity_col,
-        aggfunc="max",
-    )
-    sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
-    if not sample_cols:
-        raise ValueError("Selected peptide samples have no usable quantity values.")
-    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols)
+    matrix = completeness_peptide_matrix("peptide", quantity_column)
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Peptide",
@@ -315,24 +323,7 @@ def completeness_missing_value_plot_precursor(
     advanced: dict | None = None,
     quantity_column: str | None = None,
 ) -> bytes:
-    from app.services.peptide_tools import get_peptide_frame
-
-    frame = get_peptide_frame()
-    file_col = _peptide_file_column(frame)
-    precursor_col = _peptide_precursor_column(frame)
-    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
-    pivot = frame.pivot_table(
-        index=precursor_col,
-        columns=file_col,
-        values=quantity_col,
-        # "max" matches the peptide pivot above. "first" was order-dependent, so
-        # two exports of the same search gave different precursor completeness.
-        aggfunc="max",
-    )
-    sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
-    if not sample_cols:
-        raise ValueError("Selected peptide samples have no usable quantity values.")
-    matrix = raw_zero_to_nan(pivot[sample_cols], sample_cols)
+    matrix = completeness_peptide_matrix("precursor", quantity_column)
     return _missing_value_plot_from_matrix(
         matrix,
         title_label="Precursor",

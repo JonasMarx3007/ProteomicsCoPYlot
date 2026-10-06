@@ -428,8 +428,13 @@ def _rename_samples(data, meta):
     return data.rename(columns=dict(zip(meta["sample"], meta["new_sample"])))
 
 
-def _raw_zero_to_nan(data: pd.DataFrame, sample_columns) -> pd.DataFrame:
-    """Convert raw non-detections without touching transformed/annotation zeros."""
+def raw_zero_to_nan(data: pd.DataFrame, sample_columns) -> pd.DataFrame:
+    """Read 0 (and +/-inf) in raw, linear intensities as not measured.
+
+    Only the named sample columns change; annotation columns and values on a
+    log2 scale, where 0 is a real measurement, are left alone. Same name and
+    rule in the app and the R package.
+    """
     output = data.copy()
     present = [column for column in map(str, sample_columns) if column in output.columns]
     if present:
@@ -472,7 +477,7 @@ def _prepare_intensity_data(
 
 def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     annotated_columns = meta['sample'].tolist()
-    data_filtered = _raw_zero_to_nan(data[annotated_columns], annotated_columns)
+    data_filtered = raw_zero_to_nan(data[annotated_columns], annotated_columns)
     log2_data = np.log2(data_filtered)
 
     remaining_columns = [col for col in data.columns if col not in annotated_columns]
@@ -618,7 +623,7 @@ def _validate_sample_values(data, meta, threshold=0.2):
     return data
 
 
-def filter_data(data, meta, num, mode="per group", method="at_least_n", percentage=70):
+def filter_data(data, meta, num, mode="per_group", method="at_least_n", percentage=70):
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
     meta = meta.copy()
@@ -627,14 +632,16 @@ def filter_data(data, meta, num, mode="per group", method="at_least_n", percenta
     annotated_columns = meta['sample'].tolist()
     data_filtered = data[annotated_columns].copy()
     method = str(method).strip().lower()
-    mode = str(mode).strip().lower().replace("_", " ")
+    # One spelling everywhere since 2026-10-02 (`per_group`, as the app uses);
+    # the older "per group" with a space is still read the same way.
+    mode = str(mode).strip().lower().replace(" ", "_")
     if method not in {"at_least_n", "percentage"}:
         raise ValueError("Filter method must be 'at_least_n' or 'percentage'.")
     # An unrecognised mode used to fall through to the `any` branch, silently
     # applying the most permissive filter of the three: a misspelling retained
     # features present in only one condition, which is what `per_group` exists
     # to exclude.
-    if mode not in {"per group", "in at least one group", "overall"}:
+    if mode not in {"per_group", "in_at_least_one_group", "overall"}:
         raise ValueError(
             "Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'."
         )
@@ -656,9 +663,37 @@ def filter_data(data, meta, num, mode="per group", method="at_least_n", percenta
                 mask[cond] = valid / len(cols) >= percentage / 100
             else:
                 mask[cond] = valid >= num
-        rows_to_keep = mask.all(axis=1) if mode == "per group" else mask.any(axis=1)
+        rows_to_keep = mask.all(axis=1) if mode == "per_group" else mask.any(axis=1)
 
     return data.loc[rows_to_keep]
+
+
+LOCALIZATION_COLUMN = "PTM_localization"
+
+
+def filter_localization(data, cutoff=0.0, column=LOCALIZATION_COLUMN):
+    """Phosphosites whose localization probability is at least `cutoff`.
+
+    0 keeps every row, including rows without a probability. Above 0 a row
+    without a probability (missing, non-numeric or outside 0..1) is dropped,
+    because it cannot be shown to pass. Use it on a phosphosite table before a
+    generic function (volcano, QC, PCA, ...) to reproduce the application's
+    localization probability cutoff; the phospho-specific functions take
+    `localization_cutoff=` directly. Mirrors the backend and the R helper.
+    """
+    cutoff = float(cutoff)
+    if not 0.0 <= cutoff <= 1.0:
+        raise ValueError("The localization probability cutoff must be between 0 and 1.")
+    if cutoff <= 0.0:
+        return data.copy()
+    if column not in data.columns:
+        raise ValueError(
+            f"A localization probability cutoff of {cutoff:.2f} needs a '{column}' column, "
+            "which this phosphosite table does not have."
+        )
+    probability = pd.to_numeric(data[column], errors="coerce")
+    probability = probability.where(probability.between(0.0, 1.0))
+    return data.loc[probability >= cutoff].copy()
 
 
 def transform_phosprot(
@@ -667,8 +702,12 @@ def transform_phosprot(
     mode: str = "robust_site_median",
     data_scale: str = "linear",
     coverage_data: pd.DataFrame | None = None,
+    localization_cutoff: float = 0.0,
 ):
     """Collapse phosphosites to one phosphoprotein value per sample.
+
+    Only sites with a localization probability of at least
+    ``localization_cutoff`` are collapsed (see `filter_localization`).
 
     ``robust_site_median`` works on log2 values after centring every site by its
     across-sample median and requires at least 50% of the fixed eligible sites.
@@ -680,6 +719,9 @@ def transform_phosprot(
     and eligibility. The 50% threshold counts finite supplied values, including
     imputed values. Without coverage_data, diagnostics describe the input only.
     """
+    data = filter_localization(data, localization_cutoff)
+    if coverage_data is not None:
+        coverage_data = coverage_data.loc[coverage_data.index.isin(data.index)]
     required_cols = [
         "UPD_seq",
         "PTM_localization",
@@ -743,7 +785,7 @@ def transform_phosprot(
         log2_source[sample_cols] = log2_source[sample_cols].apply(pd.to_numeric, errors="coerce")
         linear_source = inverse_log2_transform_data(log2_source, meta)
     else:
-        linear_source = _raw_zero_to_nan(data, sample_cols)
+        linear_source = raw_zero_to_nan(data, sample_cols)
         log2_source = log2_transform_data(linear_source, meta)
     for source_frame in (log2_source, linear_source):
         source_frame[sample_cols] = (
@@ -761,7 +803,7 @@ def transform_phosprot(
         if not coverage_data["Protein_group"].astype(str).equals(data["Protein_group"]):
             raise ValueError("coverage_data Protein_group values must align exactly with data.")
         diagnostic_source = (coverage_data if resolved_scale == "log2" else
-                             log2_transform_data(_raw_zero_to_nan(coverage_data, sample_cols), meta))
+                             log2_transform_data(raw_zero_to_nan(coverage_data, sample_cols), meta))
     numeric = diagnostic_source[sample_cols].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
     eligible_mask = numeric.notna().any(axis=1)
     eligible_log2 = log2_source.loc[eligible_mask].copy()
@@ -854,6 +896,12 @@ def transform_phosprot(
         diagnostics[f"site_observed__{sample}"] = observed[sample].to_numpy(dtype=int)
         diagnostics[f"site_coverage__{sample}"] = fractions[sample].to_numpy(dtype=float)
 
+    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_log2.index]
+    supplied = supplied_source[sample_cols].notna().assign(
+        Protein_group=supplied_source['Protein_group'].to_numpy()
+    ).groupby('Protein_group')[sample_cols].sum().reindex(group_order, fill_value=0)
+    for sample in sample_cols:
+        diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
     data_phosprot = annotations.merge(values, on="Protein_group", how="left")
     data_phosprot = data_phosprot.merge(diagnostics, on="Protein_group", how="left")
 
@@ -1684,8 +1732,12 @@ def minimum_enclosing_ellipse(points, tol=1e-3):
 
 
 def fitted_group_ellipse(points):
-    """Fit an enclosing ellipse only when the group reliably spans the plane."""
-    array = np.asarray(points, dtype=float)
+    """Fit an enclosing ellipse only when the group reliably spans the plane.
+
+    The points are copied row-major first, so the same values give the same
+    ellipse whichever layout a pandas selection hands them over in.
+    """
+    array = np.ascontiguousarray(points, dtype=float)
     if array.ndim != 2 or array.shape[0] < 3 or array.shape[1] != 2 or not np.isfinite(array).all():
         return None
     try:
@@ -1778,23 +1830,40 @@ def resolve_feature_scaling(scaling="auto", method="PCA"):
     return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
 
 
-def pca_plot(data, meta, header=True, legend=True, dot_size=3,
-             width_cm=20, height_cm=10, dpi=100, plot_colors=None,
-             plot_3d=False, add_ellipses=False, scaling="auto"):
-    meta['condition'] = pd.Categorical(meta['condition'], categories=meta['condition'].unique(), ordered=True)
+def pca_scores(data, meta, plot_3d=False, scaling="auto"):
+    """The PCA coordinates `pca_plot` draws, as a table.
+
+    One row per sample with PC1, PC2 (and PC3 with `plot_3d`), `sample` and
+    `condition`. The explained variance of each component, in percent of the
+    total, is in `.attrs["explained_variance"]`. Only features measured in every
+    sample and not constant across them are used. `scaling="unit_variance"`
+    divides each feature by its sample SD (n - 1), as R's `prcomp(scale. = TRUE)`.
+    The sign of a component is arbitrary and may differ between implementations.
+    """
     transposed_expr, n_components = _prepare_pca_matrix(data, meta, plot_3d=plot_3d)
     if resolve_feature_scaling(scaling, method="PCA") == "unit_variance":
         centred = transposed_expr - transposed_expr.mean(axis=0)
-        deviation = centred.std(axis=0, ddof=0).replace(0.0, 1.0)
+        deviation = centred.std(axis=0, ddof=1).replace(0.0, 1.0).fillna(1.0)
         transposed_expr = centred / deviation
     pca = PCA(n_components=n_components)
     pca_result = pca.fit_transform(transposed_expr)
-    explained_variance = pca.explained_variance_ratio_ * 100
-    pcs = [f'PC{i+1}' for i in range(n_components)]
-    pca_scores = pd.DataFrame(pca_result, columns=pcs)
-    pca_scores['sample'] = transposed_expr.index
-    pca_scores = pca_scores.merge(meta, on='sample')
-    pca_scores['condition'] = pd.Categorical(pca_scores['condition'], categories=meta['condition'].unique(), ordered=True)
+    scores = pd.DataFrame(pca_result, columns=[f'PC{i+1}' for i in range(n_components)])
+    scores['sample'] = transposed_expr.index
+    conditions = dict(zip(meta['sample'].astype(str), meta['condition']))
+    scores['condition'] = [conditions.get(str(sample)) for sample in scores['sample']]
+    scores.attrs['explained_variance'] = [float(value) for value in pca.explained_variance_ratio_ * 100]
+    return scores
+
+
+def pca_plot(data, meta, header=True, legend=True, dot_size=3,
+             width_cm=20, height_cm=10, dpi=100, plot_colors=None,
+             plot_3d=False, add_ellipses=False, scaling="auto"):
+    meta = meta.copy()  # the caller's metadata is left as it was
+    meta['condition'] = pd.Categorical(meta['condition'], categories=meta['condition'].unique(), ordered=True)
+    scores = pca_scores(data, meta, plot_3d=plot_3d, scaling=scaling)
+    explained_variance = np.asarray(scores.attrs['explained_variance'])
+    plot_scores = scores.drop(columns='condition').merge(meta, on='sample')
+    plot_scores['condition'] = pd.Categorical(plot_scores['condition'], categories=meta['condition'].unique(), ordered=True)
     figsize = (width_cm / 2.54, height_cm / 2.54)
     if plot_3d:
         fig = plt.figure(figsize=figsize, dpi=dpi)
@@ -1802,11 +1871,11 @@ def pca_plot(data, meta, header=True, legend=True, dot_size=3,
     else:
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     colors = plot_colors if plot_colors is not None else plt.cm.tab10.colors
-    conditions = pca_scores['condition'].unique()
+    conditions = plot_scores['condition'].unique()
     color_map = {cond: colors[i % len(colors)] for i, cond in enumerate(conditions)}
     skipped_ellipses = []
     for cond in conditions:
-        subset = pca_scores[pca_scores['condition'] == cond]
+        subset = plot_scores[plot_scores['condition'] == cond]
         if plot_3d:
             ax.scatter(subset['PC1'], subset['PC2'], subset['PC3'],
                        label=cond, s=dot_size*10, alpha=0.7, color=color_map[cond])
@@ -2102,18 +2171,56 @@ def interactive_abundance_plot(data, meta, condition, workflow="Protein", search
     return fig
 
 
-def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, height=8, dpi=100,
-              data_scale="log2"):
-    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
-    meta = meta.copy()
-    meta = _sample_meta(meta, id=id)
-    data = _rename_samples(data, meta)
+def sample_correlation_matrix(data, meta, id=True, data_scale="log2"):
+    """The Pearson correlations between samples that `corr_plot` colours.
 
-    annotated_columns = meta['new_sample'].tolist()
-    data_filtered = data[annotated_columns].dropna(axis=1, how='all')
+    Rows and columns are the display names (`condition_n`, with the sample id
+    when `id=True`), in metadata order -- `corr_plot` then reorders them by
+    clustering. Each pair uses the features measured in both samples; a sample
+    with no values at all is left out.
+    """
+    data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
+    meta = _sample_meta(meta.copy(), id=id)
+    data = _rename_samples(data, meta)
+    data_filtered = data[meta['new_sample'].tolist()].dropna(axis=1, how='all')
     if data_filtered.shape[1] < 2:
         raise ValueError("At least two non-empty sample columns are required for correlation plot.")
-    correlation_matrix = data_filtered.corr(method='pearson')
+    return data_filtered.corr(method='pearson')
+
+
+
+def correlation_matrix_mesh(ax, matrix, cmap, vmin, vmax):
+    """The correlation matrix as one rectangle per cell, laid out as `matshow` lays it out.
+
+    `matshow` draws the matrix as an image, so an SVG or PDF download held a
+    bitmap: blurred when scaled, and not one shape per cell to edit. A mesh is
+    vector in those formats and the same picture in a PNG. Row 0 is at the top,
+    the cells are square and the column ticks are on top, as before.
+    """
+    values = np.ma.masked_invalid(np.asarray(matrix, dtype=float))
+    rows, cols = values.shape
+    mesh = ax.pcolormesh(
+        np.arange(cols + 1) - 0.5,
+        np.arange(rows + 1) - 0.5,
+        values,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        shading="flat",
+        # Each cell's edge in its own colour: without it a vector viewer shows
+        # hairline gaps between neighbouring cells.
+        edgecolors="face",
+        linewidth=0.0,
+    )
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(rows - 0.5, -0.5)
+    ax.set_aspect("equal")
+    ax.xaxis.tick_top()
+    return mesh
+
+def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, height=8, dpi=100,
+              data_scale="log2"):
+    correlation_matrix = sample_correlation_matrix(data, meta, id=id, data_scale=data_scale)
     incomplete = not np.isfinite(correlation_matrix.to_numpy()).all()
     ordered_corr = correlation_matrix
     if not incomplete:
@@ -2131,9 +2238,8 @@ def corr_plot(data, meta, method="Matrix", id=True, full_range=False, width=10, 
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
 
     if method == "Matrix":
-        cmap = plt.get_cmap('coolwarm').copy()
-        cmap.set_bad('#eeeeee')
-        cax = ax.matshow(ordered_corr, cmap=cmap, vmin=vmin, vmax=vmax)
+        cmap = plt.get_cmap('coolwarm').with_extremes(bad='#eeeeee')
+        cax = correlation_matrix_mesh(ax, ordered_corr, cmap, vmin, vmax)
         plt.xticks(range(len(ordered_corr.columns)), ordered_corr.columns, rotation=90, ha='center', va='bottom')
         plt.yticks(range(len(ordered_corr.index)), ordered_corr.index)
         fig.colorbar(cax)
@@ -2243,13 +2349,19 @@ def _adjust_finite_pvalues(pvalues):
 
 def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                    workflow="Protein", paired="Unpaired", uncorrected=False,
-                   test_type=None, label_column=None):
+                   test_type=None, label_column=None, observed=None):
     """Differential abundance between two conditions.
 
     `test_type` selects the design and variance model together: "unpaired",
     "unpaired_welch" or "paired". When
     it is omitted the older `paired` argument is used, so existing calls keep
     their behaviour.
+
+    Pass `observed` (the matrix before `impute_values`) when `data` is imputed:
+    the result then gains `n_imputed__<condition>` and `imputed_values`, the
+    number of imputed values behind each row. Imputed values are tested as if
+    measured. Phosphoprotein tables with site_observed__ columns get the counts
+    without it.
     """
     if condition1 == condition2:
         raise ValueError("Please select two different conditions.")
@@ -2279,6 +2391,9 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         cols_to_use += extra_cols
 
     df = data[cols_to_use].copy()
+    imputed_counts = _imputed_counts_for(
+        data, observed, {condition1: annotated_columns1, condition2: annotated_columns2}
+    )
     arr_x = df[annotated_columns1].to_numpy(dtype=float)
     arr_y = df[annotated_columns2].to_numpy(dtype=float)
 
@@ -2320,20 +2435,24 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
 
-    adj_pvals = pvals if uncorrected else _adjust_finite_pvalues(pvals)
+    # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
+    # significance is called on (raw when `uncorrected`), as in the web app.
+    adj_pvals = _adjust_finite_pvalues(pvals)
+    selected_pvals = pvals if uncorrected else adj_pvals
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
     significance[~np.isfinite(pvals)] = "Unavailable"
-    significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
-    significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
+    significance[(selected_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
+    significance[(selected_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
 
     result = {
         label_col: df[label_col].values,
         "log2FC": log2fc,
         "pval": pvals,
         "adj_pval": adj_pvals,
+        "selected_pval": selected_pvals,
         "significance": significance,
-        "neg_log10_adj_pval": negative_log10(adj_pvals),
+        "neg_log10_selected_pval": negative_log10(selected_pvals),
         # This warning does not change the test result.
         "zero_variance": constant_within_group(arr_x) | constant_within_group(arr_y),
     }
@@ -2346,19 +2465,35 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     if is_paired:
         result["n_pairs"] = n_diff.astype(int)
 
-    return pd.DataFrame(result)
+    result = pd.DataFrame(result)
+    if imputed_counts is not None:
+        for column in imputed_counts.columns:
+            result[column] = imputed_counts.loc[df.index, column].to_numpy()
+    return result
 
 
 def volcano_data_f_control(data, meta, condition1, condition2, condition1_control, condition2_control,
     in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=False,
-    test_type=None, label_column=None):
+    test_type=None, label_column=None, observed=None):
     """Control-adjusted differential abundance using the web application's tests.
 
     `test_type` accepts the same five modes as :func:`volcano_data_f`. When it
-    is omitted, the legacy `paired` argument remains authoritative.
+    is omitted, the legacy `paired` argument remains authoritative. `observed`
+    adds the imputed-value counts described there, for all four groups.
+
+    The four conditions must be distinct, as in the web app. With one control
+    shared by both sides the fold change reduces to condition1 - condition2, but
+    the control's variance would enter the standard error twice: raw p < 0.05
+    fell to 1.3 % of null rows instead of 5 %.
     """
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
+    named = [str(value).strip() for value in (condition1, condition1_control, condition2, condition2_control)]
+    if len(set(named)) != len(named):
+        raise ValueError(
+            "Control-corrected volcano analysis requires four distinct conditions; "
+            "an experimental condition cannot be used as its own control."
+        )
     if test_type is None:
         is_paired = paired_test_enabled(paired)
         variance = "pooled"
@@ -2395,6 +2530,10 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         cols_to_use += extra_cols
 
     df = data[cols_to_use].copy()
+    imputed_counts = _imputed_counts_for(data, observed, {
+        condition1: c1_cols, condition2: c2_cols,
+        condition1_control: c1_ctrl_cols, condition2_control: c2_ctrl_cols,
+    })
     arr_c1 = df[c1_cols].to_numpy(dtype=float)
     arr_c2 = df[c2_cols].to_numpy(dtype=float)
     arr_c1_ctrl = df[c1_ctrl_cols].to_numpy(dtype=float)
@@ -2466,20 +2605,24 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
 
-    adj_pvals = pvals if uncorrected else _adjust_finite_pvalues(pvals)
+    # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
+    # significance is called on (raw when `uncorrected`), as in the web app.
+    adj_pvals = _adjust_finite_pvalues(pvals)
+    selected_pvals = pvals if uncorrected else adj_pvals
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
     significance[~np.isfinite(pvals)] = "Unavailable"
-    significance[(adj_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
-    significance[(adj_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
+    significance[(selected_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
+    significance[(selected_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
 
     result = {
         label_col: df[label_col].values,
         "log2FC": log2fc,
         "pval": pvals,
         "adj_pval": adj_pvals,
+        "selected_pval": selected_pvals,
         "significance": significance,
-        "neg_log10_adj_pval": negative_log10(adj_pvals),
+        "neg_log10_selected_pval": negative_log10(selected_pvals),
     }
 
     if workflow == "Phosphoprotein":
@@ -2490,7 +2633,11 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     if is_paired:
         result["n_pairs"] = n_diff.astype(int)
 
-    return pd.DataFrame(result)
+    result = pd.DataFrame(result)
+    if imputed_counts is not None:
+        for column in imputed_counts.columns:
+            result[column] = imputed_counts.loc[df.index, column].to_numpy()
+    return result
 
 
 def _volcano_label_col(volcano_df):
@@ -2536,7 +2683,7 @@ def _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, u
 
     color_mapping = {'Downregulated': 'blue', 'Not significant': 'gray', 'Upregulated': 'red'}
     y_hline = -np.log10(in_pval)
-    max_y = max(y_hline, volcano_df['neg_log10_adj_pval'].max())
+    max_y = max(y_hline, volcano_df['neg_log10_selected_pval'].max())
 
     shapes = [
         dict(type="line", x0=in_log2fc, x1=in_log2fc, y0=0, y1=max_y, line=dict(color="black", dash="dash")),
@@ -2561,7 +2708,7 @@ def _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, u
                 continue
             fig.add_trace(go.Scatter(
                 x=points['log2FC'],
-                y=points['neg_log10_adj_pval'],
+                y=points['neg_log10_selected_pval'],
                 mode='markers',
                 marker=dict(color=color, size=8, line=dict(color='lime', width=3)) if ringed else dict(color=color, size=5),
                 text=_volcano_hover_text(points, label_col, max_chars),
@@ -2591,7 +2738,9 @@ def volcano_plot_h(volcano_df, condition1, condition2,
                               highlight_terms=highlight_terms, max_chars=max_chars)
 
 
-def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False):
+def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False,
+                 observed=None):
+    """One-way ANOVA per row. `observed` adds imputed-value counts as in volcano_data_f."""
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
     if workflow == "Protein":
@@ -2633,6 +2782,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
 
     df = data[cols_to_use].copy()
     df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
+    imputed_counts = _imputed_counts_for(data, observed, condition_cols)
 
     valid = np.ones(len(df), dtype=bool)
     groups = []
@@ -2655,6 +2805,9 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
             row_groups = [group[i][~np.isnan(group[i])] for group in groups]
             f_stat[i], pvals[i] = stats.f_oneway(*row_groups)
 
+    # f_oneway returns NaN only for a row that is constant throughout; those are
+    # dropped. A row constant within every condition but different between them
+    # gets an infinite (or enormous) F and p = 0; it stays, flagged zero_variance.
     finite = np.isfinite(pvals)
     df = df.loc[finite].copy()
     groups = [group[finite] for group in groups]
@@ -2669,21 +2822,27 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
     out = df[cols_to_use].copy()
     out["f_statistic"] = f_stat
     out["pval"] = pvals
-    out["adj_pval"] = pvals if uncorrected else _adjust_finite_pvalues(pvals)
-    out["significance"] = np.where(out["adj_pval"] < in_pval, "Significant", "Not significant")
-    out["neg_log10_adj_pval"] = -np.log10(np.clip(out["adj_pval"], np.finfo(float).tiny, None))
+    out["adj_pval"] = _adjust_finite_pvalues(pvals)
+    out["selected_pval"] = pvals if uncorrected else out["adj_pval"].to_numpy()
+    out["significance"] = np.where(out["selected_pval"] < in_pval, "Significant", "Not significant")
+    out["neg_log10_selected_pval"] = -np.log10(np.clip(out["selected_pval"], np.finfo(float).tiny, None))
+    # No variation within any condition: significance from absent variance.
+    out["zero_variance"] = np.logical_and.reduce([constant_within_group(group) for group in groups])
 
     for condition in means.columns:
         out[f"mean_{condition}"] = means[condition].to_numpy()
+    if imputed_counts is not None:
+        for column in imputed_counts.columns:
+            out[column] = imputed_counts.loc[df.index, column].to_numpy()
 
     # Benjamini-Hochberg ties many features to the same adjusted p, so sorting on
     # it alone leaves the order within those groups to whichever sort the
     # language happens to use -- the R package returned a different one. Raw p
     # then the label makes the order identical across all three pipelines.
     try:
-        sort_keys = ["adj_pval", "pval", _auto_label_col(out)]
+        sort_keys = ["selected_pval", "pval", _auto_label_col(out)]
     except ValueError:
-        sort_keys = ["adj_pval", "pval"]
+        sort_keys = ["selected_pval", "pval"]
     return out.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
 
 
@@ -2711,8 +2870,8 @@ def anova_cluster_data(anova_df, meta, n_clusters=4, in_pval=0.05, z_score=True,
     if not sample_cols:
         raise ValueError("No sample columns from meta were found in anova_df.")
 
-    if only_significant and "adj_pval" in anova_df.columns:
-        cluster_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
+    if only_significant and _significance_pval_column(anova_df):
+        cluster_df = anova_df[anova_df[_significance_pval_column(anova_df)] < in_pval].copy()
     else:
         cluster_df = anova_df.copy()
 
@@ -2867,6 +3026,86 @@ def _normalization_sample_columns(data, meta):
     return present
 
 
+MISSINGNESS_GAP = 0.10
+MISSINGNESS_MIN_COMPLETE = 20
+_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization"}
+
+
+def missingness_imbalance(data, meta, min_gap=MISSINGNESS_GAP, min_complete=MISSINGNESS_MIN_COMPLETE):
+    """Per-sample missingness, and how far each sample sits on the complete features.
+
+    Median and quantile normalization use every observed value of a sample.
+    Missing values are mostly low-abundance, so a sample with many more of them
+    has a higher observed median and is shifted down. A sample is flagged when
+    its share of missing values is at least `min_gap` above the most complete
+    sample. `complete_offset` is the sample's median distance from the row
+    median over the features measured in every sample: after normalization it
+    shows the shift those features carry. It is NaN when fewer than
+    `min_complete` features are complete. Pass the normalized matrix to see the
+    shift the normalization left; missing positions are the same before and after.
+    """
+    present = _normalization_sample_columns(data, meta)
+    numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.where(np.isfinite(numeric))
+    missing = numeric.isna().mean(axis=0) if len(numeric) else pd.Series(0.0, index=present)
+    reference = float(missing.min()) if len(missing) else 0.0
+    complete = numeric.dropna(axis=0, how="any")
+    if len(complete) >= int(min_complete):
+        offsets = complete.sub(complete.median(axis=1), axis=0).median(axis=0)
+    else:
+        offsets = pd.Series(np.nan, index=present)
+    conditions = pd.Series(np.nan, index=present, dtype=object)
+    if isinstance(meta, pd.DataFrame) and "condition" in meta.columns:
+        lookup = dict(zip(meta["sample"].astype(str), meta["condition"]))
+        conditions = pd.Series([lookup.get(str(sample)) for sample in present], index=present, dtype=object)
+    return pd.DataFrame({
+        "sample": present,
+        "condition": conditions.to_numpy(),
+        "missing_fraction": missing.reindex(present).to_numpy(dtype=float),
+        "reference_missing_fraction": reference,
+        "flagged": (missing.reindex(present).to_numpy(dtype=float) - reference) >= float(min_gap) - 1e-12,
+        "complete_features": int(len(complete)),
+        "complete_offset": offsets.reindex(present).to_numpy(dtype=float),
+    })
+
+
+def missingness_imbalance_warning(table, method, min_gap=MISSINGNESS_GAP):
+    """The warning for `missingness_imbalance`, or None when there is nothing to say.
+
+    Only median centering and quantile normalization are concerned: both are
+    computed from each sample's observed values.
+    """
+    label = _MISSINGNESS_METHOD_LABELS.get(str(method or "none").strip().lower())
+    if label is None or table.empty or not bool(table["flagged"].any()):
+        return None
+    flagged = table[table["flagged"]].sort_values("missing_fraction", ascending=False, kind="mergesort")
+    others = table[~table["flagged"]]
+    listed = [f"{sample} ({fraction * 100:.0f}%)"
+              for sample, fraction in zip(flagged["sample"].head(6), flagged["missing_fraction"].head(6))]
+    if len(flagged) > 6:
+        listed.append(f"and {len(flagged) - 6} more")
+    message = (
+        f"Missing values differ strongly between samples: {len(flagged)} of {len(table)} samples have at "
+        f"least {min_gap * 100:.0f} percentage points more missing values than the most complete sample "
+        f"({float(table['reference_missing_fraction'].iloc[0]) * 100:.0f}%): {', '.join(listed)}. "
+        f"{label} uses each sample's observed values, and missing values are mostly low-abundance, "
+        "so these samples can be shifted down."
+    )
+    if flagged["complete_offset"].notna().all() and len(others) and others["complete_offset"].notna().all():
+        shift = float(flagged["complete_offset"].mean() - others["complete_offset"].mean())
+        message += (
+            f" On the {int(table['complete_features'].iloc[0]):,} features measured in every sample, they sit "
+            f"{abs(shift):.2f} log2 {'below' if shift < 0 else 'above'} the other samples after normalization."
+        )
+    conditions = flagged["condition"].dropna().astype(str).unique().tolist()
+    if len(conditions) == 1 and flagged["condition"].notna().all():
+        message += (
+            f" All of them are in condition {conditions[0]}, so fold changes involving "
+            f"{conditions[0]} may carry this shift."
+        )
+    return message + " Check these samples before interpreting fold changes."
+
+
 def normalize_data(data, meta, method="none", linear_source=None):
     """Apply a global normalization to the sample columns of a log2 matrix.
 
@@ -2882,6 +3121,11 @@ def normalize_data(data, meta, method="none", linear_source=None):
     References: quantile normalization follows the method of Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185;
     VSN is delegated to the Bioconductor vsn package
     (Huber et al. 2002, doi:10.1093/bioinformatics/18.suppl_1.S96).
+
+    For phosphoprotein workflows, normalize phosphosites before
+    transform_phosprot, never the collapsed phosphoprotein matrix: the collapse
+    carries the site-level normalization forward, and a second pass would
+    normalize the same values twice. The app applies none at that level.
     """
     resolved = str(method or "none").strip().lower()
     if resolved in {"", "none"}:
@@ -2904,6 +3148,9 @@ def normalize_data(data, meta, method="none", linear_source=None):
 
     out = data.copy()
     out[present] = normalized
+    message = missingness_imbalance_warning(missingness_imbalance(out, meta), resolved)
+    if message:
+        warnings.warn(message, UserWarning, stacklevel=2)
     return out
 
 
@@ -2942,6 +3189,95 @@ def sample_id_map(names):
             "rename the runs so the trailing number is unique."
         )
     return mapping
+
+IMPUTED_COUNT_PREFIX = "n_imputed__"
+IMPUTED_TOTAL_COLUMN = "imputed_values"
+
+
+def imputed_cell_mask(values, observed=None):
+    """Classify cells: -1 missing, 0 measured, 1 fully imputed, 2 partially imputed.
+
+    `observed` is the matrix before imputation (same rows and sample columns).
+    Returns None without it. Mirrors app.services.functions.imputed_cell_mask.
+    """
+    present = values.apply(pd.to_numeric, errors="coerce").notna()
+    if observed is not None:
+        before = observed.reindex(index=values.index, columns=values.columns)
+        before = before.apply(pd.to_numeric, errors="coerce")
+        # -1: missing, 0: measured, 1: fully imputed, 2: partially imputed.
+        return before.isna().astype(int).where(present, -1)
+    return None
+
+
+def site_observed_imputed_mask(frame, sample_columns):
+    """Classify direct per-sample site contributions, not cross-sample centering effects.
+
+    Both site_observed__ and site_supplied__ counts are required. Without them
+    provenance is unknown, not evidence of no imputation.
+    """
+    columns = [f"site_observed__{sample}" for sample in sample_columns]
+    supplied_columns = [f"site_supplied__{sample}" for sample in sample_columns]
+    if not all(column in frame.columns for column in columns + supplied_columns):
+        return None
+    present = frame[sample_columns].apply(pd.to_numeric, errors="coerce").notna()
+    measured = frame[columns].apply(pd.to_numeric, errors="coerce").to_numpy()
+    supplied = frame[supplied_columns].apply(pd.to_numeric, errors="coerce").to_numpy()
+    known = np.isfinite(measured) & np.isfinite(supplied) & (supplied > 0) & (measured >= 0) & (measured <= supplied)
+    states = np.where(measured == 0, 1, np.where(measured < supplied, 2, 0))
+    return pd.DataFrame(states, index=frame.index, columns=sample_columns).where(present & known, -1)
+
+
+def imputed_value_counts(mask, groups):
+    """Count measured, fully imputed and partially imputed values per condition.
+
+    n_imputed__<group> and imputed_values include both imputed categories.
+
+    Imputed values enter every test as if measured -- they count towards n and
+    the degrees of freedom -- so these columns tell a call carried by
+    measurements from one carried by the imputation.
+    """
+    counts = pd.DataFrame(index=mask.index)
+    total = np.zeros(len(mask), dtype=int)
+    for group, columns in groups.items():
+        values = mask[list(columns)]
+        for state, name in ((0, "measured"), (1, "fully_imputed"), (2, "partially_imputed")):
+            counts[f"n_{name}__{group}"] = values.eq(state).sum(axis=1).astype(int).to_numpy()
+        column_count = values.isin([1, 2]).sum(axis=1).astype(int).to_numpy()
+        counts[f"{IMPUTED_COUNT_PREFIX}{group}"] = column_count
+        total = total + column_count
+    counts[IMPUTED_TOTAL_COLUMN] = total
+    return counts
+
+
+def _imputed_counts_for(data, observed, groups):
+    """Counts for `groups` of `data`, or None when imputation cannot be located.
+
+    `observed` is the pre-imputation matrix the caller passed (e.g. the filtered
+    data that was given to `impute_values`); without it a phosphoprotein table's
+    own site_observed__ columns are used when present.
+    """
+    samples = list(dict.fromkeys(c for cols in groups.values() for c in cols))
+    if observed is not None:
+        missing_rows = ~data.index.isin(observed.index)
+        missing_cols = [c for c in samples if c not in observed.columns]
+        if missing_rows.any() or missing_cols:
+            raise ValueError(
+                "observed must be the pre-imputation matrix of this data: same row index and "
+                f"sample columns ({int(missing_rows.sum())} rows, {len(missing_cols)} sample columns not found)."
+            )
+        mask = imputed_cell_mask(data[samples], observed[samples])
+    else:
+        mask = site_observed_imputed_mask(data, samples)
+    return None if mask is None else imputed_value_counts(mask, groups)
+
+
+def _significance_pval_column(table):
+    """The p-value column significance is called on: `selected_pval`, or `adj_pval` in older tables."""
+    for column in ("selected_pval", "adj_pval"):
+        if column in table.columns:
+            return column
+    return None
+
 
 def constant_within_group(values):
     """True per row where every observed replicate in the group holds one value.
@@ -3023,8 +3359,8 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
     if len(condition_cols) < 3:
         return pd.DataFrame()
 
-    if only_significant and "adj_pval" in anova_df.columns:
-        posthoc_df = anova_df[anova_df["adj_pval"] < in_pval].copy()
+    if only_significant and _significance_pval_column(anova_df):
+        posthoc_df = anova_df[anova_df[_significance_pval_column(anova_df)] < in_pval].copy()
     else:
         posthoc_df = anova_df.copy()
     if posthoc_df.empty:
@@ -3142,7 +3478,8 @@ def anova_plot(
     if not sample_cols:
         raise ValueError("No sample columns from meta were found in anova_df.")
 
-    plot_df = anova_df[anova_df["adj_pval"] < in_pval].copy() if "adj_pval" in anova_df.columns else anova_df.copy()
+    column = _significance_pval_column(anova_df)
+    plot_df = anova_df[anova_df[column] < in_pval].copy() if column else anova_df.copy()
     if plot_df.empty:
         fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
         ax.set_axis_off()
@@ -3231,8 +3568,7 @@ def anova_plot(
     ax_strip.imshow(condition_strip, aspect="auto", interpolation="nearest")
     ax_strip.set_axis_off()
 
-    plot_cmap = plt.get_cmap(cmap).copy()
-    plot_cmap.set_bad("#d8d8d8")
+    plot_cmap = plt.get_cmap(cmap).with_extremes(bad="#d8d8d8")
     image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=plot_cmap, vmin=vmin, vmax=vmax)
     ax.set_xlabel("samples")
     ax.set_ylabel("")
@@ -3364,8 +3700,7 @@ def anova_plot_cluster(
     ax_cluster.imshow(cluster_strip, aspect="auto", interpolation="nearest")
     ax_cluster.set_axis_off()
 
-    plot_cmap = plt.get_cmap(cmap).copy()
-    plot_cmap.set_bad("#d8d8d8")
+    plot_cmap = plt.get_cmap(cmap).with_extremes(bad="#d8d8d8")
     image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=plot_cmap, vmin=vmin, vmax=vmax)
     ax.set_xlabel("samples")
     ax.set_ylabel("")
@@ -3656,9 +3991,13 @@ def enrichment_analysis(
 
     fig, ax = plt.subplots(figsize=(8, 6))
     # GeneRatio (overlap / query genes), as in clusterProfiler's dot plot.
+    # BP, CC and MF terms share one plot and one BH correction, so each label
+    # names its ontology, as in the web app.
+    labels = [f"{name} ({source})" if str(source) else str(name)
+              for name, source in zip(res['term_name'], res['source'].fillna(''))]
     scatter = ax.scatter(
         x=res['gene_ratio'],
-        y=res['term_name'],
+        y=labels,
         s=res['intersection_size']*10,
         c=-np.log10(res['adj_p_value'].clip(lower=np.finfo(float).tiny)),
         cmap='RdBu_r'
@@ -3922,21 +4261,22 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
         'log2FC': log2fc,
         'pval': pvals,
         'adj_pval': adj_pvals,
+        'selected_pval': adj_pvals,
         'significance': significance
     })
     volcano_data.loc[~np.isfinite(pvals), 'significance'] = 'Unavailable'
-    volcano_data['neg_log10_pval'] = -np.log10(volcano_data['adj_pval'].clip(lower=1e-300))
+    volcano_data['neg_log10_selected_pval'] = -np.log10(volcano_data['selected_pval'].clip(lower=1e-300))
     color_mapping = {"Downregulated": "blue", "Not significant": "gray", "Upregulated": "red", "Unavailable": "gray"}
     fig = px.scatter(
         volcano_data,
         x='log2FC',
-        y='neg_log10_pval',
+        y='neg_log10_selected_pval',
         color='significance',
         hover_data=['Feature'],
         color_discrete_map=color_mapping,
         title=f"{condition1} vs. {condition2}",
     )
-    vline_height = max(-np.log10(in_pval), volcano_data['neg_log10_pval'].max())
+    vline_height = max(-np.log10(in_pval), volcano_data['neg_log10_selected_pval'].max())
     fig.add_shape(type="line", x0=in_log2fc, x1=in_log2fc, y0=0, y1=vline_height,
                   line=dict(dash='dash', color='black'))
     fig.add_shape(type="line", x0=-in_log2fc, x1=-in_log2fc, y0=0, y1=vline_height,
@@ -3971,52 +4311,186 @@ def convert_to_centered(seq: str) -> str:
     return f"{left_tail}{mod_residue}{right_tail}"
 
 
-def _ksea_format_volcano(volcano_df):
-    result = volcano_df.rename(columns={"PTM_Collapse_key": "UPD_seq"}).copy()
-    result["UPD_seq"] = [convert_to_centered(value) for value in result["UPD_seq"]]
-    columns = ["UPD_seq", "log2FC", "pval", "adj_pval", "significance"]
-    if "n_pairs" in result.columns:
-        columns.append("n_pairs")
-    columns.append("neg_log10_adj_pval")
-    return result[columns]
+# Kinase motif windows. The Kinase Library reads "_" as "beyond the protein
+# terminus", so a window cut from the peptide alone presents real flanking
+# residues as absent (and loses the -3 position of R-x-x-S/T motifs whenever
+# trypsin cleaved after that R/K). With a FASTA the window is read from the
+# protein at the site position named in PTM_Collapse_key; the peptide window is
+# kept only as a fallback and `window_source` says which one each row uses.
+# Mirrors phospho_tools.site_motif_window and the R helpers.
+
+KSEA_WINDOW_FLANK = 7
+_SITE_KEY_PATTERN = re.compile(
+    r"^(?P<proteins>[^~]*)~(?P<gene>.*)_(?P<residue>[A-Za-z])(?P<position>\d+)_M\d+$"
+)
 
 
-def ksea_data_f(data, meta, condition1, condition2,
-                in_pval=0.05, in_log2fc=1,
-                paired="Unpaired", uncorrected=False, test_type=None):
-    """Prepare standard Volcano results for KSEA, matching the web pipeline."""
+def read_fasta(path):
+    """Accession -> sequence from a FASTA file.
+
+    UniProt headers (``>sp|P12345|NAME_HUMAN ...``) are keyed by accession;
+    any other header by its first word. Use the organism's reference proteome
+    that the search was run against.
+    """
+    sequences = {}
+    header, chunks = None, []
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    sequences.setdefault(header, "".join(chunks))
+                token = line[1:].split()[0] if line[1:].split() else ""
+                header = token.split("|")[1] if token.count("|") >= 2 else token
+                chunks = []
+            else:
+                chunks.append(line)
+    if header is not None:
+        sequences.setdefault(header, "".join(chunks))
+    return sequences
+
+
+def _resolve_fasta(fasta):
+    if fasta is None:
+        return None
+    if isinstance(fasta, dict):
+        return {str(key): str(value) for key, value in fasta.items()}
+    return read_fasta(fasta)
+
+
+def _parse_site_key(key):
+    if not isinstance(key, str):
+        return None
+    match = _SITE_KEY_PATTERN.match(key.strip())
+    if match is None:
+        return None
+    accessions = [part.strip() for part in match.group("proteins").split(";") if part.strip()]
+    if not accessions:
+        return None
+    return accessions, match.group("gene"), match.group("residue").upper(), int(match.group("position"))
+
+
+def _protein_window(sequence, position, flank=KSEA_WINDOW_FLANK):
+    centre = position - 1
+    start, end = centre - flank, centre + flank + 1
+    core = sequence[max(start, 0):min(end, len(sequence))].upper()
+    return "_" * max(0, -start) + core + "_" * max(0, end - len(sequence))
+
+
+def _windows_agree(protein_window, peptide_window):
+    if not isinstance(peptide_window, str) or len(peptide_window) != len(protein_window):
+        return True
+    return all(pep == "_" or pep == prot for pep, prot in zip(peptide_window, protein_window))
+
+
+def site_motif_window(key, peptide_sequence, sequences=None):
+    """Motif window and provenance for one site (see module note above)."""
+    peptide_window = convert_to_centered(peptide_sequence)
+    parsed = _parse_site_key(key)
+    protein, gene, site = "", "", ""
+    if parsed is not None:
+        accessions, gene, residue, position = parsed
+        protein, site = accessions[0], f"{residue}{position}"
+        for accession in accessions if sequences else []:
+            sequence = sequences.get(accession)
+            if not sequence or not 1 <= position <= len(sequence):
+                continue
+            if sequence[position - 1].upper() != residue:
+                continue
+            window = _protein_window(sequence, position)
+            if _windows_agree(window, peptide_window):
+                return {"UPD_seq": window, "Protein": accession, "Gene": gene, "Site": site,
+                        "window_source": "protein"}
+    return {"UPD_seq": peptide_window, "Protein": protein, "Gene": gene, "Site": site,
+            "window_source": "peptide"}
+
+
+KSEA_EXPORT_COLUMNS = ("PTM_Collapse_key", "Protein", "Gene", "Site", "window_source")
+
+
+def _ksea_prepare(data, meta):
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
     if "UPD_seq" not in data.columns:
-        raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
+        raise ValueError("Phosphosite data must contain UPD_seq for Kinase Library.")
     working = data.copy()
-    working["PTM_Collapse_key"] = working["UPD_seq"]
+    # A unique row label keeps the site key and peptide of every row, even when
+    # two sites share a peptide window; the volcano keeps row order.
+    working["PTM_Collapse_key"] = [str(index) for index in range(len(working))]
+    return working
+
+
+def _ksea_format_volcano(volcano_df, data, fasta):
+    sequences = _resolve_fasta(fasta)
+    if sequences is None:
+        warnings.warn(
+            "No FASTA given: Kinase Library motif windows are cut from the peptide sequence only, and flanks "
+            "the peptide does not cover are padded with '_' (read as the protein end by the Kinase "
+            "Library). Pass fasta= with the searched proteome to read windows from the protein.",
+            UserWarning,
+            stacklevel=3,
+        )
+    rows = volcano_df["PTM_Collapse_key"].astype(int).to_numpy()
+    keys = (data["PTM_Collapse_key"].to_numpy()[rows] if "PTM_Collapse_key" in data.columns
+            else np.array([None] * len(rows), dtype=object))
+    peptides = data["UPD_seq"].to_numpy()[rows]
+    windows = pd.DataFrame(
+        [site_motif_window(key, peptide, sequences) for key, peptide in zip(keys, peptides)],
+        index=volcano_df.index,
+        columns=["UPD_seq", *KSEA_EXPORT_COLUMNS[1:]],
+    )
+    columns = ["log2FC", "pval", "adj_pval", "selected_pval", "significance"]
+    if "n_pairs" in volcano_df.columns:
+        columns.append("n_pairs")
+    columns.append("neg_log10_selected_pval")
+    result = volcano_df[columns].copy()
+    result.insert(0, "UPD_seq", windows["UPD_seq"])
+    result["PTM_Collapse_key"] = keys
+    for column in KSEA_EXPORT_COLUMNS[1:]:
+        result[column] = windows[column]
+    for column in volcano_df.columns:
+        if column.startswith((IMPUTED_COUNT_PREFIX, "n_measured__", "n_fully_imputed__", "n_partially_imputed__")) or column == IMPUTED_TOTAL_COLUMN:
+            result[column] = volcano_df[column].to_numpy()
+    return result.reset_index(drop=True)
+
+
+def kinase_library_data_f(data, meta, condition1, condition2,
+                in_pval=0.05, in_log2fc=1,
+                paired="Unpaired", uncorrected=False, test_type=None, fasta=None, observed=None,
+                localization_cutoff=0.0):
+    """Prepare standard Volcano results for the Kinase Library, matching the web pipeline.
+
+    ``fasta`` is a FASTA path (or an accession -> sequence dict) of the searched
+    proteome; motif windows are then read from the protein sequence. ``observed``
+    adds imputed-value counts as in volcano_data_f.
+    """
+    data = filter_localization(data, localization_cutoff)
+    working = _ksea_prepare(data, meta)
     volcano_df = volcano_data_f(
         working, meta, condition1, condition2,
         in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
-        paired=paired, uncorrected=uncorrected, test_type=test_type,
+        paired=paired, uncorrected=uncorrected, test_type=test_type, observed=observed,
     )
-    return _ksea_format_volcano(volcano_df)
+    return _ksea_format_volcano(volcano_df, data, fasta)
 
 
-def ksea_data_f_control(data, meta, condition1, condition2,
-                        condition1_control, condition2_control,
-                        in_pval=0.05, in_log2fc=1,
-                        paired="Unpaired", uncorrected=False, test_type=None):
-    """Prepare corrected Control Volcano results for KSEA."""
-    _validate_meta_samples(meta)
-    _validate_sample_values(data, meta)
-    if "UPD_seq" not in data.columns:
-        raise ValueError("Phosphosite data must contain UPD_seq for KSEA.")
-    working = data.copy()
-    working["PTM_Collapse_key"] = working["UPD_seq"]
+def kinase_library_data_f_control(data, meta, condition1, condition2,
+                                  condition1_control, condition2_control,
+                                  in_pval=0.05, in_log2fc=1,
+                                  paired="Unpaired", uncorrected=False, test_type=None, fasta=None,
+                                  observed=None, localization_cutoff=0.0):
+    """Prepare corrected Control Volcano results for the Kinase Library (see ksea_data_f)."""
+    data = filter_localization(data, localization_cutoff)
+    working = _ksea_prepare(data, meta)
     volcano_df = volcano_data_f_control(
         working, meta, condition1, condition2,
         condition1_control, condition2_control,
         in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
-        paired=paired, uncorrected=uncorrected, test_type=test_type,
+        paired=paired, uncorrected=uncorrected, test_type=test_type, observed=observed,
     )
-    return _ksea_format_volcano(volcano_df)
+    return _ksea_format_volcano(volcano_df, data, fasta)
 
 
 def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
@@ -4025,7 +4499,7 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
                         paired: str = "Unpaired", uncorrected: bool = False,
                         max_hover_sites: int = 20,
                         show_phosphosites: bool = True,
-                        test_type=None):
+                        test_type=None, localization_cutoff: float = 0.0):
     """The per-protein table behind `phosprot_regulation`.
 
     Split out so the numbers can be read, exported and compared across the
@@ -4037,6 +4511,7 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
     _validate_meta_samples(meta)
     _validate_sample_values(data, meta)
     """Collapse significant phosphosite Volcano results by phosphoprotein."""
+    data = filter_localization(data, localization_cutoff)
     label_col = "PTM_Collapse_key"
     required = {label_col, "Protein_group"}
     missing = sorted(required.difference(data.columns))
@@ -4125,13 +4600,14 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
                         paired: str = "Unpaired", uncorrected: bool = False,
                         max_hover_sites: int = 20,
                         show_phosphosites: bool = True,
-                        test_type=None):
+                        test_type=None, localization_cutoff: float = 0.0):
     """Scatter of the table returned by `phosprot_regulation_data`."""
     collapsed_df = phosprot_regulation_data(
         data, meta, condition1, condition2,
         in_pval=in_pval, in_log2fc=in_log2fc, paired=paired,
         uncorrected=uncorrected, max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites, test_type=test_type,
+        localization_cutoff=localization_cutoff,
     )
 
     fig = px.scatter(
@@ -4367,7 +4843,7 @@ def missed_cleavage_plot(data2_path, meta, id=True, text=True, text_size=8, head
         ax.bar(range(len(samples_order)), subset, bottom=bottom, label=str(c))
         bottom += subset
 
-    ax.set_ylabel("Peptides with missed cleavage (%)")
+    ax.set_ylabel("Peptides by missed cleavages (%)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
 
     if header:
@@ -4401,8 +4877,12 @@ def _peptide_starts(sequence, peptide):
 
 
 def _protein_peptides(data, protein):
+    """Peptides of the protein with at least one quantity above 0, as in the web app."""
     members = data["ProteinNames"].fillna("").astype(str).str.split(";")
     selected = members.map(lambda names: protein in [name.strip() for name in names])
+    if "Precursor.Quantity" in data.columns:
+        quantity = pd.to_numeric(data["Precursor.Quantity"], errors="coerce")
+        selected &= np.isfinite(quantity) & (quantity > 0)
     return data.loc[selected, "Stripped.Sequence"].dropna().astype(str).unique().tolist()
 
 
@@ -4593,18 +5073,35 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
     return fig
 
 
+def single_protein_values(data, meta, protein):
+    """The values `boxplot_int_single_prot` draws for one protein, as a table.
+
+    The protein is looked up in the index, or else in the first column. When
+    several rows match, each sample gets the median of its measured values.
+    Returns `condition`, `sample` and `value`, in metadata order; samples
+    without a value are left out.
+    """
+    rows = data[data.index == protein]
+    if rows.empty and data.shape[1]:
+        rows = data[data.iloc[:, 0].astype(str) == str(protein)]
+    if rows.empty:
+        raise ValueError(f"No data found for protein: {protein}")
+    out = []
+    for condition, sample in zip(meta["condition"], meta["sample"].astype(str)):
+        if sample not in rows.columns:
+            continue
+        observed = pd.to_numeric(rows[sample], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if len(observed):
+            out.append((condition, sample, float(observed.median())))
+    table = pd.DataFrame(out, columns=["condition", "sample", "value"])
+    table.attrs["source_rows"] = int(len(rows))
+    return table
+
+
 def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, header=True, legend=True,
                        plot_colors=None, width=8, height=6, dpi=100, seed=69):
-    meta = meta.copy()
-    data = data.copy()
-    data = data[data.index == protein]
-    if data.empty:
-        raise ValueError(f"No data found for protein: {protein}")
-
-    meta = _sample_meta(meta, id=False)
-    data = _rename_samples(data, meta)
-    annotated_columns = meta["new_sample"].tolist()
-    data_filtered = data.loc[:, annotated_columns]
+    values = single_protein_values(data, meta, protein)
+    meta = _sample_meta(meta.copy(), id=False)
 
     if plot_colors is None:
         plot_colors = plt.cm.tab10.colors
@@ -4616,12 +5113,7 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
     condition_colors = {cond: plot_colors[i % len(plot_colors)] for i, cond in enumerate(meta['condition'].unique())}
 
     for condition in meta["condition"].unique():
-        cols = meta.loc[meta["condition"] == condition, "new_sample"]
-        numeric = data_filtered[cols].apply(pd.to_numeric, errors="coerce").replace(
-            [np.inf, -np.inf], np.nan
-        )
-        vals = numeric.median(axis=0, skipna=True).to_numpy(dtype=float)
-        vals = vals[np.isfinite(vals)]
+        vals = values.loc[values["condition"] == condition, "value"].to_numpy(dtype=float)
         if len(vals) == 0:
             continue
         intensities.append(vals)
@@ -4672,7 +5164,7 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
     ax.set_ylabel("log2 Intensity")
     if header:
         display_protein = protein.split(";")[0]
-        suffix = f"\none median per sample across {len(data)} matching source row(s)" if len(data) > 1 else ""
+        suffix = f"\none median per sample across {values.attrs['source_rows']} matching source row(s)" if values.attrs['source_rows'] > 1 else ""
         ax.set_title(f"Measured {display_protein} intensity values (log2){suffix}")
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_colors[c], lw=4) for c in plotted_conditions]
@@ -4686,8 +5178,9 @@ def phossite_on_prot_regulation(
         id=True, figsize=(12, 8), cmap_name='plasma',
         filter_M2=False, cluster_rows=False,
         cluster_cols=False, value_type="log2",
-        header=True
+        header=True, localization_cutoff=0.0
 ):
+    data = filter_localization(data, localization_cutoff)
     protein_data = data[data['Protein_group'].str.contains(protein, case=False, na=False)]
     if protein_data.empty:
         raise ValueError(f"No data found for protein '{protein}'")
@@ -4797,8 +5290,9 @@ def _phossite_coverage_counts(data, meta, is_log2=True):
 def phossite_coverage_plot(
     data, meta, id=False, header=True, legend=True,
     width=20, height=10, dpi=300,
-    color_classI="blue", color_notclassI="orange", is_log2=True
+    color_classI="blue", color_notclassI="orange", is_log2=True, localization_cutoff=0.0
 ):
+    data = filter_localization(data, localization_cutoff)
     counts = _phossite_coverage_counts(data, meta, is_log2)
     labels = meta["condition"].astype(str) + "_" + meta.groupby("condition").cumcount().astype(str)
     if id:
@@ -4821,7 +5315,8 @@ def phossite_coverage_plot(
     return fig
 
 
-def sty_plot(data):
+def sty_plot(data, localization_cutoff=0.0):
+    data = filter_localization(data, localization_cutoff)
     sty = data["PTM_Collapse_key"].astype(str)
     letter = sty.str.extract(r'~[^_]+_([STY])\d+_')[0]
     letter = letter.fillna(sty.str.extract(r"(?:^|_)([STY])\d+(?:_|$)")[0])
@@ -4874,8 +5369,9 @@ def sty_plot(data):
 def phossite_coverage_plot_summary(
     data, meta, header=True, legend=True,
     width=20, height=10, dpi=300,
-    color_classI="blue", color_notclassI="orange", seed=69, is_log2=True
+    color_classI="blue", color_notclassI="orange", seed=69, is_log2=True, localization_cutoff=0.0
 ):
+    data = filter_localization(data, localization_cutoff)
     counts = _phossite_coverage_counts(data, meta, is_log2)
     counts["condition"] = meta["condition"].astype(str).to_numpy()
     conditions = counts["condition"].unique()
@@ -4943,7 +5439,7 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
         for column in data.columns
     }
     if not data.columns.is_unique:
-        raise ValueError("KSEA result column names must be unique.")
+        raise ValueError("Kinase Library result column names must be unique.")
 
     def numeric_field(aliases, *, effect=False):
         result = pd.Series(np.nan, index=data.index, dtype=float)
@@ -4955,7 +5451,7 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
             supplied = data[column].notna() & data[column].astype(str).str.strip().ne("")
             values = pd.to_numeric(data[column], errors="coerce")
             if (supplied & ~np.isfinite(values)).any():
-                raise ValueError(f"KSEA column '{column}' must contain finite numeric values.")
+                raise ValueError(f"Kinase Library column '{column}' must contain finite numeric values.")
             if effect and name == "frequencyfactor":
                 if (supplied & (values <= 0)).any():
                     raise ValueError("Raw Frequency Factor values must be positive.")
@@ -4964,10 +5460,10 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
                 raise ValueError("Adjusted p-values must be between 0 and 1.")
             conflict = supplied & result.notna() & ~np.isclose(result, values, rtol=1e-10, atol=1e-12)
             if conflict.any():
-                raise ValueError("Conflicting KSEA result columns; provide consistent values.")
+                raise ValueError("Conflicting Kinase Library result columns; provide consistent values.")
             result = result.where(result.notna(), values.where(supplied))
         if not found or result.isna().any():
-            raise ValueError("Each KSEA row requires a frequency factor and adjusted p-value.")
+            raise ValueError("Each Kinase Library row requires a frequency factor and adjusted p-value.")
         return result
 
     if data.empty:
@@ -4983,7 +5479,13 @@ def _normalize_ksea_results(data: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def ksea_volcano(
+# Classes of uploaded Kinase Library results: a significant frequency factor is
+# motif enrichment among up- or down-regulated sites, not kinase activity.
+KINASE_ENRICHED_UP = "Enriched in up-regulated sites"
+KINASE_ENRICHED_DOWN = "Enriched in down-regulated sites"
+
+
+def kinase_library_volcano(
         data_st,
         data_tnc,
         pval_thresh=0.1,
@@ -4993,26 +5495,26 @@ def ksea_volcano(
 ):
     df = pd.concat([_normalize_ksea_results(data_st), _normalize_ksea_results(data_tnc)], ignore_index=True)
     if df.empty:
-        raise ValueError("Uploaded KSEA result files are empty.")
+        raise ValueError("Uploaded Kinase Library result files are empty.")
     df = df.rename(columns={"Log2(Frequency Factor)": "Log₂(Frequency Factor)"})
     df["neg_log10_pval"] = -np.log10(df["Adjusted p-value"].clip(lower=1e-300))
 
     def classify(row):
         if row["Adjusted p-value"] < pval_thresh:
             if row["Log₂(Frequency Factor)"] > 0:
-                return "Upregulated"
+                return KINASE_ENRICHED_UP
             elif row["Log₂(Frequency Factor)"] < 0:
-                return "Downregulated"
+                return KINASE_ENRICHED_DOWN
         return "Not significant"
 
     df["Regulation"] = df.apply(classify, axis=1)
-    df["color"] = df["Regulation"].map({"Upregulated": "red", "Downregulated": "blue", "Not significant": "lightgrey"})
+    df["color"] = df["Regulation"].map({KINASE_ENRICHED_UP: "red", KINASE_ENRICHED_DOWN: "blue", "Not significant": "lightgrey"})
 
     df["line_color"] = "black"
     df["line_width"] = 0.5
 
-    title = f"KSEA Volcano Plot: {condition1} vs. {condition2}" if header and condition1 and condition2 else (
-        "KSEA Volcano Plot" if header else "")
+    title = f"Kinase Library Motif Enrichment: {condition1} vs. {condition2}" if header and condition1 and condition2 else (
+        "Kinase Library Motif Enrichment" if header else "")
     x_label = f"log₂(Frequency Factor) ({condition1} - {condition2})" if condition1 and condition2 else "log₂(Frequency Factor)"
 
     fig = go.Figure()
@@ -5163,16 +5665,21 @@ def overlap_plot_single(data, sample1, sample2, sample3=None, width=7, height=7,
     return fig
 
 
-def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True, data_scale="log2"):
+def overlap_plot_condition(data, meta, condition1, condition2, condition3=None, width=7, height=7, dpi=300, labels=None, colors=None, show_header=True, data_scale="log2", min_present=1):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
+    if not np.isfinite(min_present) or int(min_present) != min_present or min_present < 1:
+        raise ValueError("min_present must be a positive integer.")
+    for condition in [condition1, condition2] + ([condition3] if condition3 else []):
+        if (meta['condition'] == condition).sum() < min_present:
+            raise ValueError(f"Condition '{condition}' has fewer samples than min_present.")
     s1 = meta.loc[meta['condition']==condition1,'sample'].tolist()
     s2 = meta.loc[meta['condition']==condition2,'sample'].tolist()
-    p1 = set(data.index[data[s1].notna().any(axis=1)])
-    p2 = set(data.index[data[s2].notna().any(axis=1)])
+    p1 = set(data.index[data[s1].notna().sum(axis=1) >= min_present])
+    p2 = set(data.index[data[s2].notna().sum(axis=1) >= min_present])
     fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
     if condition3:
         s3 = meta.loc[meta['condition']==condition3,'sample'].tolist()
-        p3 = set(data.index[data[s3].notna().any(axis=1)])
+        p3 = set(data.index[data[s3].notna().sum(axis=1) >= min_present])
         kwargs = {"set_colors": colors} if colors is not None else {}
         venn3([p1, p2, p3], set_labels=labels or [condition1, condition2, condition3], ax=ax, **kwargs)
     else:
@@ -5275,7 +5782,7 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
         columns='Precursor.Id',
         values=quantity_column,
         # 'max' matches missing_value_plot_pep above. 'first' depended on input
-        # row order, and _raw_zero_to_nan runs immediately after, so which
+        # row order, and raw_zero_to_nan runs immediately after, so which
         # duplicate won decided whether a precursor read as detected.
         aggfunc='max'
     )
@@ -5283,7 +5790,7 @@ def missing_value_plot_prec(data_path, meta, bin=0, header=True, text=True,
     df_wide = df_wide.T
     sample_map = _peptide_sample_map(df_wide.columns, meta['sample'])
     data_filtered = df_wide[list(sample_map)].rename(columns=sample_map)
-    data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
+    data_filtered = raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
     return _missing_bar(na_count, bin, "Missing Value Plot - Precursor Level", header, text, text_size, color,
@@ -5308,7 +5815,7 @@ def missing_value_plot_pep(data_path, meta, bin=0, header=True, text=True,
 
     sample_map = _peptide_sample_map(df_wide.columns.drop('Stripped.Sequence', errors='ignore'), meta['sample'])
     data_filtered = df_wide[list(sample_map)].rename(columns=sample_map)
-    data_filtered = _raw_zero_to_nan(data_filtered, data_filtered.columns)
+    data_filtered = raw_zero_to_nan(data_filtered, data_filtered.columns)
 
     na_count = data_filtered.dropna(how="all").isna().sum(axis=1)
     return _missing_bar(na_count, bin, "Missing Value Plot - Peptide Level", header, text, text_size, color,
@@ -5327,6 +5834,17 @@ def _feature_axis_label(data):
     return "Features"
 
 
+def _quantified_rows(frame, samples):
+    """The rows of `frame` with a value in at least one of `samples`.
+
+    A feature missing in every selected sample says nothing about how complete
+    those samples are -- it was identified elsewhere, or never quantified -- so
+    the completeness heatmap, tables and overall percentage leave it out, as the
+    web app and the R package do. `missing_value_plot` already drops its bar.
+    """
+    return frame.loc[frame[samples].notna().any(axis=1)]
+
+
 def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10, dpi=300,
                           data_scale="log2"):
     data = _prepare_intensity_data(data, meta['sample'].tolist(), data_scale)
@@ -5335,7 +5853,7 @@ def missing_value_heatmap(data, meta, id=True, header=True, width=20, height=10,
     meta = _sample_meta(meta, id=id)
     data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
-    data_filtered = data_filtered[annotated_columns]
+    data_filtered = _quantified_rows(data_filtered[annotated_columns], annotated_columns)
 
     plt.figure(figsize=(width, height), dpi=dpi)
     sns.heatmap(data_filtered.isnull(), cbar=False, cmap='viridis')
@@ -5354,7 +5872,7 @@ def missing_protein_table(data, meta, id=True, data_scale="log2"):
     meta = _sample_meta(meta, id=id)
     data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
-    data_filtered = data_filtered[annotated_columns]
+    data_filtered = _quantified_rows(data_filtered[annotated_columns], annotated_columns)
 
     na_counts = data_filtered.isna().sum(axis=1)
     summary = na_counts.value_counts().reset_index()
@@ -5370,7 +5888,7 @@ def missing_sample_table(data, meta, id=True, data_scale="log2"):
     meta = _sample_meta(meta, id=id)
     data_filtered = _rename_samples(data, meta)
     annotated_columns = [c for c in meta['new_sample'].tolist() if c in data_filtered.columns]
-    data_filtered = data_filtered[annotated_columns]
+    data_filtered = _quantified_rows(data_filtered[annotated_columns], annotated_columns)
 
     na_counts = data_filtered.isna().sum(axis=0)
     summary = na_counts.reset_index()
@@ -5385,7 +5903,7 @@ def missing_value_outlier(df, thld=50):
 
 def all_miss_val(data, meta, data_scale="log2"):
     samples = meta['sample'].tolist()
-    data = _prepare_intensity_data(data, samples, data_scale)[samples]
+    data = _quantified_rows(_prepare_intensity_data(data, samples, data_scale)[samples], samples)
     total_values = data.size
     missing_values = data.isna().sum().sum()
     percent_missing = (missing_values / total_values) * 100
@@ -5442,3 +5960,11 @@ def _warn_dropped_features(dropped, total, purpose="clustering"):
     message = _dropped_features_message(dropped, total, purpose=purpose)
     if message:
         warnings.warn(message, RuntimeWarning, stacklevel=3)
+
+
+# The workflow is Kinase Library motif enrichment (Johnson et al., Nature 2023),
+# not KSEA (Casado et al., 2013). The ksea_* names are kept as aliases so
+# existing notebooks keep working.
+ksea_data_f = kinase_library_data_f
+ksea_data_f_control = kinase_library_data_f_control
+ksea_volcano = kinase_library_volcano

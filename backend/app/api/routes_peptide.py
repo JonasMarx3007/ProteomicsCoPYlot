@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException
 
 from app.schemas.peptide import (
     PeptideCoverageResponse,
@@ -13,7 +13,6 @@ from app.schemas.peptide import (
     PeptideQuantityOptionsResponse,
     PeptideSpecies,
 )
-from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.peptide_metadata_store import (
     clear_peptide_metadata,
     get_peptide_metadata,
@@ -23,13 +22,11 @@ from app.services.peptide_tools import (
     _file_name_column,
     get_peptide_frame,
     peptide_overview,
-    peptide_sequence_coverage,
 )
 from app.services.peptide_quantity import (
     default_peptide_quantity_column,
     peptide_quantity_columns,
 )
-from app.services.upload_limits import ensure_upload_size
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,28 +72,6 @@ def get_peptide_quantity_options() -> PeptideQuantityOptionsResponse:
     except Exception as e:
         LOGGER.exception("Failed to load peptide abundance options")
         raise HTTPException(status_code=500, detail="Failed to load peptide abundance options.") from e
-
-
-@router.post("/metadata/upload", response_model=PeptideMetadataResponse)
-def upload_peptide_metadata(file: UploadFile = File(...)) -> PeptideMetadataResponse:
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Missing filename")
-    try:
-        ensure_upload_size(file, label="Peptide metadata file")
-    except ValueError as e:
-        raise HTTPException(status_code=413, detail=str(e)) from e
-
-    try:
-        _ = get_extension(file.filename)
-        frame = read_dataframe(file.filename, file.file)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to parse peptide metadata upload")
-        raise HTTPException(status_code=400, detail="Failed to parse metadata file.") from e
-
-    stored = save_peptide_metadata(file.filename, frame)
-    return _metadata_response(stored)
 
 
 @router.post("/metadata/generate", response_model=PeptideMetadataResponse)
@@ -160,8 +135,9 @@ def get_sequence_coverage(
     chunkSize: int = 100,
 ) -> PeptideCoverageResponse:
     try:
+        from app.services.notebook_sequence import capture_sequence_coverage
         return PeptideCoverageResponse(
-            **peptide_sequence_coverage(species=species, protein=protein, chunk_size=chunkSize)
+            **capture_sequence_coverage(species=species, protein=protein, chunk_size=chunkSize)
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

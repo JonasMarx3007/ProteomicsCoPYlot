@@ -29,37 +29,54 @@ need to reproduce a CI result exactly.
 
 ## Running the checks
 
-Everything below is what CI runs, so a green local run should mean a green pull
-request.
+Everything below except `mypy` is what CI runs, so a green local run should mean
+a green pull request. `mypy` is a local tool for the code you touch (see "Type
+checking" below).
 
 ```bash
-# Backend and repository tests
-pytest tests/backend tests/repository -q
+# All Python tests (CI: every Python 3.10-3.13, plus Windows; the package
+# and parity tests also on macOS). See tests/README.md for the layout.
+pytest -q
 
-# Cross-implementation parity: Python, R and the backend must agree
-pytest tests/package -q
-
-# Lint (Python)
+# Lint (Python) -- CI pins ruff 0.15.11, the version the pre-commit hook uses
 ruff check .
+python tools/check_backend_rules.py   # backend code-shape rules ruff lacks
 
-# Types (Python) -- see "Type checking" below
-mypy
+# Types (Python) -- local only, not run in CI; see "Type checking" below
+mypy backend/app/services/your_module.py
 
-# Coverage, when you want to know
-pytest tests/backend --cov --cov-report=term-missing
+# Coverage -- CI fails below `fail_under` in pyproject.toml
+pytest --cov --cov-report=term-missing
+
+# The R package's own tests (testthat)
+Rscript tests/r/test_notebook_functions.R
 ```
 
 ```bash
 cd frontend
 npm run build     # tsc -b && vite build -- this is the type check
 npm run lint
-npm test          # node --test
+npm test          # vitest: tests/unit and tests/component
+npm run generate:api   # after changing a route, schema or plot limit
 npm run test:browser
 ```
 
-The R parity tests need `Rscript` with the packages the R helper imports. If
-`Rscript` is missing they skip rather than fail; CI runs them for real, so a
-change to `notebook_functions.R` is not verified locally unless you have R.
+### R
+
+The tests that run R are marked `@pytest.mark.requires_r("pkg", ...)` with the R
+packages they need. If `Rscript` or one of those packages is missing they skip
+and say what is missing; with `COPYLOT_REQUIRE_R=1` (set in CI) they fail
+instead. `tests/r/renv.lock` pins the R version and packages CI uses (R 4.4.2,
+a dated CRAN snapshot, Bioconductor 3.20). To reproduce it:
+
+```r
+install.packages("renv")
+renv::restore(lockfile = "tests/r/renv.lock", library = Sys.getenv("R_LIBS_USER"))
+```
+
+Besides the packages the R helper uses, the tests need `testthat` and
+`jsonlite`. A change to `notebook_functions.R` is not verified locally unless you
+have R.
 
 ### Pre-commit
 
@@ -72,30 +89,6 @@ The hooks are whitespace and file hygiene plus `ruff check --fix`. They are fast
 and they do not reformat your code. Run them over everything once with
 `pre-commit run --all-files`.
 
-## The three invariants
-
-These are the things that are easy to break and expensive to notice later.
-
-1. **The triplicate pipeline.** Every analysis function must exist in all three
-   implementations — `backend/app/services/functions.py`,
-   `proteomicscopylot/notebook_functions.py` and
-   `proteomicscopylot/notebook_functions.R` — and return the same numbers.
-   `tests/package/test_triplicate_parity.py` enforces this. Backend-only
-   endpoints belong in its `BACKEND_ONLY_ANALYSIS` allowlist, with a reason.
-
-2. **One data-source vocabulary.** A request names exactly one of
-   `data | filtered | imputed`, defined once in `app.schemas.annotation` and
-   resolved once by `functions.select_matrix`. `"data"` is the annotated,
-   unfiltered matrix. Nothing falls back to another matrix. QC and the
-   comparison pipeline have no selector at all; PCA, the statistics modules,
-   ORA and the single-protein plots do, defaulting to the most processed matrix
-   available. `tests/backend/test_one_data_source_vocabulary.py` is the
-   statement of this rule in executable form — read it before adding a selector.
-
-3. **Fold-change orientation.** `log2FC = mean(condition1) − mean(condition2)`,
-   always. The first selected condition is the minuend, everywhere, including
-   the axis labels and the text the AI assistant produces.
-
 ## Tests
 
 A bug fix comes with a test that fails before it and passes after. Please check
@@ -103,21 +96,25 @@ that yourself by reverting the fix and watching the test fail — a test that
 passes against the broken code is worse than no test, because it is a claim that
 the bug is gone.
 
-Prefer tests that load a real project and assert on real numbers over tests that
-grep source files. Source scans are useful as a guard against a rule being
-re-broken (`this unit must not be hardcoded again`), not as evidence that
-something works.
+Prefer tests that load a real project and assert on real numbers. Do not write
+tests that read source files for a string: a rule about behaviour is tested by
+running it (a component test mounts the page with the API mocked), a value both
+sides must agree on comes from the generated API files, and a rule about how
+code is written is a lint rule (`frontend/eslint.config.js`,
+`tools/check_backend_rules.py`). `tests/README.md` says which goes where.
 
-Report output is fingerprinted: `tests/backend/test_report_preservation.py`
+Report output is fingerprinted: `tests/unit/report/test_report_preservation.py`
 holds SHA-256 hashes for 24 cases. If your change alters a report on purpose,
 update the fingerprints in the same change and say in the pull request what
 moved and why.
 
 ## Style
 
-- Python: ruff with Pyflakes rules (`select = ["F"]`). Style and modernisation
-  rules are deliberately off for now; adding them means working through roughly
-  200 findings, which is its own change, not a drive-by.
+- Python: ruff with Pyflakes rules (`select = ["F"]`), gating in CI. Test files
+  may import a pytest fixture from another test module, which Pyflakes reports as
+  an unused import and a redefinition, so F401 and F811 are off under `tests/`.
+  Style and modernisation rules are deliberately off for now; adding them means
+  working through roughly 200 findings, which is its own change, not a drive-by.
 - Formatting: `ruff format` is configured but **not** enforced. Reformatting the
   repository today would touch 147 files, so please do not run it across the
   tree as part of an unrelated change. `ruff format --diff path/to/file.py`
@@ -126,8 +123,8 @@ moved and why.
 
 ### Type checking
 
-`mypy` is configured leniently and is **not** gating. It reports around 75
-pre-existing findings on a clean tree, so treat it as a tool you point at the
+`mypy` is configured leniently and is **not** run in CI. It reports around 360
+pre-existing findings (October 2026), so treat it as a tool you point at the
 code you touched rather than a build step:
 
 ```bash

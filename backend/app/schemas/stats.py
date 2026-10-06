@@ -133,6 +133,9 @@ class VolcanoResultResponse(BaseModel):
     notSignificantCount: int
     rows: list[dict[str, Any]]
     warnings: list[str] = Field(default_factory=list)
+    # Rows the t-test could not use (fewer than 2 values in a compared
+    # condition), with their value counts and means; not part of the statistics.
+    untestedRows: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class EnrichmentTerm(BaseModel):

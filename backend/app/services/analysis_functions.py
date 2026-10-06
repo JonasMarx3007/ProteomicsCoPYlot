@@ -13,12 +13,10 @@ from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import VolcanoControlRequest, VolcanoRequest
 from app.services.runtime_cache import apply_cached_wrappers
 from app.services.single_protein_tools import (
-    single_protein_boxplot_plot,
     single_protein_boxplot_table,
-    single_protein_lineplot_plot,
     single_protein_lineplot_table,
 )
-from app.services.stats_tools import run_volcano, run_volcano_control
+from app.services.stats_tools import _gene_tokens, run_volcano, run_volcano_control
 
 
 def _string_or_none(value: object) -> str | None:
@@ -42,13 +40,6 @@ def _gene_label(row: dict[str, object]) -> str | None:
         if value:
             return value
     return None
-
-
-def _gene_tokens(value: object) -> list[str]:
-    text = str(value or "").strip()
-    if not text:
-        return []
-    return [token.strip() for token in text.split(";") if token.strip()]
 
 
 def _selection_label(
@@ -160,7 +151,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
             continue
         try:
             log2fc = float(row.get("log2FC", 0.0))
-            neg_log = float(row.get("neg_log10_adj_pval", 0.0))
+            neg_log = float(row.get("neg_log10_selected_pval", 0.0))
         except Exception:
             continue
         workflow_label = _workflow_label(row)
@@ -207,32 +198,6 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
     )
 
 
-def analysis_boxplot_png(
-    kind: AnnotationKind,
-    protein: str,
-    conditions: list[str],
-    identifier: str = "workflow",
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    data_source: str = "data",
-) -> bytes:
-    return single_protein_boxplot_plot(
-        kind=kind,
-        protein=protein,
-        conditions=conditions,
-        identifier=identifier,
-        data_source=data_source,
-        outliers=False,
-        dots=False,
-        header=True,
-        legend=True,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
-    )
-
-
 def analysis_boxplot_table(
     kind: AnnotationKind,
     protein: str,
@@ -246,32 +211,6 @@ def analysis_boxplot_table(
         conditions=conditions,
         identifier=identifier,
         data_source=data_source,
-    )
-
-
-def analysis_lineplot_png(
-    kind: AnnotationKind,
-    proteins: list[str],
-    conditions: list[str],
-    identifier: str = "workflow",
-    include_id: bool = False,
-    width_cm: float = 20,
-    height_cm: float = 10,
-    dpi: int = 300,
-    data_source: str = "data",
-) -> bytes:
-    return single_protein_lineplot_plot(
-        kind=kind,
-        proteins=proteins,
-        conditions=conditions,
-        include_id=include_id,
-        identifier=identifier,
-        data_source=data_source,
-        header=True,
-        legend=True,
-        width_cm=width_cm,
-        height_cm=height_cm,
-        dpi=dpi,
     )
 
 
@@ -297,9 +236,7 @@ apply_cached_wrappers(
     globals(),
     [
         "analysis_volcano_data",
-        "analysis_boxplot_png",
         "analysis_boxplot_table",
-        "analysis_lineplot_png",
         "analysis_lineplot_table",
     ],
 )

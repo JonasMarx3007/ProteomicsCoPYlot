@@ -11,23 +11,19 @@ from threading import RLock
 
 from app.services.password_hashing import validate_password_hash, verify_password
 from app.services.session_context import get_session_id
+from app.services.env_settings import env_flag
 
 LOGGER = logging.getLogger(__name__)
 
 
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 _SESSION_AUTH: set[str] = set()
 _SESSION_LOCK = RLock()
 
 
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default)).strip().lower() in TRUTHY_VALUES
-
-
 def tool_access_enabled() -> bool:
-    return _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED", "0")
+    return env_flag("COPYLOT_TOOL_ACCESS_ENABLED")
 
 
 def _access_file_candidates(project_root: Path | None = None) -> list[Path]:
@@ -161,5 +157,7 @@ def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> 
 
 
 def clear_tool_session_auth() -> None:
+    from app.services.notebook_snapshots import forget_session
     with _SESSION_LOCK:
         _SESSION_AUTH.discard(get_session_id())
+    forget_session(get_session_id())

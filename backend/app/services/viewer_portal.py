@@ -13,6 +13,7 @@ from typing import Any
 
 from app.services.annotation_store import reset_all_annotations
 from app.services.condition_palette_store import reset_condition_palettes
+from app.services.phospho_localization import reset_localization_cutoff
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.password_hashing import validate_password_hash, verify_password
@@ -23,9 +24,9 @@ from app.services.viewer_bootstrap import (
     resolve_viewer_project_config,
     viewer_mode_enabled,
 )
+from app.services.env_settings import env_flag
 
 LOGGER = logging.getLogger(__name__)
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 # Must contain at least one character that is not a dot: the name is used as a
 # single path segment, so a name of "." or ".." would resolve outside its own
 # project directory. Names come from admin-controlled config today, but the
@@ -62,16 +63,12 @@ _QR_ACCESS_FILE_CACHE_KEY: tuple[str, float, int] | None = None
 _QR_ACCESS_FILE_CACHE: list[ViewerQrAccessEntry] = []
 
 
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default)).strip().lower() in TRUTHY_VALUES
-
-
 def viewer_portal_enabled() -> bool:
     if not viewer_mode_enabled():
         return False
     if not session_isolation_enabled():
         return False
-    return _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED", "0")
+    return env_flag("COPYLOT_VIEWER_PORTAL_ENABLED")
 
 
 def _default_access_file_candidates(project_root: Path) -> list[Path]:
@@ -303,10 +300,13 @@ def validate_viewer_portal_configuration() -> None:
 
 
 def _reset_current_session_data() -> None:
+    from app.services.notebook_snapshots import forget_session
+    forget_session(get_session_id())
     reset_all_annotations()
     reset_all_uploaded_metadata()
     reset_all_datasets()
     reset_condition_palettes()
+    reset_localization_cutoff()
     clear_peptide_metadata()
 
 
@@ -423,6 +423,8 @@ def clear_viewer_session_auth(*, reset_data: bool = False) -> None:
     with _LOCK:
         _SESSION_AUTH.pop(session_id, None)
         _BOOTSTRAPPED_SESSION_PROJECT.pop(session_id, None)
+    from app.services.notebook_snapshots import forget_session
+    forget_session(session_id)
     if reset_data:
         _reset_current_session_data()
 

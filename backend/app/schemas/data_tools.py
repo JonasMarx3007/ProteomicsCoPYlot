@@ -88,6 +88,20 @@ class ConditionPaletteResponse(BaseModel):
     palette: dict[str, str] = Field(default_factory=dict)
 
 
+class PhosphoLocalizationCutoffRequest(BaseModel):
+    cutoff: float = Field(ge=0, le=1)
+
+
+class PhosphoLocalizationCutoffResponse(BaseModel):
+    """The session-wide phosphosite localization probability cutoff.
+
+    `available` says whether the loaded phosphosite table has a
+    PTM_localization column the cutoff can act on.
+    """
+    cutoff: float
+    available: bool
+
+
 class ImputationRunRequest(BaseModel):
     kind: AnnotationKind
     method: Literal["quantile", "numerical"] = "quantile"

@@ -25,6 +25,7 @@ from app.services.annotation_processor import (
     compute_annotation,
     compute_annotation_from_metadata,
     detect_log2_transformed,
+    log2_scale_hint,
     normalize_uploaded_metadata,
     split_uploaded_metadata_profiles,
 )
@@ -44,8 +45,9 @@ from app.services.metadata_upload_store import (
     list_auto_generated_profiles,
     save_uploaded_metadata_profiles,
 )
-from app.services.phosprot_tools import aggregate_from_phospho, upload_phosprot
+from app.services.phosprot_tools import aggregate_from_phospho
 from app.services.upload_limits import ensure_upload_size
+from app.api.download_headers import attachment_disposition
 
 LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +116,7 @@ def _stream_dataframe_download(
         return StreamingResponse(
             buffer,
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": attachment_disposition(filename)},
         )
     except Exception as e:
         LOGGER.exception(error_detail)
@@ -267,6 +269,7 @@ def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultR
         warnings=computed.warnings,
         log2_auto_detected=computed.log2_auto_detected,
         phosprot_aggregation=current_dataset.phosprot_aggregation if payload.kind == "phosprot" else None,
+        phosprot_lineage=current_dataset.phosprot_lineage if payload.kind == "phosprot" else None,
     )
 
     return _response_from_stored(stored)
@@ -329,6 +332,7 @@ def detect_annotation_log2_scale(
         isLog2Transformed=detection.is_log2_transformed,
         sampleCount=len(sample_columns),
         reason=detection.reason,
+        scaleHint=log2_scale_hint(current_dataset.frame, sample_columns),
     )
 
 
@@ -376,38 +380,12 @@ def aggregate_phosprot_annotation(
     payload: PhosprotAggregateRequest,
 ) -> AnnotationResultResponse:
     try:
-        stored = aggregate_from_phospho(mode=payload.mode, source=payload.source)
+        stored = aggregate_from_phospho(
+            mode=payload.mode, source=payload.source, localization_cutoff=payload.localizationCutoff
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         LOGGER.exception("Failed to aggregate phosphoprotein dataset")
         raise HTTPException(status_code=500, detail="Failed to aggregate phosphoprotein dataset.") from e
-    return _response_from_stored(stored)
-
-
-@router.post("/phosprot/upload", response_model=AnnotationResultResponse)
-def upload_phosprot_annotation(
-    file: UploadFile = File(...),
-    isLog2Transformed: bool | None = Form(default=None),
-) -> AnnotationResultResponse:
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Missing filename")
-    try:
-        ensure_upload_size(file, label="Phosphoprotein dataset")
-    except ValueError as e:
-        raise HTTPException(status_code=413, detail=str(e)) from e
-
-    try:
-        _ = get_extension(file.filename)
-        frame = read_dataframe(file.filename, file.file)
-        stored = upload_phosprot(
-            frame=frame,
-            filename=file.filename,
-            is_log2_transformed=isLog2Transformed,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Failed to upload phosphoprotein dataset")
-        raise HTTPException(status_code=500, detail="Failed to upload phosphoprotein dataset.") from e
     return _response_from_stored(stored)

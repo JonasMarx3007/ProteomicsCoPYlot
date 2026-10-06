@@ -26,6 +26,7 @@ from app.schemas.chat import (
 from app.services.assistant_profiles import classify_model
 from app.services.cloud_ai_consent import require_cloud_ai_consent
 from app.services.workload_manager import provider_deadline
+from app.services.env_settings import env_flag, env_float, env_int
 
 
 class _NoProviderRedirects(urllib.request.HTTPRedirectHandler):
@@ -115,7 +116,7 @@ _PROVIDER_OPENER = urllib.request.build_opener(_NoProviderRedirects(), _Deadline
 
 
 def _read_provider_body(response) -> bytes:
-    limit = max(1, _env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
+    limit = max(1, env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
     body = response.read(limit + 1)
     if len(body) > limit:
         raise ValueError("Provider response exceeds the configured size limit.")
@@ -177,23 +178,34 @@ def _cache_put(cache, key, value, generation):
 
 
 _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS = 1800
-_DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-_DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
-_DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+# The one list of cloud default models; the browser reads it from
+# /api/chat/provider-defaults instead of keeping its own. Checked against the
+# providers' model lists on 2026-10-02 (gemini-2.0-flash was shut down on
+# 2026-06-01). An administrator can override each without a release:
+# COPYLOT_DEFAULT_OPENAI_MODEL, COPYLOT_DEFAULT_ANTHROPIC_MODEL, COPYLOT_DEFAULT_GEMINI_MODEL.
+_PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "openai": "gpt-5.4-mini",
+    "anthropic": "claude-sonnet-5-5",
+    "gemini": "gemini-3.8-flash",
+}
 _OPENAI_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 _ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _GEMINI_BASE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _CLOUD_MAX_CONTEXT_CHARS = 96_000
 ASSISTANT_INPUT_MAX_CHARS = 24_000
 _PROTECTED_CONTEXT_PATTERNS = (
-    re.compile(r"(?i)(?:^|[\s'\"])(?:[a-z]:[\\/]|\\\\|file://)"),
+    # Windows drive and UNC paths, and file URLs.
+    re.compile(r"(?i)(?:^|[\s'\"(=,])(?:[a-z]:[\\/]|\\\\|file://)"),
+    # Linux and macOS paths: a home directory or a common mount or system root,
+    # starting a token. API paths ("/api/...") and plain words are not matched.
+    re.compile(r"(?:^|[\s'\"(=,])(?:~/|/(?:home|Users|root|mnt|media|Volumes|tmp|var|opt|srv|private)/)"),
     re.compile(r"(?i)(?:api[-_ ]?key|authorization|access[-_ ]?token|password)\s*[:=]"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
 
 def ai_mode_enabled() -> bool:
-    return str(os.getenv("COPYLOT_AI_MODE", "")).strip().lower() in _TRUTHY_VALUES
+    return env_flag("COPYLOT_AI_MODE")
 
 
 def _resolve_provider(payload_provider: str | None) -> ChatProvider:
@@ -203,14 +215,16 @@ def _resolve_provider(payload_provider: str | None) -> ChatProvider:
     return "ollama"
 
 
+def provider_default_models() -> dict[str, str]:
+    """The default model for each cloud provider, after any environment override."""
+    return {
+        provider: (str(os.getenv(f"COPYLOT_DEFAULT_{provider.upper()}_MODEL", "")).strip() or model)
+        for provider, model in _PROVIDER_DEFAULT_MODELS.items()
+    }
+
+
 def _default_model_for_provider(provider: ChatProvider) -> str:
-    if provider == "openai":
-        return _DEFAULT_OPENAI_MODEL
-    if provider == "anthropic":
-        return _DEFAULT_ANTHROPIC_MODEL
-    if provider == "gemini":
-        return _DEFAULT_GEMINI_MODEL
-    return ""
+    return provider_default_models().get(provider, "")
 
 
 def _resolve_chat_model(payload: ChatRequest, provider: ChatProvider) -> str:
@@ -346,33 +360,6 @@ def _resolve_endpoint(endpoint_override: str | None = None) -> str:
             value = value.split("/api/", 1)[0]
         return f"{value.rstrip('/')}/api/chat"
     return str(os.getenv("COPYLOT_OLLAMA_URL", "")).strip() or _DEFAULT_OLLAMA_URL
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except Exception:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except Exception:
-        return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = str(os.getenv(name, "")).strip().lower()
-    if not raw:
-        return default
-    return raw in _TRUTHY_VALUES
 
 
 def _resolve_ollama_base_url(endpoint_override: str | None = None) -> str:
@@ -593,7 +580,7 @@ def model_capability(
 
 
 def _run_bounded_command(args, *, env, timeout) -> str:
-    limit = max(1, _env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
+    limit = max(1, env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
     output = bytearray()
     deadline = min(provider_deadline.get() or time.monotonic() + timeout, time.monotonic() + timeout)
     if time.monotonic() >= deadline:
@@ -652,7 +639,7 @@ def _run_ollama_model_command(command: str, model_name: str, endpoint_override: 
     ollama_bin = shutil.which("ollama")
     if not ollama_bin:
         raise ValueError("Ollama CLI was not found on PATH.")
-    timeout_seconds = max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS))
+    timeout_seconds = max(30, env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS))
     env = os.environ.copy()
     env["OLLAMA_HOST"] = _resolve_ollama_base_url(endpoint_override)
     return _run_bounded_command(
@@ -678,7 +665,7 @@ def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: s
         headers={"Content-Type": "application/json"},
         method=method,
     )
-    response = _open_provider_request(request, timeout=max(30, _env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
+    response = _open_provider_request(request, timeout=max(30, env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
     with response:
         payload = _read_provider_body(response).decode("utf-8", errors="replace").strip()
     return payload
@@ -807,7 +794,7 @@ def _detect_gpu_status_uncached(endpoint_override: str | None = None) -> OllamaG
         )
     return OllamaGpuStatusResponse(
         gpuEligible=True,
-        gpuEnabledDefault=_env_bool("COPYLOT_OLLAMA_GPU_DEFAULT", True),
+        gpuEnabledDefault=env_flag("COPYLOT_OLLAMA_GPU_DEFAULT", True),
         provider="cuda",
         deviceName=names[0],
         reason=None,
@@ -867,7 +854,7 @@ def _open_ollama_request(
     if not messages:
         raise ValueError("Chat request has no valid messages.")
     is_remote_endpoint = not _is_local_ollama_endpoint(endpoint)
-    requested_num_gpu = _env_int("COPYLOT_OLLAMA_NUM_GPU", -1)
+    requested_num_gpu = env_int("COPYLOT_OLLAMA_NUM_GPU", -1)
     num_gpu: int | None
     if is_remote_endpoint:
         # For remote Ollama, do not force GPU/CPU from the client host.
@@ -879,10 +866,10 @@ def _open_ollama_request(
 
     options: dict[str, float | int] = {
         "temperature": 0,
-        "top_p": _env_float("COPYLOT_OLLAMA_TOP_P", 0.9),
+        "top_p": env_float("COPYLOT_OLLAMA_TOP_P", 0.9),
         "num_predict": 1024,
         "num_ctx": int(num_ctx or _ollama_context_floor()),
-        "repeat_penalty": _env_float("COPYLOT_OLLAMA_REPEAT_PENALTY", 1.1),
+        "repeat_penalty": env_float("COPYLOT_OLLAMA_REPEAT_PENALTY", 1.1),
     }
     if num_gpu is not None:
         options["num_gpu"] = num_gpu
@@ -891,7 +878,7 @@ def _open_ollama_request(
         "model": model,
         "messages": messages,
         "stream": False,
-        "think": _env_bool("COPYLOT_OLLAMA_THINK", False),
+        "think": env_flag("COPYLOT_OLLAMA_THINK", False),
         "options": options,
     }
     if output_schema is not None:
@@ -1010,9 +997,9 @@ def _anthropic_chat_text(
     request_body: dict[str, object] = {
         "model": model,
         "messages": dialogue,
-        "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    # Use provider defaults: recent Anthropic models reject sampling overrides.
     if system_text:
         request_body["system"] = system_text
     request = urllib.request.Request(
@@ -1143,13 +1130,13 @@ def estimate_tokens(*texts: str) -> int:
 
 
 def _ollama_context_floor() -> int:
-    return max(2048, _env_int("COPYLOT_OLLAMA_NUM_CTX", 8192))
+    return max(2048, env_int("COPYLOT_OLLAMA_NUM_CTX", 8192))
 
 
 def _ollama_context_limits(model: str, endpoint_override: str | None = None) -> tuple[int, int]:
     """(floor, ceiling) num_ctx for this Ollama model."""
     floor = _ollama_context_floor()
-    ceiling = max(floor, _env_int("COPYLOT_OLLAMA_MAX_CTX", 16384))
+    ceiling = max(floor, env_int("COPYLOT_OLLAMA_MAX_CTX", 16384))
     if not model:
         return floor, ceiling
     try:
@@ -1163,8 +1150,8 @@ def _ollama_context_limits(model: str, endpoint_override: str | None = None) -> 
     # arrived; every other model stayed at 8192 for the whole run. Large models
     # that also see the full panel start at the larger window. The 12B models
     # did not need it and keep 8192, so their VRAM use is unchanged.
-    if tier != "compact" and size is not None and size >= _env_float("COPYLOT_OLLAMA_LARGE_MODEL_B", 20.0):
-        floor = max(floor, _env_int("COPYLOT_OLLAMA_LARGE_NUM_CTX", 12288))
+    if tier != "compact" and size is not None and size >= env_float("COPYLOT_OLLAMA_LARGE_MODEL_B", 20.0):
+        floor = max(floor, env_int("COPYLOT_OLLAMA_LARGE_NUM_CTX", 12288))
     if window:
         ceiling = min(ceiling, int(window))
     floor = min(floor, ceiling)
@@ -1218,6 +1205,9 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
     if len(data) > ASSISTANT_INPUT_MAX_CHARS:
         raise ValueError("This assistant request is too large. Ask a shorter, more focused question.")
     if provider != "ollama":
+        # The instruction carries generated context too (controls, labels), so
+        # both messages are checked before anything leaves the machine.
+        _validate_cloud_analysis_context(instruction)
         _validate_cloud_analysis_context(data)
     messages = [{"role": "system", "content": instruction}, {"role": "user", "content": data}]
     if provider == "ollama":

@@ -41,6 +41,7 @@ class PeptideMetadataGenerateRequest(BaseModel):
 
 
 class PeptideCoverageResponse(BaseModel):
+    notebookToken: str | None = None
     protein: str
     species: PeptideSpecies
     coveragePercent: float

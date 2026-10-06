@@ -1,19 +1,13 @@
-import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
+import { AssistantInput } from "../../components/AssistantFields";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getDistributionSummary, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
-import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
-  coercePlotDownloadFormat,
-  type PlotDownloadFormat,
-  withPlotDownloadFilename,
-  withPlotDownloadFormat,
-} from "../../lib/plotDownload";
 import { withBasePath } from "../../lib/basePath";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { ContextMode, AnnotationKind, DistributionSummaryResponse } from "../../lib/types";
 import SelectField from "../../components/SelectField";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 type Props = {
   onContextModeChange?: (mode: ContextMode | null) => void;
@@ -34,17 +28,14 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DistributionSummaryResponse | null>(null);
-  const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>(() =>
-    coercePlotDownloadFormat(persisted.downloadFormat)
-  );
   const [randomSeed, setRandomSeed] = useState(() => Number(persisted.randomSeed ?? 187));
   useEffect(() => {
     onContextModeChange?.({ kind, randomSeed });
   }, [onContextModeChange, kind, randomSeed]);
 
   useEffect(() => {
-    writePersistedUiState("data.distribution.v1", { kind, downloadFormat, randomSeed });
-  }, [kind, downloadFormat, randomSeed]);
+    writePersistedUiState("data.distribution.v1", { kind, randomSeed });
+  }, [kind, randomSeed]);
 
   const loadSummary = useCallback(async (signal?: AbortSignal) => {
     if (!availableKinds.includes(kind)) {
@@ -86,8 +77,6 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
     },
     [kind, randomSeed, advancedPlotSignal]
   );
-  const qqPlotDownloadUrl = withPlotDownloadFormat(qqPlotUrl, downloadFormat);
-  const qqPlotDownloadFilename = withPlotDownloadFilename(`qqnorm_${kind}.png`, downloadFormat);
   const qqReferenceImageUrl = withBasePath("/assets/qqnorm.jpg");
 
   return (
@@ -102,6 +91,7 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
             onChange={(value) => setKind(value as AnnotationKind)}
             options={kindOptions}
           />
+          <LocalizationCutoffField kind={kind} />
           <label className="grid gap-1 text-sm text-slate-700">
             <span>Random seed</span>
             <AssistantInput
@@ -145,29 +135,7 @@ export default function DistributionPage({ advancedPlotOptions, onContextModeCha
       {kindOptions.length > 0 && summary ? (
         <>
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
-              <div className="flex flex-wrap items-center gap-2">
-                <AssistantSelect
-                  value={downloadFormat}
-                  onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                  className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-                >
-                  {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </AssistantSelect>
-                <a
-                  href={qqPlotDownloadUrl}
-                  download={qqPlotDownloadFilename}
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-                >
-                  Download Plot
-                </a>
-              </div>
-            </div>
+            <h3 className="text-lg font-semibold text-slate-900">QQ Norm Plot</h3>
             {summary.warnings.length > 0 ? (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 {summary.warnings.join(" ")}

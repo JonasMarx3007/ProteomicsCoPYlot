@@ -11,6 +11,7 @@ from app.schemas.annotation import (
     AnnotationKind,
     MetadataSource,
     SamplePairAssignment,
+    PhosprotLineage,
 )
 from app.services.dataset_store import get_active_package
 from app.services.metadata_upload_store import (
@@ -42,6 +43,7 @@ class StoredAnnotation:
     # abundances; the other modes and a direct upload carry real intensities.
     # None for the "protein" and "phospho" kinds.
     phosprot_aggregation: str | None = None
+    phosprot_lineage: PhosprotLineage | None = None
 
 
 def _empty_annotation_state() -> dict[AnnotationKind, StoredAnnotation | None]:
@@ -115,6 +117,7 @@ def save_annotation(
     package_name: str | None = None,
     metadata_profile_name: str | None = None,
     phosprot_aggregation: str | None = None,
+    phosprot_lineage: PhosprotLineage | None = None,
 ) -> StoredAnnotation:
     stored = StoredAnnotation(
         kind=kind,
@@ -132,6 +135,7 @@ def save_annotation(
         imputed_data=(imputed_data.copy() if imputed_data is not None else pd.DataFrame()),
         created_at=datetime.now(timezone.utc).isoformat(),
         phosprot_aggregation=phosprot_aggregation,
+        phosprot_lineage=phosprot_lineage.model_copy(deep=True) if phosprot_lineage else None,
     )
     return store_prepared_annotation(stored, package_name=package_name, metadata_profile_name=metadata_profile_name)
 
@@ -320,6 +324,7 @@ def update_annotation_pairing(
         imputation=stored.imputation,
         imputed_data=getattr(stored, "imputed_data", pd.DataFrame()),
         phosprot_aggregation=getattr(stored, "phosprot_aggregation", None),
+        phosprot_lineage=getattr(stored, "phosprot_lineage", None),
     )
 
 

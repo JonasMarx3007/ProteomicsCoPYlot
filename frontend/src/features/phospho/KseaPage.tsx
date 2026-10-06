@@ -22,10 +22,21 @@ import { readPersistedUiState, writePersistedUiState } from "../../lib/persisted
 import type { PhosphoOptionsResponse } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import SelectField from "../../components/SelectField";
+import NotebookDownload from "../../components/NotebookDownload";
 
 const NO_TABLE_ROWS: Record<string, unknown>[] = [];
 
 type KseaSourceMode = "volcano" | "volcano_control";
+
+// Motif windows are read from this reference proteome at each site position;
+// "none" keeps the peptide-only window. Values match phospho_tools.KSEA_ORGANISMS.
+type KseaOrganism = "human" | "mouse" | "none";
+const KSEA_ORGANISM_VALUES: KseaOrganism[] = ["human", "mouse", "none"];
+const KSEA_ORGANISM_LABELS: Record<KseaOrganism, string> = {
+  human: "Human (UP000005640)",
+  mouse: "Mouse (UP000000589)",
+  none: "None (peptide sequence only)",
+};
 
 type Props = {
   onContextModeChange?: (mode: ContextMode | null) => void;
@@ -63,8 +74,11 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   );
   const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const [organism, setOrganism] = useState<KseaOrganism>(() =>
+    KSEA_ORGANISM_VALUES.includes(persisted.organism as KseaOrganism) ? (persisted.organism as KseaOrganism) : "human"
+  );
 
-  const [tableResult, setTableResult] = useState<{ rows: Record<string, unknown>[]; requestKey: string } | null>(null);
+  const [tableResult, setTableResult] = useState<{ rows: Record<string, unknown>[]; requestKey: string; token: string | null } | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
 
@@ -81,9 +95,9 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   useEffect(() => {
     onContextModeChange?.({ kind: "phospho", source: sourceMode, dataSource,
       condition1, condition2, condition1Control, condition2Control, pValueThreshold,
-      log2fcThreshold, testType, useUncorrected, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken });
+      log2fcThreshold, testType, useUncorrected, organism, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken });
   }, [onContextModeChange, sourceMode, dataSource, condition1, condition2, condition1Control,
-    condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, volcanoHtml, externalEvidenceToken]);
+    condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, organism, volcanoHtml, externalEvidenceToken]);
 
   useEffect(() => {
     writePersistedUiState("phospho.ksea.v1", {
@@ -97,6 +111,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
       log2fcThreshold,
       testType,
       useUncorrected,
+      organism,
       volcanoPValueThreshold,
       volcanoHeader,
       annotateHits,
@@ -112,6 +127,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     log2fcThreshold,
     testType,
     useUncorrected,
+    organism,
     volcanoPValueThreshold,
     volcanoHeader,
     annotateHits,
@@ -185,6 +201,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
       log2fcThreshold,
       testType,
       useUncorrected,
+      organism,
     };
   }, [
     validSelection,
@@ -198,6 +215,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     log2fcThreshold,
     testType,
     useUncorrected,
+    organism,
   ]);
   const debouncedTableRequest = useDebouncedValue(tableRequest, 650);
   // One shared empty array: a fresh `[]` here is a new identity every render,
@@ -225,12 +243,13 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     getPhosphoTable("ksea", debouncedTableRequest, { signal: controller.signal })
       .then((payload) => {
         if (controller.signal.aborted) return;
-        setTableResult({ rows: payload.rows ?? [], requestKey: JSON.stringify({ revision, ...debouncedTableRequest }) });
+        setTableResult({ rows: payload.rows ?? [], requestKey: JSON.stringify({ revision, ...debouncedTableRequest }),
+          token: payload.notebookToken ?? null });
       })
       .catch((err) => {
         if (controller.signal.aborted || isAbortError(err)) return;
         setTableResult(null);
-        setTableError(err instanceof Error ? err.message : "Failed to load KSEA table");
+        setTableError(err instanceof Error ? err.message : "Failed to load Kinase Library table");
       })
       .finally(() => {
         if (controller.signal.aborted) return;
@@ -244,6 +263,14 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     debouncedTableRequest,
     revision,
   ]);
+
+  // Rows whose window could not be read from the protein sequence (accession
+  // absent from the selected proteome, or residue/position mismatch) keep the
+  // peptide-only window, which pads uncovered flanks with "_".
+  const peptideWindowCount = useMemo(
+    () => tableRows.filter((row) => row.window_source === "peptide").length,
+    [tableRows]
+  );
 
   const tsvDownload = useMemo(() => {
     if (tableRows.length === 0) return null;
@@ -268,7 +295,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
 
   async function generateVolcano() {
     if (!(fileSt && fileTnc)) {
-      setVolcanoError("Please upload both KSEA result files.");
+      setVolcanoError("Please upload both Kinase Library result files.");
       return;
     }
     if (!validSelection) {
@@ -298,7 +325,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     } catch (err) {
       setVolcanoHtml("");
       setExternalEvidenceToken("");
-      setVolcanoError(err instanceof Error ? err.message : "Failed to generate KSEA volcano");
+      setVolcanoError(err instanceof Error ? err.message : "Failed to generate Kinase Library volcano");
     } finally {
       setVolcanoLoading(false);
     }
@@ -307,11 +334,16 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">KSEA</h2>
+        <h2 className="text-lg font-semibold text-slate-900">Kinase Library Motif Enrichment</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          Exports phosphosite fold changes for the Kinase Library Fisher/motif enrichment
+          (Johnson et al., Nature 2023) and plots its results. This is motif enrichment among
+          regulated sites -- not KSEA (Casado et al., 2013) and not a direct measure of kinase activity.
+        </p>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">KSEA Input Table</h3>
+        <h3 className="text-lg font-semibold text-slate-900">Kinase Library Input Table</h3>
         {!hasPhosphoDataset ? (
           <InfoNotice message="No phospho dataset loaded. Upload data in the Data tab first." />
         ) : optionsLoading ? (
@@ -402,6 +434,13 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                 onChange={(value) => setLog2fcThreshold(Math.max(0, value))}
               />
               <SelectField
+                label="Motif Window Proteome"
+                value={organism}
+                options={KSEA_ORGANISM_VALUES}
+                labels={KSEA_ORGANISM_LABELS}
+                onChange={(value) => setOrganism(value as KseaOrganism)}
+              />
+              <SelectField
                 label="Test Type"
                 value={testType}
                 options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS.map(({ value }) => value) : TEST_TYPE_VALUES}
@@ -435,19 +474,32 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                 }
               />
             ) : tableLoading || tableRequest !== debouncedTableRequest ? (
-              <NeutralNotice message="Loading KSEA input table..." />
+              <NeutralNotice message="Loading Kinase Library input table..." />
             ) : tableError ? (
               <ErrorNotice message={tableError} />
             ) : (
               <>
                 {tsvDownload ? (
+                  <div className="flex flex-wrap items-center gap-2">
                   <a
                     href={tsvDownload}
-                    download={`KSEA_${kseaComparisonLabel}.tsv`}
+                    download={`KinaseLibrary_${kseaComparisonLabel}.tsv`}
                     className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
                   >
-                    Download KSEA Table (TSV)
+                    Download Kinase Library Table (TSV)
                   </a>
+                  <NotebookDownload outputLabel="table" plotUrl={JSON.stringify({ revision, ...tableRequest })}
+                    rendered={tableResult ? { url: tableResult.requestKey, token: tableResult.token } : null} />
+                  </div>
+                ) : null}
+                {tableRows.length > 0 && peptideWindowCount > 0 ? (
+                  <InfoNotice
+                    message={
+                      organism === "none"
+                        ? "Motif windows are cut from the peptide sequence only; flanks the peptide does not cover are padded with \"_\", which the Kinase Library reads as the protein end."
+                        : `${peptideWindowCount} of ${tableRows.length} motif windows could not be read from the ${KSEA_ORGANISM_LABELS[organism]} proteome and use the peptide sequence only (window_source = peptide).`
+                    }
+                  />
                 ) : null}
                 <PreviewTable rows={tableRows} emptyText="No rows available for the current selection." />
               </>
@@ -461,23 +513,23 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
         <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-slate-700">
           <li>
             {sourceMode === "volcano_control"
-              ? "Select Condition 1/2 plus both controls (four different conditions) and download the prepared KSEA table (TSV)."
-              : "Select two conditions and download the prepared KSEA table (TSV)."}
+              ? "Select Condition 1/2 plus both controls (four different conditions) and download the prepared Kinase Library table (TSV)."
+              : "Select two conditions and download the prepared Kinase Library table (TSV)."}
           </li>
           <li>Open <a className="text-sky-700 underline" href="https://kinase-library.phosphosite.org/kinase-library/fisher-enrichment-analysis" target="_blank" rel="noreferrer">PhosphoSitePlus Kinase Library</a>.</li>
           <li>Go to <strong>Fisher Enrichment Analysis</strong> and upload the downloaded table.</li>
           <li>Set columns as in the original workflow:
-            <div>Motif column: <code>UPD_seq</code></div>
+            <div>Motif column: <code>UPD_seq</code> (15-residue window centred on the site, read from the selected proteome)</div>
             <div>log2FC column: <code>log2FC</code></div>
             <div>p-value column (optional): <code>pval</code> or <code>adj_pval</code></div>
           </li>
           <li>Run analysis for Serine/Threonine and again for Tyrosine/non-canonical kinases.</li>
-          <li>Download both result files and upload them below to generate the KSEA volcano.</li>
+          <li>Download both result files and upload them below to generate the Kinase Library volcano.</li>
         </ol>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">KSEA Volcano From Uploaded Results</h3>
+        <h3 className="text-lg font-semibold text-slate-900">Kinase Library Volcano From Uploaded Results</h3>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <FileField
             label="Serine/Threonine Result File"
@@ -490,7 +542,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
             helpText={fileTnc ? fileTnc.name : "Upload .csv, .tsv, or .txt"}
           />
           <NumericField
-            label="KSEA Volcano P-value Threshold"
+            label="Kinase Library Volcano P-value Threshold"
             value={volcanoPValueThreshold}
             onChange={(value) => setVolcanoPValueThreshold(Math.max(1e-12, Math.min(1, value)))}
           />
@@ -516,7 +568,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
             disabled={volcanoLoading || !fileSt || !fileTnc || !validSelection}
             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
-            {volcanoLoading ? "Generating..." : "Generate KSEA Volcano"}
+            {volcanoLoading ? "Generating..." : "Generate Kinase Library Volcano"}
           </button>
         </div>
         {volcanoError ? (
@@ -530,12 +582,12 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
 
       {volcanoHtml ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">KSEA Volcano</h3>
+          <h3 className="text-lg font-semibold text-slate-900">Kinase Library Volcano</h3>
           <div className="mt-4">
             <iframe
               sandbox="allow-scripts allow-downloads"
               srcDoc={volcanoHtml}
-              title="KSEA Volcano"
+              title="Kinase Library Volcano"
               className="h-[40rem] w-full rounded-xl border border-slate-200"
             />
           </div>

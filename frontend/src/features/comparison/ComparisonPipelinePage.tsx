@@ -1,4 +1,7 @@
 import { SizeRow } from "../../components/PlotFields";
+import PlotImage from "../../components/PlotImage";
+import InteractivePlot from "../../components/InteractivePlot";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { withoutStaticSize } from "../../lib/plotRenderType";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { AssistantSelect } from "../../components/AssistantFields";
@@ -24,7 +27,9 @@ import type {
 import PreviewTable from "../../components/PreviewTable";
 import SelectField from "../../components/SelectField";
 import TextField from "../../components/TextField";
+import NumberField from "../../components/NumberField";
 import type { ContextMode } from "../../lib/types";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 type Props = {
   activeTab: ComparisonTab;
@@ -62,7 +67,8 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
   const [options, setOptions] = useState<ComparisonOptionsResponse | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [imageError, setImageError] = useState<string | null>(null);
+  const [notebook, setNotebook] = useState<RenderedNotebook | null>(null);
+  const [tableSnapshot, setTableSnapshot] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -94,6 +100,9 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     alias1: String(persistedVenn.alias1 ?? ""),
     alias2: String(persistedVenn.alias2 ?? ""),
     alias3: String(persistedVenn.alias3 ?? ""),
+    // Condition mode: how many samples of a condition must have a value for a
+    // feature to count as present there. 1 is the long-standing behaviour.
+    minPresent: Math.max(1, Math.round(Number(persistedVenn.minPresent ?? 1)) || 1),
     color1: String(persistedVenn.color1 ?? "#1f77b4"),
     color2: String(persistedVenn.color2 ?? "#ff7f0e"),
     color3: String(persistedVenn.color3 ?? "#2ca02c"),
@@ -263,6 +272,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       widthCm: venn.widthCm,
       heightCm: venn.heightCm,
       dpi: venn.dpi,
+      ...(venn.mode === "Condition" ? { minPresent: venn.minPresent } : {}),
     };
     return {
       title: "Venn Diagram",
@@ -280,7 +290,9 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     return withPlotDownloadFilename(plotView.filename, downloadFormat);
   }, [plotView, downloadFormat]);
 
+  const plotToken = notebook?.url === plotView?.url ? notebook?.token : null;
   const tableRequest = useMemo<TableRequest>(() => {
+    void advancedPlotSignal;
     if (!hasKind || !options) return null;
     if (activeTab === "pearson") {
       if (!pearsonReady) return null;
@@ -295,7 +307,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       };
       return {
         tab: "pearson",
-        params,
+        params: plotToken ? { ...params, snapshot: plotToken } : params,
       };
     }
     if (!vennReady) return null;
@@ -307,12 +319,15 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
       alias1: venn.alias1,
       alias2: venn.alias2,
       alias3: venn.alias3,
+      ...(venn.mode === "Condition" ? { minPresent: venn.minPresent } : {}),
     };
     return {
       tab: "venn",
-      params,
+      params: plotToken ? { ...params, snapshot: plotToken } : params,
     };
   }, [
+    advancedPlotSignal,
+    plotToken,
     activeTab,
     hasKind,
     options,
@@ -332,6 +347,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     venn.alias1,
     venn.alias2,
     venn.alias3,
+    venn.minPresent,
   ]);
 
   useEffect(() => {
@@ -407,9 +423,12 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     const controller = new AbortController();
     setTableLoading(true);
     setTableError(null);
+    setTableSnapshot(null);
     getComparisonTable(kind, tableRequest.tab, tableRequest.params, { signal: controller.signal })
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setTableRows(payload.rows ?? []);
+        setTableSnapshot(typeof tableRequest.params.snapshot === 'string' ? tableRequest.params.snapshot : null);
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -432,23 +451,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (columns.length === 0) return null;
     return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
   }, [tableRows]);
-
-  async function handleImageError(url: string) {
-    try {
-      const response = await fetch(url);
-      const text = await response.text();
-      if (!response.ok) {
-        try {
-          const parsed = JSON.parse(text) as { detail?: string };
-          if (parsed?.detail) {
-            setImageError(parsed.detail);
-            return;
-          }
-        } catch {}
-      }
-    } catch {}
-    setImageError("Failed to load plot image. Check backend logs for details.");
-  }
 
   const modePool = activeTab === "pearson"
     ? (pearson.mode === "Single" ? options?.samples ?? [] : options?.conditions ?? [])
@@ -478,6 +480,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               )}
             </AssistantSelect>
           </label>
+          <LocalizationCutoffField kind={kind} />
         </div>
       </section>
 
@@ -530,8 +533,10 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                 >
                   Download Plot
                 </a>
+                <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
               </div>
             ) : plotView?.renderMode === "html" ? (
+              <div className="flex items-center gap-2">
               <a
                 href={plotView.url}
                 target="_blank"
@@ -540,32 +545,20 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               >
                 Open Interactive Plot
               </a>
+              <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
+              </div>
             ) : null}
           </div>
 
           {plotView ? (
             <div className="mt-4">
               {plotView.renderMode === "image" ? (
-                <img
-                  key={plotView.url}
-                  src={plotView.url}
-                  alt={plotView.title}
-                  className="w-full rounded-xl border border-slate-200"
-                  onLoad={() => setImageError(null)}
-                  onError={() => {
-                    handleImageError(plotView.url);
-                  }}
-                />
+                <PlotImage url={plotView.url} alt={plotView.title}
+                  onRendered={(url, token) => setNotebook({ url, token })} />
               ) : (
-                <iframe
-                  sandbox="allow-scripts allow-downloads"
-                  key={plotView.url}
-                  src={plotView.url}
-                  title={plotView.title}
-                  className="block w-full rounded-xl border border-slate-200"
-                  style={{ height: `max(${cmToIframeHeight(12)}px, 78vh)` }}
-                  onLoad={() => setImageError(null)}
-                />
+                <InteractivePlot url={plotView.url} title={plotView.title}
+                  height={`max(${cmToIframeHeight(12)}px, 78vh)`}
+                  onRendered={(url, token) => setNotebook({ url, token })} />
               )}
             </div>
           ) : (
@@ -576,11 +569,6 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             </div>
           )}
 
-          {imageError ? (
-            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {imageError}
-            </div>
-          ) : null}
         </section>
       ) : null}
 
@@ -589,6 +577,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">Summary Table</h3>
             {tableCsvUrl ? (
+              <div className="flex items-center gap-2">
               <a
                 href={tableCsvUrl}
                 download={`comparison_${activeTab}_${kind}.csv`}
@@ -596,6 +585,9 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               >
                 Download CSV
               </a>
+              {plotView ? <NotebookDownload plotUrl={plotView.url}
+                rendered={!tableLoading && !tableError && tableSnapshot === plotToken ? notebook : null} /> : null}
+              </div>
             ) : null}
           </div>
           <div className="mt-4">
@@ -704,6 +696,17 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             onChange={(value) => setVenn({ ...venn, mode: value })}
           />
         </div>
+        {venn.mode === "Condition" ? (
+          <div className="max-w-xs">
+            <NumberField
+              label="Minimum values per condition"
+              value={venn.minPresent}
+              step={1}
+              validate={(value) => (Number.isInteger(value) && value >= 1 ? null : "Use a whole number of at least 1.")}
+              onChange={(value) => setVenn({ ...venn, minPresent: value })}
+            />
+          </div>
+        ) : null}
         <div className="grid gap-4 lg:grid-cols-3">
           <SelectField
             labels={{ "": "None" }}

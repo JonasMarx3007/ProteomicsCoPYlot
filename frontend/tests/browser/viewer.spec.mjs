@@ -18,20 +18,22 @@ test('viewer tabs keep independent projects, plots and downloads across refresh'
   await page.goto('/');
   await login(page, 'synthetic-browser-test-only');
   const tabA = await page.evaluate(() => sessionStorage.getItem('copylot.tab.id'));
-  await page.evaluate(() => sessionStorage.setItem('pcopylot.report.qcSettings.v1', 'tab-A-settings'));
+  // A marker in a namespace a new tab clears but nothing else touches: the
+  // report keys are reset once the dataset loads after login, which raced the test.
+  await page.evaluate(() => sessionStorage.setItem('pcopylot.ui.viewerTabMarker.v1', 'tab-A-settings'));
   const opened = context.waitForEvent('page');
   await page.evaluate(() => window.open('/', '_blank'));
   const second = await opened;
   await expect(second.getByRole('button', { name: 'Open Viewer', exact: true })).toBeVisible();
   const tabB = await second.evaluate(() => sessionStorage.getItem('copylot.tab.id'));
   expect(tabB).not.toBe(tabA);
-  expect(await second.evaluate(() => sessionStorage.getItem('pcopylot.report.qcSettings.v1'))).toBeNull();
+  expect(await second.evaluate(() => sessionStorage.getItem('pcopylot.ui.viewerTabMarker.v1'))).toBeNull();
   expect(await rows(page)).toBe(12);
   await login(second, 'synthetic-second-password');
   expect(await rows(second)).toBe(6);
   expect(await rows(page)).toBe(12);
-  await second.evaluate(() => sessionStorage.setItem('pcopylot.report.qcSettings.v1', 'tab-B-settings'));
-  expect(await page.evaluate(() => sessionStorage.getItem('pcopylot.report.qcSettings.v1'))).toBe('tab-A-settings');
+  await second.evaluate(() => sessionStorage.setItem('pcopylot.ui.viewerTabMarker.v1', 'tab-B-settings'));
+  expect(await page.evaluate(() => sessionStorage.getItem('pcopylot.ui.viewerTabMarker.v1'))).toBe('tab-A-settings');
   for (const [target, marker] of [[page, 'SYNTHETIC'], [second, 'SECOND']]) {
     await target.getByRole('button', { name: 'QC Pipeline', exact: true }).click();
     const plot = target.locator('main img').first();
@@ -75,7 +77,7 @@ test('authenticated viewer is read-only', async ({ page, browser }) => {
   }
   await expect(page.locator('main input[type=file]')).toHaveCount(0);
   await expect(page.locator('main').getByRole('button', { name: 'Upload', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'KSEA', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Kinase Library', exact: true })).toHaveCount(0);
   // Bypass UI visibility with real HTTP writes: the server must enforce read-only.
   for (const [path, data] of [
     ['/api/annotations/generate', { kind: 'protein' }],

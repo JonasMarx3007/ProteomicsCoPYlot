@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 
 import io
+import hashlib
+import json
 import re
 from collections import defaultdict
 from functools import lru_cache
@@ -121,6 +123,25 @@ def _values_from_row(row: pd.Series, col_or_virtual: str) -> list[str]:
                 seen.add(token)
         return result
     return split_cell_values(row.get(col_or_virtual, pd.NA))
+
+
+def translation_key(value):
+    return hashlib.sha256(json.dumps(split_cell_values(value), ensure_ascii=True).encode()).hexdigest()
+
+
+def replay_id_translations(frame, steps):
+    if not steps:
+        return frame
+    frame = frame.copy()
+    for step in steps:
+        if step['sourceColumn'] not in frame:
+            raise ValueError('The original file lacks the recorded identifier source column.')
+        keys = frame[step['sourceColumn']].map(translation_key)
+        for column, lookup in step['outputs'].items():
+            if not keys.isin(lookup).all():
+                raise ValueError('The original file contains identifiers outside the recorded translation.')
+            frame.loc[:, column] = keys.map(lookup).tolist()
+    return frame
 
 
 def build_index(db_df: pd.DataFrame, in_label: str, out_label: str) -> dict[str, list[str]]:
@@ -267,8 +288,22 @@ def _download_details(original_filename: str) -> tuple[str, str]:
 
 
 def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
+    from app.app_version import APP_VERSION
+    from app.schemas.annotation import IdentifierTranslationStep
+    current = get_current_dataset(payload.kind)
     translated, filename, input_db, output_column, warnings = translated_dataframe(payload)
-    save_table_dataset(filename=filename, kind=payload.kind, frame=translated)
+    if get_current_dataset(payload.kind) is not current:
+        raise ValueError('The dataset changed during identifier translation; try again.')
+    columns = [output_column]
+    if 'GeneNames' not in current.frame.columns and 'GeneNames' in translated and output_column != 'GeneNames':
+        columns.append('GeneNames')
+    keys = current.frame[payload.column].map(translation_key).tolist()
+    step = IdentifierTranslationStep(sourceColumn=payload.column, inputDb=input_db,
+        outputDb=payload.outputDb, toolVersion=APP_VERSION,
+        outputs={column: dict(zip(keys, translated[column].tolist())) for column in columns})
+    save_table_dataset(filename=filename, kind=payload.kind, frame=translated,
+        phosprot_aggregation=current.phosprot_aggregation, phosprot_lineage=current.phosprot_lineage,
+        id_translations=[*current.id_translations, step])
     download_filename, _ = _download_details(filename)
     persisted_warnings = list(warnings)
     persisted_warnings.append(

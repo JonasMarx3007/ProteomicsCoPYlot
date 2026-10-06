@@ -13,6 +13,7 @@ from typing import AsyncIterator, Deque
 from starlette.responses import JSONResponse
 
 from app.services.session_context import get_session_id
+from app.services.env_settings import env_float, env_int
 
 
 _DEFAULT_QUEUE_TIMEOUT_SECONDS = 20.0
@@ -24,23 +25,11 @@ class HeavyWorkloadBusyError(RuntimeError):
 
 
 def _positive_env_int(name: str, default: int, *, minimum: int = 1) -> int:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return default
-    try:
-        return max(minimum, int(raw))
-    except ValueError:
-        return default
+    return env_int(name, default, minimum=minimum)
 
 
 def _positive_env_float(name: str, default: float) -> float:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return default
-    try:
-        return max(0.001, float(raw))
-    except ValueError:
-        return default
+    return env_float(name, default, minimum=0.001)
 
 
 def heavy_max_concurrency() -> int:
@@ -233,7 +222,6 @@ _HEAVY_PREFIXES = (
     "/api/data-tools/",
     "/api/external/",
     "/api/plots/",
-    "/api/qc/",
     "/api/stats/",
 )
 _HEAVY_EXACT = {
@@ -241,12 +229,10 @@ _HEAVY_EXACT = {
     "/api/annotations/log2-detect",
     "/api/annotations/metadata/upload",
     "/api/annotations/phosprot/aggregate",
-    "/api/annotations/phosprot/upload",
     "/api/datasets/upload",
     "/api/datasets/table-path",
     "/api/datasets/peptide-file",
     "/api/peptide/metadata/generate",
-    "/api/peptide/metadata/upload",
     "/api/peptide/sequence-coverage",
     "/api/restore/export",
     "/api/restore/import",

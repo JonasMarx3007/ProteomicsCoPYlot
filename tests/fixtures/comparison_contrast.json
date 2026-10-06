@@ -1,0 +1,8 @@
+{
+  "_comment": "comparison_contrast(condition1, condition2, condition1Control, condition2Control) for these conditions. tests/unit/report/test_report_version_and_ksea_filename.py holds the backend to it; frontend/tests/unit/ksea-filename.test.tsx holds the Kinase Library file name to it.",
+  "condition1": "Treated",
+  "condition2": "Vehicle",
+  "condition1Control": "TreatedCtrl",
+  "condition2Control": "VehicleCtrl",
+  "contrast": "(Treated - TreatedCtrl) - (Vehicle - VehicleCtrl)"
+}
