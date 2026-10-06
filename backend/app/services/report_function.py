@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.html_security import GENERATED_HTML_META
+from app.services.notebook_report import report_plot, report_table, record_sample_mapping
 
 import base64
 import logging
@@ -53,6 +54,7 @@ from app.services.functions import (
     sample_label_frame,)
 from app.services.plot_images import qc_pca_feature_summary
 from app.services.functions import resolve_feature_scaling
+from app.services.plot_styling import migrate_advanced_plot_settings
 from app.services.peptide_tools import (
     normalize_protease,
     peptide_missed_cleavage_plot,
@@ -225,6 +227,23 @@ def _peptide_mapping_metadata() -> pd.DataFrame | None:
     return peptide_metadata.frame.copy()
 
 
+
+def _report_failure(warnings: list[str], what: str, exc: Exception) -> None:
+    """Note a part of the report that could not be built, for the person who asked.
+
+    The message goes back to the page that requested the report, never into the
+    report itself. A `ValueError` is a renderer refusing the request -- an
+    empty selection, a comparison that cannot be formed -- so its message is
+    the answer, as on the plot pages. Anything else is logged with its
+    traceback and named only, because an exception string can carry a file
+    path or a column of someone's data.
+    """
+    if isinstance(exc, ValueError) and str(exc).strip():
+        warnings.append(f"{what} could not be rendered: {exc}")
+        return
+    LOGGER.exception("Report: %s could not be rendered", what)
+    warnings.append(f"{what} could not be rendered.")
+
 def _sample_mapping_html(
     *,
     levels: list[tuple[str, pd.DataFrame | None]],
@@ -244,7 +263,7 @@ def _sample_mapping_html(
         try:
             mapping = sample_label_frame(metadata)
         except Exception as exc:  # pragma: no cover - defensive runtime behavior
-            warnings.append(f"Sample mapping ({level_name}): {exc}")
+            _report_failure(warnings, f"Sample mapping ({level_name})", exc)
             continue
         if mapping.empty:
             continue
@@ -271,6 +290,7 @@ def _sample_mapping_html(
         )
 
     for level_name, mapping in rendered:
+        record_sample_mapping(level_name, mapping)
         show_pairs = bool((mapping["pair_id"].astype(str).str.strip() != "").any())
         parts.append(
             f"<h3>{html.escape(level_name)} "
@@ -307,10 +327,10 @@ def _safe_png(
     try:
         return _png_to_html(renderer())
     except Exception as exc:  # pragma: no cover - defensive runtime behavior
-        warnings.append(f"{fallback_title}: {exc}")
+        _report_failure(warnings, fallback_title, exc)
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            "Could not render this plot. See the report warnings for details."
+            "Could not render this plot."
             "</div>"
         )
 
@@ -325,10 +345,10 @@ def _safe_plotly(
     try:
         return _plotly_to_iframe(renderer(), height_px=height_px)
     except Exception as exc:  # pragma: no cover - defensive runtime behavior
-        warnings.append(f"{fallback_title}: {exc}")
+        _report_failure(warnings, fallback_title, exc)
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            "Could not render this interactive plot. See the report warnings for details."
+            "Could not render this interactive plot."
             "</div>"
         )
 
@@ -343,10 +363,10 @@ def _safe_table_html(
     try:
         frame = renderer()
     except Exception as exc:  # pragma: no cover - defensive runtime behavior
-        warnings.append(f"{fallback_title}: {exc}")
+        _report_failure(warnings, fallback_title, exc)
         return (
             "<div style='padding:10px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;'>"
-            "Could not render this summary table. See the report warnings for details."
+            "Could not render this summary table."
             "</div>"
         )
     if frame.empty:
@@ -368,10 +388,13 @@ def _append_plot_section(
     text_entries: dict[str, str],
     text_key: str,
     content_html: str,
+    comments_override: list[str] | None = None,
 ) -> None:
     html_parts.append(f"<h2>{html.escape(section_id)} {html.escape(title)}</h2>")
     comments: list[str] = []
-    if general_comment_key:
+    if comments_override is not None:
+        comments.extend(comments_override)
+    elif general_comment_key:
         comments.extend(GENERAL_COMMENTS.get(general_comment_key, []))
     if not comments and description:
         comments.append(description)
@@ -384,6 +407,43 @@ def _append_plot_section(
     below = _custom_text(text_entries, f"{text_key}Below")
     if below:
         html_parts.append(below)
+
+
+_BOXPLOT_NORMALIZATION_WORDS = {
+    "median": "median-normalized log2",
+    "quantile": "quantile-normalized log2",
+    "vsn": "VSN-transformed",
+}
+
+
+def _boxplot_comment_paragraphs(kind: str, mode: str, general_comment_key: str) -> list[str]:
+    """The boxplot section's text, written from the figure that was drawn.
+
+    The general comment used to say "log2-raw intensities in a boxplot of each
+    sample" whatever was rendered: the default mode draws one box per condition
+    of per-feature means, the matrix is the normalized one, and zeros are only
+    treated as missing for linear uploads. The first two sentences now follow
+    the mode, the normalization (unmentioned when none was applied) and the
+    upload scale; the interpretation sentences of the general comment follow.
+    """
+    singular, plural = entity_labels_for_kind(kind)
+    annotation = get_annotation(kind)
+    filter_config = getattr(annotation, "filter_config", None) if annotation is not None else None
+    normalization = str(getattr(filter_config, "normalization", "none") or "none").strip().lower()
+    scale = _BOXPLOT_NORMALIZATION_WORDS.get(normalization, "log2")
+    if str(mode).strip().lower() == "single":
+        depicted = f"Depicted are the {scale} {singular} intensities, one box per sample."
+    else:
+        depicted = (
+            f"Depicted are the mean {scale} intensities of each {singular} within each condition, "
+            "one box per condition; the per-sample mode shows each sample separately."
+        )
+    missing = "Missing values are not considered when creating the boxplots."
+    uploaded_log2 = bool(getattr(annotation, "is_log2_transformed", False)) if annotation is not None else False
+    if annotation is not None and not uploaded_log2:
+        missing += " Zero intensities in the upload were treated as missing values."
+    heading = f"{singular.capitalize()} intensity distributions - {depicted}"
+    return [heading, missing, *GENERAL_COMMENTS.get(general_comment_key, [])[2:]]
 
 
 def _module_settings(
@@ -404,7 +464,8 @@ def _advanced_settings_from_map(values: Mapping[str, Any], key: str) -> dict[str
     item = values.get(key)
     if not isinstance(item, Mapping):
         return None
-    return dict(item)
+    # A report built from an older saved session carries the older keys.
+    return migrate_advanced_plot_settings(dict(item))
 
 
 def _global_advanced_settings(context: SummaryReportContext, key: str) -> dict[str, Any] | None:
@@ -515,7 +576,6 @@ def _imputation_paragraphs(kind: str) -> list[str]:
     adjust_std = "n/a"
     down_shift = "n/a"
     width = "n/a"
-    seed = "n/a"
     sample_wise = False
     imputation_mode = "none"
     annotation = get_annotation(kind)
@@ -532,14 +592,13 @@ def _imputation_paragraphs(kind: str) -> list[str]:
             adjust_std = _format_imputation_value(getattr(imputation, "adjustStd", None))
             down_shift = _format_imputation_value(getattr(imputation, "downShift", None))
             width = _format_imputation_value(getattr(imputation, "width", None))
-            seed = _format_imputation_value(getattr(imputation, "seed", None), digits=0)
             sample_wise = bool(getattr(imputation, "sampleWise", False))
     if imputation_mode == "none":
         return []
     if imputation_mode not in {"numerical", "quantile"}:
         return [
             "The saved imputed matrix was restored, but its imputation method and parameters "
-            "are unknown. The sampling distribution, random seed and draw scope cannot be reported."
+            "are unknown. The sampling distribution and draw scope cannot be reported."
         ]
 
     template_paragraphs = GENERAL_COMMENTS.get("Imputation", [])
@@ -565,9 +624,9 @@ def _imputation_paragraphs(kind: str) -> list[str]:
             )
         ]
 
+    # Random seeds are not reported: they carry no scientific information.
     rendered.append(
-        f"The random draw used seed {seed} with "
-        f"{'sample-wise' if sample_wise else 'dataset-wide'} parameters; the generator was local to this analysis."
+        f"The values were drawn with {'sample-wise' if sample_wise else 'dataset-wide'} parameters."
     )
 
     return rendered
@@ -696,7 +755,19 @@ def _filter_not_applied_description(annotation) -> str | None:
     )
 
 
-def _imputation_html(*, kind: str, imputed: bool, subject: str = "this comparison") -> str:
+IMPUTED_AS_OBSERVED_SENTENCE = (
+    "Imputed values were treated as observed values in the statistical test: they count towards "
+    "each group's size and the degrees of freedom. Counts distinguish measured-only, fully imputed and "
+    "partially imputed values (n_measured__, n_fully_imputed__, n_partially_imputed__). For collapsed "
+    "phosphoproteins this describes direct site contributions in each sample, not cross-sample centering effects. "
+    "The n_imputed__<condition> and imputed_values "
+    "columns count values with either fully or partially imputed contributions behind every feature."
+)
+
+
+def _imputation_html(
+    *, kind: str, imputed: bool, subject: str = "this comparison", tested: bool = False
+) -> str:
     """Whether this plot ran on imputed values, and on what settings.
 
     Shared by every block whose numbers depend on which matrix reached it, so
@@ -714,6 +785,8 @@ def _imputation_html(*, kind: str, imputed: bool, subject: str = "this compariso
             "imputation settings are recorded for this dataset.</p>"
         )
     head, *rest = paragraphs
+    if tested:
+        rest = [*rest, IMPUTED_AS_OBSERVED_SENTENCE]
     return f"<p><strong>Imputation:</strong> {html.escape(head)}</p>" + "".join(
         f"<p>{html.escape(paragraph)}</p>" for paragraph in rest
     )
@@ -737,8 +810,25 @@ def _report_data_source(value: Any) -> str:
     return text if text in _DATA_SOURCE_LABELS else "data"
 
 
+# What the two colours of the phosphosite coverage plots mean. The threshold is
+# fixed (Olsen et al. 2006), unlike the session's localization cutoff.
+CLASS_I_SENTENCE = (
+    "Class I sites have a localization probability of at least 0.75; sites without a "
+    "localization probability are shown as Unclassified."
+)
+
+
+def _localization_html(kind: str) -> str:
+    """The phosphosite localization cutoff every phosphosite plot was drawn with."""
+    if kind != "phospho":
+        return ""
+    from app.services.phospho_localization import localization_cutoff_description
+
+    return f"<p><strong>Localization:</strong> {html.escape(localization_cutoff_description())}</p>"
+
+
 def _data_provenance_html(
-    *, kind: str, data_source: str, subject: str, completeness: str = ""
+    *, kind: str, data_source: str, subject: str, completeness: str = "", tested: bool = False
 ) -> str:
     """Which matrix reached this plot: source, filtering and imputation.
 
@@ -771,8 +861,9 @@ def _data_provenance_html(
         parts.append(
             f"<p><strong>Filtering:</strong> {html.escape(filter_description)}</p>"
         )
+    parts.append(_localization_html(kind))
     parts.append(
-        _imputation_html(kind=kind, imputed=source == "imputed", subject=subject)
+        _imputation_html(kind=kind, imputed=source == "imputed", subject=subject, tested=tested)
     )
     if completeness:
         parts.append(f"<p><strong>Features used:</strong> {html.escape(completeness)}</p>")
@@ -877,9 +968,8 @@ def _volcano_counts_html(
             )
         )
     except Exception as exc:  # pragma: no cover - defensive runtime behavior
-        warnings.append(
-            f"{kind.capitalize()} volcano counts "
-            f"({entry.condition1} vs {entry.condition2}): {exc}"
+        _report_failure(
+            warnings, f"{kind.capitalize()} volcano counts ({entry.condition1} vs {entry.condition2})", exc
         )
         return ""
 
@@ -894,6 +984,17 @@ def _volcano_counts_html(
         f"(higher in {entry.condition2}), out of {total:,} tested "
         f"{plural if total != 1 else singular}; {not_significant:,} not significant."
     )
+    significant = [
+        row
+        for row in (getattr(result, "rows", None) or [])
+        if row.get("significance") in {"Upregulated", "Downregulated"}
+    ]
+    if significant and all("imputed_values" in row for row in significant):
+        with_imputed = sum(1 for row in significant if (row.get("imputed_values") or 0) > 0)
+        description += (
+            f" {with_imputed:,} of the {len(significant):,} significant "
+            f"{plural if len(significant) != 1 else singular} include at least one imputed value."
+        )
     return f"<p><strong>Result:</strong> {html.escape(description)}</p>"
 
 
@@ -937,6 +1038,7 @@ def _volcano_block_html(
                 # boolean, and every `filtered` comparison was headed "Data".
                 data_source=entry.dataSource,
                 subject="this comparison",
+                tested=True,
             )
         )
         parts.append(_volcano_statistics_html(entry))
@@ -960,7 +1062,7 @@ def _volcano_block_html(
         if entry.renderType == "Normal":
             parts.append(
                 _safe_png(
-                    renderer=lambda request=request, entry=entry: volcano_png(
+                    renderer=lambda request=request, entry=entry: report_plot(volcano_png,
                         request,
                         advanced=advanced,
                         label_top_up=entry.labelTopUp,
@@ -973,7 +1075,7 @@ def _volcano_block_html(
         else:
             parts.append(
                 _safe_plotly(
-                    renderer=lambda request=request: volcano_html(request, advanced=advanced),
+                    renderer=lambda request=request: report_plot(volcano_html, request, advanced=advanced),
                     fallback_title=title,
                     warnings=warnings,
                     height_px=920,
@@ -998,9 +1100,9 @@ def _abundance_report(kind, settings, advanced, warnings, title):
                    advanced=advanced)
     if settings.get("type") == "Interactive":
         options.pop("dpi")
-        return _safe_plotly(renderer=lambda: qc_abundance_interactive_html(kind=kind, **options),
+        return _safe_plotly(renderer=lambda: report_plot(qc_abundance_interactive_html, kind=kind, **options),
                             fallback_title=title, warnings=warnings)
-    return _safe_png(renderer=lambda: qc_abundance_plot(kind=kind, **options),
+    return _safe_png(renderer=lambda: report_plot(qc_abundance_plot, kind=kind, **options),
                      fallback_title=title, warnings=warnings)
 
 
@@ -1072,10 +1174,7 @@ def _pca_parameters_html(kind: str, data_source: str, options: Mapping[str, Any]
     if cluster_key in {"none", "", "off"}:
         parts.append("clustering: none")
     elif cluster_key == "kmeans":
-        parts.append(
-            f"clustering: k-means with k = {int(options.get('cluster_count', 3))} "
-            f"(random seed {int(options.get('random_state', 42))})"
-        )
+        parts.append(f"clustering: k-means with k = {int(options.get('cluster_count', 3))}")
     elif cluster_key in {"agglomerative", "hierarchical"}:
         parts.append(
             f"clustering: agglomerative (Ward linkage) with k = {int(options.get('cluster_count', 3))}"
@@ -1126,7 +1225,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
     try:
         GENERAL_COMMENTS = _load_general_comments()
     except Exception as exc:
-        warnings.append(f"Failed to reload report general comments file: {exc}")
+        _report_failure(warnings, "The general comments file", exc)
 
     protein_annotation = get_annotation("protein")
     phospho_annotation = get_annotation("phospho")
@@ -1169,6 +1268,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 else ""
             )
             + f"<p><strong>Filtering:</strong> {html.escape(description)}</p>"
+            + _localization_html(kind)
             + _level_imputation_html(kind)
         )
 
@@ -1324,7 +1424,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="CoveragePep",
             content_html=_safe_png(
-                renderer=lambda: qc_peptide_coverage_plot(
+                renderer=lambda: report_plot(qc_peptide_coverage_plot,
                     advanced=qc_coverage_advanced,
                     reference_line=_to_bool(peptide_coverage.get("referenceLine"), True),
                     **({"quantity_column": peptide_coverage["quantityColumn"]}
@@ -1342,7 +1442,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePep",
             content_html=_safe_png(
-                renderer=lambda: completeness_missing_value_plot_peptide(advanced=completeness_missing_advanced,
+                renderer=lambda: report_plot(completeness_missing_value_plot_peptide, advanced=completeness_missing_advanced,
                     **_missing_plot_options(report_context.completenessSettings, peptide=True)),
                 fallback_title="Peptide Missing Value Plot",
                 warnings=warnings,
@@ -1357,7 +1457,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="RT",
             content_html=_safe_png(
-                renderer=lambda: peptide_rt_plot(
+                renderer=lambda: report_plot(peptide_rt_plot,
                     method=_to_str(peptide_rt.get("method"), "Hexbin Plot"),
                     add_line=_to_bool(peptide_rt.get("addLine"), False),
                     bins=_to_int(peptide_rt.get("bins"), 1000, minimum=10, maximum=2000),
@@ -1383,7 +1483,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Modification",
             content_html=_safe_png(
-                renderer=lambda: peptide_modification_plot(
+                renderer=lambda: report_plot(peptide_modification_plot,
                     include_id=_to_bool(peptide_modification.get("includeId"), False),
                     header=_to_bool(peptide_modification.get("header"), True),
                     legend=_to_bool(peptide_modification.get("legend"), True),
@@ -1405,7 +1505,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissedCleavage",
             content_html=_safe_png(
-                renderer=lambda: peptide_missed_cleavage_plot(
+                renderer=lambda: report_plot(peptide_missed_cleavage_plot,
                     include_id=_to_bool(peptide_missed_cleavage.get("includeId"), False),
                     text=_to_bool(peptide_missed_cleavage.get("text"), True),
                     text_size=_to_int(peptide_missed_cleavage.get("textSize"), 8, minimum=6, maximum=24),
@@ -1448,7 +1548,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_key="CoverageProt",
             content_html=(
                 _safe_png(
-                    renderer=lambda: qc_coverage_plot(
+                    renderer=lambda: report_plot(qc_coverage_plot,
                         kind="protein",
                         include_id=_to_bool(protein_coverage.get("includeId"), False),
                         header=_to_bool(protein_coverage.get("header"), True),
@@ -1472,7 +1572,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_coverage_table(
+                    renderer=lambda: report_table(qc_coverage_table,
                         kind="protein",
                         summary=_to_bool(protein_coverage.get("summary"), False),
                     ),
@@ -1491,7 +1591,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValueProt",
             content_html=_completeness_exclusion_html("protein") + _safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="protein", advanced=completeness_missing_advanced,
+                renderer=lambda: report_plot(completeness_missing_value_plot, kind="protein", advanced=completeness_missing_advanced,
                     **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Protein Missing Value Plot",
                 warnings=warnings,
@@ -1506,7 +1606,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="HistogramIntProt",
             content_html=_safe_png(
-                renderer=lambda: qc_intensity_histogram_plot(
+                renderer=lambda: report_plot(qc_intensity_histogram_plot,
                     kind="protein",
                     **_qc_plot_style(protein_hist),
                     height_cm=_to_float(protein_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
@@ -1522,11 +1622,14 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             title="Boxplot Intensity",
             description=None,
             general_comment_key="BoxplotIntProt",
+            comments_override=_boxplot_comment_paragraphs(
+                "protein", _to_str(protein_box.get("mode"), "Mean"), "BoxplotIntProt"
+            ),
             text_entries=text_entries,
             text_key="BoxplotIntProt",
             content_html=(
                 _safe_png(
-                    renderer=lambda: qc_boxplot_plot(
+                    renderer=lambda: report_plot(qc_boxplot_plot,
                         kind="protein",
                         mode=_to_str(protein_box.get("mode"), "Mean"),
                         outliers=_to_bool(protein_box.get("outliers"), False),
@@ -1541,7 +1644,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_boxplot_table(
+                    renderer=lambda: report_table(qc_boxplot_table,
                         kind="protein",
                         mode=_to_str(protein_box.get("mode"), "Mean"),
                     ),
@@ -1561,7 +1664,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_key="CovProt",
             content_html=(
                 _safe_png(
-                    renderer=lambda: qc_cv_plot(
+                    renderer=lambda: report_plot(qc_cv_plot,
                         kind="protein",
                         outliers=_to_bool(protein_cv.get("outliers"), False),
                         **_qc_plot_style(protein_cv),
@@ -1574,7 +1677,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_cv_table(kind="protein"),
+                    renderer=lambda: report_table(qc_cv_table, kind="protein"),
                     title="Coefficient of Variation Summary Table",
                     fallback_title="Protein CV Summary Table",
                     warnings=warnings,
@@ -1605,7 +1708,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 (
                     protein_pca_source_html
                     + _safe_plotly(
-                        renderer=lambda: qc_pca_interactive_html(
+                        renderer=lambda: report_plot(qc_pca_interactive_html,
                             kind="protein",
                             data_source=protein_pca_data_source,
                             **_pca_plot_options(protein_pca),
@@ -1621,7 +1724,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 else (
                     protein_pca_source_html
                     + _safe_png(
-                        renderer=lambda: qc_pca_plot(
+                        renderer=lambda: report_plot(qc_pca_plot,
                             kind="protein",
                             data_source=protein_pca_data_source,
                             **_pca_plot_options(protein_pca),
@@ -1655,7 +1758,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="CorrelationProt",
             content_html=_safe_png(
-                renderer=lambda: qc_correlation_plot(
+                renderer=lambda: report_plot(qc_correlation_plot,
                     kind="protein",
                     method=_to_str(protein_correlation.get("method"), "Matrix"),
                     include_id=_to_bool(protein_correlation.get("includeId"), False),
@@ -1697,6 +1800,19 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         if "phospho" in filter_paragraphs:
             html_parts.append(filter_paragraphs["phospho"])
         phospho_coverage = _module_settings(report_context, "phospho", "coverage")
+        # The Phospho-specific page's own coverage settings (include-ID, the
+        # conditions shown, colours, point jitter), saved for the report.
+        site_coverage = _module_settings(report_context, "phospho", "phosphoCoverage")
+        site_coverage_conditions = [
+            str(condition) for condition in site_coverage.get("conditions", []) or [] if str(condition).strip()
+        ] if isinstance(site_coverage.get("conditions"), list) else []
+        site_coverage_options = dict(
+            include_id=_to_bool(site_coverage.get("includeId"), False),
+            conditions=site_coverage_conditions or None,
+            color_class_i=_to_str(site_coverage.get("colorClassI"), "#2563eb"),
+            color_not_class_i=_to_str(site_coverage.get("colorNotClassI"), "#f59e0b"),
+            random_seed=_to_int(site_coverage.get("randomSeed"), 69, minimum=0, maximum=2_147_483_647),
+        )
         phospho_hist = _module_settings(report_context, "phospho", "hist")
         phospho_box = _module_settings(report_context, "phospho", "box")
         phospho_cv = _module_settings(report_context, "phospho", "cv")
@@ -1713,7 +1829,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="Phossite",
             content_html=_safe_png(
-                renderer=lambda: phosphosite_plot_png(advanced=phosphosite_plot_advanced),
+                renderer=lambda: report_plot(phosphosite_plot_png, advanced=phosphosite_plot_advanced),
                 fallback_title="Phosphosite Overview Plot",
                 warnings=warnings,
             ),
@@ -1724,25 +1840,21 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             title="Coverage Plot (Number)",
             description=None,
             general_comment_key="Coverage(Number)Phos",
+            comments_override=[*GENERAL_COMMENTS.get("Coverage(Number)Phos", []), CLASS_I_SENTENCE],
             text_entries=text_entries,
             text_key="Coverage(Number)Phos",
             content_html=(
                 _safe_png(
-                    renderer=lambda: phospho_coverage_png(
+                    renderer=lambda: report_plot(phospho_coverage_png,
                         mode="Normal",
-                        random_seed=_to_int(
-                            phospho_coverage.get("randomSeed"),
-                            69,
-                            minimum=0,
-                            maximum=2_147_483_647,
-                        ),
+                        **site_coverage_options,
                         advanced=phospho_coverage_advanced,
                     ),
                     fallback_title="Phospho Coverage Number Plot",
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_coverage_table(
+                    renderer=lambda: report_table(qc_coverage_table,
                         kind="phospho",
                         summary=_to_bool(phospho_coverage.get("summary"), False),
                     ),
@@ -1758,17 +1870,13 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             title="Coverage Plot (Quality)",
             description=None,
             general_comment_key="Coverage(Quality)Phos",
+            comments_override=[*GENERAL_COMMENTS.get("Coverage(Quality)Phos", []), CLASS_I_SENTENCE],
             text_entries=text_entries,
             text_key="Coverage(Quality)Phos",
             content_html=_safe_png(
-                renderer=lambda: phospho_coverage_png(
+                renderer=lambda: report_plot(phospho_coverage_png,
                     mode="Summary",
-                    random_seed=_to_int(
-                        phospho_coverage.get("randomSeed"),
-                        69,
-                        minimum=0,
-                        maximum=2_147_483_647,
-                    ),
+                    **site_coverage_options,
                     advanced=phospho_coverage_advanced,
                 ),
                 fallback_title="Phospho Coverage Quality Plot",
@@ -1784,7 +1892,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="MissingValuePhos",
             content_html=_completeness_exclusion_html("phospho") + _safe_png(
-                renderer=lambda: completeness_missing_value_plot(kind="phospho", advanced=completeness_missing_advanced,
+                renderer=lambda: report_plot(completeness_missing_value_plot, kind="phospho", advanced=completeness_missing_advanced,
                     **_missing_plot_options(report_context.completenessSettings)),
                 fallback_title="Phospho Missing Value Plot",
                 warnings=warnings,
@@ -1799,7 +1907,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="HistogramIntPhos",
             content_html=_safe_png(
-                renderer=lambda: qc_intensity_histogram_plot(
+                renderer=lambda: report_plot(qc_intensity_histogram_plot,
                     kind="phospho",
                     **_qc_plot_style(phospho_hist),
                     height_cm=_to_float(phospho_hist.get("heightCm"), 10.0, minimum=4.0, maximum=60.0),
@@ -1815,11 +1923,14 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             title="Boxplot Intensity",
             description=None,
             general_comment_key="BoxplotIntPhos",
+            comments_override=_boxplot_comment_paragraphs(
+                "phospho", _to_str(phospho_box.get("mode"), "Mean"), "BoxplotIntPhos"
+            ),
             text_entries=text_entries,
             text_key="BoxplotIntPhos",
             content_html=(
                 _safe_png(
-                    renderer=lambda: qc_boxplot_plot(
+                    renderer=lambda: report_plot(qc_boxplot_plot,
                         kind="phospho",
                         mode=_to_str(phospho_box.get("mode"), "Mean"),
                         outliers=_to_bool(phospho_box.get("outliers"), False),
@@ -1834,7 +1945,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_boxplot_table(
+                    renderer=lambda: report_table(qc_boxplot_table,
                         kind="phospho",
                         mode=_to_str(phospho_box.get("mode"), "Mean"),
                     ),
@@ -1854,7 +1965,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_key="CovPhos",
             content_html=(
                 _safe_png(
-                    renderer=lambda: qc_cv_plot(
+                    renderer=lambda: report_plot(qc_cv_plot,
                         kind="phospho",
                         outliers=_to_bool(phospho_cv.get("outliers"), False),
                         **_qc_plot_style(phospho_cv),
@@ -1867,7 +1978,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                     warnings=warnings,
                 )
                 + _safe_table_html(
-                    renderer=lambda: qc_cv_table(kind="phospho"),
+                    renderer=lambda: report_table(qc_cv_table, kind="phospho"),
                     title="Coefficient of Variation Summary Table",
                     fallback_title="Phospho CV Summary Table",
                     warnings=warnings,
@@ -1895,7 +2006,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 (
                     phospho_pca_source_html
                     + _safe_plotly(
-                        renderer=lambda: qc_pca_interactive_html(
+                        renderer=lambda: report_plot(qc_pca_interactive_html,
                             kind="phospho",
                             data_source=phospho_pca_data_source,
                             **_pca_plot_options(phospho_pca),
@@ -1911,7 +2022,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 else (
                     phospho_pca_source_html
                     + _safe_png(
-                        renderer=lambda: qc_pca_plot(
+                        renderer=lambda: report_plot(qc_pca_plot,
                             kind="phospho",
                             data_source=phospho_pca_data_source,
                             **_pca_plot_options(phospho_pca),
@@ -1945,7 +2056,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             text_entries=text_entries,
             text_key="CorrelationPhos",
             content_html=_safe_png(
-                renderer=lambda: qc_correlation_plot(
+                renderer=lambda: report_plot(qc_correlation_plot,
                     kind="phospho",
                     method=_to_str(phospho_correlation.get("method"), "Matrix"),
                     include_id=_to_bool(phospho_correlation.get("includeId"), False),
@@ -1981,12 +2092,9 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                 ),
             )
 
-    # Keep translated features only for now; dedicated log section is intentionally omitted.
-    if warnings:
-        html_parts.append("<h2>Report Warnings</h2>")
-        for warning in warnings:
-            html_parts.append(f"<div class='warn'>{html.escape(warning)}</div>")
-
+    # Warnings go back to the page that asked for the report (the response's
+    # `warnings`), not into the report: the report is the record of an analysis
+    # done on purpose, read by people who were not there.
     html_parts.append("</body></html>")
     html_doc = "\n".join(html_parts)
     return SummaryReportResponse(

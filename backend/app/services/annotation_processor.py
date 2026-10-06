@@ -7,25 +7,17 @@ import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import ConditionAssignment, FilterMode
-from app.services.metadata_upload_store import MAX_MANUAL_METADATA_PROFILES
+# One reading of the sample column for uploads and annotation (2026-10-02).
+from app.services.metadata_upload_store import MAX_MANUAL_METADATA_PROFILES, _resolve_sample_column
 from app.services.functions import (
     build_metadata_from_conditions,
     filter_data,
     log2_transform_data,
+    missingness_imbalance,
+    missingness_imbalance_warning,
     normalize_data,
     use_existing_log2_data,
 )
-
-SAMPLE_COLUMN_ALIASES = (
-    "sample",
-    "sample_name",
-    "data_column_name",
-    "data column name",
-    "data_column",
-    "column_name",
-    "column",
-)
-
 
 @dataclass
 class AnnotationComputationResult:
@@ -46,6 +38,42 @@ class Log2ScaleDetection:
 
 # "log2" as a token, so a run dated `log2024` is not read as a scale marker.
 _LOG2_NAME = re.compile(r"(?<![a-z0-9])log2(?![0-9])", re.IGNORECASE)
+
+
+def log2_scale_hint(data: pd.DataFrame, sample_columns: list[str]) -> str | None:
+    """A note for the scale checkbox when the values look unusual for log2 intensities.
+
+    The auto-detection cannot tell log2 from log10, natural-log or count data:
+    all of them sit in a narrow positive range. Two patterns are worth a word:
+    mostly whole numbers (count data such as spectral counts), and a median
+    below 12 with no negative values (log2 intensities from mass spectrometry
+    usually lie around 15-30; log10 or ln intensities lie lower). Centred data
+    and log2 ratios have negative values and are left alone, and so are columns
+    whose names all say log2. The checkbox itself is not changed.
+    """
+    columns = [str(column) for column in sample_columns if str(column) in data.columns]
+    if not columns:
+        return None
+    numbers = data[columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float).ravel()
+    finite = numbers[np.isfinite(numbers)]
+    if finite.size < 30:
+        return None
+    whole = float(np.mean(np.isclose(finite, np.round(finite), rtol=0, atol=1e-9)))
+    if whole >= 0.95 and float(finite.min()) >= 0:
+        return (
+            f"{whole:.0%} of the values are whole numbers, which looks like count data (for example "
+            "spectral counts) rather than log2 values. If so, untick the box so the counts are log2-transformed."
+        )
+    if all(_LOG2_NAME.search(column) for column in columns):
+        return None
+    median = float(np.median(finite))
+    if float(np.mean(finite < 0)) < 0.001 and 0 < median < 12:
+        return (
+            f"The values have a median of {median:.1f}; log2 intensities are usually around 15-30. "
+            "If these are log10 or natural-log values, convert them to log2 before uploading "
+            "(log2 = log10 x 3.32, or ln x 1.44)."
+        )
+    return None
 
 
 def detect_log2_transformed(
@@ -180,6 +208,51 @@ def _normalization_warning(normalization: str) -> str:
             "was already normalized upstream (for example MaxLFQ or PG.Normalised)."
         )
     return message
+
+
+def _missingness_warning(log2_data: pd.DataFrame, metadata: pd.DataFrame, normalization: str) -> str | None:
+    """Warn when median or quantile normalization met very uneven missingness."""
+    if str(normalization or "none").strip().lower() not in {"median", "quantile"}:
+        return None
+    return missingness_imbalance_warning(missingness_imbalance(log2_data, metadata), normalization)
+
+
+ZERO_SHARE_LIMIT = 0.005
+ZERO_GAP_LOG2 = 5.0
+
+
+def _log2_zero_warning(data: pd.DataFrame, sample_columns: list[str], is_log2_transformed: bool) -> str | None:
+    """Warn when a log2 upload holds many exact zeros far below its other values.
+
+    In a log2 matrix 0 is kept as a measurement (an intensity of 1), which is
+    right for data that really reaches 0. Some exports write 0 for "not
+    measured" instead; in a matrix whose values sit around 20, each such zero is
+    an extreme low value and turns into a fold change of 20 or more. The warning
+    fires when more than 0.5 % of the values are exactly 0 and the lowest 1 % of
+    the other values start at least 5 log2 units (32-fold) above it. Nothing is
+    changed: only the person who exported the file knows what the zeros mean.
+    """
+    if not is_log2_transformed or not sample_columns:
+        return None
+    values = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+    numbers = values.to_numpy(dtype=float)
+    finite = numbers[np.isfinite(numbers)]
+    zeros = int((finite == 0).sum())
+    if not finite.size or zeros / finite.size <= ZERO_SHARE_LIMIT:
+        return None
+    nonzero = finite[finite != 0]
+    if not nonzero.size:
+        return None
+    lowest = float(np.percentile(nonzero, 1))
+    if lowest < ZERO_GAP_LOG2:
+        return None
+    rows = int((values == 0).any(axis=1).sum())
+    return (
+        f"{zeros:,} values ({zeros / finite.size:.1%}) in {rows:,} rows are exactly 0, while the lowest 1% of "
+        f"the other values start at {lowest:.1f} log2. In a log2 matrix a 0 is kept as a measurement (an "
+        "intensity of 1), so if these zeros mean 'not measured' they act as extreme low values and produce "
+        "very large fold changes. If so, remove them or export them as empty cells and upload again."
+    )
 
 
 def prepare_normalized_log2_data(
@@ -408,19 +481,6 @@ def _clean_string_series(series: pd.Series) -> pd.Series:
     return series.where(pd.notna(series), "").astype(str).str.strip()
 
 
-def _resolve_sample_column(
-    column_map: dict[str, str],
-    columns: pd.Index,
-) -> str | None:
-    for alias in SAMPLE_COLUMN_ALIASES:
-        if alias in column_map:
-            return column_map[alias]
-    if len(columns) >= 2:
-        # Fallback for legacy metadata files where the first column stores sample names.
-        return str(columns[0]).strip()
-    return None
-
-
 def _make_unique_column_alias(raw_name: str, used_aliases: set[str]) -> str:
     alias = re.sub(r"\s+", "_", raw_name.strip())
     alias = re.sub(r"[^A-Za-z0-9_\-]", "", alias)
@@ -604,9 +664,15 @@ def compute_annotation(
         )
     if log2_warning:
         warnings.append(log2_warning)
+    zero_warning = _log2_zero_warning(data, sample_columns, resolved_log2)
+    if zero_warning:
+        warnings.append(zero_warning)
     if auto_detected:
         warnings.append("Metadata was auto-generated from date-like column names.")
     warnings.append(_normalization_warning(normalization))
+    missingness_warning = _missingness_warning(log2_data, metadata, normalization)
+    if missingness_warning:
+        warnings.append(missingness_warning)
 
     return AnnotationComputationResult(
         metadata=metadata,
@@ -676,7 +742,13 @@ def compute_annotation_from_metadata(
         )
     if log2_warning:
         warnings.append(log2_warning)
+    zero_warning = _log2_zero_warning(data, sample_columns, resolved_log2)
+    if zero_warning:
+        warnings.append(zero_warning)
     warnings.append(_normalization_warning(normalization))
+    missingness_warning = _missingness_warning(log2_data, normalized_metadata, normalization)
+    if missingness_warning:
+        warnings.append(missingness_warning)
 
     return AnnotationComputationResult(
         metadata=normalized_metadata,

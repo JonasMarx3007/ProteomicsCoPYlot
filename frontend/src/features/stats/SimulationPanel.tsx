@@ -17,6 +17,7 @@ import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
 import { InfoSection, Notice, PlotFrame, SummarySection } from "./statsShared";
 import { conditionOptions, removeSourceUsageWarnings, restorePValueThreshold } from "./statsHelpers";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 function restoreSimulationTestType(value: unknown): SimulationTestType {
   return value === "unpaired_welch" ? "unpaired_welch" : "unpaired";
@@ -251,6 +252,7 @@ export function SimulationPanel({
       <SectionCard title="Replicate & Variance Projection">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+          <LocalizationCutoffField kind={kind} />
         </div>
       </SectionCard>
 

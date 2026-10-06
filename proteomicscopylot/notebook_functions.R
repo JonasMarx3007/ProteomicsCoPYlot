@@ -156,9 +156,13 @@ rm(.copylot_source_file)
   if (!is.null(message_text)) warning(message_text, call. = FALSE)
 }
 
-.raw_zero_to_na <- function(data, columns) {
+raw_zero_to_nan <- function(data, sample_columns) {
+  # Read 0 (and +/-Inf) in raw, linear intensities as not measured. Only the
+  # named sample columns change; annotation columns and values on a log2 scale,
+  # where 0 is a real measurement, are left alone. Same name and rule in the app
+  # and the pip package.
   output <- data
-  for (column in intersect(as.character(columns), names(output))) {
+  for (column in intersect(as.character(sample_columns), names(output))) {
     values <- suppressWarnings(as.numeric(output[[column]]))
     values[!is.finite(values) | values == 0] <- NA_real_
     output[[column]] <- values
@@ -206,7 +210,7 @@ rm(.copylot_source_file)
          Phosphoprotein = "Phosphoprotein", stop("workflow must be 'Protein', 'Phosphosite', or 'Phosphoprotein'", call. = FALSE))
 }
 
-.row_zscore <- function(matrix) {
+row_zscore <- function(matrix) {
   # Same convention as backend row_zscore(): sample sd (n - 1); rows with zero
   # or undefined sd map to 0.
   means <- rowMeans(matrix, na.rm = TRUE)
@@ -482,7 +486,7 @@ extract_id_or_number <- function(x) {
   extract_sample_id(x)
 }
 
-.paired_sample_columns <- function(meta, condition1, condition2) {
+paired_sample_columns <- function(meta, condition1, condition2) {
   if (identical(as.character(condition1), as.character(condition2))) {
     stop("Paired tests require two different conditions.", call. = FALSE)
   }
@@ -535,7 +539,7 @@ extract_id_or_number <- function(x) {
   list(condition1 = unname(left[ids]), condition2 = unname(right[ids]))
 }
 
-.paired_test_enabled <- function(value) {
+paired_test_enabled <- function(value) {
   mode <- tolower(trimws(as.character(value)))
   if (!mode %in% c("paired", "unpaired")) {
     stop("paired must be 'Paired' or 'Unpaired'.", call. = FALSE)
@@ -672,11 +676,13 @@ inverse_log2_transform_data <- function(data, meta) {
   invisible(NULL)
 }
 
-filter_data <- function(data, meta, num, mode = "per group", method = "at_least_n", percentage = 70) {
+filter_data <- function(data, meta, num, mode = "per_group", method = "at_least_n", percentage = 70) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
   method <- tolower(trimws(method))
-  mode <- gsub("_", " ", tolower(trimws(mode)))
+  # One spelling everywhere since 2026-10-02 (per_group, as the app uses); the
+  # older "per group" with a space is still read the same way.
+  mode <- gsub(" ", "_", tolower(trimws(mode)))
   if (!method %in% c("at_least_n", "percentage")) {
     stop("Filter method must be 'at_least_n' or 'percentage'.", call. = FALSE)
   }
@@ -684,7 +690,7 @@ filter_data <- function(data, meta, num, mode = "per group", method = "at_least_
   # applying the most permissive filter of the three: a misspelling retained
   # features present in only one condition, which is what `per_group` exists to
   # exclude.
-  if (!mode %in% c("per group", "in at least one group", "overall")) {
+  if (!mode %in% c("per_group", "in_at_least_one_group", "overall")) {
     stop("Filter mode must be 'per_group', 'in_at_least_one_group', or 'overall'.", call. = FALSE)
   }
   .validate_filter_thresholds(num, method, percentage)
@@ -699,9 +705,35 @@ filter_data <- function(data, meta, num, mode = "per group", method = "at_least_
       if (method == "percentage") valid / length(columns) >= percentage / 100 else valid >= num
     })
     if (is.null(dim(keep))) keep <- matrix(keep, ncol = 1)
-    rows_to_keep <- if (mode == "per group") apply(keep, 1, all) else apply(keep, 1, any)
+    rows_to_keep <- if (mode == "per_group") apply(keep, 1, all) else apply(keep, 1, any)
   }
   data[rows_to_keep, , drop = FALSE]
+}
+
+# Phosphosite localization probability cutoff, mirrored from the backend and
+# the pip package. 0 keeps every row; above 0 a row without a probability
+# (missing, non-numeric or outside 0..1) is dropped. `.localization_keep`
+# returns the row mask, so an aligned matrix (observed, coverage_data) can be
+# narrowed to the same rows.
+.localization_keep <- function(data, cutoff = 0, column = "PTM_localization") {
+  cutoff <- suppressWarnings(as.numeric(cutoff))
+  if (length(cutoff) != 1L || is.na(cutoff) || cutoff < 0 || cutoff > 1) {
+    stop("The localization probability cutoff must be between 0 and 1.", call. = FALSE)
+  }
+  if (cutoff <= 0) return(rep(TRUE, nrow(data)))
+  if (!column %in% names(data)) {
+    stop(sprintf(
+      "A localization probability cutoff of %.2f needs a '%s' column, which this phosphosite table does not have.",
+      cutoff, column
+    ), call. = FALSE)
+  }
+  probability <- suppressWarnings(as.numeric(as.character(data[[column]])))
+  probability[!is.finite(probability) | probability < 0 | probability > 1] <- NA_real_
+  !is.na(probability) & probability >= cutoff
+}
+
+filter_localization <- function(data, cutoff = 0, column = "PTM_localization") {
+  data[.localization_keep(data, cutoff, column), , drop = FALSE]
 }
 
 transform_phosprot <- function(
@@ -709,8 +741,12 @@ transform_phosprot <- function(
     meta,
     mode = "robust_site_median",
     data_scale = "linear",
-    coverage_data = NULL
+    coverage_data = NULL,
+    localization_cutoff = 0
 ) {
+  keep <- .localization_keep(data, localization_cutoff)
+  data <- data[keep, , drop = FALSE]
+  if (!is.null(coverage_data)) coverage_data <- coverage_data[keep, , drop = FALSE]
   required <- c("UPD_seq", "PTM_localization", "Protein_group", "Gene_group", "PTM_Collapse_key")
   missing <- setdiff(required, names(data))
   if (length(missing)) {
@@ -757,7 +793,7 @@ transform_phosprot <- function(
     log2_data[samples] <- lapply(log2_data[samples], function(x) suppressWarnings(as.numeric(x)))
     linear_data <- inverse_log2_transform_data(log2_data, meta)
   } else {
-    linear_data <- .raw_zero_to_na(data, samples)
+    linear_data <- raw_zero_to_nan(data, samples)
     log2_data <- log2_transform_data(linear_data, meta)
   }
 
@@ -777,7 +813,7 @@ transform_phosprot <- function(
       stop("coverage_data Protein_group values must align exactly with data.", call. = FALSE)
     }
     if (data_scale == "linear") {
-      coverage_data <- log2_transform_data(.raw_zero_to_na(coverage_data, samples), meta)
+      coverage_data <- log2_transform_data(raw_zero_to_nan(coverage_data, samples), meta)
     }
     coverage_matrix <- .numeric_matrix(coverage_data, samples)
   }
@@ -857,11 +893,18 @@ transform_phosprot <- function(
       row[[paste0("site_observed__", samples[sample_index])]] <- observed[sample_index]
       row[[paste0("site_coverage__", samples[sample_index])]] <- coverage[sample_index]
     }
+    for (sample_index in seq_along(samples)) {
+      supplied_matrix <- if (mode == "robust_site_median") log2_matrix else linear_matrix
+      row[[paste0("site_supplied__", samples[sample_index])]] <- sum(is.finite(supplied_matrix[eligible_indices, sample_index]))
+    }
     row
   })
 
   output <- as.data.frame(
-    do.call(rbind, lapply(rows, as.data.frame)),
+    # check.names = FALSE: real sample names (Spectronaut, DIA-NN) start with a
+    # digit or contain "-", which as.data.frame would rewrite, breaking the
+    # sample-column lookups below ("undefined columns selected").
+    do.call(rbind, lapply(rows, as.data.frame, check.names = FALSE, stringsAsFactors = FALSE)),
     check.names = FALSE,
     stringsAsFactors = FALSE
   )
@@ -869,7 +912,7 @@ transform_phosprot <- function(
     "site_num", "site_num_eligible", samples,
     "site_observed_min", "site_observed_mean", "site_coverage_min",
     "site_coverage_mean", "site_complete_samples",
-    paste0("site_observed__", samples), paste0("site_coverage__", samples)
+    paste0("site_observed__", samples), paste0("site_coverage__", samples), paste0("site_supplied__", samples)
   )
   output[numeric_columns] <- lapply(output[numeric_columns], function(x) as.numeric(as.character(x)))
 
@@ -1831,14 +1874,30 @@ resolve_feature_scaling <- function(scaling = "auto", method = "PCA") {
   if (tolower(trimws(as.character(method %||% "PCA"))) == "pca") "centered" else "unit_variance"
 }
 
-pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=20, height_cm=10, dpi=100, plot_colors=NULL, plot_3d=FALSE, add_ellipses=FALSE, scaling="auto") {
+pca_scores <- function(data, meta, plot_3d=FALSE, scaling="auto") {
+  # The PCA coordinates pca_plot draws, as a table: one row per sample with PC1,
+  # PC2 (and PC3 with plot_3d), sample and condition. The explained variance of
+  # each component, in percent of the total, is attr(, "explained_variance").
+  # The sign of a component is arbitrary and may differ between implementations.
   prepared <- .prepare_pca_matrix(data, meta, plot_3d = plot_3d)
-  transposed_expression <- prepared$matrix
   n_components <- prepared$n_components
   unit_variance <- resolve_feature_scaling(scaling, method = "PCA") == "unit_variance"
-  pca <- prcomp(transposed_expression, rank. = n_components, scale. = unit_variance)
-  scores <- pca$x[, seq_len(n_components), drop = FALSE]
-  explained_variance <- pca$sdev^2 / sum(pca$sdev^2) * 100
+  pca <- prcomp(prepared$matrix, rank. = n_components, scale. = unit_variance)
+  coordinates <- pca$x[, seq_len(n_components), drop = FALSE]
+  scores <- as.data.frame(coordinates, stringsAsFactors = FALSE)
+  scores$sample <- rownames(coordinates)
+  scores$condition <- as.character(meta$condition[match(scores$sample, as.character(meta$sample))])
+  rownames(scores) <- NULL
+  attr(scores, "explained_variance") <- (pca$sdev^2 / sum(pca$sdev^2) * 100)[seq_len(n_components)]
+  scores
+}
+
+pca_plot <- function(data, meta, header=TRUE, legend=TRUE, dot_size=3, width_cm=20, height_cm=10, dpi=100, plot_colors=NULL, plot_3d=FALSE, add_ellipses=FALSE, scaling="auto") {
+  table <- pca_scores(data, meta, plot_3d = plot_3d, scaling = scaling)
+  n_components <- if (plot_3d) 3 else 2
+  scores <- as.matrix(table[, paste0("PC", seq_len(n_components)), drop = FALSE])
+  rownames(scores) <- table$sample
+  explained_variance <- attr(table, "explained_variance")
 
   conditions <- as.character(meta$condition[match(rownames(scores), meta$sample)])
   condition_levels <- unique(conditions)
@@ -2249,7 +2308,11 @@ interactive_abundance_plot <- function(
   )
 }
 
-corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, width=10, height=8, dpi=100, data_scale="log2") {
+sample_correlation_matrix <- function(data, meta, id=TRUE, data_scale="log2") {
+  # The Pearson correlations between samples that corr_plot colours. Rows and
+  # columns are the display names (condition_n, with the sample id when id=TRUE)
+  # in metadata order; corr_plot then reorders them by clustering. Each pair uses
+  # the features measured in both samples; a sample with no values is left out.
   data <- .prepare_intensity_data(data, meta$sample, data_scale)
   meta <- .sample_meta(meta, id = id)
   renamed_data <- .rename_samples(data, meta)
@@ -2267,8 +2330,13 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   }, logical(1))
   correlation_matrix[invalid_samples, ] <- NA_real_
   correlation_matrix[, invalid_samples] <- NA_real_
+  correlation_matrix
+}
+
+corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, width=10, height=8, dpi=100, data_scale="log2") {
+  correlation_matrix <- sample_correlation_matrix(data, meta, id = id, data_scale = data_scale)
   incomplete <- any(!is.finite(correlation_matrix))
-  ordered_indices <- if (incomplete) seq_len(ncol(values)) else hclust(
+  ordered_indices <- if (incomplete) seq_len(ncol(correlation_matrix)) else hclust(
     as.dist(1 - correlation_matrix), method = "complete"
   )$order
   ordered_correlation <- correlation_matrix[
@@ -2358,6 +2426,71 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   .plot_result()
 }
 
+# Imputed-value counts. Imputed values enter every test as if measured -- they
+# count towards n and the degrees of freedom -- so results carry, per row, how
+# many values in each group were imputed (`n_imputed__<group>`) and their total
+# (`imputed_values`). `observed` is the matrix before impute_values(), with the
+# same rows in the same order; a phosphoprotein table's own site_observed__
+# columns are used without it. Mirrors the backend and pip package.
+
+imputed_cell_mask <- function(values, observed) {
+  present <- !is.na(.numeric_matrix(values, names(values)))
+  before <- .numeric_matrix(observed, names(values))
+  states <- matrix(as.integer(is.na(before)), nrow = nrow(values), dimnames = dimnames(before))
+  states[!present] <- -1L
+  states
+}
+
+site_observed_imputed_mask <- function(frame, sample_columns) {
+  columns <- paste0("site_observed__", sample_columns)
+  supplied_columns <- paste0("site_supplied__", sample_columns)
+  if (!all(c(columns, supplied_columns) %in% names(frame))) return(NULL)
+  present <- !is.na(.numeric_matrix(frame, sample_columns))
+  measured <- .numeric_matrix(frame, columns)
+  supplied <- .numeric_matrix(frame, supplied_columns)
+  known <- is.finite(measured) & is.finite(supplied) & supplied > 0 & measured >= 0 & measured <= supplied
+  mask <- ifelse(measured == 0, 1L, ifelse(measured < supplied, 2L, 0L))
+  mask[!present | !known] <- -1L
+  colnames(mask) <- sample_columns
+  mask
+}
+
+imputed_value_counts <- function(mask, groups) {
+  counts <- data.frame(row.names = seq_len(nrow(mask)))
+  total <- integer(nrow(mask))
+  for (group in names(groups)) {
+    values <- mask[, groups[[group]], drop = FALSE]
+    for (state in 0:2) {
+      category <- c("measured", "fully_imputed", "partially_imputed")[[state + 1]]
+      counts[[paste0("n_", category, "__", group)]] <- as.integer(rowSums(values == state))
+    }
+    column_count <- as.integer(rowSums(values == 1 | values == 2))
+    counts[[paste0("n_imputed__", group)]] <- column_count
+    total <- total + column_count
+  }
+  counts$imputed_values <- total
+  counts
+}
+
+.imputed_counts_for <- function(data, observed, groups) {
+  samples <- unique(unlist(groups, use.names = FALSE))
+  if (!is.null(observed)) {
+    missing_columns <- setdiff(samples, names(observed))
+    if (nrow(observed) != nrow(data) || length(missing_columns)) {
+      stop(
+        "observed must be the pre-imputation matrix of this data: same rows in the same order ",
+        "and the sample columns (", length(missing_columns), " sample columns not found).",
+        call. = FALSE
+      )
+    }
+    mask <- imputed_cell_mask(data[, samples, drop = FALSE], observed)
+  } else {
+    mask <- site_observed_imputed_mask(data, samples)
+  }
+  if (is.null(mask)) return(NULL)
+  imputed_value_counts(mask, groups)
+}
+
 .volcano_stats <- function(
     data,
     meta,
@@ -2369,12 +2502,14 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     extras = character(),
     test_type = NULL,
     control1_columns = NULL,
-    control2_columns = NULL
+    control2_columns = NULL,
+    observed = NULL,
+    control_names = NULL
 ) {
   condition1_columns <- as.character(meta$sample[meta$condition == condition1])
   condition2_columns <- as.character(meta$sample[meta$condition == condition2])
   if (is.null(test_type)) {
-    is_paired <- .paired_test_enabled(paired)
+    is_paired <- paired_test_enabled(paired)
     variance <- "pooled"
   } else {
     resolved <- resolve_test_type(test_type)
@@ -2382,12 +2517,19 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
     variance <- resolved$model
   }
   if (is_paired) {
-    paired_columns <- .paired_sample_columns(meta, condition1, condition2)
+    paired_columns <- paired_sample_columns(meta, condition1, condition2)
     condition1_columns <- paired_columns$condition1
     condition2_columns <- paired_columns$condition2
   }
   columns <- unique(c(label_col, condition1_columns, condition2_columns, extras))
   filtered_data <- data[, columns, drop = FALSE]
+  count_groups <- list(condition1_columns, condition2_columns)
+  names(count_groups) <- c(condition1, condition2)
+  if (length(control_names) == 2 && length(control1_columns) && length(control2_columns)) {
+    count_groups[[control_names[1]]] <- as.character(control1_columns)
+    count_groups[[control_names[2]]] <- as.character(control2_columns)
+  }
+  imputed_counts <- .imputed_counts_for(data, observed, count_groups)
 
   x_data <- .numeric_matrix(filtered_data, condition1_columns)
   y_data <- .numeric_matrix(filtered_data, condition2_columns)
@@ -2413,6 +2555,7 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   }
 
   filtered_data <- filtered_data[valid, , drop = FALSE]
+  if (!is.null(imputed_counts)) imputed_counts <- imputed_counts[valid, , drop = FALSE]
   x_data <- x_data[valid, , drop = FALSE]
   y_data <- y_data[valid, , drop = FALSE]
   if (is_paired) {
@@ -2513,17 +2656,21 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
   }, numeric(1))
   }
 
+  # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
+  # significance is called on (raw when `uncorrected`), as in the web app.
   adjusted_pvalues <- pvalues
   finite <- is.finite(pvalues)
-  if (!uncorrected) adjusted_pvalues[finite] <- p.adjust(pvalues[finite], "BH")
+  adjusted_pvalues[finite] <- p.adjust(pvalues[finite], "BH")
   output_columns <- c(label_col, extras[extras %in% names(filtered_data)])
   output <- filtered_data[, output_columns, drop = FALSE]
   output$log2FC <- log2fc
   output$pval <- pvalues
   output$adj_pval <- adjusted_pvalues
+  output$selected_pval <- if (uncorrected) pvalues else adjusted_pvalues
   # A variance warning is independent of whether the test has a finite p-value.
   output$zero_variance <- constant_within_group(x_data) | constant_within_group(y_data)
   if (is_paired) output$n_pairs <- as.integer(n_pairs)
+  attr(output, "imputed_counts") <- imputed_counts
   output
 }
 
@@ -2553,11 +2700,13 @@ volcano_data_f <- function(
     uncorrected = FALSE,
     test_type = NULL,
     label_column = NULL,
-    # These two follow `label_column` so the first eleven positional slots
-    # match the pip package, which reaches the same analysis through
+    observed = NULL,
+    # These follow `label_column` and `observed` so the first twelve positional
+    # slots match the pip package, which reaches the same analysis through
     # `volcano_data_f_control`.
     control1_columns = NULL,
-    control2_columns = NULL
+    control2_columns = NULL,
+    control_names = NULL
 ) {
   if (identical(condition1, condition2)) {
     stop("Please select two different conditions.", call. = FALSE)
@@ -2582,25 +2731,39 @@ volcano_data_f <- function(
     extra_columns,
     test_type,
     control1_columns,
-    control2_columns
+    control2_columns,
+    observed,
+    control_names
   )
+  imputed_counts <- attr(output, "imputed_counts")
+  attr(output, "imputed_counts") <- NULL
   output$significance <- ifelse(
-    output$adj_pval < in_pval & output$log2FC > in_log2fc,
+    output$selected_pval < in_pval & output$log2FC > in_log2fc,
     "Upregulated",
     ifelse(
-      output$adj_pval < in_pval & output$log2FC < -in_log2fc,
+      output$selected_pval < in_pval & output$log2FC < -in_log2fc,
       "Downregulated",
       "Not significant"
     )
   )
   output$significance[!is.finite(output$pval)] <- "Unavailable"
-  output$neg_log10_adj_pval <- -log10(pmax(output$adj_pval, 1e-300))
+  output$neg_log10_selected_pval <- -log10(pmax(output$selected_pval, 1e-300))
+  if (!is.null(imputed_counts)) {
+    for (column in names(imputed_counts)) output[[column]] <- imputed_counts[[column]]
+  }
   output
 }
 
-volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL) {
+volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL, observed=NULL) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
+  # The four conditions must be distinct, as in the web app: a control shared by
+  # both sides would enter the standard error twice.
+  named <- trimws(as.character(c(condition1, condition1_control, condition2, condition2_control)))
+  if (length(unique(named)) != length(named)) {
+    stop("Control-corrected volcano analysis requires four distinct conditions; ",
+         "an experimental condition cannot be used as its own control.", call. = FALSE)
+  }
   condition1_columns <- meta$sample[meta$condition == condition1]
   condition2_columns <- meta$sample[meta$condition == condition2]
   control1_columns <- meta$sample[meta$condition == condition1_control]
@@ -2638,7 +2801,9 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
     test_type = test_type,
     control1_columns = control1_columns,
     control2_columns = control2_columns,
-    label_column = label_column
+    label_column = label_column,
+    observed = observed,
+    control_names = c(condition1_control, condition2_control)
   )
   output
 }
@@ -2694,7 +2859,7 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
   )
 
   y_threshold <- -log10(in_pval)
-  max_y <- max(y_threshold, volcano_df$neg_log10_adj_pval, na.rm = TRUE)
+  max_y <- max(y_threshold, volcano_df$neg_log10_selected_pval, na.rm = TRUE)
   x_range <- range(volcano_df$log2FC, na.rm = TRUE)
 
   normalized_terms <- if (is.null(highlight_terms)) {
@@ -2737,7 +2902,7 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
         fig,
         data = subset,
         x = ~log2FC,
-        y = ~neg_log10_adj_pval,
+        y = ~neg_log10_selected_pval,
         type = "scatter",
         mode = "markers",
         text = hover_text,
@@ -2846,7 +3011,8 @@ anova_data_f <- function(
     conditions = NULL,
     in_pval = 0.05,
     workflow = "Protein",
-    uncorrected = FALSE
+    uncorrected = FALSE,
+    observed = NULL
 ) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
@@ -2877,6 +3043,8 @@ anova_data_f <- function(
   } else {
     character()
   }
+  imputed_counts <- .imputed_counts_for(data, observed, condition_columns)
+  if (!is.null(imputed_counts)) imputed_counts <- imputed_counts[valid, , drop = FALSE]
   output <- data[
     valid,
     unique(c(label_col, sample_columns, extra_columns)),
@@ -2914,31 +3082,42 @@ anova_data_f <- function(
     )
   }
 
-  # Rows where the F test is undefined (zero within-group variance) yield NaN.
-  # Drop them rather than carrying all-NA rows into the result, and so they do
-  # not count towards the BH denominator. Matches the Python implementations.
+  # A row constant throughout yields NaN: the F test is undefined. Drop those
+  # rather than carrying all-NA rows into the result, so they do not count
+  # towards the BH denominator. A row constant within every condition but
+  # different between them gets F = Inf and p = 0; it stays, flagged
+  # zero_variance below. Matches the Python implementations.
   computable <- is.finite(pvalues)
   output <- output[computable, , drop = FALSE]
+  if (!is.null(imputed_counts)) imputed_counts <- imputed_counts[computable, , drop = FALSE]
   f_statistics <- f_statistics[computable]
   pvalues <- pvalues[computable]
 
   output$f_statistic <- f_statistics
   output$pval <- pvalues
-  output$adj_pval <- if (uncorrected) pvalues else p.adjust(pvalues, "BH")
+  output$adj_pval <- p.adjust(pvalues, "BH")
+  output$selected_pval <- if (uncorrected) pvalues else output$adj_pval
   output$significance <- ifelse(
-    output$adj_pval < in_pval,
+    output$selected_pval < in_pval,
     "Significant",
     "Not significant"
   )
-  output$neg_log10_adj_pval <- -log10(
-    pmax(output$adj_pval, .Machine$double.xmin)
+  output$neg_log10_selected_pval <- -log10(
+    pmax(output$selected_pval, .Machine$double.xmin)
   )
+  # No variation within any condition: significance from absent variance.
+  output$zero_variance <- Reduce(`&`, lapply(condition_columns, function(columns) {
+    constant_within_group(output[, columns, drop = FALSE])
+  }))
 
   for (condition in conditions) {
     output[[paste0("mean_", condition)]] <- rowMeans(
       .numeric_matrix(output, condition_columns[[condition]]),
       na.rm = TRUE
     )
+  }
+  if (!is.null(imputed_counts)) {
+    for (column in names(imputed_counts)) output[[column]] <- imputed_counts[[column]]
   }
 
   # Benjamini-Hochberg ties many features to the same adjusted p, so ordering on
@@ -2947,10 +3126,16 @@ anova_data_f <- function(
   # label makes the order identical across all three pipelines.
   label_col <- tryCatch(get("_auto_label_col")(output), error = function(e) NULL)
   if (is.null(label_col)) {
-    output[order(output$adj_pval, output$pval), , drop = FALSE]
+    output[order(output$selected_pval, output$pval), , drop = FALSE]
   } else {
-    output[order(output$adj_pval, output$pval, output[[label_col]]), , drop = FALSE]
+    output[order(output$selected_pval, output$pval, output[[label_col]]), , drop = FALSE]
   }
+}
+
+# The p-value column significance is called on: `selected_pval`, or `adj_pval` in older tables.
+.significance_pval_column <- function(table) {
+  for (column in c("selected_pval", "adj_pval")) if (column %in% names(table)) return(column)
+  NULL
 }
 
 anova_cluster_data <- function(
@@ -2973,8 +3158,8 @@ anova_cluster_data <- function(
     stop("No sample columns from meta were found in anova_df.", call. = FALSE)
   }
 
-  cluster_data <- if (only_significant && "adj_pval" %in% names(anova_df)) {
-    anova_df[anova_df$adj_pval < in_pval, , drop = FALSE]
+  cluster_data <- if (only_significant && !is.null(.significance_pval_column(anova_df))) {
+    anova_df[anova_df[[.significance_pval_column(anova_df)]] < in_pval, , drop = FALSE]
   } else {
     anova_df
   }
@@ -2995,7 +3180,7 @@ anova_cluster_data <- function(
     cluster_data <- cluster_data[dropped_info$kept, , drop = FALSE]
     .warn_dropped_features(dropped_info$dropped, dropped_info$total)
   }
-  if (z_score) matrix <- .row_zscore(matrix)
+  if (z_score) matrix <- row_zscore(matrix)
 
   if (nrow(matrix) <= 1) {
     cluster_data[[cluster_col]] <- 1
@@ -3193,6 +3378,96 @@ quantile_normalize <- function(values) {
   present
 }
 
+# Per-sample missingness, and how far each sample sits on the complete features.
+#
+# Median and quantile normalization use every observed value of a sample.
+# Missing values are mostly low-abundance, so a sample with many more of them has
+# a higher observed median and is shifted down. A sample is flagged when its
+# share of missing values is at least `min_gap` above the most complete sample.
+# `complete_offset` is the sample's median distance from the row median over the
+# features measured in every sample: after normalization it shows the shift those
+# features carry. It is NA when fewer than `min_complete` features are complete.
+MISSINGNESS_GAP <- 0.10
+MISSINGNESS_MIN_COMPLETE <- 20
+.missingness_method_labels <- c(median = "Median centering", quantile = "Quantile normalization")
+
+missingness_imbalance <- function(data, meta, min_gap = MISSINGNESS_GAP,
+                                  min_complete = MISSINGNESS_MIN_COMPLETE) {
+  present <- .normalization_sample_columns(data, meta)
+  values <- .numeric_matrix(data, present)
+  values[!is.finite(values)] <- NA_real_
+  missing <- if (nrow(values)) colMeans(is.na(values)) else stats::setNames(rep(0, length(present)), present)
+  reference <- if (length(missing)) min(missing) else 0
+  complete <- values[stats::complete.cases(values), , drop = FALSE]
+  offsets <- if (nrow(complete) >= min_complete) {
+    centred <- complete - apply(complete, 1, stats::median)
+    apply(centred, 2, stats::median)
+  } else {
+    rep(NA_real_, length(present))
+  }
+  conditions <- rep(NA_character_, length(present))
+  if (is.data.frame(meta) && "condition" %in% names(meta)) {
+    conditions <- as.character(meta$condition)[match(present, as.character(meta$sample))]
+  }
+  data.frame(
+    sample = present,
+    condition = conditions,
+    missing_fraction = as.numeric(missing),
+    reference_missing_fraction = reference,
+    flagged = (as.numeric(missing) - reference) >= min_gap - 1e-12,
+    complete_features = nrow(complete),
+    complete_offset = as.numeric(offsets),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
+# The warning for missingness_imbalance(), or NULL when there is nothing to say.
+# Only median centering and quantile normalization are concerned: both are
+# computed from each sample's observed values.
+missingness_imbalance_warning <- function(table, method, min_gap = MISSINGNESS_GAP) {
+  key <- tolower(trimws(as.character(method %||% "none")))
+  if (!key %in% names(.missingness_method_labels) || !nrow(table) || !any(table$flagged)) {
+    return(NULL)
+  }
+  label <- .missingness_method_labels[[key]]
+  flagged <- table[table$flagged, , drop = FALSE]
+  flagged <- flagged[order(-flagged$missing_fraction, seq_len(nrow(flagged))), , drop = FALSE]
+  others <- table[!table$flagged, , drop = FALSE]
+  shown <- utils::head(flagged, 6)
+  listed <- sprintf("%s (%.0f%%)", shown$sample, shown$missing_fraction * 100)
+  if (nrow(flagged) > 6) listed <- c(listed, sprintf("and %d more", nrow(flagged) - 6))
+  message <- sprintf(
+    paste0(
+      "Missing values differ strongly between samples: %d of %d samples have at least %.0f percentage ",
+      "points more missing values than the most complete sample (%.0f%%): %s. %s uses each sample's ",
+      "observed values, and missing values are mostly low-abundance, so these samples can be shifted down."
+    ),
+    nrow(flagged), nrow(table), min_gap * 100, table$reference_missing_fraction[1] * 100,
+    paste(listed, collapse = ", "), label
+  )
+  if (all(!is.na(flagged$complete_offset)) && nrow(others) && all(!is.na(others$complete_offset))) {
+    shift <- mean(flagged$complete_offset) - mean(others$complete_offset)
+    message <- paste0(message, sprintf(
+      " On the %s features measured in every sample, they sit %.2f log2 %s the other samples after normalization.",
+      format(table$complete_features[1], big.mark = ",", scientific = FALSE, trim = TRUE),
+      abs(shift), if (shift < 0) "below" else "above"
+    ))
+  }
+  conditions <- unique(as.character(flagged$condition[!is.na(flagged$condition)]))
+  if (length(conditions) == 1 && all(!is.na(flagged$condition))) {
+    message <- paste0(message, sprintf(
+      " All of them are in condition %s, so fold changes involving %s may carry this shift.",
+      conditions, conditions
+    ))
+  }
+  paste0(message, " Check these samples before interpreting fold changes.")
+}
+
+# Phosphoprotein workflows: normalize phosphosites BEFORE transform_phosprot,
+# never the collapsed phosphoprotein matrix. The collapse carries the site-level
+# normalization forward, and a second pass would normalize the same values twice;
+# the app applies none at that level.
 normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
   resolved <- tolower(trimws(as.character(method %||% "none")))
   if (resolved %in% c("", "none")) {
@@ -3226,6 +3501,8 @@ normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
   for (column in present) {
     output[[column]] <- as.numeric(normalized[[column]])
   }
+  message <- missingness_imbalance_warning(missingness_imbalance(output, meta), resolved)
+  if (!is.null(message)) warning(message, call. = FALSE)
   output
 }
 
@@ -3343,8 +3620,8 @@ anova_posthoc_data <- function(
     return(anova_df[0, c(label_col), drop = FALSE])
   }
 
-  posthoc_data <- if (only_significant && "adj_pval" %in% names(anova_df)) {
-    anova_df[anova_df$adj_pval < in_pval, , drop = FALSE]
+  posthoc_data <- if (only_significant && !is.null(.significance_pval_column(anova_df))) {
+    anova_df[anova_df[[.significance_pval_column(anova_df)]] < in_pval, , drop = FALSE]
   } else {
     anova_df
   }
@@ -3488,8 +3765,8 @@ anova_plot <- function(
     stop("No sample columns from meta were found in anova_df.", call. = FALSE)
   }
 
-  plot_data <- if ("adj_pval" %in% names(anova_df)) {
-    anova_df[anova_df$adj_pval < in_pval, , drop = FALSE]
+  plot_data <- if (!is.null(.significance_pval_column(anova_df))) {
+    anova_df[anova_df[[.significance_pval_column(anova_df)]] < in_pval, , drop = FALSE]
   } else {
     anova_df
   }
@@ -3510,7 +3787,7 @@ anova_plot <- function(
   }
   rownames(raw_matrix) <- as.character(plot_data[[label_col]])
   missing_mask <- !is.finite(raw_matrix)
-  matrix <- if (z_score) .row_zscore(raw_matrix) else raw_matrix
+  matrix <- if (z_score) row_zscore(raw_matrix) else raw_matrix
   matrix[!is.finite(matrix)] <- NA
   cluster_matrix <- matrix
 
@@ -3701,7 +3978,7 @@ anova_plot_cluster <- function(
   }
   rownames(matrix) <- as.character(anova_cluster_df[[label_col]])
   missing_mask <- !is.finite(matrix)
-  if (z_score) matrix <- .row_zscore(matrix)
+  if (z_score) matrix <- row_zscore(matrix)
   matrix[!is.finite(matrix)] <- NA
   cluster_matrix <- matrix
 
@@ -4091,7 +4368,10 @@ enrichment_analysis <- function(
       }
     )
   )
-  axis(2, seq_len(nrow(result)), result$term_name, las = 2, cex.axis = 0.65)
+  # BP, CC and MF terms share one plot and one BH correction, so each label
+  # names its ontology, as in the web app.
+  ontology <- ifelse(is.na(result$source) | result$source == "", "", paste0(" (", result$source, ")"))
+  axis(2, seq_len(nrow(result)), paste0(result$term_name, ontology), las = 2, cex.axis = 0.65)
   mtext("GO Term", side = 2, line = 10)
 
   .plot_result()
@@ -4215,7 +4495,7 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
 
   value_type <- tolower(value_type)
   if (value_type == "z") {
-    heatmap_data <- .row_zscore(heatmap_data)
+    heatmap_data <- row_zscore(heatmap_data)
     color_label <- "Z-score"
     # Symmetric limits on a diverging map, as on the ANOVA heatmaps.
     zlim <- c(-2.5, 2.5)
@@ -4352,8 +4632,9 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
     log2FC = log2fc,
     pval = pvals,
     adj_pval = adjusted_pvals,
+    selected_pval = adjusted_pvals,
     significance = significance,
-    neg_log10_adj_pval = -log10(pmax(adjusted_pvals, 1e-300)),
+    neg_log10_selected_pval = -log10(pmax(adjusted_pvals, 1e-300)),
     stringsAsFactors = FALSE
   )
   names(volcano_data)[1] <- label_col
@@ -4397,52 +4678,168 @@ convert_to_centered <- function(seq) {
   paste0(left_tail, modified_residue, right_tail)
 }
 
-.ksea_format_volcano <- function(volcano_df) {
-  names(volcano_df)[names(volcano_df) == "PTM_Collapse_key"] <- "UPD_seq"
-  volcano_df$UPD_seq <- vapply(volcano_df$UPD_seq, convert_to_centered, character(1))
-  columns <- c("UPD_seq", "log2FC", "pval", "adj_pval", "significance")
-  if ("n_pairs" %in% names(volcano_df)) columns <- c(columns, "n_pairs")
-  columns <- c(columns, "neg_log10_adj_pval")
-  volcano_df[, columns, drop = FALSE]
+# Kinase motif windows. The Kinase Library reads "_" as "beyond the protein
+# terminus", so a window cut from the peptide alone presents real flanking
+# residues as absent. With a FASTA the window is read from the protein at the
+# site position named in PTM_Collapse_key; the peptide window is only a
+# fallback and `window_source` says which one each row uses. Mirrors
+# phospho_tools.site_motif_window and the pip package.
+
+read_fasta <- function(path) {
+  lines <- readLines(path, warn = FALSE, encoding = "UTF-8")
+  lines <- trimws(lines)
+  lines <- lines[nzchar(lines)]
+  is_header <- startsWith(lines, ">")
+  if (!any(is_header)) return(character(0))
+  record <- cumsum(is_header)
+  headers <- sub("^>", "", lines[is_header])
+  tokens <- vapply(strsplit(headers, "[[:space:]]+"), function(x) if (length(x)) x[1] else "", character(1))
+  keys <- vapply(strsplit(tokens, "|", fixed = TRUE), function(parts) {
+    if (length(parts) >= 3) parts[2] else paste(parts, collapse = "|")
+  }, character(1))
+  sequences <- vapply(split(lines, record), function(chunk) paste(chunk[-1], collapse = ""), character(1))
+  names(sequences) <- keys
+  sequences[!duplicated(keys)]
 }
 
-ksea_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
+.resolve_fasta <- function(fasta) {
+  if (is.null(fasta)) return(NULL)
+  if (is.character(fasta) && length(fasta) == 1 && is.null(names(fasta))) return(read_fasta(fasta))
+  sequences <- as.character(unlist(fasta))
+  names(sequences) <- names(unlist(fasta))
+  sequences
+}
+
+.parse_site_key <- function(key) {
+  if (is.na(key) || !is.character(key)) return(NULL)
+  pattern <- "^([^~]*)~(.*)_([A-Za-z])([0-9]+)_M[0-9]+$"
+  key <- trimws(key)
+  if (!grepl(pattern, key, perl = TRUE)) return(NULL)
+  parts <- regmatches(key, regexec(pattern, key, perl = TRUE))[[1]]
+  accessions <- trimws(strsplit(parts[2], ";", fixed = TRUE)[[1]])
+  accessions <- accessions[nzchar(accessions)]
+  if (!length(accessions)) return(NULL)
+  list(accessions = accessions, gene = parts[3], residue = toupper(parts[4]), position = as.integer(parts[5]))
+}
+
+.protein_window <- function(sequence, position, flank = 7L) {
+  centre <- position - 1L
+  start <- centre - flank
+  end <- centre + flank + 1L
+  n <- nchar(sequence)
+  core <- toupper(substr(sequence, max(start, 0L) + 1L, min(end, n)))
+  paste0(strrep("_", max(0L, -start)), core, strrep("_", max(0L, end - n)))
+}
+
+.windows_agree <- function(protein_window, peptide_window) {
+  if (!is.character(peptide_window) || nchar(peptide_window) != nchar(protein_window)) return(TRUE)
+  pep <- strsplit(peptide_window, "", fixed = TRUE)[[1]]
+  prot <- strsplit(protein_window, "", fixed = TRUE)[[1]]
+  all(pep == "_" | pep == prot)
+}
+
+site_motif_window <- function(key, peptide_sequence, sequences = NULL) {
+  peptide_window <- convert_to_centered(peptide_sequence)
+  parsed <- .parse_site_key(key)
+  protein <- ""; gene <- ""; site <- ""
+  if (!is.null(parsed)) {
+    protein <- parsed$accessions[1]
+    gene <- parsed$gene
+    site <- paste0(parsed$residue, parsed$position)
+    if (length(sequences)) {
+      for (accession in parsed$accessions) {
+        if (!accession %in% names(sequences)) next
+        sequence <- sequences[[accession]]
+        if (is.na(sequence) || parsed$position < 1L || parsed$position > nchar(sequence)) next
+        if (toupper(substr(sequence, parsed$position, parsed$position)) != parsed$residue) next
+        window <- .protein_window(sequence, parsed$position)
+        if (.windows_agree(window, peptide_window)) {
+          return(list(UPD_seq = window, Protein = accession, Gene = gene, Site = site, window_source = "protein"))
+        }
+      }
+    }
+  }
+  list(UPD_seq = as.character(peptide_window), Protein = protein, Gene = gene, Site = site, window_source = "peptide")
+}
+
+.ksea_prepare <- function(data, meta) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
   if (!"UPD_seq" %in% names(data)) {
-    stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
+    stop("Phosphosite data must contain UPD_seq for Kinase Library.", call. = FALSE)
   }
   working <- data
-  working$PTM_Collapse_key <- working$UPD_seq
+  # A unique row label keeps the site key and peptide of every row, even when
+  # two sites share a peptide window; the volcano keeps row order.
+  working$PTM_Collapse_key <- as.character(seq_len(nrow(working)))
+  working
+}
+
+.ksea_format_volcano <- function(volcano_df, data, fasta) {
+  sequences <- .resolve_fasta(fasta)
+  if (is.null(sequences)) {
+    warning(
+      "No FASTA given: Kinase Library motif windows are cut from the peptide sequence only, and flanks ",
+      "the peptide does not cover are padded with '_' (read as the protein end by the Kinase ",
+      "Library). Pass fasta= with the searched proteome to read windows from the protein.",
+      call. = FALSE
+    )
+  }
+  rows <- as.integer(volcano_df$PTM_Collapse_key)
+  keys <- if ("PTM_Collapse_key" %in% names(data)) as.character(data$PTM_Collapse_key[rows]) else rep(NA_character_, length(rows))
+  peptides <- as.character(data$UPD_seq[rows])
+  windows <- lapply(seq_along(rows), function(i) site_motif_window(keys[i], peptides[i], sequences))
+  column <- function(name) vapply(windows, function(w) as.character(w[[name]]), character(1))
+  columns <- c("log2FC", "pval", "adj_pval", "selected_pval", "significance")
+  if ("n_pairs" %in% names(volcano_df)) columns <- c(columns, "n_pairs")
+  columns <- c(columns, "neg_log10_selected_pval")
+  result <- data.frame(UPD_seq = column("UPD_seq"), stringsAsFactors = FALSE)
+  result <- cbind(result, volcano_df[, columns, drop = FALSE])
+  result$PTM_Collapse_key <- keys
+  result$Protein <- column("Protein")
+  result$Gene <- column("Gene")
+  result$Site <- column("Site")
+  result$window_source <- column("window_source")
+  for (name in names(volcano_df)) {
+    if (grepl("^n_(imputed|measured|fully_imputed|partially_imputed)__", name) || name == "imputed_values") result[[name]] <- volcano_df[[name]]
+  }
+  rownames(result) <- NULL
+  result
+}
+
+kinase_library_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0) {
+  keep <- .localization_keep(data, localization_cutoff)
+  data <- data[keep, , drop = FALSE]
+  if (!is.null(observed)) observed <- observed[keep, , drop = FALSE]
+  working <- .ksea_prepare(data, meta)
   output <- volcano_data_f(
     working, meta, condition1, condition2,
-    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type
+    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type,
+    observed = observed
   )
-  .ksea_format_volcano(output)
+  .ksea_format_volcano(output, data, fasta)
 }
 
-ksea_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL) {
-  .validate_meta_samples(meta)
-  .validate_sample_values(data, meta)
-  if (!"UPD_seq" %in% names(data)) {
-    stop("Phosphosite data must contain UPD_seq for KSEA.", call. = FALSE)
-  }
-  working <- data
-  working$PTM_Collapse_key <- working$UPD_seq
+kinase_library_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0) {
+  keep <- .localization_keep(data, localization_cutoff)
+  data <- data[keep, , drop = FALSE]
+  if (!is.null(observed)) observed <- observed[keep, , drop = FALSE]
+  working <- .ksea_prepare(data, meta)
   output <- volcano_data_f_control(
     working, meta, condition1, condition2,
     condition1_control, condition2_control,
-    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type
+    in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type,
+    observed = observed
   )
-  .ksea_format_volcano(output)
+  .ksea_format_volcano(output, data, fasta)
 }
 
 .phosprot_regulation_data <- function(site_results, in_pval, in_log2fc, max_hover_sites, show_phosphosites) {
   site_results$significance <- ifelse(
-    site_results$adj_pval < in_pval & site_results$log2FC > in_log2fc,
+    site_results$selected_pval < in_pval & site_results$log2FC > in_log2fc,
     "Upregulated",
     ifelse(
-      site_results$adj_pval < in_pval & site_results$log2FC < -in_log2fc,
+      site_results$selected_pval < in_pval & site_results$log2FC < -in_log2fc,
       "Downregulated",
       "Not significant"
     )
@@ -4524,9 +4921,10 @@ ksea_data_f_control <- function(data, meta, condition1, condition2, condition1_c
   collapsed
 }
 
-phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL) {
+phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
+  data <- filter_localization(data, localization_cutoff)
   # The per-protein table behind `phosprot_regulation`, with the same signature
   # as the pip package's function of this name. Split out so the numbers can be
   # read, exported and compared across the three pipelines; `phosprot_regulation`
@@ -4543,11 +4941,12 @@ phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval
   collapsed
 }
 
-phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL) {
+phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0) {
   .require_pkg("plotly")
   collapsed <- phosprot_regulation_data(
     data, meta, condition1, condition2, in_pval, in_log2fc,
-    paired, uncorrected, max_hover_sites, show_phosphosites, test_type
+    paired, uncorrected, max_hover_sites, show_phosphosites, test_type,
+    localization_cutoff = localization_cutoff
   )
 
   hover_text <- paste0(
@@ -4743,7 +5142,7 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
 
 .PROTEASE_LABELS <- c(trypsin = "Trypsin", trypsin_lysc = "Trypsin / Lys-C")
 
-.normalize_protease <- function(value = "trypsin") {
+normalize_protease <- function(value = "trypsin") {
   key <- tolower(trimws(as.character(value)[1]))
   key <- gsub("[-/]", "_", key)
   key <- gsub("__", "_", key)
@@ -4758,8 +5157,8 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
 # cleaves K-P because Lys-C is not proline-inhibited, while R-P stays blocked
 # because trypsin is the only activity cutting R. The lookaheads need perl=TRUE
 # and are equivalent to the Python implementations.
-.count_missed_cleavages <- function(sequences, protease = "trypsin") {
-  pattern <- if (.normalize_protease(protease) == "trypsin_lysc") {
+count_missed_cleavages <- function(sequences, protease = "trypsin") {
+  pattern <- if (normalize_protease(protease) == "trypsin_lysc") {
     "K(?=.)|R(?=[^P])"
   } else {
     "[KR](?=[^P])"
@@ -4769,7 +5168,7 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
 }
 
 missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size=8, header=TRUE, protease="trypsin", width=10, height=6, dpi=100) {
-  resolved_protease <- .normalize_protease(protease)
+  resolved_protease <- normalize_protease(protease)
   data <- sanitize_dataframe(read_data(data2_path))
   file_col <- grep("file", names(data), ignore.case = TRUE, value = TRUE)[1]
   sequence_col <- grep(
@@ -4797,7 +5196,7 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
   )
 
   samples <- intersect(meta$new_sample, names(wide_data))
-  missed_cleavages <- .count_missed_cleavages(rownames(wide_data), resolved_protease)
+  missed_cleavages <- count_missed_cleavages(rownames(wide_data), resolved_protease)
   cleavage_levels <- sort(unique(missed_cleavages))
 
   percentages <- sapply(samples, function(sample) {
@@ -4824,7 +5223,7 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
     col = colors,
     border = NA,
     ylim = c(0, 100),
-    ylab = "Peptides with missed cleavage (%)",
+    ylab = "Peptides by missed cleavages (%)",
     main = if (header) {
       paste0("Missed cleavages per sample (", .PROTEASE_LABELS[[resolved_protease]], ")")
     } else {
@@ -4863,9 +5262,15 @@ missed_cleavage_plot <- function(data2_path, meta, id=TRUE, text=TRUE, text_size
   starts[substring(sequence, starts, starts + width - 1L) == peptide]
 }
 
+# Peptides of the protein with at least one quantity above 0, as in the web app:
+# a precursor listed without a quantity anywhere was not observed.
 .protein_peptides <- function(data, protein) {
   members <- strsplit(as.character(data$ProteinNames), ";", fixed = TRUE)
   selected <- vapply(members, function(names) protein %in% trimws(names), logical(1))
+  if ("Precursor.Quantity" %in% names(data)) {
+    quantity <- suppressWarnings(as.numeric(data[["Precursor.Quantity"]]))
+    selected <- selected & is.finite(quantity) & quantity > 0
+  }
   unique(as.character(na.omit(data$Stripped.Sequence[selected])))
 }
 
@@ -5040,26 +5445,41 @@ compare_prot_line <- function(data, meta, conditions, inputs, id=TRUE, header=TR
   .plot_result()
 }
 
-boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width=8, height=6, dpi=100, seed=69) {
+single_protein_values <- function(data, meta, protein) {
+  # The values boxplot_int_single_prot draws for one protein, as a table. The
+  # protein is looked up in the row names, or else in the first column. When
+  # several rows match, each sample gets the median of its measured values.
+  # Returns condition, sample and value in metadata order; samples without a
+  # value are left out.
   protein_data <- if (protein %in% rownames(data)) {
     data[which(rownames(data) == protein), , drop = FALSE]
   } else {
-    data[data[[1]] == protein, , drop = FALSE]
+    data[as.character(data[[1]]) == as.character(protein), , drop = FALSE]
   }
   if (!nrow(protein_data)) {
     stop("No data found for protein: ", protein, call. = FALSE)
   }
+  samples <- as.character(meta$sample)
+  present <- samples %in% colnames(protein_data)
+  samples <- samples[present]
+  conditions <- as.character(meta$condition)[present]
+  sample_matrix <- .numeric_matrix(protein_data, samples)
+  values <- vapply(seq_along(samples), function(sample_index) {
+    observed <- sample_matrix[, sample_index]
+    observed <- observed[is.finite(observed)]
+    if (length(observed)) median(observed) else NA_real_
+  }, numeric(1))
+  keep <- is.finite(values)
+  table <- data.frame(condition = conditions[keep], sample = samples[keep], value = values[keep], stringsAsFactors = FALSE)
+  attr(table, "source_rows") <- nrow(protein_data)
+  table
+}
 
+boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FALSE, header=TRUE, legend=TRUE, plot_colors=NULL, width=8, height=6, dpi=100, seed=69) {
+  table <- single_protein_values(data, meta, protein)
   conditions <- unique(meta$condition)
   intensities <- lapply(conditions, function(condition) {
-    columns <- as.character(meta$sample[meta$condition == condition])
-    sample_matrix <- .numeric_matrix(protein_data, columns)
-    values <- vapply(seq_along(columns), function(sample_index) {
-      observed <- sample_matrix[, sample_index]
-      observed <- observed[is.finite(observed)]
-      if (length(observed)) median(observed) else NA_real_
-    }, numeric(1))
-    values[is.finite(values)]
+    table$value[table$condition == as.character(condition)]
   })
   keep <- lengths(intensities) > 0
   intensities <- intensities[keep]
@@ -5087,8 +5507,9 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
     xlab = "Condition",
     ylab = "log2 Intensity",
     main = if (header) {
-      source_suffix <- if (nrow(protein_data) > 1) {
-        paste0("\none median per sample across ", nrow(protein_data), " matching source row(s)")
+      source_rows <- attr(table, "source_rows")
+      source_suffix <- if (source_rows > 1) {
+        paste0("\none median per sample across ", source_rows, " matching source row(s)")
       } else {
         ""
       }
@@ -5159,7 +5580,8 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
   .plot_result()
 }
 
-phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id=TRUE, figsize=c(12,8), cmap_name="plasma", filter_M2=FALSE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="log2", header=TRUE) {
+phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id=TRUE, figsize=c(12,8), cmap_name="plasma", filter_M2=FALSE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="log2", header=TRUE, localization_cutoff=0) {
+  data <- filter_localization(data, localization_cutoff)
   protein_data <- data[
     grepl(protein, data$Protein_group, ignore.case = TRUE),
     ,
@@ -5191,7 +5613,7 @@ phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id
 
   value_type <- tolower(value_type)
   if (value_type == "z") {
-    heatmap_data <- .row_zscore(heatmap_data)
+    heatmap_data <- row_zscore(heatmap_data)
     color_label <- "Z-score"
     zlim <- c(-2.5, 2.5)
   } else if (value_type == "log2") {
@@ -5261,10 +5683,11 @@ phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id
   )
 }
 
-phossite_coverage_plot <- function(data, meta, id=FALSE, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", is_log2=TRUE) {
+phossite_coverage_plot <- function(data, meta, id=FALSE, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", is_log2=TRUE, localization_cutoff=0) {
+  data <- filter_localization(data, localization_cutoff)
   counts <- .phossite_coverage_counts(data, meta, is_log2)
   meta <- .sample_meta(meta, id=id, newline=TRUE, zero_based=TRUE)
-  if (!any(counts["Unclassified", ])) counts <- counts[1:2, , drop=FALSE]
+  if (!any(counts["Unclassified", ] > 0)) counts <- counts[1:2, , drop=FALSE]
   colors <- c(color_classI, color_notclassI, "#94a3b8")[seq_len(nrow(counts))]
   .set_notebook_plot_size(width, height)
   old_par <- .set_plot_margins(legend=legend, rotated_labels=TRUE)
@@ -5276,7 +5699,8 @@ phossite_coverage_plot <- function(data, meta, id=FALSE, header=TRUE, legend=TRU
   .plot_result()
 }
 
-sty_plot <- function(data) {
+sty_plot <- function(data, localization_cutoff=0) {
+  data <- filter_localization(data, localization_cutoff)
   matches <- regexec(
     "~[^_]+_([STY])[0-9]+_",
     as.character(data$PTM_Collapse_key)
@@ -5330,9 +5754,10 @@ sty_plot <- function(data) {
   .plot_result()
 }
 
-phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", seed=69, is_log2=TRUE) {
+phossite_coverage_plot_summary <- function(data, meta, header=TRUE, legend=TRUE, width=20, height=10, dpi=300, color_classI="blue", color_notclassI="orange", seed=69, is_log2=TRUE, localization_cutoff=0) {
+  data <- filter_localization(data, localization_cutoff)
   counts <- .phossite_coverage_counts(data, meta, is_log2)
-  if (!any(counts["Unclassified", ])) counts <- counts[1:2, , drop=FALSE]
+  if (!any(counts["Unclassified", ] > 0)) counts <- counts[1:2, , drop=FALSE]
   conditions <- unique(as.character(meta$condition))
   groups <- lapply(conditions, function(condition) counts[, meta$condition == condition, drop=FALSE])
   means <- do.call(cbind, lapply(groups, rowMeans))
@@ -5392,17 +5817,17 @@ simple_phos_site_plot <- function(data, filter_value=0, width_cm=15, height_cm=1
 }
 
 .normalize_ksea_results <- function(data) {
-  if (anyDuplicated(names(data))) stop("KSEA result column names must be unique.", call.=FALSE)
+  if (anyDuplicated(names(data))) stop("Kinase Library result column names must be unique.", call.=FALSE)
   keys <- gsub("[^a-z0-9]", "", tolower(gsub("\u2082", "2", names(data), fixed=TRUE)))
   numeric_field <- function(aliases, effect=FALSE) {
     result <- rep(NA_real_, nrow(data))
     columns <- which(keys %in% aliases)
-    if (!length(columns)) stop("Each KSEA row requires a frequency factor and adjusted p-value.", call.=FALSE)
+    if (!length(columns)) stop("Each Kinase Library row requires a frequency factor and adjusted p-value.", call.=FALSE)
     for (column in columns) {
       text <- as.character(data[[column]])
       supplied <- !is.na(text) & nzchar(trimws(text))
       values <- suppressWarnings(as.numeric(text))
-      if (any(supplied & !is.finite(values))) stop("KSEA values must be finite numeric values.", call.=FALSE)
+      if (any(supplied & !is.finite(values))) stop("Kinase Library values must be finite numeric values.", call.=FALSE)
       if (effect && keys[column] == "frequencyfactor") {
         if (any(supplied & values <= 0)) stop("Raw Frequency Factor values must be positive.", call.=FALSE)
         values <- log2(values)
@@ -5411,12 +5836,12 @@ simple_phos_site_plot <- function(data, filter_value=0, width_cm=15, height_cm=1
       }
       overlap <- supplied & !is.na(result)
       if (any(abs(result[overlap] - values[overlap]) > 1e-12 + 1e-10 * abs(values[overlap]))) {
-        stop("Conflicting KSEA result columns; provide consistent values.", call.=FALSE)
+        stop("Conflicting Kinase Library result columns; provide consistent values.", call.=FALSE)
       }
       take <- supplied & is.na(result)
       result[take] <- values[take]
     }
-    if (anyNA(result)) stop("Each KSEA row requires a frequency factor and adjusted p-value.", call.=FALSE)
+    if (anyNA(result)) stop("Each Kinase Library row requires a frequency factor and adjusted p-value.", call.=FALSE)
     result
   }
   if (!nrow(data)) return(data.frame(Kinase=character(), frequency_factor=numeric(), adjusted_pvalue=numeric()))
@@ -5434,25 +5859,27 @@ simple_phos_site_plot <- function(data, filter_value=0, width_cm=15, height_cm=1
   data.frame(Kinase=labels, frequency_factor=effect, adjusted_pvalue=probability)
 }
 
-ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condition1=NULL, condition2=NULL) {
+kinase_library_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condition1=NULL, condition2=NULL) {
   .require_pkg("plotly")
 
   data <- rbind(.normalize_ksea_results(data_st), .normalize_ksea_results(data_tnc))
-  if (!nrow(data)) stop("Uploaded KSEA result files are empty.", call.=FALSE)
+  if (!nrow(data)) stop("Uploaded Kinase Library result files are empty.", call.=FALSE)
   data$neg_log10_pval <- -log10(pmax(data$adjusted_pvalue, 1e-300))
+  # A significant frequency factor is motif enrichment among up- or
+  # down-regulated sites, not kinase activity; the classes say so.
   data$Regulation <- ifelse(
     data$adjusted_pvalue < pval_thresh & data$frequency_factor > 0,
-    "Upregulated",
+    "Enriched in up-regulated sites",
     ifelse(
       data$adjusted_pvalue < pval_thresh & data$frequency_factor < 0,
-      "Downregulated",
+      "Enriched in down-regulated sites",
       "Not significant"
     )
   )
 
   color_mapping <- c(
-    Upregulated = "red",
-    Downregulated = "blue",
+    "Enriched in up-regulated sites" = "red",
+    "Enriched in down-regulated sites" = "blue",
     `Not significant` = "lightgrey"
   )
 
@@ -5488,9 +5915,9 @@ ksea_volcano <- function(data_st, data_tnc, pval_thresh=0.1, header=TRUE, condit
   }
 
   title <- if (header && !is.null(condition1) && !is.null(condition2)) {
-    paste0("KSEA Volcano Plot: ", condition1, " vs. ", condition2)
+    paste0("Kinase Library Motif Enrichment: ", condition1, " vs. ", condition2)
   } else if (header) {
-    "KSEA Volcano Plot"
+    "Kinase Library Motif Enrichment"
   } else {
     NULL
   }
@@ -5786,13 +6213,18 @@ overlap_plot_condition <- function(
     labels = NULL,
     colors = NULL,
     show_header = TRUE,
-    data_scale = "log2"
+    data_scale = "log2",
+    min_present = 1
 ) {
   data <- .prepare_intensity_data(data, meta$sample, data_scale)
+  if (length(min_present) != 1 || !is.finite(min_present) || min_present < 1 || min_present != floor(min_present)) {
+    stop("min_present must be a positive integer.", call. = FALSE)
+  }
 
   get_set <- function(condition) {
     samples <- meta$sample[meta$condition == condition]
-    present <- rowSums(!is.na(data[, samples, drop = FALSE])) > 0
+    if (length(samples) < min_present) stop("Condition has fewer samples than min_present.", call. = FALSE)
+    present <- rowSums(!is.na(data[, samples, drop = FALSE])) >= min_present
     rownames(data)[present]
   }
 
@@ -5917,7 +6349,7 @@ missing_value_plot_prec <- function(
     max
   )
   sample_columns <- names(.peptide_sample_map(names(wide_data), meta$sample))
-  wide_data <- .raw_zero_to_na(wide_data, sample_columns)
+  wide_data <- raw_zero_to_nan(wide_data, sample_columns)
   observed <- wide_data[, sample_columns, drop = FALSE]
   observed <- observed[rowSums(!is.na(observed)) > 0, , drop = FALSE]
   missing_counts <- rowSums(is.na(observed))
@@ -5962,7 +6394,7 @@ missing_value_plot_pep <- function(
   }
 
   sample_columns <- names(.peptide_sample_map(setdiff(names(wide_data), "Stripped.Sequence"), meta$sample))
-  wide_data <- .raw_zero_to_na(wide_data, sample_columns)
+  wide_data <- raw_zero_to_nan(wide_data, sample_columns)
   observed <- wide_data[, sample_columns, drop = FALSE]
   observed <- observed[rowSums(!is.na(observed)) > 0, , drop = FALSE]
   missing_counts <- rowSums(is.na(observed))
@@ -5988,6 +6420,16 @@ missing_value_plot_pep <- function(
   "Features"
 }
 
+# The sample columns without features that have no value in any of them. A
+# feature missing in every selected sample says nothing about how complete those
+# samples are -- identified elsewhere, or never quantified -- so the completeness
+# heatmap, tables and overall percentage leave it out, as the web app and the
+# Python package do. missing_value_plot already drops its bar.
+.quantified_rows <- function(frame, samples) {
+  values <- frame[, samples, drop = FALSE]
+  frame[rowSums(!is.na(values)) > 0, , drop = FALSE]
+}
+
 missing_value_heatmap <- function(
     data,
     meta,
@@ -6002,6 +6444,7 @@ missing_value_heatmap <- function(
   meta <- .sample_meta(meta, id = id)
   renamed_data <- .rename_samples(data, meta)
   samples <- intersect(meta$new_sample, names(renamed_data))
+  renamed_data <- .quantified_rows(renamed_data, samples)
   missing_matrix <- is.na(as.matrix(renamed_data[, samples, drop = FALSE])) * 1
 
   .set_notebook_plot_size(width, height)
@@ -6030,6 +6473,7 @@ missing_protein_table <- function(data, meta, id = TRUE, data_scale = "log2") {
   sample_meta <- .sample_meta(meta, id = id, newline = FALSE)
   renamed_data <- .rename_samples(data, sample_meta)
   sample_columns <- intersect(sample_meta$new_sample, names(renamed_data))
+  renamed_data <- .quantified_rows(renamed_data, sample_columns)
   missing_counts <- rowSums(
     is.na(renamed_data[, sample_columns, drop = FALSE])
   )
@@ -6048,6 +6492,7 @@ missing_sample_table <- function(data, meta, id = TRUE, data_scale = "log2") {
   sample_meta <- .sample_meta(meta, id = id, newline = FALSE)
   renamed_data <- .rename_samples(data, sample_meta)
   sample_columns <- intersect(sample_meta$new_sample, names(renamed_data))
+  renamed_data <- .quantified_rows(renamed_data, sample_columns)
   missing_counts <- colSums(
     is.na(renamed_data[, sample_columns, drop = FALSE])
   )
@@ -6067,5 +6512,13 @@ missing_value_outlier <- function(df, thld = 50) {
 all_miss_val <- function(data, meta, data_scale = "log2") {
   data <- .prepare_intensity_data(data, meta$sample, data_scale)
   intensity_matrix <- .numeric_matrix(data, meta$sample)
+  intensity_matrix <- intensity_matrix[rowSums(!is.na(intensity_matrix)) > 0, , drop = FALSE]
   round(mean(is.na(intensity_matrix)) * 100, 2)
 }
+
+# The workflow is Kinase Library motif enrichment (Johnson et al., Nature 2023),
+# not KSEA (Casado et al., 2013). The ksea_* names are kept as aliases so
+# existing scripts keep working.
+ksea_data_f <- kinase_library_data_f
+ksea_data_f_control <- kinase_library_data_f_control
+ksea_volcano <- kinase_library_volcano

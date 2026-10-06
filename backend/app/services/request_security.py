@@ -8,8 +8,8 @@ from threading import RLock
 
 from fastapi import HTTPException, Request
 
-from app.services.session_context import TRUTHY_VALUES
 from app.services.tool_access import tool_access_enabled
+from app.services.env_settings import TRUTHY_VALUES, env_flag, env_int
 
 
 def trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
@@ -74,8 +74,7 @@ def local_path_access_allowed(request: Request) -> bool:
         address = address.ipv4_mapped
     if not address.is_loopback:
         return False
-    override = str(os.getenv("COPYLOT_ALLOW_LOCAL_PATH_APIS", "")).strip().lower()
-    return not tool_access_enabled() or override in TRUTHY_VALUES
+    return not tool_access_enabled() or env_flag("COPYLOT_ALLOW_LOCAL_PATH_APIS")
 
 
 def _drop_expired(attempts: deque[float], cutoff: float) -> bool:
@@ -101,13 +100,7 @@ class LoginRateLimit:
         self.attempts: dict[tuple[str, str], deque[float]] = {}
 
     def _env_int(self, suffix: str, default: int) -> int:
-        raw = str(os.getenv(f"COPYLOT_{self._env_prefix}_LOGIN_RATE_LIMIT_{suffix}", "")).strip()
-        if not raw:
-            return default
-        try:
-            return int(raw)
-        except ValueError:
-            return default
+        return env_int(f"COPYLOT_{self._env_prefix}_LOGIN_RATE_LIMIT_{suffix}", default)
 
     def enabled(self) -> bool:
         raw = os.getenv(f"COPYLOT_{self._env_prefix}_LOGIN_RATE_LIMIT_ENABLED", "1")

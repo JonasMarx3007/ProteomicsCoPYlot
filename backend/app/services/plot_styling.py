@@ -25,20 +25,9 @@ from app.schemas.annotation import AnnotationKind
 from app.services.condition_palette_store import build_condition_color_map
 from app.services.plotting_common import get_plt as _get_plt
 
-def _normalized_conditions(conditions: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for condition in conditions:
-        normalized = str(condition).strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(normalized)
-    return ordered
-
-
 def _condition_colors(kind: AnnotationKind, _plt, conditions: list[str]) -> dict[str, str]:
-    return build_condition_color_map(kind, _normalized_conditions(conditions))
+    # build_condition_color_map trims and de-duplicates the names itself.
+    return build_condition_color_map(kind, conditions)
 
 
 def parse_advanced_plot_settings(raw: str | None) -> dict[str, Any]:
@@ -50,7 +39,35 @@ def parse_advanced_plot_settings(raw: str | None) -> dict[str, Any]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return parsed
+    return migrate_advanced_plot_settings(parsed)
+
+
+# Keys an older version of the panel wrote and no control writes any more.
+FRAME_SWITCH_KEY = "axisLineVisible"
+RETIRED_TEXT_OFFSET_KEYS = ("textXOffset", "textYOffset")
+
+
+def migrate_advanced_plot_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Settings saved by an older panel, in the keys the current one writes.
+
+    The single frame switch became four per-side boxes: an old "frame off" is
+    all four sides off, unless a side was already set on its own. The value
+    label offsets had no control since the panel was redesigned and are
+    dropped. The frontend migrates the same way when it restores a session
+    (`migrateAdvancedPlotSettings` in frontend/src/lib/plotSerialization.ts),
+    so the panel shows what the plot draws.
+    """
+    if not isinstance(settings, dict) or not (
+        FRAME_SWITCH_KEY in settings or any(key in settings for key in RETIRED_TEXT_OFFSET_KEYS)
+    ):
+        return settings
+    migrated = {key: value for key, value in settings.items()
+                if key != FRAME_SWITCH_KEY and key not in RETIRED_TEXT_OFFSET_KEYS}
+    frame = settings.get(FRAME_SWITCH_KEY)
+    if isinstance(frame, bool):
+        for key in ("axisLineTop", "axisLineRight", "axisLineBottom", "axisLineLeft"):
+            migrated.setdefault(key, frame)
+    return migrated
 
 
 def advanced_text(settings: dict[str, Any] | None, key: str) -> str | None:
@@ -870,6 +887,38 @@ def advanced_condition_colors(
     return {condition: _advanced_color(condition, color, settings) for condition, color in base.items()}
 
 
+def _offset_text(artist, fig, x_px: float, y_px: float) -> None:
+    """Move a title or axis label by a number of figure pixels from where it sits.
+
+    The offset is added to the text's own transform, so matplotlib still places
+    the label (an axis label stays clear of its tick labels) and the layout
+    still measures it. Setting coordinates instead mixed two systems: a label's
+    automatic position is partly in display pixels, and `set_label_coords`
+    read it as axes fractions, so a 2 px nudge put the label tens of axes-widths
+    away and the export refused the figure as not fitting.
+
+    Pixels are taken at the figure's dpi, as everywhere else in this module, and
+    scale with it when the figure is saved at another. Applying it again
+    replaces the earlier offset rather than adding to it.
+    """
+    from matplotlib.transforms import ScaledTranslation
+
+    base = getattr(artist, "_copylot_base_transform", None)
+    if base is None:
+        if not (x_px or y_px):
+            return
+        base = artist.get_transform()
+        artist._copylot_base_transform = base
+    dpi = float(getattr(fig, "dpi", 100.0)) or 100.0
+    artist.set_transform(base + ScaledTranslation(x_px / dpi, y_px / dpi, fig.dpi_scale_trans))
+    axes = getattr(artist, "axes", None)
+    if axes is not None and artist is getattr(axes, "title", None) and y_px:
+        # Left on, matplotlib lifts a title it finds overlapping the axes back
+        # above them, undoing a nudge downwards. `set_title(y=...)` turns it
+        # off the same way.
+        axes._autotitlepos = False
+
+
 def _fig_pixel_fraction(fig, pixels: float, axis: str) -> float:
     try:
         width_in, height_in = fig.get_size_inches()
@@ -884,17 +933,39 @@ def _plotly_pixel_fraction(pixels: float, total_px: int) -> float:
     return pixels / max(1, int(total_px))
 
 
+# The gap Plotly leaves between a title and the top of the plot area.
+PLOTLY_TITLE_GAP_PX = 20
+
+
+def _plotly_title_offset(offset_px: float, height_px: int) -> dict[str, Any]:
+    """A title moved up or down by `offset_px` pixels, in Plotly's terms.
+
+    Plotly accepts a title position only between 0 and 1, and the default
+    already sits at the top of the figure, so the old `1 + offset` refused every
+    plot whose title was raised by any amount. The title is instead anchored to
+    the top of the plot area with a gap in pixels: raising it widens the gap,
+    and `automargin` grows the figure's top margin so a raised title stays on
+    the canvas. Lowering it past the default gap moves it into the plot area.
+    """
+    gap = PLOTLY_TITLE_GAP_PX + float(offset_px)
+    layout: dict[str, Any] = {
+        "title_yref": "paper",
+        "title_yanchor": "bottom",
+        "title_automargin": True,
+    }
+    if gap >= 0:
+        layout["title_y"] = 1.0
+        layout["title_pad"] = {"b": gap}
+    else:
+        layout["title_y"] = max(0.0, 1.0 + _plotly_pixel_fraction(gap, height_px))
+        layout["title_pad"] = {"b": 0}
+    return layout
+
+
 def advanced_anchor(ax, settings: dict[str, Any] | None, x: float, y: float) -> tuple[float, float]:
     return (
         x + _fig_pixel_fraction(ax.figure, advanced_number(settings, "legendXOffset", 0.0), "x"),
         y + _fig_pixel_fraction(ax.figure, advanced_number(settings, "legendYOffset", 0.0), "y"),
-    )
-
-
-def advanced_text_position(settings: dict[str, Any] | None, x: float, y: float) -> tuple[float, float]:
-    return (
-        x + advanced_number(settings, "textXOffset", 0.0),
-        y + advanced_number(settings, "textYOffset", 0.0),
     )
 
 
@@ -1036,12 +1107,6 @@ def _apply_mpl_frame_settings(
     that names an axis colour recolours the frame as a whole, because choosing a
     theme is asking for a whole look.
     """
-    if "axisLineVisible" in settings and not _advanced_bool(settings, "axisLineVisible", True):
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.tick_params(axis="both", length=0)
-        return
-
     for name, spine in ax.spines.items():
         key = _FRAME_SIDE_KEYS.get(name)
         if key and key in settings:
@@ -1111,12 +1176,11 @@ def _apply_plotly_frame_settings(layout: dict[str, Any], settings: dict[str, Any
     and are reduced to that. Tick marks come with a drawn frame and go with it,
     which is the only property set here that the settings do not name.
     """
-    sides_named = "axisLineVisible" in settings or any(key in settings for key in _FRAME_SIDE_KEYS.values())
+    sides_named = any(key in settings for key in _FRAME_SIDE_KEYS.values())
     if sides_named:
-        visible = _advanced_bool(settings, "axisLineVisible", True)
         sides = _advanced_axis_sides(settings)
-        x_visible = visible and (sides["bottom"] or sides["top"])
-        y_visible = visible and (sides["left"] or sides["right"])
+        x_visible = sides["bottom"] or sides["top"]
+        y_visible = sides["left"] or sides["right"]
         xaxis = layout.setdefault("xaxis", {})
         xaxis["showline"] = x_visible
         xaxis["ticks"] = "outside" if x_visible else ""
@@ -1130,7 +1194,7 @@ def _apply_plotly_frame_settings(layout: dict[str, Any], settings: dict[str, Any
             yaxis["side"] = "right"
         yaxis["mirror"] = bool(sides["right"] and sides["left"])
         for axis_key in ("xaxis", "yaxis", "zaxis"):
-            layout.setdefault("scene", {}).setdefault(axis_key, {})["showline"] = visible and any(sides.values())
+            layout.setdefault("scene", {}).setdefault(axis_key, {})["showline"] = any(sides.values())
     props: dict[str, Any] = {}
     if "axisLineColor" in settings:
         colour = advanced_color_text(settings, "axisLineColor")
@@ -1249,31 +1313,16 @@ def apply_advanced_axes(ax, settings: dict[str, Any] | None) -> None:
         ax.xaxis.label.set_color(x_props["color"])
     if "color" in y_props:
         ax.yaxis.label.set_color(y_props["color"])
-    title_x = advanced_element_number(settings, "titleElement", "xOffset")
-    title_y = advanced_element_number(settings, "titleElement", "yOffset")
-    if title_x or title_y:
-        x_pos, y_pos = title_obj.get_position()
-        title_obj.set_position(
-            (
-                x_pos + _fig_pixel_fraction(ax.figure, title_x, "x"),
-                y_pos + _fig_pixel_fraction(ax.figure, title_y, "y"),
-            )
-        )
-    x_label_x = advanced_element_number(settings, "xLabelElement", "xOffset")
-    x_label_y = advanced_element_number(settings, "xLabelElement", "yOffset")
-    if x_label_x or x_label_y:
-        x_pos, y_pos = ax.xaxis.label.get_position()
-        ax.xaxis.set_label_coords(
-            x_pos + _fig_pixel_fraction(ax.figure, x_label_x, "x"),
-            y_pos + _fig_pixel_fraction(ax.figure, x_label_y, "y"),
-        )
-    y_label_x = advanced_element_number(settings, "yLabelElement", "xOffset")
-    y_label_y = advanced_element_number(settings, "yLabelElement", "yOffset")
-    if y_label_x or y_label_y:
-        x_pos, y_pos = ax.yaxis.label.get_position()
-        ax.yaxis.set_label_coords(
-            x_pos + _fig_pixel_fraction(ax.figure, y_label_x, "x"),
-            y_pos + _fig_pixel_fraction(ax.figure, y_label_y, "y"),
+    for element_key, artist in (
+        ("titleElement", title_obj),
+        ("xLabelElement", ax.xaxis.label),
+        ("yLabelElement", ax.yaxis.label),
+    ):
+        _offset_text(
+            artist,
+            ax.figure,
+            advanced_element_number(settings, element_key, "xOffset"),
+            advanced_element_number(settings, element_key, "yOffset"),
         )
     if x_tick_size > 0:
         ax.tick_params(axis="x", labelsize=x_tick_size)
@@ -1361,9 +1410,12 @@ def advanced_plotly_layout(
         layout.setdefault("title_font", {})["size"] = title_size
     title_x = advanced_element_number(settings, "titleElement", "xOffset")
     title_y = advanced_element_number(settings, "titleElement", "yOffset")
-    if title_x or title_y:
-        layout["title_x"] = 0.5 + _plotly_pixel_fraction(title_x, width_px)
-        layout["title_y"] = 1.0 + _plotly_pixel_fraction(title_y, height_px)
+    if title_x:
+        # Plotly takes a title position only between 0 and 1 of the figure;
+        # a nudge past the edge stops at the edge rather than refusing the plot.
+        layout["title_x"] = min(1.0, max(0.0, 0.5 + _plotly_pixel_fraction(title_x, width_px)))
+    if title_y:
+        layout.update(_plotly_title_offset(title_y, height_px))
     if x_axis_size > 0:
         layout.setdefault("xaxis", {}).setdefault("title", {})["font"] = {"size": x_axis_size}
     if y_axis_size > 0:
@@ -1493,6 +1545,7 @@ def advanced_plotly_layout(
     legend_x = advanced_number(settings, "legendXOffset", 0.0)
     legend_y = advanced_number(settings, "legendYOffset", 0.0)
     if legend_x or legend_y:
-        layout.setdefault("legend", {})["x"] = 1.02 + _plotly_pixel_fraction(legend_x, width_px)
-        layout.setdefault("legend", {})["y"] = 1.0 + _plotly_pixel_fraction(legend_y, height_px)
+        # Plotly's own bounds for a legend position.
+        layout.setdefault("legend", {})["x"] = min(3.0, max(-2.0, 1.02 + _plotly_pixel_fraction(legend_x, width_px)))
+        layout.setdefault("legend", {})["y"] = min(3.0, max(-2.0, 1.0 + _plotly_pixel_fraction(legend_y, height_px)))
     return layout

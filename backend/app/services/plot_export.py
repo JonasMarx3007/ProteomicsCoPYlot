@@ -6,9 +6,31 @@ from contextvars import ContextVar
 from threading import RLock
 
 plot_output_format: ContextVar[str] = ContextVar("plot_output_format", default="png")
+# False while a request asks for a download in another format: that render is a
+# file to save, not the figure on screen, so it gets no notebook export of its own.
+notebook_capture_allowed: ContextVar[bool] = ContextVar("notebook_capture_allowed", default=True)
+# Why this render offers no notebook export. The request middleware puts a
+# fresh dict here; the route runs in a worker thread with a copy of the context,
+# so the reason is written into the shared dict rather than set on the variable.
+notebook_unavailable: ContextVar[dict | None] = ContextVar("notebook_unavailable", default=None)
+
+
+def note_notebook_unavailable(reason) -> None:
+    """Say, under the plot, why it has no notebook export (GUI only)."""
+    holder = notebook_unavailable.get()
+    text = str(reason).strip()
+    if holder is not None and text and "reason" not in holder:
+        holder["reason"] = text
 # Formats matplotlib writes as vectors rather than pixels.
 _VECTOR_FORMATS = frozenset({"pdf", "svg"})
 _SAVE_LOCK = RLock()
+# One figure is built at a time. The server answers requests on several
+# threads, and matplotlib is not thread-safe: its math-text parser (used for
+# every tick label) keeps parser state, so two figures laid out at once could
+# fail with an internal error ("pop from empty list") or corrupt each other.
+# Re-entrant, and the same lock as the save, so a render that saves holds it
+# once.
+RENDER_LOCK = _SAVE_LOCK
 
 
 class PlotBytes(bytes):

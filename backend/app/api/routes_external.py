@@ -14,10 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from app.schemas.external import (
-    PeptideCollapseRequest,
-    PeptideCollapseResponse,
-)
+from app.schemas.external import PeptideCollapseRequest
 from app.services.external_tools import run_peptide_collapse
 from app.services.upload_limits import ensure_upload_size
 
@@ -32,17 +29,6 @@ class PeptideCollapseUpload(BaseModel):
 
     file: UploadFile
     cutoff: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-@router.post("/peptide-collapse/run", response_model=PeptideCollapseResponse)
-def run_peptide_collapse_route(payload: PeptideCollapseRequest) -> PeptideCollapseResponse:
-    try:
-        return run_peptide_collapse(payload)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        LOGGER.exception("Peptide collapse failed")
-        raise HTTPException(status_code=500, detail="Peptide collapse failed.") from e
 
 
 @router.post("/peptide-collapse/upload")

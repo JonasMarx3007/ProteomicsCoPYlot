@@ -304,6 +304,7 @@ def _resolve_sample_column(
         if alias in column_map:
             return column_map[alias]
     if len(columns) >= 2:
+        # Fallback for legacy metadata files where the first column stores sample names.
         return str(columns[0]).strip()
     return None
 

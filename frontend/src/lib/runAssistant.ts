@@ -1,7 +1,6 @@
 import { flushSync } from "react-dom";
 import { assistantStep, hasPendingUiRequests, type AssistantView, type AssistantResult } from "./api";
 import { applyAssistantControls, assistantConfirmation, readAssistantControls, assistantSurfaceReady, searchAssistantOptions, assistantButtonConfirmation, activateAssistantButton, addCanvasTiles, assistantFeatureChoices } from "./assistantControls";
-import { getAdvancedPlotMode } from "./appSettings";
 import { stableSnapshot, unsavedAnalysis } from "./unsavedAnalysis";
 import { AssistantConversation } from "./assistantConversation";
 import { focusCanvas } from "./canvasFocus";
@@ -27,7 +26,7 @@ function settingName(label: string): string {
   return words.replace(/\b(\w+) \1\b/g, "$1");
 }
 
-function readableReceipt(receipt: string): string {
+export function readableReceipt(receipt: string): string {
   const already = /^(.+) was already (.+)\.$/.exec(receipt);
   const change = already ?? /^Set (.+) to (.+)\.$/.exec(receipt);
   if (!change) return receipt;
@@ -109,7 +108,7 @@ export async function runAssistant(
   };
   const revision = unsavedAnalysis.capture(null);
   if (revision.pending) throw new Error("Wait for the analysis update to finish before asking the assistant.");
-  const readView = (): AssistantView => ({ ...readLocation(), advancedOptions: getAdvancedPlotMode(), controls: readAssistantControls(payload.message, searches) });
+  const readView = (): AssistantView => ({ ...readLocation(), controls: readAssistantControls(payload.message, searches) });
   const checkAbort = () => { if (signal.aborted) throw new DOMException("Aborted", "AbortError"); };
   let previousConversation = conversation.read(revision.revision);
   const remember = (status: Parameters<AssistantConversation["record"]>[4]) => {

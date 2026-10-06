@@ -20,6 +20,9 @@ import { resolveDataSource, savedDataSource, type DataSource, type DataSourceCho
  */
 export function useDataSourceChoice(persisted: unknown): {
   dataSource: DataSource;
+  /** A saved choice existed, or the backend has said which matrices exist.
+   * Until then `dataSource` is the placeholder and must not be requested. */
+  ready: boolean;
   applyChoices: (choices: Partial<DataSourceChoices> | null | undefined) => void;
   chooseDataSource: (value: DataSource) => void;
 } {
@@ -28,6 +31,7 @@ export function useDataSourceChoice(persisted: unknown): {
   // "data" is a placeholder only while `chosen` is false; nothing reads it
   // before the options arrive, because every request is gated on them.
   const [dataSource, setDataSource] = useState<DataSource>(initial ?? "data");
+  const [ready, setReady] = useState(initial !== null);
 
   const applyChoices = useCallback(
     (choices: Partial<DataSourceChoices> | null | undefined) => {
@@ -37,6 +41,7 @@ export function useDataSourceChoice(persisted: unknown): {
       // default away.
       const takeDefault = !chosen.current;
       chosen.current = true;
+      setReady(true);
       setDataSource((current) =>
         takeDefault
           ? choices?.defaultDataSource ?? resolveDataSource(current, choices)
@@ -50,8 +55,9 @@ export function useDataSourceChoice(persisted: unknown): {
 
   const chooseDataSource = useCallback((value: DataSource) => {
     chosen.current = true;
+    setReady(true);
     setDataSource(value);
   }, []);
 
-  return { dataSource, applyChoices, chooseDataSource };
+  return { dataSource, ready, applyChoices, chooseDataSource };
 }

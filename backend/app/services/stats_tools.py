@@ -53,7 +53,9 @@ from app.services.clustering_tools import (
     row_zscore,
 )
 from app.services.functions import (
+    _significance_pval_column,
     constant_within_group,
+    imputed_value_counts,
     _phosprot_values_are_centred,
     intensity_unit_label,
     anova_posthoc_data,
@@ -91,10 +93,11 @@ from app.services.stats_core import (
     two_sided_t_pvalues,
 )
 
-# A downloaded table is read without the UI that produced it, so it has to say
-# whether its p-values were corrected. The `adj_pval` column keeps its name for
-# compatibility -- the UI, the report and saved state all read it -- and this
-# column states what the value actually is.
+# A downloaded table is read without the UI that produced it, so every column
+# means one thing: `pval` is the raw p-value, `adj_pval` always the
+# Benjamini-Hochberg adjusted one, and `selected_pval` the one significance was
+# called on (raw when "use uncorrected p-values" is on, otherwise adjusted), with
+# `neg_log10_selected_pval` the plotted -log10 of it. `correction` states which.
 CORRECTION_BENJAMINI_HOCHBERG = "Benjamini-Hochberg"
 CORRECTION_NONE = "none (uncorrected)"
 
@@ -129,6 +132,45 @@ def _stats_source(
 
 def _imputed_available(kind: AnnotationKind) -> bool:
     return imputed_data_available(kind)
+
+
+def _imputation_mask(
+    kind: AnnotationKind,
+    source_used: str,
+    frame: pd.DataFrame,
+    sample_columns: list[str],
+) -> pd.DataFrame | None:
+    """Which cells of `frame` hold imputed values, when that can be known.
+
+    Protein and phosphosite data: the imputed matrix against the matrix it was
+    imputed from (filtered, else log2 -- the same choice `run_imputation`
+    makes). Phosphoproteins: from their `site_observed__` columns, which also
+    covers a phosphoprotein table aggregated from imputed sites. None when the
+    matrix carries no imputed values or they cannot be located.
+    """
+    from app.services.annotation_store import get_annotation
+    from app.services.functions import imputed_cell_mask, site_observed_imputed_mask
+
+    samples = [sample for sample in sample_columns if sample in frame.columns]
+    if not samples:
+        return None
+    if kind == "phosprot":
+        return site_observed_imputed_mask(frame, samples)
+    if source_used != "imputed":
+        return None
+    annotation = get_annotation(kind)
+    if annotation is None:
+        return None
+    before = None
+    for candidate in (getattr(annotation, "filtered_data", None), getattr(annotation, "log2_data", None)):
+        if isinstance(candidate, pd.DataFrame) and len(candidate.columns) and not candidate.empty:
+            before = candidate
+            break
+    if before is None or not frame.index.isin(before.index).all():
+        return None
+    if not all(sample in before.columns for sample in samples):
+        return None
+    return imputed_cell_mask(frame[samples], before[samples])
 
 
 def _first_available_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -190,7 +232,8 @@ def _resolve_label_column(kind: AnnotationKind, identifier: StatsIdentifier, fra
 
 def statistical_options(kind: AnnotationKind) -> StatisticalOptionsResponse:
     source_used, frame, metadata, warnings = _stats_source(kind, data_source="data")
-    conditions = sorted(metadata["condition"].dropna().astype(str).drop_duplicates().tolist())
+    # In the order the metadata lists them, as every plot draws them.
+    conditions = metadata["condition"].dropna().astype(str).drop_duplicates().tolist()
     samples_by_condition = {
         condition: metadata.loc[
             metadata["condition"].astype(str) == condition, "sample"
@@ -251,6 +294,42 @@ def _normalize_highlight_token(value: object) -> str:
     return token.strip()
 
 
+def _volcano_untested_rows(
+    df: pd.DataFrame,
+    groups: dict[str, list[str]],
+    valid_mask: np.ndarray,
+    pair_counts: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """The rows the t-test cannot use, with their value counts and means per condition.
+
+    A row needs at least two values in every compared condition. The values are
+    the ones before any control correction, so the means are the condition's own.
+    """
+    samples = {column for columns in groups.values() for column in columns}
+    identifiers = [column for column in df.columns
+                   if column not in samples and not str(column).startswith(("n_imputed__", "n_measured__", "n_fully_imputed__", "n_partially_imputed__"))
+                   and column != "imputed_values"]
+    rows = df.loc[~np.asarray(valid_mask, dtype=bool)]
+    out = rows[identifiers].reset_index(drop=True)
+    short: list[list[str]] = [[] for _ in range(len(rows))]
+    for condition, columns in groups.items():
+        values = rows[columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(values)
+        counts = finite.sum(axis=1)
+        sums = np.where(finite, values, 0.0).sum(axis=1)
+        out[f"n_{condition}"] = counts.astype(int)
+        out[f"mean_{condition}"] = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+        for index in np.flatnonzero(counts < 2):
+            short[index].append(str(condition))
+    reasons = ["fewer than 2 values in " + ", ".join(names) if names else "" for names in short]
+    if pair_counts is not None:
+        out["n_pairs"] = pair_counts[~np.asarray(valid_mask, dtype=bool)]
+        reasons = ["; ".join(filter(None, [reason, "fewer than 2 complete pairs" if count < 2 else ""]))
+                   for reason, count in zip(reasons, out["n_pairs"])]
+    out["reason"] = reasons
+    return out
+
+
 def _volcano_dataframe(
     *,
     kind: AnnotationKind,
@@ -266,6 +345,7 @@ def _volcano_dataframe(
     condition2_control: str | None = None,
     frame_override: pd.DataFrame | None = None,
     metadata_override: pd.DataFrame | None = None,
+    untested_out: list | None = None,
 ) -> tuple[ResolvedSource, str, pd.DataFrame, list[str]]:
     if condition1 == condition2:
         raise ValueError("Please select two different conditions.")
@@ -333,6 +413,18 @@ def _volcano_dataframe(
             selected_columns.append(extra)
 
     df = frame[[col for col in selected_columns if col in frame.columns]].copy()
+    count_groups = {condition1: cols1, condition2: cols2}
+    if ctrl1_cols and ctrl2_cols:
+        count_groups[str(condition1_control)] = ctrl1_cols
+        count_groups[str(condition2_control)] = ctrl2_cols
+    # The full frame, not df: phosphoprotein tables keep site_observed__ there.
+    mask = _imputation_mask(kind, source_used, frame.loc[df.index], [c for cols in count_groups.values() for c in cols])
+    imputed_columns: list[str] = []
+    if mask is not None:
+        counts = imputed_value_counts(mask, count_groups)
+        imputed_columns = counts.columns.tolist()
+        for column in imputed_columns:
+            df[column] = counts[column].to_numpy()
     arr_x = df[cols1].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
     arr_y = df[cols2].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
 
@@ -351,6 +443,19 @@ def _volcano_dataframe(
         # A control variance cannot be estimated from a single value, and it is
         # now part of the test statistic, so controls need replicates too.
         valid_mask &= np.sum(np.isfinite(control), axis=1) >= 2
+    pair_counts = np.sum(np.isfinite(arr_x) & np.isfinite(arr_y), axis=1) if paired else None
+    if pair_counts is not None:
+        valid_mask &= pair_counts >= 2
+    untested = int((~valid_mask).sum())
+    if untested:
+        # These rows leave the test silently otherwise, and they are often the
+        # on/off cases a user is looking for, so they are counted and kept.
+        warnings.append(
+            f"{untested:,} of {len(valid_mask):,} rows were not tested: fewer than 2 values in a compared "
+            "condition or, for paired tests, fewer than 2 complete pairs."
+        )
+    if untested_out is not None:
+        untested_out.append(_volcano_untested_rows(df, count_groups, valid_mask, pair_counts))
     if not np.any(valid_mask):
         raise ValueError("No rows have enough replicate values for the selected comparison.")
 
@@ -370,14 +475,6 @@ def _volcano_dataframe(
 
     if paired:
         diffs = arr_x - arr_y
-        valid_pairs = np.sum(np.isfinite(diffs), axis=1) >= 2
-        if not np.any(valid_pairs):
-            raise ValueError("No rows have enough paired values for the selected comparison.")
-        df = df.loc[valid_pairs].reset_index(drop=True)
-        arr_x = arr_x[valid_pairs]
-        arr_y = arr_y[valid_pairs]
-        diffs = diffs[valid_pairs]
-        control_arrays = [control[valid_pairs] for control in control_arrays]
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
         if control_arrays:
@@ -410,24 +507,28 @@ def _volcano_dataframe(
             se, dof = pooled_se_df(var1, n1, var2, n2)
         pvals = two_sided_t_pvalues(log2fc, se, dof)
 
-    adj_pvals = pvals if use_uncorrected else _bh_adjust(pvals)
+    adj_pvals = _bh_adjust(pvals)
+    selected_pvals = pvals if use_uncorrected else adj_pvals
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
     significance[~np.isfinite(pvals)] = "Unavailable"
-    significance[(adj_pvals < p_value_threshold) & (log2fc > log2fc_threshold)] = "Upregulated"
-    significance[(adj_pvals < p_value_threshold) & (log2fc < -log2fc_threshold)] = "Downregulated"
+    significance[(selected_pvals < p_value_threshold) & (log2fc > log2fc_threshold)] = "Upregulated"
+    significance[(selected_pvals < p_value_threshold) & (log2fc < -log2fc_threshold)] = "Downregulated"
 
     result = df.copy()
     result["log2FC"] = log2fc
     result["pval"] = pvals
     result["adj_pval"] = adj_pvals
+    result["selected_pval"] = selected_pvals
     result["correction"] = _correction_label(use_uncorrected)
-    result["neg_log10_adj_pval"] = _safe_neg_log10(adj_pvals if not use_uncorrected else pvals)
+    result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
     result["significance"] = significance
     # A variance warning is independent of whether the test has a finite p-value.
     result["zero_variance"] = constant_within_group(arr_x) | constant_within_group(arr_y)
     if paired:
         result["n_pairs"] = n_diff.astype(int)
+    # Imputation counts go last, after the statistics they qualify.
+    result = result[[c for c in result.columns if c not in imputed_columns] + imputed_columns]
     return source_used, label_column, result, warnings
 
 
@@ -437,6 +538,7 @@ def _volcano_response(
     label_column: str,
     df: pd.DataFrame,
     warnings: list[str],
+    untested: pd.DataFrame | None = None,
 ) -> VolcanoResultResponse:
     return VolcanoResultResponse(
         kind=kind,
@@ -448,10 +550,13 @@ def _volcano_response(
         notSignificantCount=int((df["significance"] == "Not significant").sum()),
         rows=df.astype(object).where(pd.notna(df), None).to_dict(orient="records"),
         warnings=warnings,
+        untestedRows=([] if untested is None else
+                      untested.astype(object).where(pd.notna(untested), None).to_dict(orient="records")),
     )
 
 
 def run_volcano(payload: VolcanoRequest) -> VolcanoResultResponse:
+    untested: list[pd.DataFrame] = []
     source_used, label_column, df, warnings = _volcano_dataframe(
         kind=payload.kind,
         condition1=payload.condition1,
@@ -462,11 +567,14 @@ def run_volcano(payload: VolcanoRequest) -> VolcanoResultResponse:
         test_type=payload.testType,
         use_uncorrected=payload.useUncorrected,
         data_source=payload.dataSource,
+        untested_out=untested,
     )
-    return _volcano_response(payload.kind, source_used, label_column, df, warnings)
+    return _volcano_response(payload.kind, source_used, label_column, df, warnings,
+                             untested[0] if untested else None)
 
 
 def run_volcano_control(payload: VolcanoControlRequest) -> VolcanoResultResponse:
+    untested: list[pd.DataFrame] = []
     source_used, label_column, df, warnings = _volcano_dataframe(
         kind=payload.kind,
         condition1=payload.condition1,
@@ -479,8 +587,10 @@ def run_volcano_control(payload: VolcanoControlRequest) -> VolcanoResultResponse
         data_source=payload.dataSource,
         condition1_control=payload.condition1Control,
         condition2_control=payload.condition2Control,
+        untested_out=untested,
     )
-    return _volcano_response(payload.kind, source_used, label_column, df, warnings)
+    return _volcano_response(payload.kind, source_used, label_column, df, warnings,
+                             untested[0] if untested else None)
 
 
 # The interactive palette. Screen-first: saturated enough to pick a point out of
@@ -598,7 +708,7 @@ def _volcano_top_hits(
 ) -> pd.DataFrame:
     """The most significant hits in each direction, for on-figure labelling.
 
-    Ranked by the p-value the plot is drawn against -- `neg_log10_adj_pval` is
+    Ranked by the p-value the plot is drawn against -- `neg_log10_selected_pval` is
     what the y-axis shows, so the labelled points are the highest ones, which is
     what a reader expects "top hits" to mean. Ties are broken by |log2FC| so the
     choice is deterministic rather than dependent on row order.
@@ -614,7 +724,7 @@ def _volcano_top_hits(
             continue
         subset["_abs_fc"] = subset["log2FC"].abs()
         subset = subset.sort_values(
-            ["neg_log10_adj_pval", "_abs_fc"], ascending=False, kind="mergesort"
+            ["neg_log10_selected_pval", "_abs_fc"], ascending=False, kind="mergesort"
         )
         wanted.append(subset.head(int(count)))
     if not wanted:
@@ -724,7 +834,7 @@ def _volcano_figure(
             fig.add_trace(
                 go.Scatter(
                     x=part["log2FC"],
-                    y=part["neg_log10_adj_pval"],
+                    y=part["neg_log10_selected_pval"],
                     mode="markers",
                     marker=marker,
                     name=f"{significance}{suffix}",
@@ -734,7 +844,7 @@ def _volcano_figure(
             )
 
     y_line = float(-np.log10(max(p_value_threshold, 1e-300)))
-    max_y = max(y_line, float(volcano_df["neg_log10_adj_pval"].max()) if not volcano_df.empty else y_line)
+    max_y = max(y_line, float(volcano_df["neg_log10_selected_pval"].max()) if not volcano_df.empty else y_line)
     # The static twin of this plot has honoured the panel's reference-line colour
     # for a while and this one did not, so the same volcano changed appearance
     # when you switched renderer. Both read the same settings now.
@@ -814,12 +924,12 @@ def _place_volcano_labels(
     placed: list[Any] = []
     drawn = 0
 
-    ordered = hits.sort_values("neg_log10_adj_pval", ascending=False, kind="mergesort")
+    ordered = hits.sort_values("neg_log10_selected_pval", ascending=False, kind="mergesort")
     for row in ordered.itertuples():
         text = str(getattr(row, label_column, "") or "").strip()
         if not text:
             continue
-        point = (float(row.log2FC), float(row.neg_log10_adj_pval))
+        point = (float(row.log2FC), float(row.neg_log10_selected_pval))
         annotation = None
         for x_offset, y_offset in _LABEL_OFFSETS:
             distance = (x_offset**2 + y_offset**2) ** 0.5
@@ -914,7 +1024,7 @@ def _volcano_png_figure(
         settings = style[significance]
         ax.scatter(
             subset["log2FC"],
-            subset["neg_log10_adj_pval"],
+            subset["neg_log10_selected_pval"],
             s=marker_area(float(settings["size"])),
             c=str(settings["color"]),
             alpha=float(settings["alpha"]),
@@ -930,7 +1040,7 @@ def _volcano_png_figure(
         if not picked.empty:
             ax.scatter(
                 picked["log2FC"],
-                picked["neg_log10_adj_pval"],
+                picked["neg_log10_selected_pval"],
                 s=marker_area(float(style["_highlight"]["size"])),
                 facecolors="none",
                 edgecolors=str(style["_highlight"]["color"]),
@@ -1114,6 +1224,13 @@ def _anova_dataframe(
 
     df = frame[[col for col in selected_columns if col in frame.columns]].copy()
     df[sample_cols] = df[sample_cols].apply(pd.to_numeric, errors="coerce")
+    mask = _imputation_mask(payload.kind, source_used, frame.loc[df.index], sample_cols)
+    imputed_columns: list[str] = []
+    if mask is not None:
+        counts = imputed_value_counts(mask, condition_cols)
+        imputed_columns = counts.columns.tolist()
+        for column in imputed_columns:
+            df[column] = counts[column].to_numpy()
 
     valid = np.ones(len(df), dtype=bool)
     groups: list[np.ndarray] = []
@@ -1140,9 +1257,12 @@ def _anova_dataframe(
             row_groups = [group[i][~np.isnan(group[i])] for group in groups]
             f_stat[i], pvals[i] = stats.f_oneway(*row_groups)
 
-    # Do not coerce NaN to 1.0 here: f_oneway returns NaN when the test is
-    # undefined (zero within-group variance), and coercing first would make the
-    # isfinite filter below a no-op, keeping untestable rows in the BH pool.
+    # Do not coerce NaN to 1.0 here: f_oneway returns NaN when the whole row is
+    # constant, and coercing first would make the isfinite filter below a no-op,
+    # keeping untestable rows in the BH pool. A row that is constant within every
+    # condition but differs between them is different: F is infinite (or, with
+    # floating-point noise, enormous) and p is 0, so it stays and is flagged as
+    # zero_variance below.
     finite = np.isfinite(pvals)
     df = df.loc[finite].reset_index(drop=True)
     groups = [group[finite] for group in groups]
@@ -1157,24 +1277,37 @@ def _anova_dataframe(
         index=df.index,
     )
 
-    selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
+    adj_pvals = _bh_adjust(pvals)
+    selected_pvals = pvals if payload.useUncorrected else adj_pvals
     result = df.copy()
     result["f_statistic"] = f_stat
     result["pval"] = pvals
-    result["adj_pval"] = selected_pvals
+    result["adj_pval"] = adj_pvals
+    result["selected_pval"] = selected_pvals
     result["correction"] = _correction_label(payload.useUncorrected)
     result["significance"] = np.where(
         selected_pvals < payload.pValueThreshold,
         "Significant",
         "Not significant",
     )
-    result["neg_log10_adj_pval"] = _safe_neg_log10(selected_pvals)
+    result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
+    # No variation within any condition: the significance comes from absent
+    # variance, not from the size of the difference. Same idea as the volcano's flag.
+    result["zero_variance"] = np.logical_and.reduce([constant_within_group(group) for group in groups])
     for condition in means.columns:
         result[f"mean_{condition}"] = means[condition].to_numpy()
+    result = result[[c for c in result.columns if c not in imputed_columns] + imputed_columns]
+    flagged = int(result["zero_variance"].sum())
+    if flagged:
+        warnings = [*warnings, (
+            f"{flagged:,} rows have no variation within any condition, so their F is infinite "
+            "(or extremely large) and p is 0: they rank first because the variance is absent, "
+            "not because the difference is large. They are marked in the zero_variance column."
+        )]
 
     # Benjamini-Hochberg ties many features to the same adjusted p; raw p then
     # the label keeps the order identical to both shipped packages.
-    sort_keys = ["adj_pval", "pval"]
+    sort_keys = ["selected_pval", "pval"]
     if label_column in result.columns:
         sort_keys.append(label_column)
     return (
@@ -1196,7 +1329,7 @@ def _anova_cluster_dataframe(
     if not sample_cols:
         raise ValueError("No sample columns from metadata were found in the ANOVA table.")
 
-    cluster_df = anova_df[anova_df["adj_pval"] < payload.pValueThreshold].copy()
+    cluster_df = anova_df[anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold].copy()
     if cluster_df.empty:
         cluster_df.insert(1, "cluster", pd.Series(index=cluster_df.index, dtype="int64"))
         return cluster_df.reset_index(drop=True), None
@@ -1306,10 +1439,23 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
                 "pairwise comparison test the same thing.",
             ]
         elif post_hoc_df.empty:
-            if (anova_df["adj_pval"] < payload.pValueThreshold).any():
+            if (anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold).any():
                 warnings = [*warnings, "Rows passed the ANOVA threshold, but no usable Tukey HSD comparisons could be calculated."]
             else:
                 warnings = [*warnings, "No rows passed the ANOVA threshold, so Tukey HSD was not run."]
+        if len(condition_cols) >= 3 and "zero_variance" in anova_df.columns:
+            flagged_significant = anova_df.loc[
+                anova_df["zero_variance"]
+                & (anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold),
+                label_column,
+            ].astype(str)
+            compared = set(post_hoc_df[label_column].astype(str)) if not post_hoc_df.empty else set()
+            left_out = int((~flagged_significant.isin(compared)).sum())
+            if left_out:
+                warnings = [*warnings, (
+                    f"Tukey HSD left out {left_out:,} significant rows with no variation within any "
+                    "condition: with a pooled variance of 0 the comparison is undefined."
+                )]
 
     return AnovaResultResponse(
         kind=payload.kind,
@@ -1317,7 +1463,7 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
         sourceUsed=source_used,
         labelColumn=label_column,
         totalRows=int(len(anova_df)),
-        significantCount=int((anova_df["adj_pval"] < payload.pValueThreshold).sum()),
+        significantCount=int((anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold).sum()),
         clusterCount=cluster_count,
         completenessNotice=completeness_notice,
         rows=anova_df.where(pd.notna(anova_df), None).to_dict(orient="records"),
@@ -1389,7 +1535,7 @@ def _anova_heatmap_figure(
         raise ValueError("No sample columns from metadata were found in the ANOVA table.")
 
     if not clustered:
-        plot_df = plot_df[plot_df["adj_pval"] < p_value_threshold].copy()
+        plot_df = plot_df[plot_df[_significance_pval_column(plot_df)] < p_value_threshold].copy()
 
     if plot_df.empty:
         fig, ax = plt.subplots(figsize=(12, 8), dpi=150)
@@ -1554,8 +1700,7 @@ def _anova_heatmap_figure(
         ax_cluster.invert_yaxis()
     ax_cluster.set_axis_off()
 
-    cmap = plt.get_cmap("RdBu_r").copy()
-    cmap.set_bad("#d8d8d8")
+    cmap = plt.get_cmap("RdBu_r").with_extremes(bad="#d8d8d8")
     image = ax.imshow(display_matrix, aspect="auto", interpolation="nearest", cmap=cmap, vmin=-2.5, vmax=2.5)
     ax.set_xlabel("samples")
     ax.set_ylabel("")
@@ -2334,7 +2479,9 @@ def ora_plot_png(
 
     frame = pd.DataFrame(
         {
-            "name": [term.name for term in terms],
+            # BP, CC and MF terms share one plot and one BH correction, so each
+            # label names its ontology.
+            "name": [f"{term.name} ({term.source})" if term.source else term.name for term in terms],
             # GeneRatio (overlap / query size), the x axis every ORA dot plot
             # from clusterProfiler onwards uses; term coverage stays in the table.
             "geneRatio": [term.geneRatio for term in terms],
@@ -2377,7 +2524,11 @@ def ora_plot_png(
     )
     areas = np.clip(counts * bubble_scale, _ORA_MIN_BUBBLE_AREA * canvas, None)
 
-    score_norm = Normalize(vmin=float(frame["score"].min()), vmax=float(frame["score"].max()))
+    score_min, score_max = float(frame["score"].min()), float(frame["score"].max())
+    if score_min == score_max:
+        padding = max(0.1, score_max * 0.05)
+        score_min, score_max = max(0.0, score_min - padding), score_max + padding
+    score_norm = Normalize(vmin=score_min, vmax=score_max)
     fig, ax = plt.subplots(
         figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi))
     )
@@ -2771,14 +2922,15 @@ def _simulation_dataframe(
     result = data_filtered.copy()
     result["log2FC"] = log2fc
     result["pval"] = pvals
-    result["adj_pval"] = selected_pvals
+    result["adj_pval"] = _bh_adjust(pvals)
+    result["selected_pval"] = selected_pvals
     result["correction"] = _correction_label(payload.useUncorrected)
     result["test_type"] = payload.testType
     result["observed_n_condition1"] = n1_real.astype(int)
     result["observed_n_condition2"] = n2_real.astype(int)
     result["effective_n_condition1"] = simulated_n1.astype(int)
     result["effective_n_condition2"] = simulated_n2.astype(int)
-    result["neg_log10_adj_pval"] = _safe_neg_log10(selected_pvals)
+    result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
     result["significance"] = significance
     return source_used, label_column, result, warnings
 

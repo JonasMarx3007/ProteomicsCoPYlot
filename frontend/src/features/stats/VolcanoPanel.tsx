@@ -6,7 +6,8 @@ import { coercePlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plo
 import { AssistantTextarea } from "../../components/AssistantFields";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
 import PairingEditor from "../../components/PairingEditor";
-import { buildPlotUrl, getStatisticalOptions, isAbortError, pairingIsReady, runVolcanoAnalysis, runVolcanoControlAnalysis } from "../../lib/api";
+import { buildPlotUrl, getStatisticalOptions, getVolcanoNotebookTable, isAbortError, pairingIsReady, runVolcanoAnalysis, runVolcanoControlAnalysis } from "../../lib/api";
+import type { RenderedNotebook } from "../../components/NotebookDownload";
 import { useDatasetRevision } from "../../lib/datasetAvailability";
 import { addVolcanoReportEntry, listVolcanoReportEntries, removeVolcanoReportEntry } from "../../lib/reportState";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
@@ -23,6 +24,7 @@ import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
 import { ImageSection, InfoSection, Notice, PlotFrame, SummarySection, TableSection } from "./statsShared";
 import { conditionOptions, isPairedTestType, removeSourceUsageWarnings, restorePValueThreshold, sanitizeFilenamePart } from "./statsHelpers";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 function TextareaField({
   label,
@@ -150,6 +152,8 @@ export function VolcanoPanel({
     coercePlotDownloadFormat(persisted.downloadFormat)
   );
   const [error, setError] = useState<string | null>(null);
+  const [renderedNotebook, setRenderedNotebook] = useState<RenderedNotebook | null>(null);
+  const [notebookTable, setNotebookTable] = useState<{ url: string; token: string; data: VolcanoResultResponse } | null>(null);
   const [resultState, setResultState] = useState<{
     key: string;
     data: VolcanoResultResponse;
@@ -501,11 +505,29 @@ export function VolcanoPanel({
     dpi,
   ]);
 
+  useEffect(() => {
+    if (renderedNotebook?.url !== plotUrl || !renderedNotebook.token) return;
+    const controller = new AbortController();
+    const token = renderedNotebook.token;
+    getVolcanoNotebookTable(kind, token, controller.signal).then(data => {
+      if (!controller.signal.aborted) setNotebookTable({ url: plotUrl, token, data });
+    }).catch(cause => {
+      if (!controller.signal.aborted && !isAbortError(cause)) {
+        setError(cause instanceof Error ? cause.message : "Failed to load the captured volcano table");
+      }
+    });
+    return () => controller.abort();
+  }, [kind, plotUrl, renderedNotebook]);
+  const capturedTable = notebookTable?.url === plotUrl
+    && notebookTable.token === renderedNotebook?.token ? notebookTable : null;
+  const displayedResult = capturedTable?.data ?? result;
+
   return (
     <div className="space-y-6">
       <SectionCard title="Volcano Plot">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+          <LocalizationCutoffField kind={kind} />
         </div>
       </SectionCard>
 
@@ -644,13 +666,15 @@ export function VolcanoPanel({
       {!canRun && options ? (
         <InfoSection message="Please select two different conditions to generate the plot." />
       ) : null}
-      {canRun && result ? (
+      {canRun && result && displayedResult ? (
         <>
-          <SummarySection items={[{ label: "Rows", value: String(result.totalRows) }, { label: "Upregulated", value: String(result.upregulatedCount) }, { label: "Downregulated", value: String(result.downregulatedCount) }, { label: "Not Significant", value: String(result.notSignificantCount) }]} warnings={removeSourceUsageWarnings(result.warnings)} />
+          <SummarySection items={[{ label: "Rows", value: String(displayedResult.totalRows) }, { label: "Upregulated", value: String(displayedResult.upregulatedCount) }, { label: "Downregulated", value: String(displayedResult.downregulatedCount) }, { label: "Not Significant", value: String(displayedResult.notSignificantCount) }]} warnings={removeSourceUsageWarnings(Array.from(new Set([...(displayedResult.warnings ?? []), ...(result.warnings ?? [])])))} />
           {renderType === "Normal" ? (
             <ImageSection
               title="Volcano Plot"
               url={plotUrl}
+              notebook={renderedNotebook}
+              onRendered={(url, token) => setRenderedNotebook({ url, token })}
               download={{
                 filename: volcanoExportFilename(sourceMode, kind, condition1, condition2).replace(/\.csv$/, ".png"),
                 format: downloadFormat,
@@ -658,13 +682,23 @@ export function VolcanoPanel({
               }}
             />
           ) : (
-            <PlotFrame title="Volcano Plot" url={plotUrl} height={760} />
+            <PlotFrame title="Volcano Plot" url={plotUrl} height={760} notebook={renderedNotebook}
+              onRendered={(url, token) => setRenderedNotebook({ url, token })} />
           )}
           <TableSection
             title="Result Table"
-            rows={result.rows}
+            rows={displayedResult.rows}
+            plotUrl={plotUrl}
+            notebook={capturedTable ? { url: capturedTable.url, token: capturedTable.token } : null}
             filename={volcanoExportFilename(sourceMode, kind, condition1, condition2)}
           />
+          {result.untestedRows && result.untestedRows.length > 0 ? (
+            <TableSection
+              title="Rows not tested"
+              rows={result.untestedRows}
+              filename={volcanoExportFilename(sourceMode, kind, condition1, condition2).replace(/\.csv$/, "_not_tested.csv")}
+            />
+          ) : null}
         </>
       ) : null}
     </div>

@@ -3,7 +3,7 @@ import ast
 import re
 
 from app.schemas.assistant import Evidence, ScientificAnswer
-from app.services.assistant_answers import answer_facts, _comparison, render_hypotheses, evidence_qualifications
+from app.services.assistant_answers import answer_facts, _comparison, render_hypotheses, evidence_qualifications, evidence_entity_names
 from app.services.assistant_methods import METHODS
 
 _TOPICS = {
@@ -476,7 +476,7 @@ def assemble_answer(answer: ScientificAnswer, catalogue: dict, values: dict, evi
         if "{{" in hypothesis or "}}" in hypothesis:
             raise ValueError("Hypotheses cannot introduce evidence references or observations.")
     # Only model-written hypotheses go through prose validation; factual/method text is app-owned.
-    paragraphs.extend(render_hypotheses(answer.hypotheses))
+    paragraphs.extend(render_hypotheses(answer.hypotheses, evidence_entity_names(evidence)))
     used = {int(item["source"][1:]) for _, item in selected
             if isinstance(item.get("source"), str) and item["source"][1:].isdigit()}
     paragraphs.extend(evidence_qualifications(evidence, used or None))

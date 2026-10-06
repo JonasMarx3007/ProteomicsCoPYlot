@@ -2,6 +2,18 @@
 
 Run commands from the repository root unless a section says otherwise.
 
+## Notebook export memory
+
+Notebook exports default to one eighth of physical RAM per session and one
+quarter across the server, constrained by a detected container memory limit.
+A 32 GiB machine therefore allows about 4 GiB per session and 8 GiB total.
+Override these with `COPYLOT_NOTEBOOK_SESSION_MEMORY_MB` and
+`COPYLOT_NOTEBOOK_MEMORY_MB` (MiB); the session limit must not exceed the total.
+Budgets include retained source tables, counted once when shared between exports,
+and are rechecked after deferred preparation. Archive resources use the same
+session budget rather than a separate 128 MiB ceiling. Other application data
+and transient ZIP-building allocations need additional RAM.
+
 ## Prerequisites
 
 - Python 3.10 or newer
@@ -120,8 +132,10 @@ this policy against the forwarded client address.
 | --- | --- | --- |
 | `COPYLOT_SESSION_ISOLATION` | `1` | Each browser session gets its own datasets, annotations and caches. |
 | `COPYLOT_ALLOWED_HOSTS` | loopback names | Extra `Host` header values the server will answer to, comma separated. |
-| `COPYLOT_UPLOAD_MAX_BYTES` | 512 MiB | Size limit applied to the upload as it arrives. |
-| `COPYLOT_UPLOAD_MAX_CELLS` | 50,000,000 | Row x column limit applied to the parsed table. |
+| `COPYLOT_UPLOAD_MAX_BYTES` | 64 GiB | Size limit applied to the upload as it arrives. |
+| `COPYLOT_UPLOAD_MAX_CELLS` | 10,000,000,000 | Row x column limit applied to the parsed table. |
+| `COPYLOT_UPLOAD_MAX_FRAME_BYTES` | 25% of physical/container RAM, at most 128 GiB | Parsed-table memory budget; explicit byte values override automatic sizing. If RAM cannot be detected, the fallback is 1 GiB. |
+| `COPYLOT_UPLOAD_MAX_COLUMNS` | 20,000 | Protects against malformed or accidentally transposed files. |
 
 **Session isolation is on by default and required by the browser UI.** Each tab
 has its own API namespace and path-scoped HttpOnly cookie, so tabs can open
@@ -139,13 +153,16 @@ single-user API clients; the tab-scoped browser UI refuses it. Password-protecte
 deployments also refuse this configuration. Existing direct `/api/` clients
 continue to use their original cookie/header session behavior.
 
-**Host header allowlist.** The server answers only to `localhost`, `127.0.0.1`,
-`::1` and `0.0.0.0`, with or without a port. This is the standard defence against
-DNS rebinding, where a page you visit re-points its own hostname at `127.0.0.1`
-and then talks to this server from your browser: the request genuinely originates
-from loopback and is same-origin, so neither the peer-address check nor CORS
-applies, and the hostname is the only thing left to test. When serving under a
-real name, add it:
+**Host header allowlist.** The server answers only to `localhost`, `127.0.0.1`
+and `::1` (written `[::1]` in a URL), with or without a port. This is the standard
+defence against DNS rebinding, where a page you visit re-points its own hostname
+at `127.0.0.1` and then talks to this server from your browser: the request
+genuinely originates from loopback and is same-origin, so neither the peer-address
+check nor CORS applies, and the hostname is the only thing left to test.
+`0.0.0.0` is not on the list: it is an address to listen on, not a name a browser
+sends, so `http://0.0.0.0:...` is refused. When serving under a real name, or
+reaching the server from another machine, add the name or address you type in
+the browser:
 
 ```bash
 COPYLOT_ALLOWED_HOSTS=proteomics.institute.example
@@ -156,6 +173,19 @@ compressed for parquet and xlsx — a 0.28 MB parquet can expand past 1 GB once
 parsed. `COPYLOT_UPLOAD_MAX_CELLS` bounds the parsed shape instead. For parquet
 the check reads the file's own metadata, so an oversized table is refused before
 it is materialised.
+
+These defaults admit large precursor reports: 500 samples × 100,000 precursors
+× 70 columns represent 3.5 billion cells. File size and cell count are not a
+promise that the data fits in RAM. The current analysis engine materializes
+tables and creates processing copies; it is not an out-of-core engine. On a
+32 GiB machine the automatic parsed-table budget is about 8 GiB, while a
+256 GiB server permits about 64 GiB. Multiple sessions also share that RAM.
+Raise the explicit memory budget only with sufficient memory for parsing and
+analysis copies. For files beyond one Excel worksheet's row limit, use TSV or
+Parquet. Keep the reverse proxy's request limit aligned with the file limit,
+including multipart overhead; the supplied nginx example allows 65 GiB requests.
+Existing deployed proxy settings must be updated separately. Save-state and
+notebook-export limits remain separate from data-upload limits.
 
 ## Frontend modes
 
@@ -281,7 +311,11 @@ the complete R helper from an R session:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
+# VSN normalization (optional) comes from Bioconductor:
+install.packages("BiocManager"); BiocManager::install("vsn")
 ```
+
+The exact versions the tests run against are in `tests/r/renv.lock`.
 
 Build source and wheel distributions:
 
@@ -389,8 +423,8 @@ editing the Compose files:
 - viewer services: `COPYLOT_VIEWER_MEMORY_LIMIT` (default `6g`),
   `COPYLOT_VIEWER_CPUS` (default `2.0`), and `COPYLOT_VIEWER_TMPFS_SIZE` (default `1g`).
 
-Request limits are also configurable. Defaults allow 512 MiB per ordinary/replacement upload,
-1 GiB across restore replacements, 64 MiB compressed and 256 MiB expanded restore state, and
+Request limits are also configurable. Defaults allow 64 GiB per ordinary/replacement upload,
+128 GiB across restore replacements, 64 MiB compressed and 256 MiB expanded restore state, and
 128 MiB for plot conversion. The corresponding variables are `COPYLOT_UPLOAD_MAX_BYTES`,
 `COPYLOT_RESTORE_REPLACEMENT_MAX_BYTES`, `COPYLOT_RESTORE_REPLACEMENTS_TOTAL_MAX_BYTES`,
 `COPYLOT_RESTORE_UPLOAD_MAX_BYTES`, `COPYLOT_RESTORE_EXPANDED_MAX_BYTES`, and

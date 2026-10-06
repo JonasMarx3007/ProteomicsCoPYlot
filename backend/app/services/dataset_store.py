@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import pandas as pd
 
 from app.services.runtime_cache import invalidate_runtime_cache
 from app.services.session_context import get_session_id
+from app.schemas.annotation import PhosprotLineage, IdentifierTranslationStep
 
 DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
 TableDatasetKind = Literal["protein", "phospho", "phosprot"]
@@ -22,6 +23,8 @@ class StoredTableDataset:
     suggested_is_log2_transformed: bool | None = None
     source_path: str | None = None
     phosprot_aggregation: str | None = None
+    phosprot_lineage: PhosprotLineage | None = None
+    id_translations: list[IdentifierTranslationStep] = field(default_factory=list)
 
 
 @dataclass
@@ -125,6 +128,22 @@ def rename_package(old_name: str, new_name: str) -> str:
     return new_resolved
 
 
+def session_has_datasets() -> bool:
+    """True when this session holds at least one stored dataset.
+
+    Unlike list_packages() this never answers with the default package name for
+    an empty session, and it does not create a session entry by asking.
+    """
+    state = _DATASET_SESSIONS.get(get_session_id())
+    if state is None:
+        return False
+    return any(
+        package_state.get(kind) is not None
+        for package_state in state.datasets_by_package.values()
+        for kind in ("protein", "phospho", "phosprot", "peptide")
+    )
+
+
 def list_packages(*, include_empty: bool = False) -> list[str]:
     state = _session_state()
     if include_empty:
@@ -154,6 +173,8 @@ def save_table_dataset(
     package_name: str | None = None,
     source_path: str | None = None,
     phosprot_aggregation: str | None = None,
+    phosprot_lineage: PhosprotLineage | None = None,
+    id_translations: list[IdentifierTranslationStep] | None = None,
 ) -> StoredTableDataset:
     resolved_package = _normalize_package_name(package_name)
     state = _package_state(resolved_package)
@@ -164,6 +185,8 @@ def save_table_dataset(
         frame=frame,
         source_path=str(source_path).strip() or None if source_path is not None else None,
         phosprot_aggregation=phosprot_aggregation,
+        phosprot_lineage=phosprot_lineage.model_copy(deep=True) if phosprot_lineage else None,
+        id_translations=[step.model_copy(deep=True) for step in id_translations or []],
     )
     state[kind] = stored
     invalidate_runtime_cache(f"dataset:{resolved_package}:{kind}:updated")

@@ -37,12 +37,12 @@ from app.services.metadata_upload_store import (
     set_active_profile as set_active_metadata_profile,
 )
 from app.services.session_context import get_session_id, session_isolation_enabled
+from app.services.env_settings import TRUTHY_VALUES, env_flag
 
 DatasetKind = Literal["protein", "phospho", "phosprot"]
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 # How these config files spell "not provided". `phospho_file`, `meta_phospho_file`
 # and the rest all use the literal string "none", so any key that reads a value
 # out of a config has to treat it as absence rather than as a bad value.
@@ -1177,8 +1177,7 @@ def _normalize_imputation_mode(raw: str, warnings: list[str] | None = None) -> s
 
 
 def _viewer_mode_enabled() -> bool:
-    raw = os.getenv("COPYLOT_VIEWER_MODE", "").strip().lower()
-    return raw in TRUTHY_VALUES
+    return env_flag("COPYLOT_VIEWER_MODE")
 
 
 def viewer_mode_enabled() -> bool:
@@ -1188,7 +1187,7 @@ def viewer_mode_enabled() -> bool:
 def _viewer_portal_enabled() -> bool:
     if not viewer_mode_enabled():
         return False
-    return str(os.getenv("COPYLOT_VIEWER_PORTAL_ENABLED", "")).strip().lower() in TRUTHY_VALUES
+    return env_flag("COPYLOT_VIEWER_PORTAL_ENABLED")
 
 
 def _resolve_config_path() -> Path:
@@ -1227,13 +1226,30 @@ def bootstrap_current_viewer_session(*, force_reload: bool = False) -> ViewerBoo
     config_key = f"{config_path.resolve()}@{stamp}"
     if not force_reload:
         with _SESSION_BOOTSTRAP_LOCK:
-            if _SESSION_BOOTSTRAP_CONFIG.get(session_id) == config_key:
-                return None
+            already_loaded = _SESSION_BOOTSTRAP_CONFIG.get(session_id) == config_key
+        # The marker says the project was loaded; the stores say whether it still
+        # is. Session cleanup (idle timeout, session cap) empties the stores, and
+        # trusting the marker alone then served a returning visitor an empty project.
+        if already_loaded and _session_still_loaded():
+            return None
 
     result = load_viewer_state(config_path)
     with _SESSION_BOOTSTRAP_LOCK:
         _SESSION_BOOTSTRAP_CONFIG[session_id] = config_key
     return result
+
+
+def _session_still_loaded() -> bool:
+    """True while this session's dataset store still holds a published dataset."""
+    from app.services.dataset_store import session_has_datasets
+
+    return session_has_datasets()
+
+
+def forget_viewer_session_bootstrap(session_id: str | None = None) -> None:
+    """Drop the "already loaded" marker of a session whose data was discarded."""
+    with _SESSION_BOOTSTRAP_LOCK:
+        _SESSION_BOOTSTRAP_CONFIG.pop(session_id if session_id is not None else get_session_id(), None)
 
 
 def _default_viewer_config_path() -> Path:

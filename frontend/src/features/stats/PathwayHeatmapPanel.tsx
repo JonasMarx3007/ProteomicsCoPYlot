@@ -15,6 +15,8 @@ import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import { ImageSection, InfoSection, Notice } from "./statsShared";
 import { conditionOptions, hasGeneNameSupport } from "./statsHelpers";
+import type { RenderedNotebook } from "../../components/NotebookDownload";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
 function MultiSelect({ values, onChange, options }: { values: string[]; onChange: (value: string[]) => void; options: { value: string; label: string }[] }) {
   return (
@@ -85,6 +87,7 @@ export function PathwayHeatmapPanel({
   const [heightCm, setHeightCm] = useState(() => restorePlotDimensionCm(persisted.heightCm, 12));
   const [dpi, setDpi] = useState(() => restorePlotDpi(persisted.dpi, 300));
   const [error, setError] = useState<string | null>(null);
+  const [notebook, setNotebook] = useState<RenderedNotebook | null>(null);
   const geneNamesAvailable = hasGeneNameSupport(options);
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   const pathwayDataSourceOptions = useMemo(() => dataSourceOptions(options), [options]);
@@ -210,6 +213,7 @@ export function PathwayHeatmapPanel({
       <SectionCard title="Pathway Heatmap">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
+          <LocalizationCutoffField kind={kind} />
         </div>
       </SectionCard>
 
@@ -265,7 +269,8 @@ export function PathwayHeatmapPanel({
       </SectionCard>
       {advancedPlotOptions}
       {!geneNamesAvailable && options ? <InfoSection message="Gene names are required for pathway heatmaps. Please generate or load gene names first." /> : null}
-      {geneNamesAvailable && pathway && selectedConditions.length > 0 ? <ImageSection title="Pathway Heatmap" url={heatmapUrl} /> : null}
+      {geneNamesAvailable && pathway && selectedConditions.length > 0 ? <ImageSection title="Pathway Heatmap" url={heatmapUrl}
+        notebook={notebook} onRendered={(url, token) => setNotebook({ url, token })} /> : null}
     </div>
   );
 }

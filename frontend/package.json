@@ -6,11 +6,12 @@
   "scripts": {
     "test:browser": "playwright test",
     "test:viewer": "playwright test --config=playwright.viewer.config.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "test": "vitest run",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:api": "python ../tools/export_openapi.py && openapi-typescript src/lib/generated/openapi.json --default-non-nullable false -o src/lib/generated/api.d.ts"
   },
   "dependencies": {
     "react": "^19.3.0",
@@ -20,6 +21,9 @@
     "@eslint/js": "^10.0.1",
     "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.12.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -28,10 +32,13 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.12.0",
+    "jsdom": "^30.1.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.0",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.3"
   },
   "license": "GPL-3.0-only"
 }

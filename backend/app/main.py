@@ -4,8 +4,9 @@ import io
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from app.app_version import APP_VERSION
 from app.services.html_security import GENERATED_HTML_CSP
-from app.services.plot_export import plot_output_format
+from app.services.plot_export import notebook_capture_allowed, notebook_unavailable, plot_output_format
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -21,7 +22,6 @@ from app.api.routes_datasets import router as datasets_router
 from app.api.routes_external import router as external_router
 from app.api.routes_chat import router as chat_router
 from app.api.routes_plots import router as plots_router
-from app.api.routes_qc import router as qc_router
 from app.api.routes_peptide import router as peptide_router
 from app.api.routes_stats import router as stats_router
 from app.api.routes_analysis import router as analysis_router
@@ -72,6 +72,7 @@ from app.services.workload_manager import (
     sync_thread_worker_limit,
 )
 from app.services.plot_limits import PlotSizeValidationError, validate_plot_request
+from app.services.env_settings import env_flag
 
 LOGGER = logging.getLogger(__name__)
 _DEFAULT_PLOT_CONVERSION_MAX_BYTES = 128 * 1024 * 1024
@@ -85,11 +86,7 @@ def _plot_conversion_max_bytes() -> int:
         return _DEFAULT_PLOT_CONVERSION_MAX_BYTES
 
 
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
-
-
-_AUTH_PROTECTED_RUNTIME = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED") or _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED")
+_AUTH_PROTECTED_RUNTIME = env_flag("COPYLOT_TOOL_ACCESS_ENABLED") or env_flag("COPYLOT_VIEWER_PORTAL_ENABLED")
 
 
 @asynccontextmanager
@@ -105,6 +102,7 @@ async def _lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Proteomics CoPYlot API",
+    version=APP_VERSION,
     docs_url=None if _AUTH_PROTECTED_RUNTIME else "/docs",
     redoc_url=None if _AUTH_PROTECTED_RUNTIME else "/redoc",
     openapi_url=None if _AUTH_PROTECTED_RUNTIME else "/openapi.json",
@@ -140,14 +138,16 @@ _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/annotations/generate"),
     ("PUT", "/api/annotations/pairing"),
     ("POST", "/api/annotations/phosprot/aggregate"),
-    ("POST", "/api/annotations/phosprot/upload"),
-    ("POST", "/api/peptide/metadata/upload"),
     ("POST", "/api/peptide/metadata/generate"),
     ("POST", "/api/data-tools/imputation/run"),
     # `/imputation/download` runs the same imputation as `/run` and hands back
     # the whole filled matrix as CSV. Denying one and not the other left the
     # computation reachable by the endpoint that also exports the result.
     ("POST", "/api/data-tools/imputation/download"),
+    # ID translation writes the translated table into the session as a dataset
+    # of its own, and the page that offers it is not in a viewer's tab list.
+    ("POST", "/api/data-tools/id-translation/run"),
+    ("POST", "/api/data-tools/id-translation/download"),
     ("POST", "/api/restore/import"),
     # The whole session in one blob: every package, every source, log2, filtered
     # and imputed matrix, all metadata. A published project is figures to read,
@@ -158,6 +158,9 @@ _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/chat/models/remove"),
 }
 _VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
+    # Every notebook ZIP carries the exact input matrix. A published project is
+    # figures to read, not a dataset to take away; viewers download plots only.
+    ("GET", "/api/plots/notebooks/"),
     ("DELETE", "/api/annotations/"),
     ("DELETE", "/api/peptide/metadata/"),
     ("POST", "/api/external/"),
@@ -169,13 +172,12 @@ _VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
 _REMOTE_LOCAL_PATH_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/table-path"),
     ("POST", "/api/datasets/peptide-path"),
-    ("POST", "/api/external/peptide-collapse/run"),
 }
 
 
 def _authentication_configuration_error(*, validate_credentials: bool = True) -> str | None:
-    tool_auth = _truthy_env("COPYLOT_TOOL_ACCESS_ENABLED")
-    viewer_auth = _truthy_env("COPYLOT_VIEWER_PORTAL_ENABLED")
+    tool_auth = env_flag("COPYLOT_TOOL_ACCESS_ENABLED")
+    viewer_auth = env_flag("COPYLOT_VIEWER_PORTAL_ENABLED")
     if tool_auth and viewer_auth:
         return "Tool access and viewer portal authentication cannot be enabled in the same process."
     if (tool_auth or viewer_auth) and not session_isolation_enabled():
@@ -347,7 +349,7 @@ if _CORS_ORIGINS:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-CoPYlot-Notice"],
+        expose_headers=["X-CoPYlot-Notice", "X-CoPYlot-Notebook", "X-CoPYlot-Notebook-Unavailable"],
     )
 
 
@@ -636,10 +638,19 @@ async def plot_download_format_middleware(request: Request, call_next):
         if asked in _NATIVE_DOWNLOAD_FORMATS:
             native_format = asked
     token = plot_output_format.set(native_format)
+    capture_token = notebook_capture_allowed.set(
+        not request.query_params.get("downloadFormat", "").strip())
+    unavailable: dict = {}
+    unavailable_token = notebook_unavailable.set(unavailable)
     try:
         response = await call_next(request)
     finally:
+        notebook_unavailable.reset(unavailable_token)
+        notebook_capture_allowed.reset(capture_token)
         plot_output_format.reset(token)
+    if unavailable.get("reason") and "x-copylot-notebook" not in response.headers:
+        from urllib.parse import quote
+        response.headers["X-CoPYlot-Notebook-Unavailable"] = quote(unavailable["reason"])
     if request.method != "GET":
         return response
     if response.status_code < 200 or response.status_code >= 300:
@@ -712,7 +723,6 @@ app.include_router(data_tools_router)
 app.include_router(chat_router)
 app.include_router(stats_router)
 app.include_router(analysis_router)
-app.include_router(qc_router)
 app.include_router(peptide_router)
 app.include_router(plots_router)
 app.include_router(external_router)

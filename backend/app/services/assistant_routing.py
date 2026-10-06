@@ -384,6 +384,33 @@ def explicit_selection(question: str) -> str | None:
     return tokens[0]
 
 
+_THRESHOLD_CHANGE = re.compile(
+    r"\b(?:lower|loosen|relax|raise|increase|decrease|reduce|drop|change|adjust|set|move|turn off|switch off"
+    r"|disable|remove|skip|use)\b[^.!?]{0,40}\b(?:thresholds?|cut-?offs?|p[- ]?values?|alpha|fdr|q[- ]?values?"
+    r"|fold[- ]?changes?|log2 ?fc|corrections?|multiple[- ]testing|bh|benjamini|uncorrected|raw p)\b"
+)
+_MORE_HITS = re.compile(
+    r"\b(?:more|additional|extra)\b(?:\s+\w+){0,2}\s+(?:significant|hits?|discoveries|proteins|sites|genes"
+    r"|features|phosphosites|results)\b"
+    r"|\bso (?:that )?[^.!?]{0,50}\b(?:significant|significance|pass|passes|show up)\b"
+    r"|\b(?:get|find|see|reach|obtain|achieve)\b[^.!?]{0,30}\bsignifican"
+)
+
+
+def _threshold_change_for_more_hits(text: str) -> bool:
+    """A threshold or correction change asked for in order to get more hits.
+
+    "Lower the p threshold so more proteins are significant" passed the
+    original check, which looked for "more significant" and "make ...
+    significant". Changing a threshold on its own ("lower the p threshold to
+    0.01") is an ordinary request and stays allowed; it is the stated goal of
+    more significant results that makes it tuning.
+    """
+    if re.search(r"\b(?:fewer|less|stricter|more stringent|more conservative)\b", text):
+        return False  # asking for fewer hits is not tuning for significance
+    return bool(_THRESHOLD_CHANGE.search(text) and _MORE_HITS.search(text))
+
+
 def significance_tuning(question: str) -> bool:
     """A request to change analysis choices until results look significant.
 
@@ -394,6 +421,8 @@ def significance_tuning(question: str) -> bool:
     """
     text = question.lower()
     if re.search(r"\bmore significant\b|\buntil\b[^.!?]{0,80}\bsignifican", text):
+        return True
+    if _threshold_change_for_more_hits(text):
         return True
     return bool(re.search(r"\b(?:make|get|force|tune|tweak|push)\b[^.!?]{0,60}\b(?:significant|significance)\b(?!\s+(?:threshold|line|cut-?off|colou?r|label))", text)
                 and not re.search(r"\b(?:colou?rs?|lines?|labels?|fonts?|dashed|dotted|points?|dots?|markers?|bigger|larger|smaller|size|highlight\w*|bold)\b", text))

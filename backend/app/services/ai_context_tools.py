@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import re
 from typing import Any
 from app.schemas.assistant import ContextMode
 from app.services import ai_functions
@@ -41,47 +40,6 @@ _MODULE_SPECIFIC_AI_FUNCTIONS: dict[str, list[str]] = {
     "qc.correlation": ["qc_correlation_plot"],
 }
 
-def _humanize_segment(segment: str) -> str:
-    text = str(segment or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
-    text = re.sub(r"[_-]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return " ".join(word.capitalize() for word in text.split(" "))
-
-def _readable_context_line(line: str) -> str:
-    text = str(line or "").strip()
-    if not text or "|" not in text:
-        return text
-    parts = [part.strip() for part in text.split("|") if part.strip()]
-    if not parts:
-        return ""
-    raw_label = parts[0]
-    if raw_label.endswith("_answer_summary"):
-        label = "Direct answer evidence"
-    elif raw_label.endswith(("_response_rule", "_quality_rule", "_inference_rule", "_evidence_limit")):
-        label = "Interpretation constraint"
-    else:
-        label = _humanize_segment(raw_label)
-    fields: list[str] = []
-    for part in parts[1:]:
-        if "=" not in part:
-            fields.append(_humanize_segment(part).lower())
-            continue
-        key, value = part.split("=", 1)
-        readable_key = re.sub(r"[_-]+", " ", key).strip().lower()
-        readable_value = value.strip()
-        preserve_identifier = any(
-            token in readable_key
-            for token in ("identifier", "term", "sample", "pair", "filename", "column", "path", "model")
-        ) or "_HUMAN" in readable_value.upper()
-        if not preserve_identifier:
-            readable_value = readable_value.replace("_", " ")
-        fields.append(f"{readable_key}: {readable_value}")
-    if not fields:
-        return f"{label}."
-    return f"{label}: {'; '.join(fields)}."
 
 def _function_payload(
     function_name: str,

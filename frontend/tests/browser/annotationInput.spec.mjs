@@ -73,3 +73,31 @@ test('conflicting manual conditions show an error and preserve the previous anno
   await expect(page.getByText("Sample 'A1' is assigned more than once.", { exact: false })).toBeVisible();
   expect(await (await request.get('/api/annotations/current/protein')).json()).toEqual(before);
 });
+
+test('a scale hint under the log2 box flags values that look like log10', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Dataset type', { exact: true }).selectOption('protein');
+  // Ten proteins around 4: plausible as log10 intensities, far below log2 ones.
+  const rows = Array.from({ length: 10 }, (_, i) =>
+    `P${i},G${i},${(3.6 + i * 0.07).toFixed(2)},${(3.7 + i * 0.07).toFixed(2)},${(3.65 + i * 0.07).toFixed(2)},${(3.75 + i * 0.07).toFixed(2)}`);
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'log10-fixture.csv', mimeType: 'text/csv',
+    buffer: Buffer.from(['ProteinNames,GeneNames,A1,A2,A3,A4', ...rows].join('\n') + '\n'),
+  });
+  const uploaded = page.waitForResponse(r => r.url().endsWith('/api/datasets/upload'));
+  await page.getByRole('button', { name: 'Upload', exact: true }).last().click();
+  expect((await uploaded).ok()).toBeTruthy();
+  await page.getByRole('button', { name: 'Annotation', exact: true }).click();
+  await page.getByLabel('Condition name', { exact: true }).fill('A');
+  const detected = page.waitForResponse(r => r.url().endsWith('/api/annotations/log2-detect'));
+  await page.getByLabel('Sample columns', { exact: true }).selectOption(['A1', 'A2', 'A3', 'A4']);
+  await detected;
+  const scale = page.getByLabel('Dataset is already log2 transformed');
+  const hint = page.getByRole('note').filter({ hasText: 'log2 intensities are usually around 15-30' });
+  await expect(scale).toBeChecked();
+  await expect(hint).toContainText('The values have a median of 4.0');
+  await scale.uncheck();
+  await expect(hint).toHaveCount(0);
+  await scale.check();
+  await expect(hint).toBeVisible();
+});

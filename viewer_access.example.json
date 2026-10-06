@@ -2,13 +2,8 @@
   "credentials": [
     {
       "password_pbkdf2_sha256": "600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
-      "project": "example_project",
-      "label": "Example Project"
-    },
-    {
-      "password_pbkdf2_sha256": "600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000",
-      "project": "TKI_project",
-      "label": "TKI Project"
+      "project": "HEK293",
+      "label": "HEK293 example"
     }
   ]
 }

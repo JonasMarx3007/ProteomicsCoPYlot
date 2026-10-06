@@ -71,6 +71,8 @@ COPY launch_tool.py /app/launch_tool.py
 COPY launch_viewer.py /app/launch_viewer.py
 COPY viewer_config.json /app/viewer_config.json
 COPY proteomicscopylot/example_data /app/proteomicscopylot/example_data
+COPY proteomicscopylot/notebook_functions.py /app/proteomicscopylot/notebook_functions.py
+COPY LICENSE /app/LICENSE
 RUN mkdir -p /app/data /app/viewer_data /app/local
 COPY data/db /app/data/db
 COPY data/report /app/data/report

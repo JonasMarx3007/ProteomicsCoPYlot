@@ -1,0 +1,5 @@
+{
+  "PCA": "centered",
+  "UMAP": "unit_variance",
+  "t-SNE": "unit_variance"
+}

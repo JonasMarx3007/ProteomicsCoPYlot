@@ -5,12 +5,15 @@ import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { coercePlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plotDownload";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import PairingEditor from "../../components/PairingEditor";
-import { buildPlotUrl, getStatisticalOptions, isAbortError, pairingIsReady, runAnovaAnalysis, runEnrichmentAnalysis } from "../../lib/api";
+import { oraExportRows } from "./oraExport";
+import { buildPlotUrl, getOraNotebookTables, getStatisticalOptions, isAbortError, pairingIsReady, runAnovaAnalysis, runEnrichmentAnalysis } from "../../lib/api";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
+import { fetchPlot } from "../../lib/fetchPlot";
 import { useDatasetRevision } from "../../lib/datasetAvailability";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, EnrichmentOrganism, EnrichmentRequest, EnrichmentResultResponse, EnrichmentTerm, StatsTestType, StatisticalOptionsResponse, DataSource } from "../../lib/types";
+import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, EnrichmentOrganism, EnrichmentRequest, EnrichmentResultResponse, StatsTestType, StatisticalOptionsResponse, DataSource } from "../../lib/types";
 import { dataSourceOptions, ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
@@ -20,45 +23,63 @@ import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
 import { ImageSection, InfoSection, Notice, SummarySection, TableSection } from "./statsShared";
 import { ANOVA_CLUSTER_METHOD_OPTIONS, conditionOptions, hasGeneNameSupport, isPairedTestType, restoreClusterCount, restoreClusterMethod, restorePValueThreshold, sanitizeFilenamePart } from "./statsHelpers";
+import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
-function GeneListSection({ title, genes, filename }: { title: string; genes: string[]; filename: string }) {
+function useOraNotebook(kind: AnnotationKind, direction: string, plotUrl: string, tableOnly: boolean) {
+  const [rendered, setRendered] = useState<RenderedNotebook | null>(null);
+  const [captured, setCaptured] = useState<{ url: string; token: string; data: EnrichmentResultResponse } | null>(null);
+  const [error, setError] = useState<{ url: string; message: string } | null>(null);
+  useEffect(() => {
+    if (!tableOnly || !plotUrl) return;
+    const controller = new AbortController();
+    fetchPlot(`${plotUrl}&tableOnly=true`, controller.signal).then(async response => {
+      if (!response.ok) throw new Error("Could not prepare the ORA notebook.");
+      await response.arrayBuffer();
+      const token = response.headers.get("X-CoPYlot-Notebook") ?? "";
+      if (!controller.signal.aborted) setRendered({ url: plotUrl, token: /^[A-Za-z0-9_-]{32}$/.test(token) ? token : null });
+    }).catch(cause => {
+      if (!controller.signal.aborted && !isAbortError(cause)) {
+        setError({ url: plotUrl, message: cause instanceof Error ? cause.message : "Failed to capture ORA" });
+      }
+    });
+    return () => controller.abort();
+  }, [plotUrl, tableOnly]);
+  useEffect(() => {
+    if (rendered?.url !== plotUrl || !rendered.token) return;
+    const controller = new AbortController();
+    const token = rendered.token;
+    getOraNotebookTables(kind, direction, token, controller.signal).then(data => {
+      if (!controller.signal.aborted) setCaptured({ url: plotUrl, token, data });
+    }).catch(cause => {
+      if (!controller.signal.aborted && !isAbortError(cause)) {
+        setError({ url: plotUrl, message: cause instanceof Error ? cause.message : "Failed to load ORA snapshot" });
+      }
+    });
+    return () => controller.abort();
+  }, [kind, direction, plotUrl, rendered]);
+  const current = captured?.url === plotUrl && captured.token === rendered?.token ? captured : null;
+  return { rendered, notebook: current ? rendered : null, data: current?.data,
+    error: error?.url === plotUrl ? error.message : null,
+    onRendered: (url: string, token: string | null) => setRendered({ url, token }) };
+}
+
+function GeneListSection({ title, genes, filename, plotUrl, notebook }: {
+  title: string; genes: string[]; filename: string; plotUrl?: string; notebook?: RenderedNotebook | null;
+}) {
   const href = `data:text/plain;charset=utf-8,${encodeURIComponent(genes.join("\n"))}`;
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        <a href={href} download={filename} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
+        <div className="flex flex-wrap items-center gap-2"><a href={href} download={filename} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
           Download TXT
-        </a>
+        </a>{plotUrl ? <NotebookDownload plotUrl={plotUrl} rendered={notebook ?? null} /> : null}</div>
       </div>
       <div className="max-h-60 overflow-auto rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
         {genes.length ? genes.join(", ") : "No genes available."}
       </div>
     </section>
   );
-}
-
-function oraExportRows(
-  terms: EnrichmentTerm[],
-  result: EnrichmentResultResponse,
-  context: Record<string, unknown>
-): Record<string, unknown>[] {
-  return terms.map((term) => ({
-    method: "ORA",
-    organism: result.organism,
-    analysisSource: result.selectedCluster == null ? "volcano" : "anova",
-    datasetLevel: result.kind,
-    dataSource: result.sourceUsed,
-    backgroundMode: result.backgroundMode,
-    backgroundSize: result.backgroundSize,
-    annotatedBackgroundSize: result.annotatedBackgroundSize,
-    correctionMethod: result.correctionMethod,
-    upstreamCorrectionMethod: result.upstreamCorrectionMethod,
-    testedTermCount: result.testedTermCount,
-    ...result.termCounts[String(context.direction ?? "cluster")],
-    ...context,
-    ...term,
-  }));
 }
 
 export function OraPanel({
@@ -147,20 +168,22 @@ export function OraPanel({
     data: EnrichmentResultResponse;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const currentResultKey = JSON.stringify({
-    revision,
+  // The request, once; the cache key is derived from it, so a field sent to
+  // the backend cannot be missing from the key a result is stored and found
+  // under (frontend/tests/component/result-keys.test.tsx).
+  const requestPayload = useMemo<EnrichmentRequest>(() => ({
     kind,
-    sourceMode,
+    source: sourceMode,
     dataSource,
     condition1,
     condition2,
-    condition1Control,
-    condition2Control,
-    testType,
+    condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
+    condition2Control: sourceMode === "volcano_control" ? condition2Control : null,
     pValueThreshold,
     log2fcThreshold,
+    testType,
     useUncorrected,
-    selectedCluster,
+    selectedCluster: sourceMode === "anova" ? Number(selectedCluster) : null,
     nClusters: Math.max(1, Math.round(nClusters)),
     clusterMethod,
     adjPValueCutoff,
@@ -169,7 +192,12 @@ export function OraPanel({
     maxTermSize,
     backgroundMode,
     organism,
-  });
+  }), [
+    kind, sourceMode, dataSource, condition1, condition2, condition1Control, condition2Control,
+    pValueThreshold, log2fcThreshold, testType, useUncorrected, selectedCluster, nClusters,
+    clusterMethod, adjPValueCutoff, topN, minTermSize, maxTermSize, backgroundMode, organism,
+  ]);
+  const currentResultKey = JSON.stringify({ revision, ...requestPayload });
   const result = resultState?.key === currentResultKey ? resultState.data : null;
 
   const kindAvailable = oraKindOptions.some((option) => option.value === kind);
@@ -355,28 +383,7 @@ export function OraPanel({
 
     const controller = new AbortController();
 
-    runEnrichmentAnalysis({
-      kind,
-      source: sourceMode,
-      dataSource,
-      condition1,
-      condition2,
-      condition1Control: sourceMode === "volcano_control" ? condition1Control : null,
-      condition2Control: sourceMode === "volcano_control" ? condition2Control : null,
-      pValueThreshold,
-      log2fcThreshold,
-      testType,
-      useUncorrected,
-      selectedCluster: sourceMode === "anova" ? Number(selectedCluster) : null,
-      nClusters: roundedClusterCount,
-      clusterMethod,
-      adjPValueCutoff,
-      topN,
-      minTermSize,
-      maxTermSize,
-      backgroundMode,
-      organism,
-    } satisfies EnrichmentRequest, { signal: controller.signal })
+    runEnrichmentAnalysis(requestPayload, { signal: controller.signal })
       .then((response) => {
         if (controller.signal.aborted) return;
         setResultState({ key: currentResultKey, data: response });
@@ -391,34 +398,10 @@ export function OraPanel({
     return () => {
       controller.abort();
     };
-  }, [
-    canRun,
-    geneNamesAvailable,
-    kind,
-    sourceMode,
-    dataSource,
-    condition1,
-    condition2,
-    condition1Control,
-    condition2Control,
-    testType,
-    pValueThreshold,
-    log2fcThreshold,
-    useUncorrected,
-    selectedCluster,
-    roundedClusterCount,
-    // ORA must run against the partition the ANOVA page drew.
-    clusterMethod,
-    adjPValueCutoff,
-    topN,
-    minTermSize,
-    maxTermSize,
-    backgroundMode,
-    organism,
-    currentResultKey,
-  ]);
+  }, [canRun, geneNamesAvailable, requestPayload, currentResultKey]);
 
   const commonPlotParams = {
+    organism,
     source: sourceMode,
     dataSource,
     condition1,
@@ -456,6 +439,13 @@ export function OraPanel({
           selectedCluster: Number(selectedCluster),
         })
       : null;
+
+  const upNotebook = useOraNotebook(kind, "up", upPlotUrl, Boolean(canRun && result && sourceMode !== "anova" && !result.upTerms.length));
+  const downNotebook = useOraNotebook(kind, "down", downPlotUrl, Boolean(canRun && result && sourceMode !== "anova" && !result.downTerms.length));
+  const clusterNotebook = useOraNotebook(kind, "cluster", clusterPlotUrl ?? "", Boolean(canRun && result && sourceMode === "anova" && !result.clusterTerms.length));
+  const upResult = upNotebook.data ?? result;
+  const downResult = downNotebook.data ?? result;
+  const clusterResult = clusterNotebook.data ?? result;
 
   useEffect(() => {
     writePersistedUiState("stats.ora.v1", {
@@ -526,6 +516,7 @@ export function OraPanel({
       <SectionCard title="GO Enrichment (ORA)">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={oraKindOptions} />
+          <LocalizationCutoffField kind={kind} />
         </div>
       </SectionCard>
 
@@ -696,6 +687,7 @@ export function OraPanel({
         <Notice error={error} warnings={options?.warnings} />
       </SectionCard>
       {advancedPlotOptions}
+      <Notice error={upNotebook.error ?? downNotebook.error ?? clusterNotebook.error} />
       {options && !geneNamesAvailable ? <InfoSection message="Gene names are required for ORA. Please generate or load gene names first." /> : null}
       {options && geneNamesAvailable && !canRun ? (
         <InfoSection
@@ -732,6 +724,8 @@ export function OraPanel({
               <ImageSection
                 title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
                 url={clusterPlotUrl}
+                notebook={clusterNotebook.rendered}
+                onRendered={clusterNotebook.onRendered}
                 download={{
                   filename: `ora_anova_cluster_${result.selectedCluster ?? selectedCluster}_${kind}.png`,
                   format: downloadFormat,
@@ -749,19 +743,22 @@ export function OraPanel({
             )}
             <GeneListSection
               title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Genes`}
-              genes={result.clusterGenes}
+              genes={clusterResult?.clusterGenes ?? result.clusterGenes}
+              plotUrl={clusterPlotUrl ?? undefined} notebook={clusterNotebook.notebook}
               filename={`ora_anova_cluster_${result.selectedCluster ?? selectedCluster}_${kind}.txt`}
             />
             {result.backgroundMode === "experiment" ? (
               <GeneListSection
                 title="Tested-gene Background"
-                genes={result.backgroundGenes}
+                genes={clusterResult?.backgroundGenes ?? result.backgroundGenes}
+                plotUrl={clusterPlotUrl ?? undefined} notebook={clusterNotebook.notebook}
                 filename={`ora_background_${kind}.txt`}
               />
             ) : null}
             <TableSection
               title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
-              rows={oraExportRows(result.clusterTerms, result, {
+              plotUrl={clusterPlotUrl ?? undefined} notebook={clusterNotebook.notebook}
+              rows={oraExportRows(clusterResult?.clusterTerms ?? result.clusterTerms, clusterResult ?? result, {
                 analysisSource: sourceMode,
                 selectedCluster: result.selectedCluster ?? selectedCluster,
                 pValueThreshold,
@@ -797,6 +794,8 @@ export function OraPanel({
                 <ImageSection
                   title={condition1 ? `Upregulated Terms in ${condition1}` : "Upregulated Terms"}
                   url={upPlotUrl}
+                  notebook={upNotebook.rendered}
+                  onRendered={upNotebook.onRendered}
                   download={{
                     filename: upPlotFilename,
                     format: downloadFormat,
@@ -816,6 +815,8 @@ export function OraPanel({
                 <ImageSection
                   title={condition1 ? `Downregulated Terms in ${condition1}` : "Downregulated Terms"}
                   url={downPlotUrl}
+                  notebook={downNotebook.rendered}
+                  onRendered={downNotebook.onRendered}
                   download={{
                     filename: downPlotFilename,
                     format: downloadFormat,
@@ -832,14 +833,18 @@ export function OraPanel({
                 />
               )}
             </div>
-            <GeneListSection title="Upregulated Genes" genes={result.upGenes} filename={`ora_up_${kind}.txt`} />
-            <GeneListSection title="Downregulated Genes" genes={result.downGenes} filename={`ora_down_${kind}.txt`} />
+            <GeneListSection title="Upregulated Genes" genes={upResult?.upGenes ?? result.upGenes} filename={`ora_up_${kind}.txt`}
+              plotUrl={upPlotUrl} notebook={upNotebook.notebook} />
+            <GeneListSection title="Downregulated Genes" genes={downResult?.downGenes ?? result.downGenes} filename={`ora_down_${kind}.txt`}
+              plotUrl={downPlotUrl} notebook={downNotebook.notebook} />
             {result.backgroundMode === "experiment" ? (
-              <GeneListSection title="Tested-gene Background" genes={result.backgroundGenes} filename={`ora_background_${kind}.txt`} />
+              <GeneListSection title="Tested-gene Background" genes={upResult?.backgroundGenes ?? result.backgroundGenes} filename={`ora_background_${kind}.txt`}
+                plotUrl={upPlotUrl} notebook={upNotebook.notebook} />
             ) : null}
             <TableSection
               title="Upregulated Terms"
-              rows={oraExportRows(result.upTerms, result, {
+              plotUrl={upPlotUrl} notebook={upNotebook.notebook}
+              rows={oraExportRows(upResult?.upTerms ?? result.upTerms, upResult ?? result, {
                 analysisSource: sourceMode,
                 direction: "up",
                 condition1,
@@ -858,7 +863,8 @@ export function OraPanel({
             />
             <TableSection
               title="Downregulated Terms"
-              rows={oraExportRows(result.downTerms, result, {
+              plotUrl={downPlotUrl} notebook={downNotebook.notebook}
+              rows={oraExportRows(downResult?.downTerms ?? result.downTerms, downResult ?? result, {
                 analysisSource: sourceMode,
                 direction: "down",
                 condition1,

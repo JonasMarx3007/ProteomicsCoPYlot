@@ -132,10 +132,6 @@ async function withStore<T>(
   }
 }
 
-export function supportsNativeSaveStatePicker(): boolean {
-  return typeof pickerGlobal().showSaveFilePicker === "function";
-}
-
 export function supportsNativeOpenStatePicker(): boolean {
   return typeof pickerGlobal().showOpenFilePicker === "function";
 }

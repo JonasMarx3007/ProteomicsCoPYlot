@@ -1,4 +1,6 @@
 import PlotImage from "../../components/PlotImage";
+import InteractivePlot from "../../components/InteractivePlot";
+import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -92,6 +94,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
   const [coverageResult, setCoverageResult] = useState<PeptideCoverageResponse | null>(null);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
+  const [coverageNotebook, setCoverageNotebook] = useState<RenderedNotebook | null>(null);
+  const coverageRequestUrl = buildPlotUrl('/api/peptide/sequence-coverage', coverage);
 
   useEffect(() => {
     writePersistedUiState("peptide.level.v1", { rt, modification, missedCleavage, coverage });
@@ -234,7 +238,9 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       { signal: controller.signal }
     )
       .then((response) => {
+        if (controller.signal.aborted) return;
         setCoverageResult(response);
+        setCoverageNotebook({ url: coverageRequestUrl, token: response.notebookToken ?? null });
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -249,7 +255,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
     return () => {
       controller.abort();
     };
-  }, [activeTab, coverage.chunkSize, coverage.protein, coverage.species, overview]);
+  }, [activeTab, coverage.chunkSize, coverage.protein, coverage.species, coverageRequestUrl, overview]);
 
   useEffect(() => {
     saveQcReportSettings("peptide", {
@@ -389,6 +395,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
             title="Retention Time Plot"
             url={rtPlotUrl}
             downloadName="peptide_rt_plot.png"
+            notebookEnabled
             renderMode={rtInteractive ? "html" : "image"}
           />
         </>
@@ -418,7 +425,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           {!hasMetadata ? (
             <InfoBanner message="Generate protein annotation in Data > Annotation to generate the modification plot." />
           ) : (
-            <ImagePlotCard title="Modification Plot" url={modificationPlotUrl} downloadName="peptide_modification_plot.png" />
+            <ImagePlotCard title="Modification Plot" url={modificationPlotUrl} downloadName="peptide_modification_plot.png" notebookEnabled />
           )}
         </>
       ) : null}
@@ -457,7 +464,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
           {!hasMetadata ? (
             <InfoBanner message="Generate protein annotation in Data > Annotation to generate the missed cleavage plot." />
           ) : (
-            <ImagePlotCard title="Missed Cleavage Plot" url={missedCleavagePlotUrl} downloadName="peptide_missed_cleavage_plot.png" />
+            <ImagePlotCard title="Missed Cleavage Plot" url={missedCleavagePlotUrl} downloadName="peptide_missed_cleavage_plot.png" notebookEnabled />
           )}
         </>
       ) : null}
@@ -521,6 +528,7 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm text-slate-600">Coverage map for the selected protein.</div>
                   {coverageDownloadUrl ? (
+                    <div className="flex flex-wrap items-center gap-2">
                     <a
                       href={coverageDownloadUrl}
                       download={`${coverageResult.protein}_${coverageResult.species}_coverage.txt`}
@@ -528,6 +536,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                     >
                       Download TXT
                     </a>
+                    <NotebookDownload plotUrl={coverageRequestUrl} rendered={coverageNotebook} />
+                    </div>
                   ) : null}
                 </div>
                 <pre className="mt-4 max-h-[28rem] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-700">
@@ -671,14 +681,17 @@ function ImagePlotCard({
   downloadName,
   renderMode = "image",
   heightCm = 15,
+  notebookEnabled = false,
 }: {
   title: string;
   url: string;
   downloadName: string;
   renderMode?: "image" | "html";
   heightCm?: number;
+  notebookEnabled?: boolean;
 }) {
   const [downloadFormat, setDownloadFormat] = useState<PlotDownloadFormat>("png");
+  const [notebook, setNotebook] = useState<RenderedNotebook | null>(null);
 
   const downloadUrl = withPlotDownloadFormat(url, downloadFormat);
   const downloadFilename = withPlotDownloadFilename(downloadName, downloadFormat);
@@ -707,8 +720,10 @@ function ImagePlotCard({
             >
               Download Plot
             </a>
+            {notebookEnabled ? <NotebookDownload plotUrl={url} rendered={notebook} /> : null}
           </div>
         ) : (
+          <div className="flex flex-wrap items-center gap-2">
           <a
             href={url}
             target="_blank"
@@ -717,11 +732,19 @@ function ImagePlotCard({
           >
             Open Interactive Plot
           </a>
+          {notebookEnabled ? <NotebookDownload plotUrl={url} rendered={notebook} /> : null}
+          </div>
         )}
       </div>
       {renderMode === "image" ? (
         <div className="mt-4">
-          <PlotImage url={url} alt={title} />
+          <PlotImage url={url} alt={title} onRendered={notebookEnabled ? (renderedUrl, token) => setNotebook({ url: renderedUrl, token }) : undefined} />
+        </div>
+      ) : notebookEnabled ? (
+        <div className="mt-4">
+          <InteractivePlot url={url} title={`${title} interactive`}
+            height={`max(${cmToIframeHeight(heightCm)}px, 78vh)`}
+            onRendered={(renderedUrl, token) => setNotebook({ url: renderedUrl, token })} />
         </div>
       ) : (
         <iframe

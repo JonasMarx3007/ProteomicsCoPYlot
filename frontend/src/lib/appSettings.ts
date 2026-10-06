@@ -1,3 +1,4 @@
+import { migrateAdvancedSettingsMap } from "./plotSerialization";
 import type { AdvancedPlotSettings } from "./types";
 import { IS_VIEWER_MODE } from "./appMode";
 
@@ -101,7 +102,7 @@ export function getAdvancedPlotSettingsByKey(): Record<string, AdvancedPlotSetti
   try {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, AdvancedPlotSettings>)
+      ? (migrateAdvancedSettingsMap(parsed as Record<string, AdvancedPlotSettings>) as Record<string, AdvancedPlotSettings>)
       : {};
   } catch {
     return {};

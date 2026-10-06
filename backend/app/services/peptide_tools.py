@@ -778,7 +778,7 @@ def peptide_missed_cleavage_plot(
         ax.bar(range(len(sample_order)), subset, bottom=bottom, label=str(count))
         bottom += subset.to_numpy(dtype=float)
 
-    ax.set_ylabel("Peptides with missed cleavage (%)")
+    ax.set_ylabel("Peptides by missed cleavages (%)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
     # Name the rule on the plot: the same peptides give different counts under
     # trypsin and trypsin/Lys-C, so the figure is ambiguous without it.
@@ -875,8 +875,17 @@ def _peptide_starts(sequence: str, peptide: str):
 
 
 def _protein_peptides(frame: pd.DataFrame, protein: str) -> list[str]:
+    """Peptides of the protein that were measured: at least one row with a quantity above 0.
+
+    A report lists every precursor it searched for, including runs where it
+    was not quantified; a peptide with no quantity anywhere was not observed
+    and must not cover sequence. Without a quantity column every row counts.
+    """
     members = frame[_protein_names_column(frame)].fillna("").astype(str).str.split(";")
     selected = members.map(lambda names: protein in [name.strip() for name in names])
+    if "Precursor.Quantity" in frame.columns:
+        quantity = pd.to_numeric(frame["Precursor.Quantity"], errors="coerce")
+        selected &= np.isfinite(quantity) & (quantity > 0)
     return frame.loc[selected, _stripped_sequence_column(frame)].dropna().astype(str).unique().tolist()
 
 

@@ -44,6 +44,14 @@ class PairingUpdateRequest(BaseModel):
     pairs: list[SamplePairAssignment] = Field(min_length=2)
 
 
+class IdentifierTranslationStep(BaseModel):
+    sourceColumn: str
+    inputDb: str
+    outputDb: str
+    toolVersion: str
+    outputs: dict[str, dict[str, str]]
+
+
 class AnnotationFilterConfig(BaseModel):
     method: FilterMethod = "at_least_n"
     minPresent: int = Field(default=0, ge=0)
@@ -76,9 +84,13 @@ class Log2DetectionResponse(BaseModel):
     isLog2Transformed: bool | None
     sampleCount: int
     reason: str
+    # Shown under the "already log2" checkbox when the values look like log10,
+    # ln or count data; the detection itself cannot tell those from log2.
+    scaleHint: str | None = None
 
 
 class AnnotationImputationInfo(BaseModel):
+    toolVersion: str | None = None
     mode: str = "none"
     applied: bool = False
     qValue: float | None = None
@@ -94,6 +106,22 @@ class AnnotationImputationInfo(BaseModel):
     rowCount: int | None = None
     missingBefore: int | None = None
     missingAfter: int | None = None
+
+
+class PhosprotLineage(BaseModel):
+    """Historical inputs at collapse time, never inferred from the current session."""
+    model_config = {"extra": "forbid"}
+    toolVersion: str
+    aggregation: PhosprotAggregationMode
+    source: Literal["filtered", "log2", "imputed"]
+    coverageSource: Literal["filtered", "log2"]
+    filter: AnnotationFilterConfig
+    imputation: AnnotationImputationInfo | None
+    siteCount: int = Field(ge=0)
+    sampleCount: int = Field(ge=0)
+    robustMinFraction: float | None = Field(default=None, gt=0, le=1)
+    # Sites below this localization probability were left out of the collapse.
+    localizationCutoff: float = Field(default=0.0, ge=0, le=1)
 
 
 class AnnotationResultResponse(BaseModel):
@@ -134,3 +162,6 @@ class PhosprotAggregateRequest(BaseModel):
     # Must match the UI default in frontend/src/features/metadata/AnnotationPage.tsx.
     mode: PhosprotAggregationMode = "robust_site_median"
     source: PhosprotAggregationSource = "non_imputed"
+    # Only phosphosites with at least this localization probability are
+    # collapsed; sites without a probability are excluded above 0.
+    localizationCutoff: float = Field(default=0.0, ge=0, le=1)

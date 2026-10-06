@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.data_tools import (
+    PhosphoLocalizationCutoffRequest,
+    PhosphoLocalizationCutoffResponse,
     ConditionPaletteResponse,
     ConditionPaletteUpdateRequest,
     DistributionSummaryResponse,
@@ -30,6 +32,7 @@ from app.services.data_tools import (
     run_id_translation,
     run_imputation,
 )
+from app.api.download_headers import attachment_disposition
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,7 +70,7 @@ def download_imputation_route(payload: ImputationRunRequest) -> StreamingRespons
         return StreamingResponse(
             buffer,
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": attachment_disposition(filename)},
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -94,7 +97,11 @@ def completeness_tables_route(
     kind: AnnotationKind,
     outlierThreshold: float = 50.0,
     includeId: bool = True,
+    snapshot: str = "",
 ) -> CompletenessTablesResponse:
+    if snapshot:
+        from app.services.notebook_completeness import snapshot_tables
+        return snapshot_tables(kind, snapshot, include_id=includeId, outlier_threshold=outlierThreshold)
     try:
         return completeness_tables(
             kind=kind,
@@ -127,7 +134,7 @@ def download_id_translation_route(payload: IdTranslationRequest) -> StreamingRes
         return StreamingResponse(
             buffer,
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": attachment_disposition(filename)},
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -159,3 +166,36 @@ def set_condition_colors_route(
     except Exception as e:
         LOGGER.exception("Failed to save condition colors")
         raise HTTPException(status_code=500, detail="Failed to save condition colors.") from e
+
+
+def _localization_cutoff_response() -> PhosphoLocalizationCutoffResponse:
+    from app.services.annotation_store import get_annotation
+    from app.services.dataset_store import get_current_dataset
+    from app.services.functions import LOCALIZATION_COLUMN
+    from app.services.phospho_localization import get_localization_cutoff
+
+    annotation = get_annotation("phospho")
+    frame = getattr(annotation, "source_data", None) if annotation is not None else None
+    if frame is None or getattr(frame, "empty", True):
+        dataset = get_current_dataset("phospho")
+        frame = getattr(dataset, "frame", None)
+    available = frame is not None and LOCALIZATION_COLUMN in frame.columns
+    return PhosphoLocalizationCutoffResponse(cutoff=get_localization_cutoff(), available=bool(available))
+
+
+@router.get("/phospho-localization-cutoff", response_model=PhosphoLocalizationCutoffResponse)
+def get_phospho_localization_cutoff_route() -> PhosphoLocalizationCutoffResponse:
+    return _localization_cutoff_response()
+
+
+@router.post("/phospho-localization-cutoff", response_model=PhosphoLocalizationCutoffResponse)
+def set_phospho_localization_cutoff_route(
+    payload: PhosphoLocalizationCutoffRequest,
+) -> PhosphoLocalizationCutoffResponse:
+    from app.services.phospho_localization import set_localization_cutoff
+
+    try:
+        set_localization_cutoff(payload.cutoff)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return _localization_cutoff_response()

@@ -18,6 +18,7 @@ import {
   getModelCapability,
   getOllamaGpuStatus,
   getOllamaModels,
+  getProviderDefaultModels,
   installOllamaModel,
   removeOllamaModel,
   grantCloudAiConsent,
@@ -25,6 +26,7 @@ import {
   type AssistantResult,
 } from "../lib/api";
 import { runAssistant } from "../lib/runAssistant";
+import AssistantChangeLog from "./AssistantChangeLog";
 import { AssistantConversation } from "../lib/assistantConversation";
 
 // A stable empty mode, so the assistant's view does not change identity on
@@ -53,11 +55,6 @@ const MAX_MODEL_HISTORY_MESSAGES = 8;
 const CHAT_INPUT_MAX_CHARS = 32_000;
 const DEFAULT_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_ENDPOINT ?? "").trim();
 const DEFAULT_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
-const API_PROVIDER_DEFAULT_MODELS: Record<Exclude<ChatProvider, "ollama">, string> = {
-  openai: "gpt-4o-mini",
-  anthropic: "claude-3-5-sonnet-latest",
-  gemini: "gemini-2.0-flash",
-};
 
 
 function ModelCapabilityIndicator({ capability }: { capability: ModelCapabilityResponse | null }) {
@@ -114,7 +111,10 @@ export default function AppShell({
   const [chatModel, setChatModel] = useState("");
   const [chatOllamaEndpoint, setChatOllamaEndpoint] = useState(DEFAULT_OLLAMA_ENDPOINT);
   const [chatOllamaEndpointActive, setChatOllamaEndpointActive] = useState(DEFAULT_OLLAMA_ENDPOINT);
-  const [chatRemoteModel, setChatRemoteModel] = useState(API_PROVIDER_DEFAULT_MODELS.openai);
+  const [chatRemoteModel, setChatRemoteModel] = useState("");
+  // Cloud default models come from the server, which keeps the only list.
+  // Empty until loaded; an empty model name is resolved to the default there too.
+  const [providerDefaults, setProviderDefaults] = useState<Record<string, string>>({});
   const [chatApiKey, setChatApiKey] = useState("");
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
@@ -208,10 +208,19 @@ export default function AppShell({
   }, [chatMessages, chatLoading, chatOpen]);
 
   useEffect(() => {
+    if (!aiEnabled) return;
+    let cancelled = false;
+    getProviderDefaultModels()
+      .then((models) => { if (!cancelled) setProviderDefaults(models); })
+      .catch(() => { /* the server applies its default to an empty model name */ });
+    return () => { cancelled = true; };
+  }, [aiEnabled]);
+
+  useEffect(() => {
     if (!aiEnabled) {
       setChatModel("");
       setChatProvider("ollama");
-      setChatRemoteModel(API_PROVIDER_DEFAULT_MODELS.openai);
+      setChatRemoteModel("");
       setChatOllamaEndpoint(DEFAULT_OLLAMA_ENDPOINT);
       setChatOllamaEndpointActive(DEFAULT_OLLAMA_ENDPOINT);
       chatOllamaEndpointAppliedRef.current = DEFAULT_OLLAMA_ENDPOINT;
@@ -596,7 +605,7 @@ export default function AppShell({
                             if (!nextProvider || nextProvider === chatProvider) return;
                             setChatProvider(nextProvider);
                             if (nextProvider !== "ollama") {
-                              setChatRemoteModel(API_PROVIDER_DEFAULT_MODELS[nextProvider]);
+                              setChatRemoteModel(providerDefaults[nextProvider] ?? "");
                             }
                             resetChatForModelChange();
                           }}
@@ -766,7 +775,7 @@ export default function AppShell({
                             type="text"
                             value={chatRemoteModel}
                             onChange={(event) => setChatRemoteModel(event.target.value)}
-                            placeholder="Model (e.g. gpt-4o-mini)"
+                            placeholder={providerDefaults[chatProvider] ? `Model (default ${providerDefaults[chatProvider]})` : "Model (server default)"}
                             disabled={chatLoading}
                             className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
                           />
@@ -848,6 +857,7 @@ export default function AppShell({
               </div>
             </div>
             <div className="border-t border-slate-200 p-4">
+              <AssistantChangeLog />
               {chatError ? (
                 <div className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                   {chatError}

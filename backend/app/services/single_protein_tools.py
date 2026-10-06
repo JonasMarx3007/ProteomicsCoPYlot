@@ -30,6 +30,7 @@ from app.services.plot_styling import (
     resolve_marker,
 )
 from app.services.runtime_cache import apply_cached_wrappers
+from app.services.stats_tools import _gene_tokens
 from app.services.plotting_common import get_plt as _get_plt, get_sns as _get_seaborn
 from app.services.data_tools import metadata_for_kind as _metadata_for_kind
 
@@ -142,15 +143,6 @@ def _feature_label(value: object, kind: AnnotationKind) -> str:
     return text
 
 
-def _gene_tokens(value: object) -> list[str]:
-    if value is None or pd.isna(value):
-        return []
-    text = str(value or "").strip()
-    if not text:
-        return []
-    return [token.strip() for token in text.split(";") if token.strip()]
-
-
 def _feature_options(
     frame: pd.DataFrame,
     key_col: str,
@@ -201,6 +193,52 @@ def _feature_match_mask(
     # Stripped, because _feature_options strips before it offers a value: an
     # unstripped compare here would make a legitimate selection match nothing.
     return text_values.str.strip().isin(selected)
+
+
+def _unmatched_names(
+    values: pd.Series,
+    selected: list[str],
+    kind: AnnotationKind,
+    identifier: SingleProteinIdentifier,
+) -> list[str]:
+    """The selected names `_feature_match_mask` would match to no row.
+
+    Built from the same keys the mask compares, as sets, so a long selection
+    against a large table costs one pass over the column.
+    """
+    text_values = values.astype(str)
+    if identifier == "genes":
+        keys = {token.casefold() for value in text_values for token in _gene_tokens(value)}
+    elif kind == "protein":
+        keys = set(text_values.str.split(";").str[0].str.strip())
+    else:
+        keys = set(text_values.str.strip())
+    names = dict.fromkeys(str(item).strip() for item in selected if str(item).strip())
+    return [name for name in names if (name.casefold() if identifier == "genes" else name) not in keys]
+
+
+def unmatched_lineplot_names(
+    kind: AnnotationKind,
+    proteins: list[str],
+    identifier: str = "workflow",
+    data_source: str = "data",
+) -> list[str]:
+    """Selected proteins/sites/genes the lineplot cannot draw, because no row has them.
+
+    The lineplot draws what matches and leaves the rest out; these are named
+    under the plot so a typo or a full group name ("P1;P2", where the leading
+    accession "P1" is what is matched) does not vanish without a word.
+    """
+    frame, _, _ = _analysis_frame(kind, data_source=data_source)
+    resolved_identifier = _normalize_identifier(identifier)
+    key_col = _line_box_key_column_for_identifier(kind, frame, identifier=resolved_identifier)
+    return _unmatched_names(frame[key_col], proteins, kind, resolved_identifier)
+
+
+def unmatched_names_notice(names: list[str]) -> str:
+    if not names:
+        return ""
+    return f"Not found in this dataset, so not plotted: {', '.join(names)}."
 
 
 def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[dict[str, str]]:
@@ -354,13 +392,12 @@ def _lineplot_long_table(
             melted.groupby(["Feature", "Sample"], as_index=False, sort=True)["Value"]
             .median()
         )
-        melted = melted.dropna(subset=["Value"])
         melted = melted.merge(
             feature_metadata.rename(columns={"__feature_tokens": "Feature"}),
             on="Feature",
             how="left",
         )
-        melted["SampleCount"] = melted.groupby("Feature")["Sample"].transform("nunique")
+        melted["SampleCount"] = melted.groupby("Feature")["Value"].transform("count")
         melted["Aggregation"] = "Per-sample median"
         melted["Warning"] = melted.apply(
             lambda row: (
@@ -408,9 +445,8 @@ def _lineplot_long_table(
             melted.groupby(["Feature", "Sample"], as_index=False, sort=True)["Value"]
             .median()
         )
-        melted = melted.dropna(subset=["Value"])
         melted = melted.merge(feature_metadata, on="Feature", how="left")
-        melted["SampleCount"] = melted.groupby("Feature")["Sample"].transform("nunique")
+        melted["SampleCount"] = melted.groupby("Feature")["Value"].transform("count")
         melted["Aggregation"] = "Per-sample median"
         melted["Warning"] = melted.apply(
             lambda row: (
@@ -425,10 +461,6 @@ def _lineplot_long_table(
     melted["Value"] = pd.to_numeric(melted["Value"], errors="coerce").replace(
         [np.inf, -np.inf], np.nan
     )
-    melted = melted.dropna(subset=["Value"])
-    if melted.empty:
-        raise ValueError("Selected proteins/sites have no numeric values in the chosen conditions.")
-
     melted = melted.merge(
         labeled[["new_sample", "condition"]].rename(columns={"new_sample": "Sample", "condition": "Condition"}),
         on="Sample",
@@ -619,9 +651,8 @@ def _heatmap_matrix(
     else:
         raise ValueError("valueType must be 'log2' or 'z'.")
 
-    # Constant rows become undefined after row z-scoring and carry no pattern
-    # information. They were already absent from the final heatmap; remove them
-    # before checking whether the remaining matrix can be clustered.
+    # Remove undefined rows before clustering. The shared z-score helper keeps
+    # constant rows as zero; they remain valid heatmap rows.
     matrix = matrix.replace([np.inf, -np.inf], np.nan).dropna(how="all")
     if matrix.empty:
         raise ValueError("Heatmap matrix is empty after preprocessing.")
@@ -707,8 +738,8 @@ def single_protein_options(
         .astype(str)
         .str.strip()
         .loc[lambda series: series != ""]
+        # In the order the metadata lists them, as every plot draws them.
         .drop_duplicates()
-        .sort_values()
         .tolist()
     )
     return {
@@ -767,6 +798,7 @@ def single_protein_lineplot_plot(
     dpi: int = 300,
     advanced: dict | None = None,
     data_source: str = "data",
+    show_na_low: bool = False,
 ) -> bytes:
     plt = _get_plt()
     table, ordered_samples = _lineplot_long_table(
@@ -784,10 +816,15 @@ def single_protein_lineplot_plot(
 
     for idx, feature in enumerate(features):
         subset = table[table["Feature"] == feature].sort_values("x")
+        measured = subset["Value"].notna()
+        # The analysis matrix is log2: 0 corresponds to linear intensity 1.
+        # Baseline vertices are presentation only, never observations or markers.
+        line = subset if show_na_low else subset.loc[measured]
         ax.plot(
-            subset["x"],
-            subset["Value"],
+            line["x"],
+            line["Value"].fillna(0.0) if show_na_low else line["Value"],
             marker="o",
+            markevery=np.flatnonzero(measured.to_numpy()).tolist() if show_na_low else None,
             label=feature,
             color=color_map(idx),
         )

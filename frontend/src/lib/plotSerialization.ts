@@ -152,7 +152,7 @@ export function compactElementSettings(
  * There used to be three near-copies of this -- in `App.tsx`, the QC page and
  * the Completeness page -- and they had drifted. The Completeness page dropped
  * the legend, box, colour-scale, condition-label and condition-colour keys, and
- * `textXOffset`/`textYOffset` were forwarded only by the page whose plots do
+ * the text offsets were forwarded only by the page whose plots did
  * not read them. Each omission is silent in exactly the same way: the panel
  * stores the setting, the URL never carries it, and the plot comes back looking
  * as though it had never been set.
@@ -166,8 +166,9 @@ export function compactElementSettings(
  * instructions.
  */
 export function compactAdvancedPlotSettings(
-  settings: AdvancedPlotSettings
+  stored: AdvancedPlotSettings
 ): AdvancedPlotSettings {
+  const settings = migrateAdvancedPlotSettings(stored);
   const next: AdvancedPlotSettings = {};
   const trimmed = (value: string | undefined) => value?.trim();
 
@@ -188,8 +189,6 @@ export function compactAdvancedPlotSettings(
   if (Number.isFinite(settings.yTickLabelRotation)) {
     next.yTickLabelRotation = settings.yTickLabelRotation;
   }
-  if (settings.textXOffset) next.textXOffset = settings.textXOffset;
-  if (settings.textYOffset) next.textYOffset = settings.textYOffset;
 
   if (positive(settings.legendFontSize)) next.legendFontSize = settings.legendFontSize;
   if (settings.legendXOffset) next.legendXOffset = settings.legendXOffset;
@@ -237,9 +236,6 @@ export function compactAdvancedPlotSettings(
 
   const axisLineColor = trimmed(settings.axisLineColor);
   const axisLineStyle = trimmed(settings.axisLineStyle);
-  if (typeof settings.axisLineVisible === "boolean") {
-    next.axisLineVisible = settings.axisLineVisible;
-  }
   if (axisLineColor) next.axisLineColor = axisLineColor;
   if (positive(settings.axisLineWidth)) next.axisLineWidth = settings.axisLineWidth;
   if (axisLineStyle) next.axisLineStyle = axisLineStyle;
@@ -267,5 +263,49 @@ export function compactAdvancedPlotSettings(
   if (conditionColors) next.conditionColors = conditionColors;
 
   Object.assign(next, compactMarkerSettings(settings), compactElementSettings(settings));
+  return next;
+}
+
+/**
+ * Settings saved by an older panel, in the keys the current one writes.
+ *
+ * The single frame switch (`axisLineVisible`) became four per-side boxes, so an
+ * old "frame off" is all four sides off unless a side was already set on its
+ * own; the value-label offsets (`textXOffset`/`textYOffset`) had no control
+ * since the redesign and are dropped. Applied where a saved session's settings
+ * are read back, so the panel shows what the plot draws. The backend does the
+ * same (`migrate_advanced_plot_settings` in plot_styling.py) for reports and
+ * any request that still carries the old keys.
+ */
+export function migrateAdvancedPlotSettings(settings: AdvancedPlotSettings): AdvancedPlotSettings {
+  const legacy = settings as AdvancedPlotSettings & {
+    axisLineVisible?: unknown;
+    textXOffset?: unknown;
+    textYOffset?: unknown;
+  };
+  if (!("axisLineVisible" in legacy) && !("textXOffset" in legacy) && !("textYOffset" in legacy)) {
+    return settings;
+  }
+  const { axisLineVisible, textXOffset: _x, textYOffset: _y, ...rest } = legacy;
+  void _x;
+  void _y;
+  const next: AdvancedPlotSettings = { ...rest };
+  if (typeof axisLineVisible === "boolean") {
+    next.axisLineTop ??= axisLineVisible;
+    next.axisLineRight ??= axisLineVisible;
+    next.axisLineBottom ??= axisLineVisible;
+    next.axisLineLeft ??= axisLineVisible;
+  }
+  return next;
+}
+
+/** `migrateAdvancedPlotSettings` over a saved map of plot keys or tabs. */
+export function migrateAdvancedSettingsMap<K extends string>(
+  settings: Partial<Record<K, AdvancedPlotSettings>>
+): Partial<Record<K, AdvancedPlotSettings>> {
+  const next: Partial<Record<K, AdvancedPlotSettings>> = {};
+  for (const [key, value] of Object.entries(settings) as [K, AdvancedPlotSettings | undefined][]) {
+    if (value && typeof value === "object") next[key] = migrateAdvancedPlotSettings(value);
+  }
   return next;
 }

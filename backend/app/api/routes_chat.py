@@ -25,6 +25,7 @@ from app.services.chat_tools import (
     ollama_install_model,
     ollama_models,
     ollama_remove_model,
+    provider_default_models,
 )
 from app.services.cloud_ai_consent import (
     CloudAiConsentRequired,
@@ -108,6 +109,14 @@ def model_capability_route(
     except Exception as exc:
         LOGGER.exception("Failed to inspect model capabilities")
         raise HTTPException(status_code=500, detail="Failed to inspect model capabilities.") from exc
+
+
+@router.get("/provider-defaults")
+def provider_defaults_route() -> dict[str, dict[str, str]]:
+    """The cloud default models, so the browser does not keep its own copy."""
+    if not ai_mode_enabled():
+        raise HTTPException(status_code=404, detail="AI features are disabled for this app mode.")
+    return {"models": provider_default_models()}
 
 
 @router.get("/gpu-status", response_model=OllamaGpuStatusResponse)

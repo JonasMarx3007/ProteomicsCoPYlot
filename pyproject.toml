@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "GPL-3.0-only"
 license-files = ["LICENSE", "NOTICE"]
 authors = [
-  { name = "ProteomicsCoPYlot contributors" }
+  { name = "Jonas Marx" }
 ]
 keywords = ["proteomics", "phosphoproteomics", "plotting", "notebooks"]
 classifiers = [
@@ -81,6 +81,13 @@ markers = [
     # Runs the published example notebook end to end. Slower than a unit test
     # because it renders real figures; deselect with -m "not slow".
     "slow: exercises a full published workflow rather than one function",
+    # Set from the folder a test lives in (tests/conftest.py); see tests/README.md.
+    "unit: one function or module, in tests/unit/",
+    "reference: compared with an established implementation (scipy, statsmodels), in tests/reference/",
+    "integration: through the API or a loaded project, in tests/integration/",
+    "parity: the app, the pip package and the R package agree, in tests/parity/",
+    "contracts: frontend and backend agree on names and values, in tests/contracts/",
+    "repo: repository layout and release hygiene, in tests/repo/",
 ]
 
 
@@ -117,6 +124,11 @@ line-ending = "lf"
 "backend/app/main.py" = ["F841"]
 "backend/app/services/viewer_bootstrap.py" = ["F841"]
 "backend/app/services/restore_state.py" = ["F841"]
+# A pytest fixture imported from another test module and then requested as a
+# test parameter reads to Pyflakes as an unused import (F401) redefined by the
+# argument (F811). `ruff check --fix` in the pre-commit hook would delete those
+# imports and break the tests, so both are off under tests/.
+"tests/**/*.py" = ["F401", "F811"]
 
 # --- Type checking ----------------------------------------------------------
 # Deliberately lenient. A strict mypy on 500 KB of untyped scientific code
@@ -134,14 +146,16 @@ check_untyped_defs = false
 disallow_untyped_defs = false
 
 # --- Coverage ---------------------------------------------------------------
-# Measured, not gated. A threshold nobody can meet gets bypassed, and one set at
-# today's number blocks the next honest refactor. Run it when you want to know;
-# add `fail_under` when the team agrees on a floor.
+# Gated in CI (tests.yml, Python 3.13 job). The floor sits a few points below
+# the 85 % measured on 2026-10-02 with R installed -- that runner has no R, so
+# the R bridge code runs less there. Raise it as coverage grows; do not lower it
+# to make a run pass.
 [tool.coverage.run]
 source = ["backend/app", "proteomicscopylot"]
 omit = ["*/__init__.py", "*/example_data/*"]
 
 [tool.coverage.report]
+fail_under = 82
 skip_empty = true
 exclude_also = [
     "if TYPE_CHECKING:",

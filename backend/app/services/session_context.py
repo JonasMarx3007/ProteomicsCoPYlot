@@ -3,21 +3,17 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from app.services.env_settings import env_flag
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; keeps this module import-light
     from starlette.responses import Response
 
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 _SESSION_ID_CTX: ContextVar[str] = ContextVar("copylot_session_id", default="global")
 _TAB_ID_CTX: ContextVar[str] = ContextVar("copylot_tab_id", default="")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
-
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default)).strip().lower() in TRUTHY_VALUES
 
 
 def session_isolation_enabled() -> bool:
@@ -28,7 +24,7 @@ def session_isolation_enabled() -> bool:
     overwrite the first one's uploaded data. That is only ever safe for a
     single-user desktop run, so it has to be asked for rather than assumed.
     """
-    return _truthy_env("COPYLOT_SESSION_ISOLATION", "1")
+    return env_flag("COPYLOT_SESSION_ISOLATION", True)
 
 
 def session_cookie_name() -> str:
@@ -72,7 +68,7 @@ def session_header_name() -> str:
 
 
 def session_cookie_secure() -> bool:
-    return _truthy_env("COPYLOT_SESSION_COOKIE_SECURE", "0")
+    return env_flag("COPYLOT_SESSION_COOKIE_SECURE")
 
 
 def new_session_id() -> str:

@@ -13,8 +13,7 @@ on:
     paths:
       - "proteomicscopylot/**"
       - "backend/app/**"
-      - "tests/package/**"
-      - "tests/r/**"
+      - "tests/**"
       - "examples/**"
       - "backend/requirements.lock"
       - "pyproject.toml"
@@ -23,8 +22,7 @@ on:
     paths:
       - "proteomicscopylot/**"
       - "backend/app/**"
-      - "tests/package/**"
-      - "tests/r/**"
+      - "tests/**"
       - "examples/**"
       - "backend/requirements.lock"
       - "pyproject.toml"
@@ -56,29 +54,35 @@ jobs:
           r-version: "4.4.2"
           use-public-rspm: true
 
+      # tests/r/renv.lock pins every R package these tests use (CRAN snapshot
+      # and Bioconductor release), so the comparisons run against the same R
+      # code each time. The cache is keyed on the lockfile.
       - name: Cache R packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.R_LIBS_USER }}
-          key: r-${{ runner.os }}-${{ hashFiles('.github/workflows/cross-implementation.yml') }}
+          key: r-${{ runner.os }}-4.4.2-${{ hashFiles('tests/r/renv.lock') }}
 
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev libfontconfig1-dev \
                                   libharfbuzz-dev libfribidi-dev libfreetype6-dev libpng-dev \
-                                  libtiff5-dev libjpeg-dev
+                                  libtiff5-dev libjpeg-dev libuv1-dev
 
-      - name: Install R packages
+      - name: Install the locked R packages
         run: |
-          install.packages(c("VennDiagram", "hexbin", "plotly", "readxl", "scatterplot3d", "arrow", "BiocManager"))
-          BiocManager::install(c("vsn", "limma"), ask = FALSE, update = FALSE)
+          options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(),
+            paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))
+          if (!requireNamespace("renv", quietly = TRUE)) install.packages("renv")
+          renv::restore(lockfile = "tests/r/renv.lock", library = Sys.getenv("R_LIBS_USER"), prompt = FALSE)
         shell: Rscript {0}
 
       - name: Report the R environment
         run: |
           cat("R", R.version.string, "\n")
-          for (pkg in c("VennDiagram", "hexbin", "plotly", "readxl", "scatterplot3d", "arrow", "vsn", "limma")) {
+          for (pkg in c("VennDiagram", "hexbin", "plotly", "readxl", "scatterplot3d", "arrow",
+                        "jsonlite", "testthat", "vsn", "limma")) {
             ok <- requireNamespace(pkg, quietly = TRUE)
             cat(sprintf("  %-15s %s\n", pkg, if (ok) as.character(packageVersion(pkg)) else "MISSING"))
           }
@@ -90,11 +94,24 @@ jobs:
           pip install -r backend/requirements.lock
           pip install --no-deps -e .
 
-      - name: Run standalone R notebook-function tests
+      - name: Run the R package's own tests (testthat)
         run: Rscript tests/r/test_notebook_functions.R
 
+      # COPYLOT_REQUIRE_R turns "R or an R package is missing" from a skip into
+      # a failure, so a broken R setup cannot pass quietly.
       - name: Run package and cross-implementation tests
-        run: pytest tests/package -q
+        env:
+          COPYLOT_REQUIRE_R: "1"
+          COPYLOT_REQUIRE_VSN: "1"
+        run: pytest tests/parity tests/unit/package -q -rs
+
+      # The main test job has no R, so these skip there.
+      - name: Run the other tests that call R
+        env:
+          COPYLOT_REQUIRE_VSN: "1"
+          COPYLOT_REQUIRE_R: "1"
+        run: |
+          pytest tests/unit tests/integration tests/reference -q -rs -m requires_r --ignore=tests/unit/package
 
       - name: Fail if the run littered the working tree
         run: |

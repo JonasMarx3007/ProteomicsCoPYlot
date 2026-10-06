@@ -12,9 +12,14 @@ _DIMENSION = re.compile(r"(?<![\w.+-])(?:2D|3D)(?![\w.%])", re.I)
 _METHOD_FIELDS = frozenset({"method", "selected_test_description", "SD", "scale", "source",
     "log2_uploads", "for_significance", "for_y_axis", "x", "y", "log2FC", "whiskers", "outliers"})
 _METHOD_WORDING = {
-    "mean_condition2_minus_mean_condition1": "mean log2 intensity in the second condition minus that in the first",
+    # log2FC = mean(condition1) - mean(condition2), the orientation used everywhere.
+    "mean_condition1_minus_mean_condition2": "mean log2 intensity in the first condition minus that in the second",
+    "mean_of_complete_pair_differences_condition1_minus_condition2":
+        "mean of the complete-pair differences, first condition minus second",
     "negative_log10_of_selected_p_metric": "negative log10 of the selected p-value metric",
     "neg_log10_adj_pval": "negative log10 of the BH-adjusted p-value",
+    "neg_log10_selected_pval": "negative log10 of the selected p-value",
+    "selected_pval": "selected p-value",
     "neg_log10_pval": "negative log10 of the raw p-value",
     "adj_pval": "BH-adjusted p-value", "pval": "raw p-value",
     "unpaired_student_t_test_with_pooled_variance": "unpaired Student's t-test with pooled variance",
@@ -190,13 +195,47 @@ def _comparison(left: str, right: str, values: dict[str, str], evidence: list[Ev
     return f"The {metric} for {a[3][1]} ({values[left]}{suffix}) is {relation} that for {b[3][1]} ({values[right]}{suffix})."
 
 
-def render_hypotheses(hypotheses: list[str]) -> list[str]:
+_TENTATIVE = re.compile(r"\b(?:may|might|could|possibly|possible|hypothes\w*)\b", re.I)
+_STATISTICAL_CLAIM = re.compile(r"\bsignifican\w*|\bp[- ]?values?\b|\bfdr\b|\bfold[- ]?changes?\b", re.I)
+# Fields whose values name the features the evidence is about.
+_ENTITY_FIELDS = frozenset({"entity", "protein", "proteins", "gene", "genes", "site", "term", "feature", "values"})
+# Generic nouns those fields also carry ("entity=proteins"); they name no feature.
+_GENERIC_ENTITY_WORDS = frozenset({
+    "protein", "proteins", "phosphosite", "phosphosites", "phosphoprotein", "phosphoproteins", "peptide",
+    "peptides", "gene", "genes", "site", "sites", "feature", "features", "none", "true", "false",
+})
+
+
+def evidence_entity_names(evidence: list[Evidence]) -> set[str]:
+    """Known feature names, so digits in identifiers are not treated as measurements."""
+    names: set[str] = set()
+    for item in evidence:
+        for line in item.text.splitlines():
+            for part in line.split("|")[1:]:
+                if "=" not in part:
+                    continue
+                field, value = (piece.strip() for piece in part.split("=", 1))
+                if field.lower() not in _ENTITY_FIELDS and not field.lower().endswith("_entity"):
+                    continue
+                for token in re.split(r"[;,]", value):
+                    token = token.strip()
+                    if len(token) >= 3 and re.search(r"[A-Za-z]", token) and token.lower() not in _GENERIC_ENTITY_WORDS:
+                        names.add(token)
+    return names
+
+
+def render_hypotheses(hypotheses: list[str], entity_names: set[str] | frozenset[str] = frozenset()) -> list[str]:
     result = []
     for text in hypotheses:
         if not text.strip():
             continue
-        if "{{" in text or "}}" in text or _NUMBER.search(_DIMENSION.sub("dimension", text)):
+        numeric_text = text
+        for name in sorted(entity_names, key=len, reverse=True):
+            numeric_text = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "feature", numeric_text, flags=re.I)
+        if "{{" in text or "}}" in text or _NUMBER.search(_DIMENSION.sub("dimension", numeric_text)):
             raise ValueError("Hypotheses cannot introduce numerical claims or evidence references.")
+        if not _TENTATIVE.search(text) or _STATISTICAL_CLAIM.search(text):
+            raise ValueError("Hypotheses require explicitly tentative wording and cannot make statistical claims.")
         result.append("One possible explanation—not established by these results—is: " + text.strip())
     return result
 

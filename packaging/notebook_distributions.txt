@@ -1,0 +1,17 @@
+# Distributions whose version a notebook export pins in requirements.txt.
+# Both desktop builds copy their metadata explicitly (--copy-metadata), so the
+# frozen app can read the installed versions whatever PyInstaller's collect-all
+# does with an import name that differs from its distribution (sklearn ->
+# scikit-learn, umap -> umap-learn). tests/unit/notebook/test_notebook_packaging.py
+# fails if a notebook source imports a package that is missing here.
+matplotlib
+matplotlib-venn
+numpy
+openpyxl
+pandas
+plotly
+pyarrow
+scikit-learn
+scipy
+seaborn
+umap-learn

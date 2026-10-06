@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -31,9 +33,35 @@ function buildModeManifest(): Plugin {
   };
 }
 
+// public/manuals also holds the editable .docx sources (about 6 MB) and PDFs
+// no page links to. Vite copies public/ as it is, so without this every build
+// shipped them. Only the PDFs App.tsx opens through `manualPath(...)` are kept;
+// linking another one there is all it takes to ship it.
+function linkedManualsOnly(): Plugin {
+  let outDir = "dist";
+  let root = process.cwd();
+  return {
+    name: "copylot-linked-manuals-only",
+    apply: "build",
+    configResolved(config) {
+      root = config.root;
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    closeBundle() {
+      const manuals = path.join(outDir, "manuals");
+      if (!existsSync(manuals)) return;
+      const app = readFileSync(path.join(root, "src", "App.tsx"), "utf-8");
+      const linked = new Set([...app.matchAll(/manualPath\("([^"]+)"\)/g)].map((match) => match[1]));
+      for (const entry of readdirSync(manuals)) {
+        if (!linked.has(entry)) rmSync(path.join(manuals, entry), { recursive: true, force: true });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: basePath,
-  plugins: [react(), tailwindcss(), buildModeManifest()],
+  plugins: [react(), tailwindcss(), buildModeManifest(), linkedManualsOnly()],
   server: {
     port: 5173,
     strictPort: true,

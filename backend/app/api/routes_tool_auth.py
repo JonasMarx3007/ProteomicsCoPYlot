@@ -51,6 +51,11 @@ def tool_auth_login_route(
             status_code=500,
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
+    except Exception as exc:
+        # Anything else is ours to fix: logged with its traceback, answered with
+        # one fixed sentence, as the viewer login does.
+        LOGGER.exception("Failed to authenticate tool session")
+        raise HTTPException(status_code=500, detail="Failed to authenticate tool session.") from exc
     LOGIN_RATE_LIMIT.clear(request, bucket="password")
     set_session_cookie(response, rotated)
     return ToolAuthLoginResponse(ok=True)
@@ -73,6 +78,11 @@ def tool_auth_link_login_route(
             status_code=500,
             detail="Tool access configuration is unavailable. Contact the administrator.",
         ) from exc
+    except Exception as exc:
+        # Anything else is ours to fix: logged with its traceback, answered with
+        # one fixed sentence, as the viewer login does.
+        LOGGER.exception("Failed to authenticate tool session")
+        raise HTTPException(status_code=500, detail="Failed to authenticate tool session.") from exc
     LOGIN_RATE_LIMIT.clear(request, bucket="link")
     set_session_cookie(response, rotated)
     return ToolAuthLoginResponse(ok=True)
