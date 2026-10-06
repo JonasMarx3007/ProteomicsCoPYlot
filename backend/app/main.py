@@ -744,7 +744,7 @@ async def health():
 
 
 if _FRONTEND_DIST is None:
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     async def root():
         return {"message": "Backend is running"}
 else:

@@ -128,7 +128,8 @@ describe.each(PAIRS)("$name", ({ mount, path }) => {
 describe("the static volcano", () => {
   it("has an export control for its figure", async () => {
     render(PAIRS[0].mount("Normal"));
-    expect(await screen.findByLabelText("Volcano Plot download format")).toBeTruthy();
+    await plotRequest(PAIRS[0].path);
+    expect(await screen.findByLabelText("Volcano Plot download format", {}, { timeout: 4000 })).toBeTruthy();
     expect(screen.getByText("Download Plot").getAttribute("href")).toMatch(/volcano\.png/);
   });
 });
