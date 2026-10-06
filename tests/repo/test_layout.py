@@ -201,10 +201,11 @@ def test_windows_port_check_preserves_existing_listeners() -> None:
         frontend.bind(("127.0.0.1", 0))
         ports = [backend.getsockname()[1], frontend.getsockname()[1]]
         def check():
-            return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
                 str(ROOT / "packaging/windows/check_launch_ports.ps1"),
                 "-BackendPort", str(ports[0]), "-FrontendPort", str(ports[1])],
-                capture_output=True, text=True, timeout=20)
+                # Cold PowerShell startup on hosted Windows can exceed 20 seconds.
+                capture_output=True, text=True, timeout=60)
         assert check().returncode == 0
         for listener, port in zip((backend, frontend), ports):
             listener.listen()
