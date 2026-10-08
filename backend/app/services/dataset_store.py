@@ -20,7 +20,6 @@ class StoredTableDataset:
     filename: str
     kind: TableDatasetKind
     frame: pd.DataFrame
-    suggested_is_log2_transformed: bool | None = None
     source_path: str | None = None
     phosprot_aggregation: str | None = None
     phosprot_lineage: PhosprotLineage | None = None
@@ -147,11 +146,11 @@ def session_has_datasets() -> bool:
 def list_packages(*, include_empty: bool = False) -> list[str]:
     state = _session_state()
     if include_empty:
-        names = sorted(state.datasets_by_package.keys(), key=lambda value: value.lower())
+        packages = sorted(state.datasets_by_package.keys(), key=lambda value: value.lower())
         active = get_active_package()
-        if active in names:
-            names = [active] + [value for value in names if value != active]
-        return names
+        if active in packages:
+            packages = [active] + [value for value in packages if value != active]
+        return packages
     names: list[str] = []
     for name, package_state in state.datasets_by_package.items():
         if any(package_state.get(kind) is not None for kind in ("protein", "phospho", "phosprot", "peptide")):

@@ -28,7 +28,7 @@ export const qcTabs: { key: QcTab; label: string }[] = [
   { key: "coverage", label: "Coverage Plot" },
   { key: "histogram", label: "Histogram Intensity" },
   { key: "boxplot", label: "Boxplot Intensity" },
-  { key: "cv", label: "Cov Plot" },
+  { key: "cv", label: "CV Plot" },
   { key: "pca", label: "Principal Component Analysis" },
   { key: "abundance", label: "Abundance Plot" },
   { key: "correlation", label: "Correlation Plot" },

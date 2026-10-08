@@ -1,4 +1,11 @@
-.copylot_source_file <- tryCatch(sys.frame(1)$ofile, error = function(e) "")
+# The directory this file was sourced from, for the bundled GO table. source()
+# records the path as `ofile` in its own frame; searching every frame, innermost
+# first, also finds it when source() is called from inside another function.
+.copylot_source_file <- tryCatch({
+  sourced <- Filter(function(path) is.character(path) && length(path) == 1L && nzchar(path),
+    lapply(rev(sys.frames()), function(frame) frame$ofile))
+  if (length(sourced)) sourced[[1]] else ""
+}, error = function(e) "")
 .copylot_source_dir <- if (is.null(.copylot_source_file) || !nzchar(.copylot_source_file)) {
   ""
 } else {
@@ -311,10 +318,6 @@ row_zscore <- function(matrix) {
 }
 
 # BASIC AND DATA
-resource_path_manual <- function(relative_path) {
-  file.path(getwd(), relative_path)
-}
-
 bool_to_str <- function(value) {
   if (isTRUE(value)) "TRUE" else if (identical(value, FALSE)) "FALSE" else ""
 }
@@ -363,12 +366,6 @@ sanitize_dataframe <- function(df) {
   df
 }
 
-resource_path <- function(relative_path) {
-  source_file <- sys.frame(1)$ofile %||% "."
-  base_path <- dirname(normalizePath(source_file, mustWork = FALSE))
-  file.path(base_path, relative_path)
-}
-
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
 }
@@ -406,6 +403,35 @@ rename_cols <- function(df) {
 
 info <- function() {
   cat("Proteomics CoPYlot is a package/app to streamline the analysis of proteomics data. Have fun!\n")
+}
+
+# The bundled HEK293 example (WT vs GRK, five replicates each), by short name.
+EXAMPLE_DATA_FILES <- c(
+  protein = "20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv",
+  phospho = "20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv",
+  phosphoprotein = "phosprot_filtered_data_full.csv",
+  protein_metadata = "protein_metadata_full.csv",
+  phospho_metadata = "phospho_metadata_full.csv"
+)
+
+# Path of a bundled example file: one of the names of EXAMPLE_DATA_FILES. The
+# files sit next to this script, in the repository and in the installed package.
+example_data_path <- function(name) {
+  if (!name %in% names(EXAMPLE_DATA_FILES)) {
+    stop("Unknown example '", name, "'; choose one of: ",
+      paste(names(EXAMPLE_DATA_FILES), collapse = ", "), ".", call. = FALSE)
+  }
+  if (!nzchar(.copylot_source_dir)) {
+    stop("Source notebook_functions.R from its file to locate the bundled examples.", call. = FALSE)
+  }
+  path <- file.path(.copylot_source_dir, "example_data", EXAMPLE_DATA_FILES[[name]])
+  if (!file.exists(path)) stop("The bundled example file is missing: ", path, call. = FALSE)
+  normalizePath(path)
+}
+
+# Read a bundled example file with read_data(); see EXAMPLE_DATA_FILES for the names.
+load_example_data <- function(name) {
+  read_data(example_data_path(name))
 }
 
 read_data <- function(file) {
@@ -736,6 +762,8 @@ filter_localization <- function(data, cutoff = 0, column = "PTM_localization") {
   data[.localization_keep(data, cutoff, column), , drop = FALSE]
 }
 
+# Modes as in the pip package; "mean" averages only the sites quantified in
+# every sample, so all samples use the same sites.
 transform_phosprot <- function(
     data,
     meta,
@@ -850,6 +878,7 @@ transform_phosprot <- function(
       )
     )
 
+    used_indices <- eligible_indices
     if (mode == "robust_site_median") {
       values <- if (eligible_count) log2_matrix[eligible_indices, , drop = FALSE] else matrix(NA_real_, 0, length(samples))
       if (eligible_count) {
@@ -875,9 +904,16 @@ transform_phosprot <- function(
           call. = FALSE
         )
       )
+      # 'mean' and 'sum_ignore_na' use only sites quantified in every sample, so
+      # all samples use the same sites and coverage cannot flip a fold change.
+      used_indices <- if (mode %in% c("mean", "sum_ignore_na")) {
+        eligible_indices[rowSums(!is.finite(linear_matrix[eligible_indices, , drop = FALSE])) == 0]
+      } else {
+        eligible_indices
+      }
       for (sample_index in seq_along(samples)) {
-        row[[samples[sample_index]]] <- if (eligible_count) {
-          sum_fun(linear_matrix[eligible_indices, sample_index])
+        row[[samples[sample_index]]] <- if (length(used_indices)) {
+          sum_fun(linear_matrix[used_indices, sample_index])
         } else {
           NA_real_
         }
@@ -895,7 +931,10 @@ transform_phosprot <- function(
     }
     for (sample_index in seq_along(samples)) {
       supplied_matrix <- if (mode == "robust_site_median") log2_matrix else linear_matrix
-      row[[paste0("site_supplied__", samples[sample_index])]] <- sum(is.finite(supplied_matrix[eligible_indices, sample_index]))
+      supplied <- is.finite(supplied_matrix[used_indices, sample_index])
+      row[[paste0("site_supplied__", samples[sample_index])]] <- sum(supplied)
+      row[[paste0("site_measured__", samples[sample_index])]] <- sum(
+        supplied & is.finite(coverage_matrix[used_indices, sample_index]))
     }
     row
   })
@@ -912,7 +951,8 @@ transform_phosprot <- function(
     "site_num", "site_num_eligible", samples,
     "site_observed_min", "site_observed_mean", "site_coverage_min",
     "site_coverage_mean", "site_complete_samples",
-    paste0("site_observed__", samples), paste0("site_coverage__", samples), paste0("site_supplied__", samples)
+    paste0("site_observed__", samples), paste0("site_coverage__", samples),
+    paste0("site_supplied__", samples), paste0("site_measured__", samples)
   )
   output[numeric_columns] <- lapply(output[numeric_columns], function(x) as.numeric(as.character(x)))
 
@@ -961,8 +1001,11 @@ qqnorm_plot <- function(data, meta, seed = 187) {
   .plot_result()
 }
 
-# Reference: the downshifted-normal model and its defaults follow Perseus
-# (Tyanova et al. 2016, doi:10.1038/nmeth.3901).
+# Methods: "quantile" (default) draws around the q-quantile of the observed values
+# with adj_std times their standard deviation, in the spirit of MinProb (Lazar et
+# al. 2016, doi:10.1021/acs.jproteome.5b00981). "numerical" is the downshifted
+# normal with Perseus defaults, mean - down_shift * SD and width * SD (Tyanova et
+# al. 2016, doi:10.1038/nmeth.3901).
 # Phosphoprotein workflows: impute phosphosites BEFORE transform_phosprot, never
 # the collapsed matrix. Retain the non-imputed site matrix for coverage checks;
 # aggregate imputed log2 values with data_scale="log2".
@@ -974,6 +1017,10 @@ impute_values <- function(data, meta, q=0.01, adj_std=0.3, ret=0, sample_wise=TR
   if (method == "normal") method <- "quantile"
   if (!method %in% c("quantile", "numerical")) {
     stop("Imputation method must be 'quantile' or 'numerical'.", call. = FALSE)
+  }
+  spread <- suppressWarnings(as.numeric(if (method == "quantile") adj_std else width))
+  if (length(spread) != 1L || is.na(spread) || spread <= 0) {
+    stop("Adjust standard deviation must be greater than 0.", call. = FALSE)
   }
   samples <- as.character(meta$sample)
   output <- data
@@ -2430,7 +2477,7 @@ corr_plot <- function(data, meta, method="Matrix", id=TRUE, full_range=FALSE, wi
 # count towards n and the degrees of freedom -- so results carry, per row, how
 # many values in each group were imputed (`n_imputed__<group>`) and their total
 # (`imputed_values`). `observed` is the matrix before impute_values(), with the
-# same rows in the same order; a phosphoprotein table's own site_observed__
+# same rows in the same order; a phosphoprotein table's own site-contribution
 # columns are used without it. Mirrors the backend and pip package.
 
 imputed_cell_mask <- function(values, observed) {
@@ -2442,7 +2489,8 @@ imputed_cell_mask <- function(values, observed) {
 }
 
 site_observed_imputed_mask <- function(frame, sample_columns) {
-  columns <- paste0("site_observed__", sample_columns)
+  prefix <- if (any(startsWith(names(frame), "site_measured__"))) "site_measured__" else "site_observed__"
+  columns <- paste0(prefix, sample_columns)
   supplied_columns <- paste0("site_supplied__", sample_columns)
   if (!all(c(columns, supplied_columns) %in% names(frame))) return(NULL)
   present <- !is.na(.numeric_matrix(frame, sample_columns))
@@ -2656,6 +2704,16 @@ imputed_value_counts <- function(mask, groups) {
   }, numeric(1))
   }
 
+  # Every variance component constant: the standard error is zero and the test
+  # undefined, so the row gets no p-value ("Unavailable") instead of p = 0.
+  variation_parts <- if (is_paired) list(round(differences, 9)) else list(x_data, y_data)
+  for (columns in list(control1_columns, control2_columns)) {
+    if (is.null(columns) || !length(columns)) next
+    variation_parts[[length(variation_parts) + 1]] <-
+      .numeric_matrix(data, as.character(columns))[valid, , drop = FALSE]
+  }
+  pvalues[without_variation(variation_parts)] <- NA_real_
+
   # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
   # significance is called on (raw when `uncorrected`), as in the web app.
   adjusted_pvalues <- pvalues
@@ -2668,7 +2726,12 @@ imputed_value_counts <- function(mask, groups) {
   output$adj_pval <- adjusted_pvalues
   output$selected_pval <- if (uncorrected) pvalues else adjusted_pvalues
   # A variance warning is independent of whether the test has a finite p-value.
-  output$zero_variance <- constant_within_group(x_data) | constant_within_group(y_data)
+  # Paired tests: the variation that matters is that of the differences.
+  output$zero_variance <- if (is_paired) {
+    constant_differences(differences)
+  } else {
+    constant_within_group(x_data) | constant_within_group(y_data)
+  }
   if (is_paired) output$n_pairs <- as.integer(n_pairs)
   attr(output, "imputed_counts") <- imputed_counts
   output
@@ -3085,30 +3148,36 @@ anova_data_f <- function(
   # A row constant throughout yields NaN: the F test is undefined. Drop those
   # rather than carrying all-NA rows into the result, so they do not count
   # towards the BH denominator. A row constant within every condition but
-  # different between them gets F = Inf and p = 0; it stays, flagged
-  # zero_variance below. Matches the Python implementations.
+  # different between them gets F = Inf; it stays, flagged zero_variance below,
+  # but gets no p-value -- the same rule the volcano applies to rows without
+  # variation. Matches the Python implementations.
   computable <- is.finite(pvalues)
   output <- output[computable, , drop = FALSE]
   if (!is.null(imputed_counts)) imputed_counts <- imputed_counts[computable, , drop = FALSE]
   f_statistics <- f_statistics[computable]
   pvalues <- pvalues[computable]
 
+  # No variation within any condition: an infinite F says only that the
+  # variance is absent, not that the difference is large. No p-value, out of
+  # the BH family, shown as Unavailable.
+  zero_variance <- Reduce(`&`, lapply(condition_columns, function(columns) {
+    constant_within_group(output[, columns, drop = FALSE])
+  }))
+  pvalues[zero_variance] <- NA_real_
+
   output$f_statistic <- f_statistics
   output$pval <- pvalues
   output$adj_pval <- p.adjust(pvalues, "BH")
   output$selected_pval <- if (uncorrected) pvalues else output$adj_pval
   output$significance <- ifelse(
-    output$selected_pval < in_pval,
-    "Significant",
-    "Not significant"
+    is.na(pvalues),
+    "Unavailable",
+    ifelse(output$selected_pval < in_pval, "Significant", "Not significant")
   )
   output$neg_log10_selected_pval <- -log10(
     pmax(output$selected_pval, .Machine$double.xmin)
   )
-  # No variation within any condition: significance from absent variance.
-  output$zero_variance <- Reduce(`&`, lapply(condition_columns, function(columns) {
-    constant_within_group(output[, columns, drop = FALSE])
-  }))
+  output$zero_variance <- zero_variance
 
   for (condition in conditions) {
     output[[paste0("mean_", condition)]] <- rowMeans(
@@ -3389,7 +3458,7 @@ quantile_normalize <- function(values) {
 # features carry. It is NA when fewer than `min_complete` features are complete.
 MISSINGNESS_GAP <- 0.10
 MISSINGNESS_MIN_COMPLETE <- 20
-.missingness_method_labels <- c(median = "Median centering", quantile = "Quantile normalization")
+.missingness_method_labels <- c(median = "Median centering", quantile = "Quantile normalization", vsn = "VSN")
 
 missingness_imbalance <- function(data, meta, min_gap = MISSINGNESS_GAP,
                                   min_complete = MISSINGNESS_MIN_COMPLETE) {
@@ -3423,8 +3492,8 @@ missingness_imbalance <- function(data, meta, min_gap = MISSINGNESS_GAP,
 }
 
 # The warning for missingness_imbalance(), or NULL when there is nothing to say.
-# Only median centering and quantile normalization are concerned: both are
-# computed from each sample's observed values.
+# Median centering, quantile normalization and VSN are concerned: all are
+# fitted on each sample's observed values.
 missingness_imbalance_warning <- function(table, method, min_gap = MISSINGNESS_GAP) {
   key <- tolower(trimws(as.character(method %||% "none")))
   if (!key %in% names(.missingness_method_labels) || !nrow(table) || !any(table$flagged)) {
@@ -3573,6 +3642,18 @@ constant_within_group <- function(values) {
   low <- suppressWarnings(apply(matrix_values, 1, min, na.rm = TRUE))
   high <- suppressWarnings(apply(matrix_values, 1, max, na.rm = TRUE))
   counts > 0 & is.finite(low) & is.finite(high) & low == high
+}
+
+# constant_within_group() for paired differences, ignoring float subtraction
+# noise: differences are compared at nine decimals.
+constant_differences <- function(differences) {
+  constant_within_group(round(as.matrix(differences), 9))
+}
+
+# Rows where every variance component is constant: the standard error is zero,
+# so the t statistic is undefined and the row gets no p-value ("Unavailable").
+without_variation <- function(groups) {
+  Reduce(`&`, lapply(groups, constant_within_group))
 }
 
 # Mean across a condition's replicates, blanked where too few were observed.
@@ -4566,6 +4647,12 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
   )
 }
 
+# A what-if projection of the volcano, not a power calculation: the observed mean
+# fold changes are held fixed and the pooled t-test is recomputed with the
+# variance multiplied by `mod_var` and, when `mod_n` > 1, `mod_n` replicates per
+# group. Nothing is drawn at random. The observed fold changes include noise, so
+# the projection is optimistic for effects that look large, and it does not
+# estimate the probability of detecting a true effect.
 volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, workflow="Protein", mod_var=1, mod_n=0) {
   condition1_columns <- meta$sample[meta$condition == condition1]
   condition2_columns <- meta$sample[meta$condition == condition2]
@@ -4612,6 +4699,10 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
   t_statistic <- log2fc / standard_error
   degrees_freedom <- n1 + n2 - 2
   pvals <- 2 * stats::pt(abs(t_statistic), degrees_freedom, lower.tail = FALSE)
+  # Rows without variation in either group: no p-value at any projected n,
+  # out of the BH family -- the volcano's rule, so the projection at the
+  # observed n reproduces the volcano table.
+  pvals[without_variation(list(x_data, y_data))] <- NA_real_
   adjusted_pvals <- pvals
   finite <- is.finite(pvals)
   adjusted_pvals[finite] <- p.adjust(pvals[finite], method = "BH")
@@ -5157,13 +5248,13 @@ normalize_protease <- function(value = "trypsin") {
 # cleaves K-P because Lys-C is not proline-inhibited, while R-P stays blocked
 # because trypsin is the only activity cutting R. The lookaheads need perl=TRUE
 # and are equivalent to the Python implementations.
-count_missed_cleavages <- function(sequences, protease = "trypsin") {
+count_missed_cleavages <- function(sequence, protease = "trypsin") {
   pattern <- if (normalize_protease(protease) == "trypsin_lysc") {
     "K(?=.)|R(?=[^P])"
   } else {
     "[KR](?=[^P])"
   }
-  matches <- gregexpr(pattern, toupper(as.character(sequences)), perl = TRUE)
+  matches <- gregexpr(pattern, toupper(as.character(sequence)), perl = TRUE)
   vapply(matches, function(m) if (m[1] == -1L) 0L else length(m), integer(1))
 }
 
@@ -5387,7 +5478,6 @@ compare_prot_line <- function(data, meta, conditions, inputs, id=TRUE, header=TR
 
   values <- .numeric_matrix(filtered_data, ordered_samples)
   labels <- as.character(filtered_data[[key_col]])
-  if (workflow == "Protein") labels <- sub(";.*$", "", labels)
   unique_labels <- unique(labels)
   aggregated_values <- matrix(
     NA_real_,
@@ -5513,7 +5603,7 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
       } else {
         ""
       }
-      paste0("Measured ", sub(";.*$", "", protein), " intensity values (log2)", source_suffix)
+      paste0("Measured ", protein, " intensity values (log2)", source_suffix)
     } else {
       ""
     }
@@ -6137,7 +6227,9 @@ correlation_xy_intensity <- function(data, meta, condition1, condition2, alias1=
   .require_pkg("VennDiagram")
 
   colors <- colors %||% .tab10[seq_along(sets)]
-  venn <- VennDiagram::venn.diagram(
+  # With file logging off, VennDiagram logs every argument to the console as
+  # INFO messages instead; they say nothing about the result.
+  venn <- suppressMessages(VennDiagram::venn.diagram(
     x = sets,
     category.names = labels,
     filename = NULL,
@@ -6154,7 +6246,7 @@ correlation_xy_intensity <- function(data, meta, condition1, condition2, alias1=
     # Without this the package writes a futile.logger file into the user's
     # working directory on every call, one per venn drawn.
     disable.logging = TRUE
-  )
+  ))
 
   grid::grid.newpage()
   grid::grid.draw(grid::grobTree(children = do.call(grid::gList, venn)))

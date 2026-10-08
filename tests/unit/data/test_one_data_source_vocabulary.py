@@ -31,7 +31,6 @@ import pkgutil
 from typing import Literal, get_args, get_origin
 
 import pytest
-from fastapi.testclient import TestClient
 
 
 from app.main import app
@@ -44,7 +43,6 @@ from app.services.functions import (
     qc_matrix,
     select_matrix,
 )
-from app.services.viewer_bootstrap import load_viewer_state
 
 
 CHOOSING_MODULES = [

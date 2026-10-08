@@ -3,11 +3,11 @@ from app.schemas.assistant import Evidence
 
 METHODS = {
     "data.distribution": "Pools sample values from the distribution service's selected source and reports descriptive statistics, with population standard deviation. A QQ plot compares a distribution with a normal reference; numerical summaries alone do not establish normality, batch effects or an imputation mechanism.",
-    "stats.simulation": "A hypothetical sensitivity analysis holds observed mean fold changes fixed while changing variance and effective sample-size assumptions in independent-sample t-tests. It is not new experimental data or a validated power prediction. Interpret the selected pooled-variance/Welch test and raw/BH-adjusted p-values explicitly.",
+    "stats.simulation": "A what-if projection, not a power calculation: the observed mean fold changes are held fixed and the independent-sample t-test is recomputed for an assumed variance factor and number of replicates per group. Nothing is drawn at random. The observed fold changes include noise, so the projection is optimistic for effects that look large, and it does not estimate the probability of detecting a true effect. Interpret the selected pooled-variance/Welch test and raw/BH-adjusted p-values explicitly.",
     "phospho.ksea": "Prepares testable phosphosite fold changes and p-values for an external Kinase Library tool. These are inputs, not calculated kinase activity. Uploaded external kinase plots have separate provenance and are not evidence of activity from the export table; substrate counts and kinase-level scores require the external result data.",
     "analysis.canvas": "The canvas composes multiple analysis tiles and reusable entity selections. It is not a single statistical test. Interpret each tile using its own source, contrast and method; the composition itself does not supply a combined scientific conclusion.",
     "stats.anova": "One-way independent-groups ANOVA tests whether all condition means are equal, assuming equal population variances. Rows need sufficient replicates in every condition; undefined tests are excluded. The selected metric is raw p or BH-adjusted p across finite tests. Omnibus significance does not identify a particular condition pair or direction. Optional Tukey HSD provides pairwise follow-up; clustering of significant rows describes patterns and is not an additional significance test.",
-    "qc.cv": "CV = 100 * sample standard deviation / mean, within each condition. Use original uploaded linear intensities before application normalization and imputation; back-transform log2 uploads first. Sample SD uses ddof=1. Missing observations are excluded, not zero-filled; nonfinite CVs are excluded. This is descriptive variability, not a statistical significance test or a universal quality threshold.",
+    "qc.cv": "CV = 100 * sample standard deviation / mean, within each condition, on linear intensities before imputation (log2 values are back-transformed first; when a normalization was applied, the normalized values are used, except after VSN). Sample SD uses ddof=1. Missing observations are excluded, not zero-filled; nonfinite CVs are excluded. This is descriptive variability, not a statistical significance test or a universal quality threshold.",
     "stats.volcano": "The x-axis is the selected contrast's log2 fold change; the first selected condition minus the second for the ordinary comparison, so a positive value means higher in condition 1. The control variant is (condition 1 - its control) minus (condition 2 - its control). The y-axis is -log10 of the selected p-metric, adjusted unless uncorrected values were selected. BH adjustment controls false discovery rate across the applicable test family. The selected test, pairing and thresholds determine inference; inspect results for their actual values. Log2FC=1 corresponds to a twofold ratio. Statistical significance does not prove biological importance or causality.",
     "qc.coverage": "Counts observed entities in the selected workflow and samples. Peptide and precursor counts are different quantities. Detection depends on the declared scale: zero is non-detection on linear intensity but a valid value on log2 intensity. Missing values remain missing.",
     "qc.histogram": "Displays an intensity distribution. The selected aggregation and data source determine what each observation represents; do not infer individual-sample behavior from condition averages.",
@@ -29,12 +29,36 @@ METHODS = {
     "phospho.coverage": "Counts sites using the application's localization categories. Unknown localization is unclassified rather than assigned an invented quality class.",
     "phospho.distribution": "Summarizes the selected phosphosite distribution. Interpret the actual aggregation and localization selections from results rather than assuming defaults.",
     "phospho.sty": "Summarizes serine, threonine and tyrosine site composition. Composition reflects measured sites and experimental coverage, not unbiased proteome-wide phosphorylation prevalence.",
-    "phospho.phosprotRegulation": "Compares phosphorylation-related and protein-related regulation under the selected contrasts and tests. Inspect source and contrast direction; do not equate site abundance with occupancy.",
+    "phospho.phosprotRegulation": "Tests every phosphosite with the selected volcano test and thresholds, then plots each protein with at least one significant site: the x-axis is the sum of its upregulated sites' log2 fold changes, the y-axis the absolute sum of its downregulated sites' log2 fold changes. It uses site-level data only; protein abundance is not included or corrected for. Inspect source and contrast direction; do not equate site abundance with occupancy.",
     "peptide.rtPlot": "Displays peptide retention-time information. Observed differences do not alone establish chromatography failure; check source, units and aggregation.",
     "peptide.modification": "Summarizes observed peptide modifications. Counts depend on peptide/precursor identity and selected quantity; they do not directly establish modification occupancy.",
     "peptide.missedCleavage": "Summarizes missed-cleavage information under the selected peptide processing rules. A descriptive distribution alone does not determine digestion quality without a stated criterion.",
     "peptide.sequenceCoverage": "Maps observed peptide sequences onto a protein sequence. Sequence coverage is not intensity coverage and does not prove absence of unobserved sequence regions.",
 }
+
+
+_CV_SOURCE_SENTENCES = {
+    "none": "Use original uploaded linear intensities before application of imputation; back-transform log2 uploads first.",
+    "vsn": "After VSN the unnormalized intensities of the same rows are used, because VSN's glog output back-transformed is not a linear intensity; imputation is not applied.",
+}
+
+
+def cv_method_text(normalization: str | None) -> str:
+    """The CV method sentence for the normalization the session applied.
+
+    With no normalization the original wording stands (uploaded linear
+    intensities before imputation); a normalization is mentioned only when one
+    was applied, VSN with its exception.
+    """
+    mode = str(normalization or "none").strip().lower()
+    source = _CV_SOURCE_SENTENCES.get(mode) or (
+        f"Computed on the {mode}-normalized values back-transformed to linear intensities, before imputation."
+    )
+    return (
+        "CV = 100 * sample standard deviation / mean, within each condition. " + source
+        + " Sample SD uses ddof=1. Missing observations are excluded, not zero-filled; nonfinite CVs are excluded."
+        " This is descriptive variability, not a statistical significance test or a universal quality threshold."
+    )
 
 
 def method_evidence(module: str) -> Evidence:

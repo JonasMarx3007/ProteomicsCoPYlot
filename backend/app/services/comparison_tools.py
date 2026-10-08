@@ -193,41 +193,19 @@ def _pearson_vectors_with_features(
     condition2: str = "",
     min_present: int = 1,
 ) -> tuple[pd.Series, pd.Series, pd.Series, str, str]:
+    """`_pearson_vectors` plus each row's feature identifier (for hover text)."""
+    x, y, label1, label2 = _pearson_vectors(
+        kind=kind,
+        mode=mode,
+        sample1=sample1,
+        sample2=sample2,
+        condition1=condition1,
+        condition2=condition2,
+        min_present=min_present,
+    )
     frame, meta, _ = _analysis_context(kind)
-    mode_norm = str(mode).strip().lower()
-    id_col = _id_column(kind, frame)
-    features = frame[id_col].fillna("").astype(str)
-
-    if mode_norm in {"single", "sample"}:
-        if not sample1 or not sample2:
-            raise ValueError("Please select two samples.")
-        if sample1 == sample2:
-            raise ValueError("Please select two different samples.")
-        if sample1 not in frame.columns or sample2 not in frame.columns:
-            raise ValueError("Selected samples are not available in the current dataset.")
-
-        x = pd.to_numeric(frame[sample1], errors="coerce")
-        y = pd.to_numeric(frame[sample2], errors="coerce")
-        return x, y, features, sample1, sample2
-
-    if mode_norm == "condition":
-        if not condition1 or not condition2:
-            raise ValueError("Please select two conditions.")
-        if condition1 == condition2:
-            raise ValueError("Please select two different conditions.")
-
-        cols1 = meta.loc[meta["condition"] == condition1, "sample"].astype(str).tolist()
-        cols2 = meta.loc[meta["condition"] == condition2, "sample"].astype(str).tolist()
-        cols1 = [col for col in cols1 if col in frame.columns]
-        cols2 = [col for col in cols2 if col in frame.columns]
-        if not cols1 or not cols2:
-            raise ValueError("No matching sample columns for one or both selected conditions.")
-
-        x, _ = condition_mean(frame, cols1, min_present=min_present)
-        y, _ = condition_mean(frame, cols2, min_present=min_present)
-        return x, y, features, condition1, condition2
-
-    raise ValueError("Mode must be 'Single' or 'Condition'.")
+    features = frame[_id_column(kind, frame)].fillna("").astype(str)
+    return x, y, features, label1, label2
 
 
 def pearson_correlation_table(

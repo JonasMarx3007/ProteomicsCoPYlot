@@ -15,8 +15,6 @@ from app.services.notebook_anova import anova_module, render_anova
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_volcano import inputs
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.mark.parametrize('method', ['average', 'ward', 'complete', 'weighted', 'single'])
@@ -169,7 +167,9 @@ def test_anova_snapshot_serializes_infinite_f_like_normal_api(inputs):
         response = client.get(f'/api/plots/stats/protein/anova-tables?snapshot={token}')
         assert response.status_code == 200, response.text
         row = next(row for row in response.json()['rows'] if row['ProteinNames'] == 'P0')
-        assert row['pval'] == 0
+        # No variation within any condition: no p-value (as the live API), and
+        # the infinite F is serialised as null, not as a JSON error.
+        assert row['pval'] is None and row['significance'] == 'Unavailable'
         assert row['f_statistic'] is None
     recipe = snapshots.get(get_session_id(), token)
     table = pd.read_parquet(io.BytesIO(recipe.resources['rows.parquet']))

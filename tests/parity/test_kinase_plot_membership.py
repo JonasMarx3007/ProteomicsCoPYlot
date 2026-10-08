@@ -178,7 +178,7 @@ def test_the_ksea_names_remain_aliases_of_the_kinase_library_functions():
 
 @pytest.mark.requires_r()
 def test_the_r_package_keeps_the_same_ksea_aliases(rscript):
-    """The R package keeps the same three old names, bound to the very same
+    """The R functions keep the same three old names, bound to the very same
     function objects, so an old R notebook calls the current implementation
     rather than a stale copy or nothing at all."""
     checks = "\n".join(

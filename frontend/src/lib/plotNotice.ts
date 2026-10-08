@@ -1,6 +1,6 @@
 /** Notes a plot response carries for the page, shown under the figure (never in it). */
 
-export function readNotice(response: Response, header: string): string {
+function readNotice(response: Response, header: string): string {
   const raw = response.headers.get(header) ?? "";
   try {
     return decodeURIComponent(raw);
@@ -10,7 +10,13 @@ export function readNotice(response: Response, header: string): string {
 }
 
 /** Why this figure has no notebook export, when the server could not prepare one. */
-export function notebookUnavailableNotice(response: Response): string {
+function notebookUnavailableNotice(response: Response): string {
   const reason = readNotice(response, "X-CoPYlot-Notebook-Unavailable").trim();
   return reason ? `Notebook export unavailable: ${reason}` : "";
+}
+
+/** Every note a plot response carries: the plot's own notice, then any notebook reason. */
+export function plotNotices(response: Response): string {
+  return [readNotice(response, "X-CoPYlot-Notice").trim(), notebookUnavailableNotice(response)]
+    .filter(Boolean).join(" ");
 }

@@ -39,7 +39,6 @@ dependencies = [
   "scikit-learn>=1.3,<2",
   "matplotlib-venn>=1.0,<2",
   "plotly>=5.15,<8",
-  "statsmodels>=0.14,<1",
 ]
 
 [project.optional-dependencies]
@@ -48,13 +47,14 @@ bio = [
 ]
 dev = [
   "build",
-  "httpx",
+  "httpx2",
   "ipython",
   "mypy",
   "nbformat>=4.2",
   "pytest",
   "pytest-cov",
   "ruff",
+  "statsmodels>=0.14,<1",
   "twine",
   "wheel",
 ]
@@ -85,7 +85,7 @@ markers = [
     "unit: one function or module, in tests/unit/",
     "reference: compared with an established implementation (scipy, statsmodels), in tests/reference/",
     "integration: through the API or a loaded project, in tests/integration/",
-    "parity: the app, the pip package and the R package agree, in tests/parity/",
+    "parity: the app, the pip package and the R functions agree, in tests/parity/",
     "contracts: frontend and backend agree on names and values, in tests/contracts/",
     "repo: repository layout and release hygiene, in tests/repo/",
 ]
@@ -124,11 +124,8 @@ line-ending = "lf"
 "backend/app/main.py" = ["F841"]
 "backend/app/services/viewer_bootstrap.py" = ["F841"]
 "backend/app/services/restore_state.py" = ["F841"]
-# A pytest fixture imported from another test module and then requested as a
-# test parameter reads to Pyflakes as an unused import (F401) redefined by the
-# argument (F811). `ruff check --fix` in the pre-commit hook would delete those
-# imports and break the tests, so both are off under tests/.
-"tests/**/*.py" = ["F401", "F811"]
+# Shared pytest fixtures live in conftest.py files, never imported from another
+# test module, so unused imports are reported under tests/ as everywhere else.
 
 # --- Type checking ----------------------------------------------------------
 # Deliberately lenient. A strict mypy on 500 KB of untyped scientific code
@@ -136,7 +133,9 @@ line-ending = "lf"
 # configuration catches the errors that do not need annotations to find, and
 # can be tightened one module at a time with a [[tool.mypy.overrides]] block.
 [tool.mypy]
-python_version = "3.10"
+# Match the locked Python 3.13 CI environment and its dependency stubs.
+# Runtime compatibility remains tested separately on Python 3.10–3.13.
+python_version = "3.13"
 files = ["backend/app", "proteomicscopylot"]
 ignore_missing_imports = true
 follow_imports = "silent"
@@ -144,6 +143,54 @@ warn_unused_configs = true
 warn_redundant_casts = true
 check_untyped_defs = false
 disallow_untyped_defs = false
+
+# Stepwise adoption (2026-10-06). CI runs `mypy` and must stay green. These
+# modules had findings when mypy entered CI and are excluded until fixed; to
+# adopt one, delete its line here and fix what mypy then reports. Never add a
+# module to this list: new code is checked from the start.
+[[tool.mypy.overrides]]
+module = [
+  "app.api.routes_annotations",
+  "app.api.routes_chat",
+  "app.api.routes_peptide",
+  "app.api.routes_plots",
+  "app.api.routes_restore",
+  "app.api.routes_runtime",
+  "app.schemas.plot_settings",
+  "app.services.ai_functions",
+  "app.services.analysis_functions",
+  "app.services.annotation_store",
+  "app.services.assistant_answers",
+  "app.services.assistant_narrative",
+  "app.services.assistant_routing",
+  "app.services.assistant_styling",
+  "app.services.canvas_focus",
+  "app.services.chat_tools",
+  "app.services.data_tools",
+  "app.services.functions",
+  "app.services.managed_temp",
+  "app.services.metadata_upload_store",
+  "app.services.notebook_archive",
+  "app.services.notebook_interactive",
+  "app.services.notebook_pca",
+  "app.services.notebook_qc",
+  "app.services.peptide_tools",
+  "app.services.phospho_localization",
+  "app.services.phospho_tools",
+  "app.services.plot_export",
+  "app.services.plot_images",
+  "app.services.plot_limits",
+  "app.services.plot_styling",
+  "app.services.plot_webgl",
+  "app.services.report_function",
+  "app.services.restore_state",
+  "app.services.scientific_assistant",
+  "app.services.single_protein_tools",
+  "app.services.stats_tools",
+  "app.services.viewer_bootstrap",
+  "proteomicscopylot.notebook_functions",
+]
+ignore_errors = true
 
 # --- Coverage ---------------------------------------------------------------
 # Gated in CI (tests.yml, Python 3.13 job). The floor sits a few points below

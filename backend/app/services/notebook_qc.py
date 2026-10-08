@@ -7,6 +7,7 @@ does not implement all of its advanced options. No second renderer is maintained
 from __future__ import annotations
 
 import ast
+import re
 from functools import lru_cache
 import inspect
 from pathlib import Path
@@ -15,7 +16,7 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_source import extract_notebook_source, _segment
+from app.services.notebook_source import _bindings, _global_references, _segment, extract_notebook_source
 from app.services.notebook_snapshots import NotebookSnapshots
 
 snapshots = NotebookSnapshots()
@@ -33,8 +34,56 @@ def _source(name: str) -> str:
         path = Path(sys._MEIPASS) / "notebook_sources" / name
     else:
         root = Path(__file__).resolve().parents[3]
-        path = root / ("proteomicscopylot" if name == "notebook_functions.py" else "backend/app/services") / name
-    return path.read_text(encoding="utf-8")
+        package = name in {"notebook_functions.py", "_core.py"}
+        path = root / ("proteomicscopylot" if package else "backend/app/services") / name
+    return _inline_core(path.read_text(encoding="utf-8"))
+
+
+_CORE_BLOCK = re.compile(r"^# <shared-core>.*?^# </shared-core>\n", re.MULTILINE | re.DOTALL)
+
+
+def _inline_core(text: str) -> str:
+    """Replace a module's import of the shared core with the definitions it uses.
+
+    `functions.py`, `stats_core.py` and `notebook_functions.py` import part of
+    `proteomicscopylot/_core.py` inside a `# <shared-core>` block. Notebook
+    exports must not import the application or the package, so the source they
+    are extracted from carries those definitions (and whatever they need from the
+    core) in place of the block. Imports the module already makes are not
+    repeated.
+    """
+    match = _CORE_BLOCK.search(text)
+    if match is None:
+        return text
+    wanted = {
+        alias.asname or alias.name
+        for node in ast.walk(ast.parse(match.group(0)))
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(("_core", "copylot_core"))
+        for alias in node.names
+    }
+    host = text[:match.start()] + text[match.end():]
+    bound = set().union(*(_bindings(node) for node in ast.parse(host).body))
+    core = _source("_core.py")
+    core_body = ast.parse(core).body
+    definitions: dict[str, ast.stmt] = {}
+    for node in core_body:
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            continue
+        for bound_name in _bindings(node):
+            definitions[bound_name] = node
+    selected: set[ast.stmt] = set()
+    required = set(wanted)
+    while required:
+        node = definitions.get(required.pop())
+        if node is None or node in selected:
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and _bindings(node) <= bound:
+            continue
+        selected.add(node)
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            required.update(_global_references(_segment(core, node)) - _bindings(node))
+    inlined = "\n\n".join(_segment(core, node) for node in core_body if node in selected)
+    return text[:match.start()] + inlined + "\n" + text[match.end():]
 
 
 def _definition(source: str, name: str) -> str:
@@ -116,7 +165,7 @@ def qc_source(plot: str):
     serialization = extract_notebook_source(_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
     table_code = _table_source(plot) if plot in PAIRED_PLOTS else ""
     scientific_source = _source("functions.py")
-    scientific = "\n\n".join(_definition(scientific_source, name) for name in ("raw_zero_to_nan", "intensity_unit_label", "abundance_axis_label"))
+    scientific = "\n\n".join(_definition(scientific_source, name) for name in ("raw_zero_to_nan", "condition_cvs", "intensity_unit_label", "abundance_axis_label"))
     combined = _merge_source("import math\nimport numpy as np\nimport pandas as pd\nfrom typing import Any", notebook,
                              styles, serialization, helpers, function, table_code, scientific)
     roots = ("plot_figure", "to_png_bytes", "get_plt") + (("prepare_table",) if plot in PAIRED_PLOTS else ())
@@ -133,7 +182,6 @@ def _table_source(plot: str) -> str:
     table_function = table_function.replace("_get_sample_columns(kind, frame)", "metadata['sample'].tolist()")
     table_function = table_function.replace("_metadata_for_kind(kind, frame, sample_columns)", "metadata.copy()")
     table_code += "\n\n" + table_function
-    table_code = table_code.replace("_grouped_meta_order", "_table_grouped_meta_order")
     table_code = table_code.replace("_extract_id_or_number", "extract_sample_id")
     return table_code
 
@@ -150,7 +198,8 @@ def _qc_module(plot: str):
 def render_qc(kind: str, *, plot: str = "coverage", **options) -> tuple[bytes, str]:
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
-    from app.services.data_tools import log2_qc_frame, linear_qc_frame, metadata_for_kind, _get_sample_columns
+    from app.services.data_tools import (log2_qc_frame, linear_qc_frame, linear_qc_uses_unnormalized,
+        metadata_for_kind, _get_sample_columns)
     from app.services import plot_images
     from app.services.plot_styling import advanced_condition_colors
     from app.services.plot_export import plot_output_format
@@ -167,6 +216,7 @@ def render_qc(kind: str, *, plot: str = "coverage", **options) -> tuple[bytes, s
         raise ValueError("Load and annotate a dataset before plotting.")
     lineage, imputation, uses_imputed_input, imputation_text = input_history(kind, annotation, dataset)
     data = (linear_qc_frame(kind) if plot in LINEAR_PLOTS else log2_qc_frame(kind)).copy(deep=True)
+    unnormalized = plot in LINEAR_PLOTS and linear_qc_uses_unnormalized(kind)
     metadata = metadata_for_kind(kind, data, _get_sample_columns(kind, data)).copy(deep=True)
     bound = inspect.signature(getattr(plot_images, QC_RENDERERS[plot])).bind(kind, **options)
     bound.apply_defaults()
@@ -219,6 +269,7 @@ def render_qc(kind: str, *, plot: str = "coverage", **options) -> tuple[bytes, s
                     "filter": annotation.filter_config.model_dump() if annotation.filter_config else None,
                     "filterAppliedToThisPlot": False, "filterScope": "after_collapse" if lineage else "within_this_annotation",
                     "imputationAppliedToThisPlot": uses_imputed_input,
+                    "linearQcUnnormalized": unnormalized,
                     "outputs": ["plot", "table"] if table is not None else ["plot"],
                     "renderer": "Exact UI QC renderer with portable inputs; notebook identifier helpers"},
         resources=resources,
@@ -230,7 +281,7 @@ def render_qc(kind: str, *, plot: str = "coverage", **options) -> tuple[bytes, s
                     + table_calculation,
         input_explanation=("The exact collapsed phosphoprotein Data matrix is included, without post-collapse filtering. "
                           "Upstream normalization, filtering and any imputation are documented in upstreamCollapse; collapse is not rerun. "
-                          if lineage else f"This export freezes the normalized, unfiltered, non-imputed {'linear' if plot in LINEAR_PLOTS else 'log2'} Data matrix used by the figure. ") +
+                          if lineage else f"This export freezes the {'unnormalized (VSN output is not a linear intensity)' if unnormalized else 'normalized'}, unfiltered, non-imputed {'linear' if plot in LINEAR_PLOTS else 'log2'} Data matrix used by the figure. ") +
                           "It does not rerun normalization, filtering or imputation. Original-file preprocessing replay is not yet included.",
     )
     try:

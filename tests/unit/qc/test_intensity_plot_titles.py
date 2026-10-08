@@ -23,6 +23,16 @@ ROOT = Path(__file__).resolve().parents[3]
 SAMPLES = ["A1", "A2", "B1", "B2"]
 
 
+@pytest.fixture(autouse=True)
+def close_test_figures():
+    import matplotlib.pyplot as plt
+
+    existing = set(plt.get_fignums())
+    yield
+    for number in set(plt.get_fignums()) - existing:
+        plt.close(number)
+
+
 @pytest.fixture
 def captured(monkeypatch):
     frame = pd.DataFrame({"ProteinNames": [f"P{i}" for i in range(6)], **{s: np.random.default_rng(i).normal(20, 1, 6) for i, s in enumerate(SAMPLES)}})
@@ -57,7 +67,7 @@ def test_histogram_is_titled_as_condition_means(captured):
 # --- the same words in the two shipped packages ------------------------------------
 #
 # The packages are called on a small project; the pip package's matplotlib
-# figures are read back, and the R package runs with its base-graphics calls
+# figures are read back, and the R functions run with their base-graphics calls
 # wrapped so the `main`, `xlab` and `ylab` they are given, and every `mtext`,
 # are recorded.
 
@@ -144,10 +154,14 @@ cat(jsonlite::toJSON(lapply(records, I)))
 """
 
 
-def _r_labels(rscript: str, tmp_path: Path) -> dict[str, set[str]]:
+@pytest.fixture(scope="module")
+def r_labels(require_r, tmp_path_factory) -> dict[str, frozenset[str]]:
+    """Render the same R figures once; each test reads its own label assertions."""
     import json
     import subprocess
 
+    rscript = require_r("jsonlite")
+    tmp_path = tmp_path_factory.mktemp("r_plot_labels")
     paths = []
     for name, column in (("protein", "ProteinNames"), *((column, column) for column in ROW_LABELS)):
         path = tmp_path / f"{name}.csv"
@@ -157,7 +171,7 @@ def _r_labels(rscript: str, tmp_path: Path) -> dict[str, set[str]]:
     result = subprocess.run([rscript, "-e", R_LABEL_SCRIPT, *arguments], cwd=ROOT,
                             capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
-    return {label: set(texts) for label, texts in json.loads(result.stdout).items()}
+    return {label: frozenset(texts) for label, texts in json.loads(result.stdout).items()}
 
 
 def test_the_pip_package_uses_the_app_s_titles(tmp_path) -> None:
@@ -169,8 +183,8 @@ def test_the_pip_package_uses_the_app_s_titles(tmp_path) -> None:
 
 
 @pytest.mark.requires_r("jsonlite")
-def test_the_three_pipelines_use_the_same_titles(rscript, tmp_path) -> None:
-    labels = _r_labels(rscript, tmp_path)
+def test_the_three_pipelines_use_the_same_titles(r_labels) -> None:
+    labels = r_labels
     assert HISTOGRAM_TITLE in labels["histogram"], labels["histogram"]
     assert MEAN_BOXPLOT_TITLE in labels["mean boxplot"], labels["mean boxplot"]
     for texts in labels.values():
@@ -222,8 +236,8 @@ def test_the_pip_heatmap_names_its_rows_by_level(column: str, label: str) -> Non
 
 
 @pytest.mark.requires_r("jsonlite")
-def test_pip_and_r_heatmaps_name_their_rows_by_level(rscript, tmp_path) -> None:
-    labels = _r_labels(rscript, tmp_path)
+def test_pip_and_r_heatmaps_name_their_rows_by_level(r_labels) -> None:
+    labels = r_labels
     for column, label in ROW_LABELS.items():
         texts = labels[f"heatmap {column}"]
         assert label in texts, (column, texts)
@@ -245,7 +259,7 @@ def test_per_sample_coverage_plots_label_their_axis_sample(monkeypatch):
     assert figures[-1].axes[0].get_xlabel() == "Condition"
 
 
-def _assert_unit_stated_once(texts: set[str], where: str) -> None:
+def _assert_unit_stated_once(texts: set[str] | frozenset[str], where: str) -> None:
     for text in texts:
         assert "Percentage" not in text or "(%)" not in text, f"{where}: {text!r} says the unit twice"
         assert text != "Peptides with missed cleavage (%)", f"{where}: the bars include the 0-missed class"
@@ -300,8 +314,8 @@ def test_percent_axes_state_the_unit_once_in_the_pip_package(tmp_path) -> None:
 
 
 @pytest.mark.requires_r("jsonlite")
-def test_percent_axes_state_the_unit_once_in_the_r_package(rscript, tmp_path) -> None:
-    labels = _r_labels(rscript, tmp_path)
+def test_percent_axes_state_the_unit_once_in_the_r_package(r_labels) -> None:
+    labels = r_labels
     assert MISSED_CLEAVAGE_AXIS in labels["missed cleavages"], labels["missed cleavages"]
     assert SITE_SHARE_AXIS in labels["sty"], labels["sty"]
     _assert_unit_stated_once(labels["missed cleavages"] | labels["sty"], "R package")

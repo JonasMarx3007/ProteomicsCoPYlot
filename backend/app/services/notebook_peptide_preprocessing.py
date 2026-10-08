@@ -23,10 +23,6 @@ def replay_peptide_matrix(raw, config):
     return raw_zero_to_nan(matrix, list(matrix.columns))
 
 
-def with_peptide_preprocessing(recipe):
-    return bind_peptide_preprocessing(recipe)()
-
-
 def bind_peptide_preprocessing(recipe):
     """Read the run mapping from live state now; check the replay when the notebook is downloaded."""
     from app.services import peptide_tools, plot_images, completeness_tools

@@ -54,3 +54,20 @@ def test_previewing_stores_nothing(client) -> None:
         response = client.get(f"/api/plots/imputation/protein/{path}.png", params={"seed": 5})
         assert response.status_code == 200, response.text[:200]
     assert get_annotation("protein").imputed_data.equals(before)
+
+
+def test_preview_and_run_resolve_the_same_imputation_matrix(monkeypatch):
+    """One resolver: a raw linear zero is missing in the preview and in the run alike."""
+    import numpy as np
+    import pandas as pd
+    from app.services import data_tools, plot_images
+
+    raw = pd.DataFrame({"ProteinNames": ["P1", "P2"], "A1": [0.0, 5.0], "A2": [3.0, 4.0]})
+    monkeypatch.setattr(data_tools, "get_annotation", lambda kind: None)
+    monkeypatch.setattr(data_tools, "_get_current_frame", lambda kind: raw.copy())
+    monkeypatch.setattr(data_tools, "_get_sample_columns", lambda kind, frame: ["A1", "A2"])
+    source, frame, warnings = data_tools._best_imputation_source("protein")
+    preview_source, preview = plot_images._imputation_source("protein")
+    assert source == preview_source == "raw" and warnings
+    assert np.isnan(frame.loc[0, "A1"])
+    pd.testing.assert_frame_equal(frame, preview)

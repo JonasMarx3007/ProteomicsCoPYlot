@@ -47,5 +47,6 @@ class AnalysisVolcanoResponse(BaseModel):
     upregulatedCount: int
     downregulatedCount: int
     notSignificantCount: int
+    unavailableCount: int = 0
     points: list[AnalysisVolcanoPoint]
     warnings: list[str] = Field(default_factory=list)

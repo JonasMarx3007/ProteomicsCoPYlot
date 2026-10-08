@@ -2,12 +2,12 @@
 // variance factor and replicate count.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getStatisticalOptions, isAbortError, runSimulationAnalysis } from "../../lib/api";
+import { buildPlotUrl, isAbortError, runSimulationAnalysis } from "../../lib/api";
 import { useDatasetRevision } from "../../lib/datasetAvailability";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, SimulationRequest, SimulationResultResponse, SimulationTestType, StatsIdentifier, StatisticalOptionsResponse, DataSource } from "../../lib/types";
+import type { ContextMode, AnnotationKind, SimulationRequest, SimulationResultResponse, SimulationTestType, StatsIdentifier, DataSource, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { SIMULATION_TEST_TYPE_OPTIONS } from "../../lib/statisticalTests";
@@ -15,7 +15,8 @@ import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
-import { InfoSection, Notice, PlotFrame, SummarySection } from "./statsShared";
+import { keepCondition, keepIdentifier, useStatisticalOptionsLoader } from "./useStatisticalOptions";
+import { InfoSection, Notice, PlotFrame, SummarySection, ConditionPicker } from "./statsShared";
 import { conditionOptions, removeSourceUsageWarnings, restorePValueThreshold } from "./statsHelpers";
 import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
@@ -105,24 +106,19 @@ export function SimulationPanel({
     [options]
   );
 
-  useEffect(() => {
-    if (!kindAvailable) return;
-    const controller = new AbortController();
-    getStatisticalOptions(kind, { signal: controller.signal })
-      .then((data) => {
-        setOptions(data);
-        applyDataSourceChoices(data);
-        setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setError(err instanceof Error ? err.message : "Failed to load statistical options");
-        }
-      });
-    return () => controller.abort();
-  }, [kind, kindAvailable, applyDataSourceChoices]);
+  useStatisticalOptionsLoader(
+    kind,
+    kindAvailable,
+    (data) => {
+      setOptions(data);
+      applyDataSourceChoices(data);
+      setCondition1(keepCondition(data.availableConditions));
+      setCondition2(keepCondition(data.availableConditions));
+      setIdentifier(keepIdentifier(data));
+    },
+    setError,
+  );
+
 
   const canRun = Boolean(
     kindAvailable &&
@@ -272,10 +268,11 @@ export function SimulationPanel({
             options={simulationDataSourceOptions}
           />
         </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-          <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-        </div>
+        <ConditionPicker
+          conditions={conditionOptions(options)}
+          condition1={{ value: condition1, onChange: setCondition1 }}
+          condition2={{ value: condition2, onChange: setCondition2 }}
+        />
         <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
           <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as SimulationTestType)} options={SIMULATION_TEST_TYPE_OPTIONS} />
@@ -289,10 +286,11 @@ export function SimulationPanel({
         <div className="mt-6 border-t border-slate-200 pt-6">
           <h4 className="text-sm font-semibold text-slate-900">Projection settings</h4>
           <p className="mt-2 text-sm text-slate-600">
-            A what-if, not new data: the observed mean fold changes are held fixed and the t-test is
-            recomputed under the variance and sample size set here. Nothing is drawn at random, so
-            the same settings always give the same plot. It is a planning aid, not a validated power
-            prediction.
+            A what-if projection, not a power calculation: the observed mean fold changes are held
+            fixed and the t-test is recomputed for the variance factor and replicates per group set
+            here. Nothing is drawn at random, so the same settings always give the same plot. The
+            observed fold changes include noise, so the projection is optimistic for effects that
+            look large, and it does not estimate the probability of detecting a true effect.
           </p>
           <div className="mt-3 grid gap-4 lg:grid-cols-2">
             <NumberField label="Variance × factor" value={varianceMultiplier} onChange={(value) => setVarianceMultiplier(Math.max(0.01, value))} step={0.05} />
@@ -325,6 +323,7 @@ export function SimulationPanel({
             { label: "Upregulated", value: String(result.upregulatedCount) },
             { label: "Downregulated", value: String(result.downregulatedCount) },
             { label: "Not Significant", value: String(result.notSignificantCount) },
+            { label: "No p-value", value: String(result.unavailableCount ?? 0) },
           ]} warnings={removeSourceUsageWarnings(result.warnings)} />
           <PlotFrame title="Projected volcano plot" url={plotUrl} height={760} />
         </>

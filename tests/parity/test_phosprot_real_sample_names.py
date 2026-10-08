@@ -26,16 +26,7 @@ META = EXAMPLE / "phospho_metadata_full.csv"
 MODES = ("robust_site_median", "mean", "sum_ignore_na", "sum_propagate_na")
 
 
-def _rscript() -> str | None:
-    try:
-        from app.services.r_runtime import detect_r_runtime
-    except Exception:
-        return None
-    runtime = detect_r_runtime()
-    return str(runtime["executable"]) if runtime.get("available") else None
-
-
-RSCRIPT = _rscript()
+from _r_runtime import RSCRIPT
 
 
 def test_example_sample_names_are_the_kind_that_broke():

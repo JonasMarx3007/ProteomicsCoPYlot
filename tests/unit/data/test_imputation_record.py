@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -20,7 +21,6 @@ from app.schemas.annotation import AnnotationImputationInfo
 from app.schemas.data_tools import ImputationRunRequest
 from app.services.annotation_store import get_annotation
 from app.services.data_tools import run_imputation
-from app.services.viewer_bootstrap import load_viewer_state
 
 
 @pytest.fixture
@@ -29,7 +29,8 @@ def restored(example_project):
     annotation = get_annotation("protein")
     before = (annotation.imputed_data, getattr(annotation, "imputation", None))
     yield
-    annotation.imputed_data, annotation.imputation = before
+    current = get_annotation("protein")
+    current.imputed_data, current.imputation = before
 
 
 def test_a_run_records_the_shape_of_what_it_imputed(restored) -> None:
@@ -70,3 +71,32 @@ def test_a_record_written_before_the_row_count_existed_still_parses() -> None:
     )
     assert legacy.rowCount is None
     assert AnnotationImputationInfo().rowCount is None
+
+
+@pytest.mark.parametrize("method", ["quantile", "numerical"])
+def test_imputation_commands_execute_without_result_cache(restored, monkeypatch, method):
+    from app.services import data_tools, runtime_cache
+
+    def reject_cache(*args, **kwargs):
+        raise AssertionError("State-changing imputation must not use the result cache")
+
+    monkeypatch.setattr(runtime_cache, "cached_call", reject_cache)
+    original = data_tools.impute_values_with_diagnostics
+    seeds = []
+
+    def counted(**kwargs):
+        seeds.append(kwargs["seed"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(data_tools, "impute_values_with_diagnostics", counted)
+    matrices = []
+    for seed in (71, 71, 72):
+        response = run_imputation(ImputationRunRequest(kind="protein", method=method, seed=seed))
+        stored = get_annotation("protein")
+        matrices.append(stored.imputed_data.copy())
+        assert stored.imputation.seed == response.seed == seed
+        assert stored.imputation.mode == response.method == method
+        assert response.missingBefore > response.missingAfter
+    assert seeds == [71, 71, 72]
+    pd.testing.assert_frame_equal(matrices[0], matrices[1])
+    assert not matrices[1].equals(matrices[2])

@@ -31,7 +31,6 @@ from app.services.report_function import (
     _level_imputation_html,
     report_function,
 )
-from app.services.viewer_bootstrap import load_viewer_state
 
 CONFIG = ROOT / "tests" / "fixtures" / "viewer_config.json"
 

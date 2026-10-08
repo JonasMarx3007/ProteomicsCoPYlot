@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { displayLabel, visibleColumns } from "../lib/columnLabels";
 import { collectColumns } from "../lib/tableData";
 
 /**
@@ -13,13 +14,20 @@ export default function PreviewTable({
   rows,
   emptyText,
   downloadAction,
+  labels,
+  plotSummary = false,
 }: {
   rows: Record<string, unknown>[];
   emptyText: string;
   /** A button above the table, for pages that offer the full file. */
   downloadAction?: { label: string; onClick: () => void | Promise<void>; disabled?: boolean };
+  /** Header text for columns whose shared label does not fit this table. */
+  labels?: Record<string, string>;
+  /** Only plot summary schemas reserve x/y/color_val for drawing coordinates. */
+  plotSummary?: boolean;
 }) {
-  const columns = useMemo(() => collectColumns(rows ?? []), [rows]);
+  // Data keys stay as they are (the CSV downloads use them); the header shows the label.
+  const columns = useMemo(() => visibleColumns(collectColumns(rows ?? []), plotSummary), [rows, plotSummary]);
 
   if (!rows || rows.length === 0 || columns.length === 0) {
     return (
@@ -38,8 +46,9 @@ export default function PreviewTable({
               <th
                 key={column}
                 className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700"
+                title={column}
               >
-                {column}
+                {displayLabel(column, labels)}
               </th>
             ))}
           </tr>

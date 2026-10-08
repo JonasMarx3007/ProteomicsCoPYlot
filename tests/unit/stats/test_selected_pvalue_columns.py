@@ -20,7 +20,6 @@ from scipy.stats import false_discovery_control
 
 from app.schemas.stats import AnovaRequest, VolcanoRequest
 from app.services import ai_functions, stats_tools
-from app.services.viewer_bootstrap import load_viewer_state
 from proteomicscopylot import notebook_functions as notebook
 
 ROOT = Path(__file__).resolve().parents[3]

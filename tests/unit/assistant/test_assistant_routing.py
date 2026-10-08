@@ -214,12 +214,12 @@ def test_the_open_page_is_not_reopened(assistant_rig):
     ("Which page shows kinase activity?", "Phospho-specific / Kinase Library"),
     ("How do I find the enrichment results?", "Statistical Analysis / GO Enrichment (ORA)"),
     ("Where can I check whether my replicates cluster together?", "QC Pipeline / Principal Component Analysis"),
-    ("Where can I compare CVs between conditions?", "QC Pipeline / Cov Plot"),
+    ("Where can I compare CVs between conditions?", "QC Pipeline / CV Plot"),
     ("How can I see all phosphosites of one protein?", "Single Protein / Phosphosites on Protein Heatmap"),
     ("Which page shows significantly changed proteins?", "Statistical Analysis / Volcano Plot"),
     ("Which page shows which phosphosites change between A and B?", "Statistical Analysis / Volcano Plot"),
     ("Can I see the kinase activity of AKT1 in my data? Where would I look?", "Phospho-specific / Kinase Library"),
-    ("I'm new here. Where can I check whether my replicates are consistent?", "QC Pipeline / Cov Plot"),
+    ("I'm new here. Where can I check whether my replicates are consistent?", "QC Pipeline / CV Plot"),
     ("Where are missing values shown?", "Completeness / Missing Value Plot"),
 ])
 def test_where_questions_point_to_pages_and_change_nothing(monkeypatch, message, first):

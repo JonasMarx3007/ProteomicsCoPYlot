@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ElementType } from "react";
 import { AssistantSelect } from "./AssistantFields";
 
 type Option = string | { value: string; label: string };
@@ -17,6 +17,8 @@ type Props = {
   /** Greyed out where the active renderer does not read this setting. */
   disabled?: boolean;
   disabledHint?: string;
+  /** false renders a plain select, outside the assistant's control list. */
+  assistant?: boolean;
 };
 
 /**
@@ -31,9 +33,10 @@ type Props = {
  * browser tests.
  */
 export default function SelectField({
-  label, value, onChange, options, labels, placeholder, emptyLabel, disabled = false, disabledHint,
+  label, value, onChange, options, labels, placeholder, emptyLabel, disabled = false, disabledHint, assistant = true,
 }: Props) {
   const fieldId = useId();
+  const Select: ElementType = assistant ? AssistantSelect : "select";
   const items = options.map((option) =>
     typeof option === "string" ? { value: option, label: labels?.[option] ?? option } : option
   );
@@ -45,11 +48,11 @@ export default function SelectField({
       >
         {label}
       </label>
-      <AssistantSelect id={fieldId} aria-label={label}
+      <Select id={fieldId} aria-label={label}
         value={value}
         disabled={disabled}
         title={disabled ? disabledHint : undefined}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event: { target: { value: string } }) => onChange(event.target.value)}
         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
       >
         {placeholder ? <option value="">{placeholder}</option> : null}
@@ -57,7 +60,7 @@ export default function SelectField({
         {items.map((item) => (
           <option key={item.value} value={item.value}>{item.label}</option>
         ))}
-      </AssistantSelect>
+      </Select>
       {disabled && disabledHint ? <p className="mt-1 text-xs text-slate-400">{disabledHint}</p> : null}
     </div>
   );

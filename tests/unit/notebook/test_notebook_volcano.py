@@ -6,44 +6,15 @@ import subprocess
 import sys
 from zipfile import ZipFile
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from app.schemas.annotation import AnnotationFilterConfig
 from app.schemas.stats import VolcanoRequest, VolcanoControlRequest
-from app.schemas.data_tools import ImputationRunRequest
-from app.services.annotation_store import save_annotation, reset_all_annotations
-from app.services.dataset_store import save_table_dataset, reset_all_datasets
-from app.services.data_tools import run_imputation
 from app.services import stats_tools
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_volcano import render_volcano
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_phosprot import phosphosites
-
-
-@pytest.fixture
-def inputs():
-    reset_all_datasets()
-    reset_all_annotations()
-    samples = [f'{group}{i}' for group in 'ABCD' for i in range(1, 5)]
-    frame = pd.DataFrame(np.random.default_rng(27).normal(12, 2, (15, 16)), columns=samples)
-    frame['ProteinNames'] = [f'P{i}' for i in range(15)]
-    frame['GeneNames'] = [f'G{i}' for i in range(15)]
-    frame.loc[0, 'A1'] = np.nan
-    frame.loc[1, ['A1', 'A2', 'A3']] = np.nan
-    frame.loc[2, ['B1', 'B2', 'B3']] = np.nan
-    save_table_dataset('example.tsv', 'protein', frame)
-    save_annotation(kind='protein', source_data=frame, log2_data=frame, filtered_data=frame.iloc[:-1],
-        metadata=pd.DataFrame({'sample': samples, 'condition': [s[0] for s in samples], 'pair_id': [s[1] for s in samples]}),
-        is_log2_transformed=True, metadata_source='manual', filter_config=AnnotationFilterConfig(),
-        auto_detected=False, warnings=[])
-    run_imputation(ImputationRunRequest(kind='protein', seed=77, sampleWise=True))
-    yield
-    reset_all_datasets()
-    reset_all_annotations()
 
 
 @pytest.mark.parametrize('test_type', ['unpaired', 'unpaired_welch', 'paired'])

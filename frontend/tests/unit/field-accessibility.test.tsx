@@ -18,7 +18,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantSurface } from "../../src/components/AssistantFields";
-import { Checkbox, NumericField } from "../../src/components/QcFields";
+import NumberField from "../../src/components/NumberField";
+import CheckboxField from "../../src/components/CheckboxField";
 import SelectField from "../../src/components/SelectField";
 import CompletenessPage from "../../src/features/completeness/CompletenessPage";
 import ColorsPage from "../../src/features/data/ColorsPage";
@@ -65,8 +66,8 @@ const PAGES: [string, () => ReactElement][] = [
   ["the peptide page", () => <PeptideLevelPage activeTab="rtPlot" />],
   ["the shared fields", () => <>
     <SelectField label="Dataset level" value="a" options={["a", "b"]} onChange={noop} />
-    <NumericField label="Threshold" value={1} onChange={noop} />
-    <Checkbox label="Show legend" checked onChange={noop} />
+    <NumberField label="Threshold" value={1} onChange={noop} />
+    <CheckboxField label="Show legend" checked onChange={noop} />
   </>],
 ];
 

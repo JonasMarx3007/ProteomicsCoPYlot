@@ -67,9 +67,10 @@ def extract_notebook_source(source: str, entry_points: tuple[str, ...]) -> Noteb
         name = required.pop()
         if name in allowed:
             continue
-        node = definitions.get(name)
-        if node is None:
+        found = definitions.get(name)
+        if found is None:
             raise ValueError(f"Notebook dependency is not portable: {name}")
+        node = found
         if node in selected:
             continue
         selected.add(node)
@@ -85,7 +86,7 @@ def extract_notebook_source(source: str, entry_points: tuple[str, ...]) -> Noteb
                 raise ValueError("A notebook export must not depend on the application server.")
         required.update(_global_references(segment) - _bindings(node))
     ordered = [node for node in tree.body if node in selected]
-    imports = set()
+    imports: set[str] = set()
     for node in ordered:
         for part in ast.walk(node):
             if isinstance(part, ast.Import):

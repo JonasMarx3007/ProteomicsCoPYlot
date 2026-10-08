@@ -4,7 +4,8 @@ The viewer never collapses anything; `collapse_mode` is provenance, and it
 decides whether the phosphoprotein values are labelled as intensities or as
 ratios to each site's median. The root config said `sum_ignore_na` while the
 portal config said `robust_site_median` for the same file, so the portal
-labelled sums as ratios. Recomputing the file shows `sum_ignore_na` is right.
+labelled sums as ratios. Recomputing the file shows `sum_ignore_na` is right
+(the file was regenerated on 2026-10-07 when the mode moved to the shared site set).
 """
 from __future__ import annotations
 
@@ -38,6 +39,9 @@ def test_the_declared_mode_reproduces_the_shipped_phosphoprotein_file():
     rebuilt = notebook.transform_phosprot(sites, meta, mode=_mode(CONFIGS[0]), data_scale="log2")
     rebuilt = rebuilt[0] if isinstance(rebuilt, tuple) else rebuilt
     samples = meta["sample"].astype(str).tolist()
+    # The sum runs over the sites quantified in every sample; a protein without
+    # such a site has no value anywhere and is not shipped.
+    rebuilt = rebuilt[rebuilt[samples].notna().any(axis=1)]
     merged = shipped.merge(rebuilt, on="Phosphoprotein", suffixes=("_shipped", "_rebuilt"))
     assert len(merged) == len(shipped) == len(rebuilt)
     left = merged[[f"{s}_shipped" for s in samples]].to_numpy(float)

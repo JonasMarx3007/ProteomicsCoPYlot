@@ -14,14 +14,8 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 - Customize plot titles, labels, colors, axes, grids, themes, and download output.
 - Save and restore UI/report state, with a portable export that omits local dataset paths for sharing.
 - Publish configured datasets through read-only viewer and password-gated viewer-portal modes.
-- Use optional AI features, backed either by a local Ollama instance or by a cloud provider.
+- Use optional AI features, backed by a local Ollama instance, a local server with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio), or a cloud provider.
 - Reuse analysis helpers from Python or R notebooks.
-
-For phosphoprotein analysis, missing values can be imputed at the phosphosite level
-before collapsing, never on the collapsed phosphoprotein matrix. Both imputed and
-non-imputed inputs are supported. Keep the original observations alongside imputed
-data to preserve meaningful site-coverage diagnostics. Ordinary protein imputation
-remains available.
 
 ## Quick start
 
@@ -54,9 +48,9 @@ Run the viewer:
 .\packaging\windows\run_viewer.bat
 ```
 
-macOS and Linux launchers are grouped under `packaging/macos/` and `packaging/linux/`.
+On macOS and Linux, the same launchers are in `packaging/unix/` (for example `bash packaging/unix/run_app.sh`).
 
-See [Installation, Running, and Packaging](docs/INSTALLATION.md) for every supported platform, AI variants, production launch, Docker, viewer portals, and executable/package builds.
+See [Installation, Running, and Packaging](docs/INSTALLATION.md) (and [Environment variables](docs/ENVIRONMENT.md)) for every supported platform, AI variants, production launch, Docker, viewer portals, and executable/package builds.
 
 ## Application modes
 
@@ -85,28 +79,43 @@ API key and sends data to that provider:
 | provider | endpoint |
 |---|---|
 | Ollama (default) | local, no external request |
+| Local server (OpenAI-compatible) | a llama.cpp, vLLM or LM Studio server the operator allows, e.g. `http://host:8080/v1` (see [Installation](docs/INSTALLATION.md)) |
 | OpenAI | `https://api.openai.com/v1/chat/completions` |
 | Anthropic | `https://api.anthropic.com/v1/messages` |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/models` |
 
-When a cloud provider is selected, the request includes context derived from the loaded dataset
-— condition-level summary statistics, top differential hits, and similar values — not only the
-question that was typed. Use the local Ollama option for unpublished or otherwise sensitive
+When a cloud provider is selected, the request includes context derived from the loaded dataset,
+such as condition-level summary statistics and top differential hits, not only the question that
+was typed. Use Ollama or a local server for unpublished or otherwise sensitive
 data.
 
 Provide the key through `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` where
 possible; a key set in the environment takes precedence over one entered in the interface and
 is never transmitted from the browser.
 
+Each model works at an assistant level (Basic, Standard or Advanced) that matches what it
+handles reliably: small models take one small step at a time and answer with sentences the
+application writes; large models may restyle a whole figure, apply Nature or Cell Press figure
+specifications and write their own answers, whose numbers the application checks. The rules
+are the same at every level; see [Installation](docs/INSTALLATION.md#assistant-levels).
+
 ## Notebook package
 
-Install the Python package locally:
+Install the Python package from a checkout of this repository:
 
 ```bash
-python -m pip install -e ".[bio]"
+python -m pip install ".[bio]"
 ```
 
-Install the optional R packages used by the complete R helper:
+For development, install it editable instead (`python -m pip install -e ".[bio]"`) so changes
+to `proteomicscopylot/` take effect without reinstalling. The `bio` extra adds Biopython for
+FASTA-based sequence coverage.
+
+Load the bundled HEK293 example with `load_example_data("protein")` (also `"phospho"`,
+`"phosphoprotein"`, `"protein_metadata"` and `"phospho_metadata"`); the R functions provide
+the same `load_example_data()`.
+
+Install the optional R packages the R functions use:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
@@ -119,8 +128,20 @@ Examples:
 - `examples/example.ipynb`
 - `examples/example.R`
 
-The Python notebook, R notebook, and UI pipelines support the same core analysis
+The Python package, the R functions (`notebook_functions.R`, loaded with `source()`; it
+is a script, not an installable R package) and the app support the same core analysis
 workflows. Use the examples above for detailed usage and parameter choices.
+
+### Notebook exports
+
+Most plots and tables, and the report, can be downloaded as a ZIP that holds a Jupyter
+notebook recreating them. Given the original upload, the notebook replays the recorded
+preprocessing (normalization, filtering, localization cutoff and phosphosite collapse) and
+checks that it reproduces the exact input matrix the app used. Outputs computed from
+imputed data are the exception: the ZIP ships that exact imputed matrix together with the
+imputation settings, and the random draws are not repeated. The last cell compares every
+figure byte for byte with the one CoPYlot produced, which requires the package versions in
+the ZIP's `requirements.txt` and the same fonts.
 
 The installable package includes:
 
@@ -198,16 +219,25 @@ For a reproducible Python 3.13 reference environment, install
 ## Methods and citations
 
 Several analyses re-implement or delegate to published methods. If you use them,
-please cite the original work alongside this software.
+please cite the original work alongside this software. This table is generated from
+`backend/app/services/method_references.py`, the list the report and the manual cite from.
 
 | Method | Where it is used | Reference |
 | --- | --- | --- |
-| Quantile normalization | Normalization across samples | Bolstad *et al.* (2003), [10.1093/bioinformatics/19.2.185](https://doi.org/10.1093/bioinformatics/19.2.185) |
-| Downshifted-normal imputation | Missing-value imputation | Tyanova *et al.* (2016), [10.1038/nmeth.3901](https://doi.org/10.1038/nmeth.3901) |
-| Variance-stabilizing normalization | Normalization delegated to Bioconductor VSN | Huber *et al.* (2002), [10.1093/bioinformatics/18.suppl_1.S96](https://doi.org/10.1093/bioinformatics/18.suppl_1.S96) |
-| Benjamini–Hochberg false discovery rate | Multiple-testing correction | Benjamini & Hochberg (1995), [10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) |
-| Tukey–Kramer post-hoc | Pairwise comparisons after ANOVA | Tukey (1949), *Biometrics* 5:99–114; Kramer (1956), *Biometrics* 12:307–310 |
-| Kinase–substrate specificity atlases | Kinase Library input preparation and result visualization | Johnson *et al.* (2023), [10.1038/s41586-022-05575-3](https://doi.org/10.1038/s41586-022-05575-3); Yaron-Barir *et al.* (2024), [10.1038/s41586-024-07407-y](https://doi.org/10.1038/s41586-024-07407-y) |
+| Quantile normalization | Normalization across samples | Bolstad et al. (2003), [10.1093/bioinformatics/19.2.185](https://doi.org/10.1093/bioinformatics/19.2.185) |
+| Variance-stabilizing normalization | Normalization delegated to Bioconductor vsn | Huber et al. (2002), [10.1093/bioinformatics/18.suppl_1.S96](https://doi.org/10.1093/bioinformatics/18.suppl_1.S96) |
+| Low-quantile normal imputation (default) | Missing values drawn around a low quantile of the observed values, in the spirit of MinProb | Lazar et al. (2016), [10.1021/acs.jproteome.5b00981](https://doi.org/10.1021/acs.jproteome.5b00981) |
+| Downshifted-normal imputation | Missing-value imputation, 'numerical' method (Perseus defaults) | Tyanova et al. (2016), [10.1038/nmeth.3901](https://doi.org/10.1038/nmeth.3901) |
+| Student's t-test | Pooled-variance and paired volcano tests | Student (1908), [10.1093/biomet/6.1.1](https://doi.org/10.1093/biomet/6.1.1) |
+| Welch's t-test | Unequal-variance volcano test | Welch (1947), [10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28) |
+| Benjamini-Hochberg false discovery rate | Multiple-testing correction | Benjamini & Hochberg (1995), [10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) |
+| Tukey HSD post-hoc test (Tukey-Kramer for unequal group sizes) | Pairwise comparisons after ANOVA | Tukey (1949); Kramer (1956), Biometrics 5:99-114; Biometrics 12:307-310 |
+| Hypergeometric over-representation test | GO over-representation analysis | Rivals et al. (2007), [10.1093/bioinformatics/btl633](https://doi.org/10.1093/bioinformatics/btl633) |
+| Gene Ontology | Term annotations for over-representation analysis | Ashburner et al. (2000); Gene Ontology Consortium (2023), [10.1038/75556](https://doi.org/10.1038/75556); [10.1093/genetics/iyad031](https://doi.org/10.1093/genetics/iyad031) |
+| Class I phosphosite localization (probability >= 0.75) | Phosphosite coverage classes | Olsen et al. (2006), [10.1016/j.cell.2006.09.026](https://doi.org/10.1016/j.cell.2006.09.026) |
+| Kinase-substrate specificity atlases | Kinase Library input preparation and result visualization | Johnson et al. (2023); Yaron-Barir et al. (2024), [10.1038/s41586-022-05575-3](https://doi.org/10.1038/s41586-022-05575-3); [10.1038/s41586-024-07407-y](https://doi.org/10.1038/s41586-024-07407-y) |
+| UMAP | Sample embedding (optional) | McInnes et al. (2018), arXiv:1802.03426 |
+| t-SNE | Sample embedding (optional) | van der Maaten & Hinton (2008), J. Mach. Learn. Res. 9:2579-2605 |
 
 Kinase enrichment is calculated externally in the
 [Kinase Library](https://kinase-library.phosphosite.org). CoPYlot prepares the
@@ -220,9 +250,9 @@ reference data retain their upstream terms and attribution; see
 [Biological reference data](data/db/README.md).
 
 The bundled HEK293 demonstration dataset is released separately under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see
-[Example data](proteomicscopylot/example_data/README.md) for its contents,
-checksums, experimental design, and provenance.
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Its contents, checksums,
+experimental design, and provenance are described in
+[Example data](proteomicscopylot/example_data/README.md).
 
 For citation metadata, see [CITATION.cff](CITATION.cff). Deployment security
 requirements are covered in [Installation, Running, and Packaging](docs/INSTALLATION.md).

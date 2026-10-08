@@ -1,5 +1,5 @@
 DESTINATIONS = {
-    "data.imputation": "Data / Imputation", "qc.coverage": "QC Pipeline / Coverage Plot", "qc.cv": "QC Pipeline / Cov Plot", "qc.boxplot": "QC Pipeline / Boxplot Intensity",
+    "data.imputation": "Data / Imputation", "qc.coverage": "QC Pipeline / Coverage Plot", "qc.cv": "QC Pipeline / CV Plot", "qc.boxplot": "QC Pipeline / Boxplot Intensity",
     "qc.pca": "QC Pipeline / Principal Component Analysis", "qc.correlation": "QC Pipeline / Correlation Plot",
     "completeness.missingPlot": "Completeness / Missing Value Plot", "completeness.heatmap": "Completeness / Missing Value Heatmap",
     "stats.volcano": "Statistical Analysis / Volcano Plot", "stats.ora": "Statistical Analysis / GO Enrichment (ORA)",

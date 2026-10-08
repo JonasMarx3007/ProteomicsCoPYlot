@@ -164,8 +164,11 @@ def test_canvas_volcano_matches_dedicated_statistics(source_annotation, source, 
     samples = [f"{group}{rep}" for group in "ABCD" for rep in range(1, 4)]
     for index, sample in enumerate(samples):
         group, rep = divmod(index, 3)
-        frame[sample] = [10 + group * 2 + rep * .3, 20 - group * 1.2 + rep * .4,
-                         float("nan") if rep == 0 else 12 + group + rep * .2]
+        # A little irregular noise: exactly parallel replicates would give constant
+        # paired differences, which have no p-value at all.
+        noise = .01 * ((index * 7) % 5)
+        frame[sample] = [10 + group * 2 + rep * .3 + noise, 20 - group * 1.2 + rep * .4 + noise,
+                         float("nan") if rep == 0 else 12 + group + rep * .2 + noise]
     # "data" is the unfiltered annotated matrix, so it needs the same samples.
     # Under the old two-resolver world "data" reached the filtered frame, so
     # this fixture never had to set log2_data at all.

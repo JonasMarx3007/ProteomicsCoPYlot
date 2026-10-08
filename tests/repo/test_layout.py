@@ -18,7 +18,7 @@ def test_documented_repository_directories_exist() -> None:
         "docs",
         "packaging/windows",
         "packaging/macos",
-        "packaging/linux",
+        "packaging/unix",
         "packaging/python",
     ):
         assert (ROOT / relative).is_dir(), relative
@@ -42,11 +42,9 @@ def test_root_has_no_legacy_clutter() -> None:
 
 def test_platform_launchers_reference_repository_root() -> None:
     windows = (ROOT / "packaging" / "windows" / "run_app.bat").read_text(encoding="utf-8")
-    linux = (ROOT / "packaging" / "linux" / "run_app_linux.sh").read_text(encoding="utf-8")
-    macos = (ROOT / "packaging" / "macos" / "run_app_macos.sh").read_text(encoding="utf-8")
+    unix = (ROOT / "packaging" / "unix" / "run_app.sh").read_text(encoding="utf-8")
     assert "%SCRIPT_DIR%..\\.." in windows
-    assert '$(dirname "${BASH_SOURCE[0]}")/../..' in linux
-    assert '$(dirname "${BASH_SOURCE[0]}")/../..' in macos
+    assert '$(dirname "${BASH_SOURCE[0]}")/../..' in unix
 
 
 def test_project_guidance_files_exist() -> None:
@@ -168,7 +166,7 @@ def test_launchers_and_builders_have_no_development_presets() -> None:
         for variant in ("ProteomicsCoPYlot", "ProteomicsCoPYlotAI", "DataViewer", "DataViewerAI"):
             assert variant in text
         assert "[4/4]" in text and "/6]" not in text
-    for platform, suffix in [("windows", ".bat"), ("macos", "_macos.sh"), ("linux", "_linux.sh")]:
+    for platform, suffix in [("windows", ".bat"), ("unix", ".sh")]:
         for mode in ("app", "viewer"):
             text = (ROOT / "packaging" / platform / f"run_{mode}_ai{suffix}").read_text(encoding="utf-8")
             assert "uvicorn app.main:app" in text and "npm run dev" in text
@@ -176,7 +174,7 @@ def test_launchers_and_builders_have_no_development_presets() -> None:
 
 
 def test_viewer_launchers_enable_isolation_and_windows_launchers_check_ports() -> None:
-    for platform in ("windows", "macos", "linux"):
+    for platform in ("windows", "unix"):
         for path in (ROOT / "packaging" / platform).glob("run_viewer*"):
             text = path.read_text(encoding="utf-8")
             assert "COPYLOT_SESSION_ISOLATION=1" in text
@@ -252,3 +250,54 @@ def test_local_markdown_links_resolve() -> None:
             if not resolved.exists():
                 broken.append(f"{markdown.relative_to(ROOT)} -> {target}")
     assert not broken, "Broken local Markdown links:\n" + "\n".join(broken)
+
+
+def test_build_scripts_import_names_that_exist() -> None:
+    """Inline Python in build files is not linted, so a moved function breaks only the build."""
+    import ast
+
+    sources = [ROOT / "Dockerfile", *sorted((ROOT / "packaging").rglob("*.sh")),
+               *sorted((ROOT / "packaging").rglob("*.ps1")), *sorted((ROOT / ".github").rglob("*.yml"))]
+    pattern = re.compile(r"from (app(?:\.\w+)+) import ([\w, ]+)")
+    checked = 0
+    for source in sources:
+        for module, names in pattern.findall(source.read_text(encoding="utf-8")):
+            path = ROOT / "backend" / Path(*module.split("."))
+            path = path / "__init__.py" if path.is_dir() else path.with_suffix(".py")
+            assert path.is_file(), f"{source.name}: module {module} does not exist"
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            defined = {node.name for node in tree.body
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+            defined |= {target.id for node in tree.body if isinstance(node, ast.Assign)
+                        for target in node.targets if isinstance(target, ast.Name)}
+            defined |= {alias.asname or alias.name for node in tree.body
+                        if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names}
+            for name in (part.strip() for part in names.split(",")):
+                assert name in defined, f"{source.name}: {module} has no {name}"
+                checked += 1
+    assert checked, "expected at least the Dockerfile font check"
+
+
+def test_ai_gated_browser_tests_are_tagged_for_ci() -> None:
+    """CI runs the AI-gated browser tests by their @ai tag; an untagged one would never run there."""
+    gate = re.compile(r"test\.skip\(process\.env\.(?:VITE_AI_ENABLED|COPYLOT_BROWSER_ASSISTANT_STUB) !== '1'")
+    declaration = re.compile(r"\btest\((['`]).*?\1,")
+    for spec in sorted((ROOT / "frontend" / "tests" / "browser").glob("*.spec.mjs")):
+        lines = spec.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines):
+            if not gate.search(line):
+                continue
+            owner = next(lines[i] for i in range(number - 1, -1, -1) if declaration.search(lines[i]))
+            assert "tag: '@ai'" in owner, f"{spec.name}:{number + 1} is AI-gated but not tagged @ai"
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert 'npx playwright test --grep "@ai' in workflow
+
+
+def test_unix_launchers_open_the_browser_on_macos_and_linux() -> None:
+    """One launcher set serves macOS and Linux; only the browser opener differs."""
+    for path in (ROOT / "packaging" / "unix").glob("run_*.sh"):
+        text = path.read_text(encoding="utf-8")
+        assert 'if [ "$(uname -s)" = "Darwin" ]; then' in text and "xdg-open" in text, path
+        assert 'open_browser "http://localhost:' in text, path
+    assert not (ROOT / "packaging" / "linux").exists()
+    assert not list((ROOT / "packaging" / "macos").glob("run_*"))

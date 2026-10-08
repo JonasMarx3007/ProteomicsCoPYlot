@@ -53,6 +53,13 @@ def _reset_on_browser_load_enabled() -> bool:
 def export_restore_state(payload: RestoreExportRequest) -> StreamingResponse:
     try:
         blob = export_state_blob(ui_state=payload.uiState, portable=payload.portable)
+    except RestoreStateError as exc:
+        LOGGER.exception("Save-state export rejected")
+        raise HTTPException(
+            status_code=400,
+            detail=("Save state cannot be exported. Ask the administrator to check the restore "
+                    "size limits and server log for details. Your current analysis is unchanged."),
+        ) from exc
     except Exception as exc:
         LOGGER.exception("Failed to export restore state")
         raise HTTPException(status_code=500, detail="Failed to export restore state.") from exc

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 from scipy import stats
 
 from app.services.stats_core import bh_adjust, pooled_se_df, satterthwaite, two_sided_t_pvalues
 
 
 def test_bh_matches_statsmodels_and_keeps_nans():
-    statsmodels = pytest.importorskip("statsmodels.stats.multitest")
+    from statsmodels.stats import multitest as statsmodels
     rng = np.random.default_rng(1)
     p = np.concatenate([rng.uniform(0, 0.01, 6), rng.uniform(0, 1, 40)])
     assert np.allclose(bh_adjust(p), statsmodels.multipletests(p, method="fdr_bh")[1], rtol=1e-12)

@@ -21,7 +21,6 @@ class DatasetPreviewResponse(BaseModel):
     columns: int
     columnNames: list[str]
     preview: list[dict[str, Any]]
-    suggestedIsLog2Transformed: bool | None = None
     sourcePath: str | None = None
 
 

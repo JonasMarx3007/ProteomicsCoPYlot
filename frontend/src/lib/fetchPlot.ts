@@ -23,10 +23,10 @@ function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Retry only explicitly temporary, read-only plot requests; never replay writes. */
-export async function fetchPlot(url: string, signal: AbortSignal): Promise<Response> {
+export async function fetchPlot(url: string, signal: AbortSignal, headers?: Record<string, string>): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted();
-    const response = await fetch(url, { signal });
+    const response = await fetch(url, headers ? { signal, headers } : { signal });
     const delay = retryDelay(response);
     if (delay === null || attempt >= 3) return response;
     await response.body?.cancel();

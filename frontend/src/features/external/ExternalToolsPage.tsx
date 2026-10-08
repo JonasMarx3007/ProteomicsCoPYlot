@@ -152,6 +152,27 @@ function PeptideCollapseTool() {
           Upload a Spectronaut TSV file, collapse the phosphosite profiles, and download the
           collapsed TSV result.
         </p>
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          <p className="font-medium text-slate-700">How the collapse works</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            <li>
+              A site&apos;s value in a run is the median of the log2 intensities
+              (EG.TotalQuantity) of the precursors that carry that site in that run. It therefore
+              depends on which precursors were measured in each run: a run that misses a
+              site&apos;s most intense precursors gets a lower value for the site.
+            </li>
+            <li>
+              A site&apos;s localization probability is the highest EG.PTMAssayProbability
+              observed for it in any run and precursor; the cutoff is applied to that
+              maximum, so a site kept by the cutoff was confidently localized in at least
+              one run.
+            </li>
+            <li>
+              Multiply phosphorylated precursors keep their own site rows (<code>_M2</code>,{" "}
+              <code>_M3</code>); nothing is merged into the singly phosphorylated row.
+            </li>
+          </ul>
+        </div>
 
         <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5">
           <label className="block text-sm">

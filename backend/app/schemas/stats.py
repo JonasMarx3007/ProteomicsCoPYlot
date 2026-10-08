@@ -131,6 +131,8 @@ class VolcanoResultResponse(BaseModel):
     upregulatedCount: int
     downregulatedCount: int
     notSignificantCount: int
+    # Rows with no p-value (no variation, or no finite test statistic).
+    unavailableCount: int = 0
     rows: list[dict[str, Any]]
     warnings: list[str] = Field(default_factory=list)
     # Rows the t-test could not use (fewer than 2 values in a compared
@@ -358,5 +360,7 @@ class SimulationResultResponse(BaseModel):
     upregulatedCount: int
     downregulatedCount: int
     notSignificantCount: int
+    # Rows with no p-value (no variation, or no finite test statistic).
+    unavailableCount: int = 0
     rows: list[dict[str, Any]]
     warnings: list[str] = Field(default_factory=list)

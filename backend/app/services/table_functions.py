@@ -6,29 +6,12 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.data_tools import _get_sample_columns, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
 from app.services.functions import (
+    condition_cvs,
     extract_sample_id as _extract_id_or_number,
     raw_zero_to_nan,
 )
+from app.services.plot_images import _grouped_meta_order
 from app.services.runtime_cache import apply_cached_wrappers
-
-
-def _grouped_meta_order(meta: pd.DataFrame) -> pd.DataFrame:
-    if meta.empty:
-        return meta.copy()
-
-    ordered = meta.copy()
-    ordered["condition"] = ordered["condition"].astype(str)
-    condition_order = ordered["condition"].dropna().drop_duplicates().tolist()
-    if not condition_order:
-        return ordered.reset_index(drop=True)
-
-    ordered["_condition_order"] = pd.Categorical(
-        ordered["condition"],
-        categories=condition_order,
-        ordered=True,
-    )
-    ordered = ordered.sort_values("_condition_order", kind="stable")
-    return ordered.drop(columns="_condition_order").reset_index(drop=True)
 
 
 def prepare_coverage_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool = False) -> pd.DataFrame:
@@ -217,28 +200,9 @@ def prepare_boxplot_single_df(data: pd.DataFrame, meta: pd.DataFrame, name: bool
 
 
 def prepare_cov_df(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
-    conditions = meta["condition"].unique()
-    summary_list: list[dict[str, object]] = []
-    for cond in conditions:
-        cols = meta.loc[meta["condition"] == cond, "sample"].tolist()
-        if len(cols) < 2:
-            continue
-        subset = data[cols]
-        means = subset.mean(axis=1, skipna=True)
-        sds = subset.std(axis=1, skipna=True)
-        cv = (sds / means) * 100
-        cv = cv[np.isfinite(cv)]
-        if len(cv) == 0:
-            continue
-
-        summary = _boxplot_summary(cv)
-
-        summary_list.append(
-            {
-                "Condition": str(cond),
-                **summary,
-            }
-        )
+    summary_list: list[dict[str, object]] = [
+        {"Condition": condition, **_boxplot_summary(cv)} for condition, cv in condition_cvs(data, meta)
+    ]
 
     summary_df = pd.DataFrame(summary_list)
     if summary_df.empty:

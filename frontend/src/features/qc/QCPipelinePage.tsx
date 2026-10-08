@@ -1,31 +1,30 @@
+import { registerStyleStore, styleTemplate, withStyle } from "../../lib/plotStyles";
 import { AssistantAppearanceMount, AssistantSelect } from "../../components/AssistantFields";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
+import OptionsLayout from "../../components/OptionsLayout";
 import { MATPLOTLIB_CONTROLS, PLOTLY_DEFAULT_TEMPLATE_CONTROLS } from "../../lib/plotControlDefaults";
-import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
+import { restorePlotDimensionCm, restorePlotDpi, iframeHeightForPlot } from "../../lib/plotLimits";
 import PlotImage from "../../components/PlotImage";
 import InteractivePlot from "../../components/InteractivePlot";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { withoutStaticSize } from "../../lib/plotRenderType";
-import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
+import { SizeRow } from "../../components/PlotFields";
+import CheckboxField from "../../components/CheckboxField";
+import NumberField from "../../components/NumberField";
 import { compactAdvancedPlotSettings as compactAdvancedSettings, migrateAdvancedSettingsMap } from "../../lib/plotSerialization";
 import { methodDefaultScaling, pcaMethodLabel, SCALING_LABELS, scalingLabel, scalingValue } from "./pcaScaling";
-import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { collectColumns, csvDataUrl, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { buildPlotUrl, getPeptideQuantityOptions, getQcPcaFeatures, getQcPlotOptions, getQcTable, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
 } from "../../lib/plotDownload";
 import { saveQcReportSettings } from "../../lib/reportState";
-import {
-  readPersistedSessionUiState,
-  readPersistedUiState,
-  writePersistedSessionUiState,
-  writePersistedUiState,
-} from "../../lib/persistedUiState";
+import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { getAdvancedPlotMode } from "../../lib/appSettings";
 import { IS_VIEWER_MODE } from "../../lib/appMode";
 import AdvancedPlotOptions, {
@@ -119,7 +118,7 @@ export default function QCPipelinePage({
   // Versioned: settings saved before v2 carry the frame and grid defaults the
   // panel used to add to every first edit, and would now apply for good.
   const persistedAdvanced: AdvancedPlotState = migrateAdvancedSettingsMap(IS_VIEWER_MODE
-    ? readPersistedSessionUiState<AdvancedPlotState>("qc.advanced.v2", {})
+    ? readPersistedUiState<AdvancedPlotState>("qc.advanced.v2", {})
     : (persisted.advancedV2 as AdvancedPlotState) ?? {});
   const [kind, setKind] = useState<QcKind>(() => {
     const value = String(persisted.kind ?? "protein").trim();
@@ -264,7 +263,7 @@ export default function QCPipelinePage({
     if (!IS_VIEWER_MODE) {
       nextState.advancedV2 = advancedByTab;
     } else {
-      writePersistedSessionUiState("qc.advanced.v2", advancedByTab);
+      writePersistedUiState("qc.advanced.v2", advancedByTab);
     }
     writePersistedUiState("qc.pipeline.v1", nextState);
   }, [kind, downloadFormat, coverage, hist, box, cv, pca, abundance, correlation, advancedByTab]);
@@ -556,9 +555,20 @@ export default function QCPipelinePage({
   }, [kind, activeTab, coverage.summary, box.mode, plotSignal]);
 
 
-  const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
+  const activeAdvancedSettings = advancedByTab[activeTab] ?? styleTemplate() ?? {};
+  // Named styles and "this style on every plot" (lib/plotStyles.ts) reach these settings here.
+  const styleStoreState = useRef({ tab: activeTab, byTab: advancedByTab });
+  useEffect(() => { styleStoreState.current = { tab: activeTab, byTab: advancedByTab }; }, [activeTab, advancedByTab]);
+  useEffect(() => registerStyleStore("qc", {
+    active: () => styleStoreState.current.byTab[styleStoreState.current.tab] ?? styleTemplate() ?? {},
+    setActive: (settings) => setAdvancedByTab((prev) => ({ ...prev, [styleStoreState.current.tab]: settings })),
+    setAll: (style) => {
+      setAdvancedByTab((prev) => Object.fromEntries(Object.entries(prev).map(([tab, value]) => [tab, withStyle(value, style)])));
+      return Object.keys(styleStoreState.current.byTab).length;
+    },
+  }), []);
   const activeAdvancedRenderSettings = useMemo(
-    () => advancedRenderByTab[activeTab] ?? {},
+    () => advancedRenderByTab[activeTab] ?? styleTemplate() ?? {},
     [activeTab, advancedRenderByTab]
   );
   const activeConditionDisplayLabels = useMemo(
@@ -859,7 +869,7 @@ export default function QCPipelinePage({
     if (!tableRequest || tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
     if (columns.length === 0) return null;
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
+    return csvDataUrl(rowsToCsv(tableRows, columns));
   }, [tableRequest, tableRows, tableLoading, tableError, notebookToken, tableSnapshotToken]);
 
 
@@ -930,24 +940,8 @@ export default function QCPipelinePage({
           <h3 className="text-lg font-semibold text-slate-900">{activePlotTitle}</h3>
           {plotView?.mode === "image" ? (
             <div className="flex flex-wrap items-center gap-2">
-              <AssistantSelect
-                value={downloadFormat}
-                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-              >
-                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </AssistantSelect>
-              <a
-                href={plotDownloadUrl}
-                download={plotDownloadFilename}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+                href={plotDownloadUrl} filename={plotDownloadFilename} />
               {pairedNotebook ? (
                 <NotebookDownload key={plotView.url} plotUrl={plotView.url} rendered={renderedNotebook} />
               ) : null}
@@ -1024,7 +1018,7 @@ export default function QCPipelinePage({
                 {tableError}
               </div>
             ) : (
-              <PreviewTable rows={tableRows} emptyText="No summary rows available." />
+              <PreviewTable rows={tableRows} emptyText="No summary rows available." plotSummary />
             )}
           </div>
         </section>
@@ -1035,14 +1029,14 @@ export default function QCPipelinePage({
   function renderOptions() {
     if (activeTab === "coverage") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
-            <Checkbox key="id" label="Toggle IDs" checked={coverage.includeId} onChange={(v) => setCoverage({ ...coverage, includeId: v })} />,
-            <Checkbox key="summary" label="Summary Type" checked={coverage.summary} onChange={(v) => setCoverage({ ...coverage, summary: v })} />,
-            <Checkbox key="text" label="Toggle Text" checked={coverage.text} onChange={(v) => setCoverage({ ...coverage, text: v })} />,
-            <Checkbox key="reference-line" label="Total Line" checked={coverage.referenceLine} onChange={(v) => setCoverage({ ...coverage, referenceLine: v })} />,
+            <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={coverage.includeId} onChange={(v) => setCoverage({ ...coverage, includeId: v })} />,
+            <CheckboxField assistant={false} key="summary" label="Summary Type" checked={coverage.summary} onChange={(v) => setCoverage({ ...coverage, summary: v })} />,
+            <CheckboxField assistant={false} key="text" label="Toggle Text" checked={coverage.text} onChange={(v) => setCoverage({ ...coverage, text: v })} />,
+            <CheckboxField assistant={false} key="reference-line" label="Total Line" checked={coverage.referenceLine} onChange={(v) => setCoverage({ ...coverage, referenceLine: v })} />,
           ]}
-          inputs={[
+          fields={[
             ...((kind === "peptide" || kind === "precursor")
               ? [
                   <SelectField
@@ -1057,7 +1051,7 @@ export default function QCPipelinePage({
               : []),
             ...(coverage.summary
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="random-seed"
                     label="Random Seed"
                     value={coverage.randomSeed}
@@ -1066,7 +1060,7 @@ export default function QCPipelinePage({
                 ]
               : []),
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={coverage.dpi}
               heightCm={coverage.heightCm}
@@ -1082,10 +1076,10 @@ export default function QCPipelinePage({
 
     if (activeTab === "histogram") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={hist.dpi}
               heightCm={hist.heightCm}
@@ -1101,13 +1095,13 @@ export default function QCPipelinePage({
 
     if (activeTab === "boxplot") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
-            <Checkbox key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(v) => setBox({ ...box, outliers: v })} />,
-            <Checkbox key="id" label="Toggle IDs" checked={box.includeId} onChange={(v) => setBox({ ...box, includeId: v })} />,
-            <Checkbox key="text" label="Toggle Text" checked={box.text} onChange={(v) => setBox({ ...box, text: v })} />,
+            <CheckboxField assistant={false} key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(v) => setBox({ ...box, outliers: v })} />,
+            <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={box.includeId} onChange={(v) => setBox({ ...box, includeId: v })} />,
+            <CheckboxField assistant={false} key="text" label="Toggle Text" checked={box.text} onChange={(v) => setBox({ ...box, text: v })} />,
           ]}
-          inputs={[
+          fields={[
             <SelectField
               key="type"
               label="Type"
@@ -1116,7 +1110,7 @@ export default function QCPipelinePage({
               options={["Mean", "Single"]}
             />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={box.dpi}
               heightCm={box.heightCm}
@@ -1132,14 +1126,14 @@ export default function QCPipelinePage({
 
     if (activeTab === "cv") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
-            <Checkbox key="outliers" label="Toggle Outliers" checked={cv.outliers} onChange={(v) => setCv({ ...cv, outliers: v })} />,
-            <Checkbox key="text" label="Toggle Text" checked={cv.text} onChange={(v) => setCv({ ...cv, text: v })} />,
+            <CheckboxField assistant={false} key="outliers" label="Toggle Outliers" checked={cv.outliers} onChange={(v) => setCv({ ...cv, outliers: v })} />,
+            <CheckboxField assistant={false} key="text" label="Toggle Text" checked={cv.text} onChange={(v) => setCv({ ...cv, text: v })} />,
           ]}
-          inputs={[
+          fields={[
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={cv.dpi}
               heightCm={cv.heightCm}
@@ -1170,11 +1164,11 @@ export default function QCPipelinePage({
       return (
         <div className="space-y-4">
           <PcaFeatureNotice summary={pcaFeatures} dataSource={pca.dataSource} />
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
             ...(showEllipsesToggle
               ? [
-                  <Checkbox
+                  <CheckboxField assistant={false}
                     key="ellipses"
                     label="Add Ellipses (2D)"
                     checked={pca.addEllipses}
@@ -1183,7 +1177,7 @@ export default function QCPipelinePage({
                 ]
               : []),
           ]}
-          inputs={[
+          fields={[
             <SelectField
               key="data-source"
               label="Data Source"
@@ -1275,7 +1269,7 @@ export default function QCPipelinePage({
               : []),
             ...(showClusterCount
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="cluster-count"
                     label="Cluster Count"
                     value={pca.clusterCount}
@@ -1287,13 +1281,13 @@ export default function QCPipelinePage({
               : []),
             ...(showDbscan
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="dbscan-eps"
                     label="DBSCAN eps (× median sample distance)"
                     value={pca.dbscanEpsFactor}
                     onChange={(v) => setPca({ ...pca, dbscanEpsFactor: Math.max(0.001, v) })}
                   />,
-                  <NumericField
+                  <NumberField assistant={false}
                     key="dbscan-min-samples"
                     label="DBSCAN Min Samples"
                     value={pca.dbscanMinSamples}
@@ -1305,7 +1299,7 @@ export default function QCPipelinePage({
               : []),
             ...(showUmap
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="umap-neighbors"
                     label="UMAP Neighbors"
                     value={pca.umapNNeighbors}
@@ -1313,7 +1307,7 @@ export default function QCPipelinePage({
                       setPca({ ...pca, umapNNeighbors: Math.max(2, Math.min(200, Math.round(v))) })
                     }
                   />,
-                  <NumericField
+                  <NumberField assistant={false}
                     key="umap-min-dist"
                     label="UMAP Min Dist"
                     value={pca.umapMinDist}
@@ -1323,13 +1317,13 @@ export default function QCPipelinePage({
               : []),
             ...(showTsne
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="tsne-perplexity"
                     label="t-SNE Perplexity"
                     value={pca.tsnePerplexity}
                     onChange={(v) => setPca({ ...pca, tsnePerplexity: Math.max(1, v) })}
                   />,
-                  <NumericField
+                  <NumberField assistant={false}
                     key="tsne-learning-rate"
                     label="t-SNE Learning Rate"
                     value={pca.tsneLearningRate}
@@ -1339,7 +1333,7 @@ export default function QCPipelinePage({
               : []),
             ...(showRandomState
               ? [
-                  <NumericField
+                  <NumberField assistant={false}
                     key="random-state"
                     label="Random State"
                     value={pca.randomState}
@@ -1348,7 +1342,7 @@ export default function QCPipelinePage({
                 ]
               : []),
           ]}
-          sizeRow={
+          size={
             pca.type === "Interactive" ? null : <SizeRow
               dpi={pca.dpi}
               heightCm={pca.heightCm}
@@ -1366,10 +1360,10 @@ export default function QCPipelinePage({
     if (activeTab === "abundance") {
       const abundanceConditions = ["All Conditions", ...conditionOptions];
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
           ]}
-          inputs={[
+          fields={[
             <SelectField
               key="type"
               label="Type"
@@ -1385,7 +1379,7 @@ export default function QCPipelinePage({
               options={abundanceConditions}
             />,
           ]}
-          sizeRow={
+          size={
             abundance.type === "Interactive" ? null : <SizeRow
               dpi={abundance.dpi}
               heightCm={abundance.heightCm}
@@ -1406,12 +1400,12 @@ export default function QCPipelinePage({
           Each correlation uses only the features measured in both samples, so with missing values
           the cells can rest on different sets of features.
         </div>
-      <OptionsLayout
+      <OptionsLayout order="toggles-fields-size"
         toggles={[
-          <Checkbox key="id" label="Toggle IDs" checked={correlation.includeId} onChange={(v) => setCorrelation({ ...correlation, includeId: v })} />,
-          <Checkbox key="full-range" label="Use Full Range" checked={correlation.fullRange} onChange={(v) => setCorrelation({ ...correlation, fullRange: v })} />,
+          <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={correlation.includeId} onChange={(v) => setCorrelation({ ...correlation, includeId: v })} />,
+          <CheckboxField assistant={false} key="full-range" label="Use Full Range" checked={correlation.fullRange} onChange={(v) => setCorrelation({ ...correlation, fullRange: v })} />,
         ]}
-        inputs={[
+        fields={[
           <SelectField
             key="method"
             label="Type"
@@ -1420,7 +1414,7 @@ export default function QCPipelinePage({
             options={["Matrix", "Ellipse"]}
           />,
         ]}
-        sizeRow={
+        size={
           <SizeRow
             dpi={correlation.dpi}
             heightCm={correlation.heightCm}
@@ -1537,25 +1531,6 @@ function PcaFeatureNotice({
   );
 }
 
-function OptionsLayout({
-  toggles,
-  inputs,
-  sizeRow,
-}: {
-  toggles: ReactNode[];
-  inputs?: ReactNode[];
-  sizeRow: ReactNode | null;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">{toggles}</div>
-      {inputs && inputs.length > 0 ? (
-        <div className="grid gap-4 lg:grid-cols-3">{inputs}</div>
-      ) : null}
-      {sizeRow ? <div>{sizeRow}</div> : null}
-    </div>
-  );
-}
 
 function tabTitle(tab: QcTab): string {
   switch (tab) {
@@ -1566,7 +1541,7 @@ function tabTitle(tab: QcTab): string {
     case "boxplot":
       return "Boxplot Intensity";
     case "cv":
-      return "Cov Plot";
+      return "CV Plot";
     case "pca":
       return "Principal Component Analysis";
     case "abundance":
@@ -1577,6 +1552,5 @@ function tabTitle(tab: QcTab): string {
 }
 
 function cmToIframeHeight(heightCm: number): number {
-  const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (10 * 96) / 2.54;
-  return Math.max(760, Math.round(basePx + 220));
+  return iframeHeightForPlot(heightCm, { fallbackCm: 10, minPx: 760, paddingPx: 220 });
 }

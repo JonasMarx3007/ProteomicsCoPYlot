@@ -98,7 +98,7 @@ def test_cloud_route_accepts_server_key_only_after_consent(provider, monkeypatch
 
     monkeypatch.setattr(chat_tools, f'_{provider}_chat_text', reply)
     with TestClient(app) as client:
-        payload = {'provider': provider, 'message': 'Hello', 'model': 'synthetic-model', 'view': {'module': 'data.upload'}}
+        payload = {'provider': provider, 'message': 'Please do that.', 'model': 'synthetic-model', 'view': {'module': 'data.upload'}}
         assert client.post('/api/chat/assistant', json=payload).status_code == 428
         assert calls == []
         status = client.get(f'/api/chat/cloud-consent/{provider}').json()
@@ -166,7 +166,7 @@ def test_upstream_error_cannot_echo_server_key(provider, monkeypatch, caplog):
             "disclosureVersion": status["disclosureVersion"],
         }).status_code == 200
         response = client.post("/api/chat/assistant", json={
-            "provider": provider, "message": "Hello", "model": "synthetic-model", "view": {"module": "data.upload"},
+            "provider": provider, "message": "Please do that.", "model": "synthetic-model", "view": {"module": "data.upload"},
         })
     assert response.status_code == 400
     assert "HTTP 401" in response.text

@@ -17,7 +17,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import { AssistantAppearanceMount, AssistantCanvasButton, AssistantInput, AssistantSelect, AssistantSurface } from "../../src/components/AssistantFields";
-import { NumericField, SizeRow } from "../../src/components/PlotFields";
+import NumberField from "../../src/components/NumberField";
+import { SizeRow } from "../../src/components/PlotFields";
 import {
   addCanvasTiles,
   applyAssistantControls,
@@ -65,13 +66,13 @@ const byLabel = (label: string, question = "", searches: Record<string, string> 
 describe("numeric fields", () => {
   it("expose the plot size as bounded cosmetic controls without changing other numeric permissions", () => {
     const { container } = render(<Surface>
-      <NumericField label="Threshold" value={1} onChange={noop} />
+      <NumberField label="Threshold" value={1} onChange={noop} />
       <SizeRow widthCm={20} heightCm={10} dpi={300} onWidthChange={noop} onHeightChange={noop} onDpiChange={noop} />
     </Surface>);
     const threshold = byLabel("Threshold");
     expect(threshold.appearance).toBe(false);
     expect(threshold.permission).toBe("confirm");
-    expect(Array.from(container.querySelectorAll("label > span")).map((span) => span.textContent))
+    expect(Array.from(container.querySelectorAll("label")).map((label) => label.textContent))
       .toEqual(["Threshold", "Width (cm)", "Height (cm)", "DPI"]);
     for (const [label, min, max] of [["Width (cm)", MIN_PLOT_DIMENSION_CM, MAX_PLOT_DIMENSION_CM],
       ["Height (cm)", MIN_PLOT_DIMENSION_CM, MAX_PLOT_DIMENSION_CM], ["DPI", MIN_PLOT_DPI, MAX_PLOT_DPI]] as const) {

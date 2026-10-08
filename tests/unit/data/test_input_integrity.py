@@ -85,3 +85,66 @@ def test_empty_mapping_still_allows_automatic_sample_detection():
     result = build_metadata_from_conditions(pd.DataFrame({"20240131": [1]}), [])
     assert result.auto_detected
     assert result.metadata["sample"].tolist() == ["20240131"]
+
+
+def test_auto_detection_skips_per_run_statistics():
+    from app.services.functions import _auto_sample_columns
+
+    spectronaut = ["PG.ProteinGroups", "[1] 20240131_A1.raw.PG.Quantity", "[1] 20240131_A1.raw.PG.Qvalue",
+                   "[1] 20240131_A1.raw.PG.NrOfStrippedSequencesIdentified", "[2] 20240131_B1.raw.PG.Quantity"]
+    assert _auto_sample_columns(spectronaut) == ["[1] 20240131_A1.raw.PG.Quantity", "[2] 20240131_B1.raw.PG.Quantity"]
+    plain = ["Protein", "20240131_A1", "20240131_A1_Qvalue", "20240131_A1 count", "20240131_B1"]
+    assert _auto_sample_columns(plain) == ["20240131_A1", "20240131_B1"]
+
+
+@pytest.mark.parametrize("run_name", ["LFQ", "intensity", "abundance", "area"])
+def test_auto_detection_uses_measurement_suffix_not_run_name(run_name):
+    run = f"[1] 20241018_{run_name}_run.raw.PG."
+    quantity = run + "Quantity"
+    statistics = [run + suffix for suffix in ("Qvalue", "NrOfPrecursors", "Score", "PEP")]
+    result = build_metadata_from_conditions(pd.DataFrame({
+        column: [1.0] for column in [quantity, *statistics]
+    }), [])
+    assert result.auto_detected
+    assert result.metadata["sample"].tolist() == [quantity]
+    with pytest.raises(ValueError, match="no auto-detectable sample"):
+        build_metadata_from_conditions(pd.DataFrame({column: [1.0] for column in statistics}), [])
+
+
+def test_auto_detection_keeps_plain_diann_run_names_with_measurement_words():
+    samples = ["20241018_LFQ_A.raw", "20241018_score_B.raw", "20241018_count_C.raw"]
+    result = build_metadata_from_conditions(pd.DataFrame({sample: [1.0] for sample in samples}), [])
+    assert result.metadata["sample"].tolist() == samples
+
+
+@pytest.mark.parametrize("suffix", ["Quantity", "Log2Quantity", "NormalizedQuantity", "Intensity", "Abundance", "Area", "LFQ"])
+def test_auto_detection_keeps_quantity_fields(suffix):
+    from app.services.functions import _auto_sample_columns
+
+    sample = f"[1] 20241018_score_run.raw.PG.{suffix}"
+    assert _auto_sample_columns([sample, "[1] 20241018_score_run.raw.PG.Qvalue"]) == [sample]
+
+
+def test_explicit_sample_mapping_does_not_use_auto_detection_heuristics():
+    sample = "20241018_Qvalue"
+    result = build_metadata_from_conditions(pd.DataFrame({sample: [1.0]}), [
+        {"name": "A", "columns": [sample]},
+    ])
+    assert not result.auto_detected
+    assert result.metadata.to_dict("records") == [{"sample": sample, "condition": "A"}]
+
+
+def test_auto_annotation_transforms_and_filters_only_measurements():
+    from app.services.annotation_processor import compute_annotation
+
+    sample = "[1] 20241018_LFQ_run.raw.PG.Quantity"
+    qvalue = "[1] 20241018_LFQ_run.raw.PG.Qvalue"
+    counts = "[1] 20241018_LFQ_run.raw.PG.NrOfPrecursors"
+    frame = pd.DataFrame({"ProteinNames": ["P1", "P2"], sample: [8., 0.],
+                          qvalue: [0.01, 0.02], counts: [3, 4]})
+    result = compute_annotation(frame, [], False, 1, "overall")
+    assert result.metadata["sample"].tolist() == [sample]
+    assert result.log2_data[sample].iloc[0] == 3.0
+    assert pd.isna(result.log2_data[sample].iloc[1])
+    pd.testing.assert_frame_equal(result.log2_data[[qvalue, counts]], frame[[qvalue, counts]])
+    assert result.filtered_data["ProteinNames"].tolist() == ["P1"]

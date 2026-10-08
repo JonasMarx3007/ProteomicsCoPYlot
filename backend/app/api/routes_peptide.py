@@ -27,6 +27,7 @@ from app.services.peptide_quantity import (
     default_peptide_quantity_column,
     peptide_quantity_columns,
 )
+from app.services.json_records import json_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,13 +36,12 @@ router = APIRouter(prefix="/api/peptide", tags=["peptide"])
 
 
 def _metadata_response(stored) -> PeptideMetadataResponse:
-    preview = stored.frame.head(30).where(pd.notna(stored.frame.head(30)), None)
     return PeptideMetadataResponse(
         filename=stored.filename,
         rows=len(stored.frame),
         columns=len(stored.frame.columns),
         createdAt=stored.created_at,
-        preview=preview.to_dict(orient="records"),
+        preview=json_records(stored.frame, 30),
     )
 
 

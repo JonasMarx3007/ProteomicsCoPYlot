@@ -7,9 +7,8 @@ on the way. These tests load a project that uses such names and call the real
 routes, then read back what the renderer actually drew from: the settings and
 the condition column of the data it recorded for the notebook export.
 
-A semicolon is the one character a protein name cannot carry: it separates the
-members of a protein group, and a group is selected by its first member. That is
-why "P1;P2" appears as a group here and is selected as "P1".
+Semicolons separate members of a protein group. The complete group identifier
+must survive transport too: "P1;P2" is selected as "P1;P2", not "P1".
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
 
 CONDITIONS = ["Drug, high", "A;B|δ", "x=y", "100% ready", 'quote"name']
-PROTEINS = ["P1", "Drug, high", "A|B=δ", "100% ready", 'quote"name']
+PROTEINS = ["P1;P2", "Drug, high", "A|B=δ", "100% ready", 'quote"name']
 SITE_PROTEIN = "P1;P2|δ"
 PATHWAY = "Path|δ, test"
 

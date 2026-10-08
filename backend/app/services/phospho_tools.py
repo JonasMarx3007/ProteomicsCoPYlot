@@ -35,6 +35,7 @@ from app.services.plot_styling import (
 )
 from app.services.runtime_cache import apply_cached_wrappers
 from app.services.plotting_common import get_plt_with_ticker as _get_plt, get_plotly_px as _get_plotly, get_plotly_go as _get_plotly_go, plotly_html as _plotly_html
+from app.services.json_records import json_records
 
 
 def _phospho_context() -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
@@ -893,7 +894,7 @@ def ksea_uploaded_volcano_html(
             "condition1": condition1, "condition2": condition2,
             "condition1Control": condition1_control, "condition2Control": condition2_control,
             "totalRows": len(frame), "counts": frame["regulation"].value_counts().to_dict(),
-            "rows": frame.head(10).astype(object).where(pd.notna(frame.head(10)), None).to_dict(orient="records"),
+            "rows": json_records(frame, 10),
             "limitations": "Uploaded external results; adjustment procedure is not independently verified. Substrate counts are included only when explicitly supplied; absent counts are unknown. Frequency factor is not a direct activity measurement."})
     color_map = {
         KINASE_ENRICHED_UP: "red",
@@ -1040,7 +1041,9 @@ def phosprot_regulation_table(
             f"{site} ({effect:+.4g})"
             for site, effect in zip(up_sites, up["log2FC"].astype(float), strict=True)
         ]
-        down_sum = float(-down["log2FC"].astype(float).sum())
+        # The magnitude of the down-regulated sum; abs() rather than a sign flip,
+        # so a protein without down-regulated sites reads 0, not -0.0.
+        down_sum = abs(float(down["log2FC"].astype(float).sum()))
         up_sum = float(up["log2FC"].astype(float).sum())
 
         rows.append(

@@ -63,7 +63,8 @@ from app.services.metadata_upload_store import (
 )
 from app.services.peptide_metadata_store import clear_peptide_metadata
 from app.services.upload_limits import ensure_upload_size
-from app.services.env_settings import env_flag
+from app.services.viewer_bootstrap import viewer_mode_enabled
+from app.services.json_records import json_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,12 +72,8 @@ LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
 
-def _viewer_mode_enabled() -> bool:
-    return env_flag("COPYLOT_VIEWER_MODE")
-
-
 def _include_empty_packages() -> bool:
-    if not _viewer_mode_enabled():
+    if not viewer_mode_enabled():
         return True
     # In viewer mode we always hide empty packages (for example the implicit
     # session-default "Data" package) so only configured dataset packages are shown.
@@ -100,10 +97,7 @@ def _table_preview_response(stored) -> DatasetPreviewResponse:
         rows=len(df),
         columns=len(df.columns),
         columnNames=[str(c) for c in df.columns],
-        preview=df.head(20).replace({float("nan"): None}).to_dict(orient="records"),
-        suggestedIsLog2Transformed=getattr(
-            stored, "suggested_is_log2_transformed", None
-        ),
+        preview=json_records(df, 20),
         sourcePath=getattr(stored, "source_path", None),
     )
 
@@ -427,7 +421,7 @@ def set_active_dataset_package(payload: ActiveDatasetPackageRequest) -> CurrentD
     package_name = payload.packageName.strip()
     if not package_name:
         raise HTTPException(status_code=400, detail="Package name must not be empty.")
-    if _viewer_mode_enabled() and package_name not in list_packages(include_empty=True):
+    if viewer_mode_enabled() and package_name not in list_packages(include_empty=True):
         raise HTTPException(status_code=404, detail="Dataset package is not available.")
     set_active_package(package_name)
     return _current_datasets_response()
@@ -478,7 +472,7 @@ def set_active_metadata_profile_route(payload: ActiveMetadataProfileRequest) -> 
     profile_name = payload.profileName.strip()
     if not profile_name:
         raise HTTPException(status_code=400, detail="Metadata profile name must not be empty.")
-    if _viewer_mode_enabled() and profile_name not in list_metadata_profiles():
+    if viewer_mode_enabled() and profile_name not in list_metadata_profiles():
         raise HTTPException(status_code=404, detail="Metadata profile is not available.")
     previous_profile = get_active_metadata_profile()
     try:

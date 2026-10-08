@@ -1,9 +1,11 @@
+import NumberField from "../../components/NumberField";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
+import OptionsLayout from "../../components/OptionsLayout";
 import PlotImage from "../../components/PlotImage";
 import InteractivePlot from "../../components/InteractivePlot";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
-import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
-import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { useId, useEffect, useMemo, useState, type ReactNode } from "react";
+import { restorePlotDimensionCm, restorePlotDpi, iframeHeightForPlot } from "../../lib/plotLimits";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   buildPlotUrl,
   getPeptideOverview,
@@ -14,7 +16,6 @@ import { withoutStaticSize } from "../../lib/plotRenderType";
 import { SizeRow } from "../../components/PlotFields";
 import { saveQcReportSettings } from "../../lib/reportState";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
   withPlotDownloadFormat,
@@ -338,8 +339,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       {activeTab === "rtPlot" ? (
         <>
           <SectionCard as="h2" title="RT Plot Options">
-            <OptionsLayout
-              controls={[
+            <OptionsLayout order="fields-size-toggles"
+              fields={[
                 // `peptide_rt_interactive_html` always draws a scatter and
                 // reads neither Mode nor Bins, so neither is offered while the
                 // interactive renderer is selected: a control that changes
@@ -360,19 +361,19 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   onChange={(value) => setRt({ ...rt, type: value })}
                   options={["Normal", "Interactive"]}
                 />,
-                <CommittedNumberField
+                <NumberField
                   key="bins"
                   label="Bins"
                   value={rt.bins}
-                  onCommit={(value) => setRt({ ...rt, bins: Math.max(10, Math.round(value)) })}
+                  onChange={(value) => setRt({ ...rt, bins: Math.max(10, Math.round(value)) })}
                   disabled={rtInteractive}
                   disabledHint="Binning applies to the hexbin and density modes only."
                 />,
-                <CommittedNumberField
+                <NumberField
                   key="randomSeed"
                   label="Random Seed"
                   value={rt.randomSeed}
-                  onCommit={(value) => setRt({ ...rt, randomSeed: Math.max(0, Math.round(value)) })}
+                  onChange={(value) => setRt({ ...rt, randomSeed: Math.max(0, Math.round(value)) })}
                 />,
               ]}
               size={
@@ -404,8 +405,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       {activeTab === "modification" ? (
         <>
           <SectionCard as="h2" title="Modification Plot Options">
-            <OptionsLayout
-              controls={[]}
+            <OptionsLayout order="fields-size-toggles"
+              fields={[]}
               size={
                 <SizeRow
                   widthCm={modification.widthCm}
@@ -433,8 +434,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       {activeTab === "missedCleavage" ? (
         <>
           <SectionCard as="h2" title="Missed Cleavage Plot Options">
-            <OptionsLayout
-              controls={[
+            <OptionsLayout order="fields-size-toggles"
+              fields={[
                 <SelectField
                   key="protease"
                   label="Cleavage Rule"
@@ -472,8 +473,8 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
       {activeTab === "sequenceCoverage" ? (
         <>
           <SectionCard as="h2" title="Sequence Coverage Options">
-            <OptionsLayout
-              controls={[
+            <OptionsLayout order="fields-size-toggles"
+              fields={[
                 <SelectField
                   key="species"
                   label="Database"
@@ -489,11 +490,11 @@ export default function PeptideLevelPage({ activeTab, onContextModeChange, advan
                   onChange={(value) => setCoverage({ ...coverage, protein: value })}
                   options={overview.availableProteins}
                 />,
-                <CommittedNumberField
+                <NumberField
                   key="chunk-size"
                   label="Chunk Size"
                   value={coverage.chunkSize}
-                  onCommit={(value) => setCoverage({ ...coverage, chunkSize: Math.max(10, Math.round(value)) })}
+                  onChange={(value) => setCoverage({ ...coverage, chunkSize: Math.max(10, Math.round(value)) })}
                 />,
               ]}
             />
@@ -584,96 +585,6 @@ function InfoBanner({ message }: { message: string }) {
 
 
 
-function formatNumberValue(value: number) {
-  return Number.isFinite(value) ? String(value) : "";
-}
-
-function CommittedNumberField({
-  label,
-  value,
-  onCommit,
-  disabled = false,
-  disabledHint,
-}: {
-  label: string;
-  value: number;
-  onCommit: (value: number) => void;
-  /** Greyed out where the active renderer does not read this setting. */
-  disabled?: boolean;
-  disabledHint?: string;
-}) {
-  const fieldId = useId();
-  const [draft, setDraft] = useState(() => formatNumberValue(value));
-
-  useEffect(() => {
-    setDraft(formatNumberValue(value));
-  }, [value]);
-
-  const commit = () => {
-    const normalized = draft.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(formatNumberValue(value));
-      return;
-    }
-    const nextValue = Number(normalized);
-    if (!Number.isFinite(nextValue)) {
-      setDraft(formatNumberValue(value));
-      return;
-    }
-    onCommit(nextValue);
-    setDraft(formatNumberValue(nextValue));
-  };
-
-  return (
-    <div>
-      <label
-        htmlFor={fieldId}
-        className={`mb-2 block text-sm font-medium ${disabled ? "text-slate-400" : "text-slate-700"}`}
-      >
-        {label}
-      </label>
-      <AssistantInput id={fieldId}
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        value={draft}
-        disabled={disabled}
-        title={disabled ? disabledHint : undefined}
-        onChange={(e) => setDraft(e.target.value.replace(",", "."))}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-      />
-      {disabled && disabledHint ? (
-        <p className="mt-1 text-xs text-slate-400">{disabledHint}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function OptionsLayout({
-  controls,
-  size,
-  toggles,
-}: {
-  controls: ReactNode[];
-  /** The shared width/height/DPI row, so this page sizes plots like every other. */
-  size?: ReactNode;
-  toggles?: ReactNode[];
-}) {
-  return (
-    <div className="space-y-4">
-      {controls.length > 0 ? <div className="grid gap-4 lg:grid-cols-3">{controls}</div> : null}
-      {size}
-      {toggles && toggles.length > 0 ? <div className="flex flex-wrap gap-3">{toggles}</div> : null}
-    </div>
-  );
-}
 
 function ImagePlotCard({
   title,
@@ -702,24 +613,8 @@ function ImagePlotCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         {renderMode === "image" ? (
           <div className="flex flex-wrap items-center gap-2">
-            <AssistantSelect
-              value={downloadFormat}
-              onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-              className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-            >
-              {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </AssistantSelect>
-            <a
-              href={downloadUrl}
-              download={downloadFilename}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-            >
-              Download Plot
-            </a>
+            <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+              href={downloadUrl} filename={downloadFilename} />
             {notebookEnabled ? <NotebookDownload plotUrl={url} rendered={notebook} /> : null}
           </div>
         ) : (
@@ -761,6 +656,5 @@ function ImagePlotCard({
 }
 
 function cmToIframeHeight(heightCm: number): number {
-  const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (15 * 96) / 2.54;
-  return Math.max(860, Math.round(basePx + 280));
+  return iframeHeightForPlot(heightCm, { fallbackCm: 15, minPx: 860, paddingPx: 280 });
 }

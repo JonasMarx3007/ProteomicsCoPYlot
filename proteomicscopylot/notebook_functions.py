@@ -23,50 +23,56 @@ from scipy.stats import gaussian_kde, pearsonr
 from scipy.stats import t
 from sklearn.decomposition import PCA
 
-_SAMPLE_DOTTED_SUFFIX = re.compile(
-    r"(?:(?:\.(?:PG|GG|EG|FG|PEP|PR|Precursor|Protein|Peptide))?\."
-    r"(?:(?:Avg|Average)?Log[._\s-]*2(?:Normal(?:i[sz]ed|isation|ization))?"
-    r"(?:Quantity|Intensity|Abundance)|Normal(?:i[sz]ed|isation|ization)"
-    r"(?:Quantity|Intensity|Abundance)?|Max[._\s-]*LFQ(?:Quantity|Intensity|Abundance)?|"
-    r"TotalQuantity|Quantity|Intensity|Abundance))$",
-    re.IGNORECASE,
-)
-_SAMPLE_TEXT_SUFFIX = re.compile(
-    r"[\s._-]+(?:(?:Max[\s._-]*LFQ[\s._-]+)?"
-    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Intensity|"
-    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Spectral[\s._-]+Count|"
-    r"PSMs?|Percent[\s._-]+PSMs?|LFQ[\s._-]+Intensity|iBAQ|"
-    r"MS\s*/\s*MS[\s._-]+Count|MS[12][\s._-]+(?:Intensity|Count)|"
-    r"Razor\s*\+\s*Unique[\s._-]+Peptides|Unique[\s._-]+Peptides|Peptides|"
-    r"Sequence[\s._-]+Coverage(?:[\s._-]*\[%\])?|"
-    r"Log[._\s-]*2[\s._-]*(?:Quantity|Intensity|Abundance|Ratio)|"
-    r"(?:Quantity|Abundance|Ratio))$",
-    re.IGNORECASE,
-)
-_SAMPLE_ACQUISITION_SUFFIX = re.compile(
-    r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$",
-    re.IGNORECASE,
-)
-_SAMPLE_NUMBER = re.compile(r"\d+")
-
+# <shared-core> proteomicscopylot/_core.py, one copy for the app and the pip
+# package. Notebook exports inline these definitions here.
 try:
-    from statsmodels.stats.multitest import multipletests
-except ModuleNotFoundError:
-    def multipletests(pvals, alpha=0.05, method="fdr_bh"):
-        if method != "fdr_bh":
-            raise ModuleNotFoundError(
-                "statsmodels is required for multipletests methods other than 'fdr_bh'."
-            )
-        pvals = np.asarray(pvals, dtype=float)
-        n = len(pvals)
-        order = np.argsort(pvals)
-        ranked = pvals[order]
-        adjusted_ranked = ranked * n / np.arange(1, n + 1)
-        adjusted_ranked = np.minimum.accumulate(adjusted_ranked[::-1])[::-1]
-        adjusted = np.empty_like(adjusted_ranked)
-        adjusted[order] = np.clip(adjusted_ranked, 0, 1)
-        reject = adjusted <= alpha
-        return reject, adjusted, None, None
+    from ._core import (
+        _SAMPLE_DOTTED_SUFFIX,
+        _SAMPLE_TEXT_SUFFIX,
+        _SAMPLE_ACQUISITION_SUFFIX,
+        _SAMPLE_NUMBER,
+        strip_sample_measurement_suffix,
+        extract_sample_id,
+        _significance_pval_column,
+        constant_within_group,
+        condition_mean,
+        resolve_feature_scaling,
+        _auto_label_col,
+        bh_adjust,
+    )
+except ImportError:  # loaded from its file alone, outside the package
+    import importlib.util as _importlib_util
+
+    _core_spec = _importlib_util.spec_from_file_location("_copylot_core", Path(__file__).with_name("_core.py"))
+    _core = _importlib_util.module_from_spec(_core_spec)
+    _core_spec.loader.exec_module(_core)
+    _SAMPLE_DOTTED_SUFFIX = _core._SAMPLE_DOTTED_SUFFIX
+    _SAMPLE_TEXT_SUFFIX = _core._SAMPLE_TEXT_SUFFIX
+    _SAMPLE_ACQUISITION_SUFFIX = _core._SAMPLE_ACQUISITION_SUFFIX
+    _SAMPLE_NUMBER = _core._SAMPLE_NUMBER
+    strip_sample_measurement_suffix = _core.strip_sample_measurement_suffix
+    extract_sample_id = _core.extract_sample_id
+    _significance_pval_column = _core._significance_pval_column
+    constant_within_group = _core.constant_within_group
+    condition_mean = _core.condition_mean
+    resolve_feature_scaling = _core.resolve_feature_scaling
+    _auto_label_col = _core._auto_label_col
+    bh_adjust = _core.bh_adjust
+# </shared-core>
+
+
+def multipletests(pvals, alpha=0.05, method="fdr_bh"):
+    """Benjamini-Hochberg adjustment, in the return shape of statsmodels' function.
+
+    One implementation (`_core.bh_adjust`, shared with the application), so the
+    adjusted p-values never depend on whether statsmodels happens to be
+    installed; tests/reference compares it with statsmodels.
+    """
+    if method != "fdr_bh":
+        raise ValueError("Only method='fdr_bh' (Benjamini-Hochberg) is available.")
+    adjusted = bh_adjust(np.asarray(pvals, dtype=float))
+    reject = adjusted <= alpha
+    return reject, adjusted, None, None
 
 try:
     from Bio import SeqIO
@@ -75,14 +81,6 @@ except ModuleNotFoundError:
 
 
 #BASIC AND DATA
-def resource_path_manual(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-
-
 def bool_to_str(value):
     if value is True:
         return "TRUE"
@@ -151,14 +149,6 @@ def sanitize_dataframe(df):
     return df
 
 
-def resource_path(relative_path: str) -> str:
-    if hasattr(sys, "_MEIPASS"):
-        base_path = Path(sys._MEIPASS)
-    else:
-        base_path = Path(__file__).parent
-    return str(base_path / relative_path)
-
-
 def rename_cols(df):
     rename_map = {
         "Run": "File.Name",
@@ -201,6 +191,31 @@ def info():
     print("Proteomics CoPYlot is a package/app to streamline the analysis of proteomics data. Have fun!")
 
 
+# The bundled HEK293 example (WT vs GRK, five replicates each), by short name.
+EXAMPLE_DATA_FILES = {
+    "protein": "20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv",
+    "phospho": "20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv",
+    "phosphoprotein": "phosprot_filtered_data_full.csv",
+    "protein_metadata": "protein_metadata_full.csv",
+    "phospho_metadata": "phospho_metadata_full.csv",
+}
+
+
+def example_data_path(name):
+    """Path of a bundled example file: one of the keys of EXAMPLE_DATA_FILES."""
+    if name not in EXAMPLE_DATA_FILES:
+        raise ValueError(f"Unknown example {name!r}; choose one of: {', '.join(EXAMPLE_DATA_FILES)}.")
+    path = Path(__file__).resolve().parent / "example_data" / EXAMPLE_DATA_FILES[name]
+    if not path.is_file():
+        raise FileNotFoundError(f"The bundled example file is missing: {path}")
+    return path
+
+
+def load_example_data(name):
+    """Read a bundled example file with `read_data`; see EXAMPLE_DATA_FILES for the names."""
+    return read_data(example_data_path(name))
+
+
 def read_data(file):
     if hasattr(file, 'name'):
         filename = file.name
@@ -227,22 +242,6 @@ def read_data(file):
     df = rename_cols(df)
 
     return df
-
-
-def strip_sample_measurement_suffix(value):
-    sample = re.split(r"[\\/]", str(value).strip())[-1]
-    previous = None
-    while sample != previous:
-        previous = sample
-        sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
-        sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
-    return _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
-
-
-def extract_sample_id(value):
-    original = str(value).strip()
-    numbers = _SAMPLE_NUMBER.findall(strip_sample_measurement_suffix(original))
-    return numbers[-1] if numbers else original
 
 
 def paired_sample_columns(meta, condition1, condition2):
@@ -355,7 +354,7 @@ def count_missed_cleavages(sequence, protease="trypsin"):
             total += 1
         return total
 
-    # A column of sequences must give a count per sequence, as the R package
+    # A column of sequences must give a count per sequence, as the R functions
     # does. Passing one used to stringify the whole container and count the
     # residues in its repr -- brackets and quotes included -- so a list of two
     # peptides returned a single meaningless number instead of two counts.
@@ -410,7 +409,7 @@ def _sample_meta(meta, id=True, newline=False, zero_based=False):
     `n` counts each condition's samples in metadata order, from 1 (from 0 with
     `zero_based`). The id follows on its own line with `newline` -- for tick
     labels -- or after a space. Returns a copy with `sample` as text and `id` and
-    `new_sample` added. The R package's `.sample_meta` is the same rule.
+    `new_sample` added. The R functions' `.sample_meta` is the same rule.
     """
     meta = meta.copy()
     meta["sample"] = meta["sample"].astype(str)
@@ -433,7 +432,7 @@ def raw_zero_to_nan(data: pd.DataFrame, sample_columns) -> pd.DataFrame:
 
     Only the named sample columns change; annotation columns and values on a
     log2 scale, where 0 is a real measurement, are left alone. Same name and
-    rule in the app and the R package.
+    rule in the app and the R functions.
     """
     output = data.copy()
     present = [column for column in map(str, sample_columns) if column in output.columns]
@@ -713,7 +712,9 @@ def transform_phosprot(
     across-sample median and requires at least 50% of the fixed eligible sites.
     The other modes aggregate original-scale intensities and the result is log2
     transformed afterwards, so every mode returns log2 values and the fold
-    changes computed from them are comparable. ``data_scale`` describes the
+    changes computed from them are comparable. ``mean`` averages only the sites
+    quantified in every sample, so all samples use the same sites; a protein
+    without such a site is missing. ``data_scale`` describes the
     supplied sample columns and may be ``"linear"`` or ``"log2"``.
     Pass aligned pre-imputation ``coverage_data`` for observed-site diagnostics
     and eligibility. The 50% threshold counts finite supplied values, including
@@ -858,6 +859,10 @@ def transform_phosprot(
                 "mode must be 'robust_site_median', 'sum_propagate_na', "
                 "'sum_ignore_na', or 'mean'"
             )
+        if mode in ("mean", "sum_ignore_na"):
+            # Only sites quantified in every sample, so all samples use the same sites
+            # and a change in coverage cannot flip a fold change.
+            source = source.loc[source[sample_cols].apply(pd.to_numeric, errors="coerce").notna().all(axis=1)]
         values = source.groupby("Protein_group", as_index=False).agg(
             {column: summarizer for column in sample_cols}
         )
@@ -896,12 +901,17 @@ def transform_phosprot(
         diagnostics[f"site_observed__{sample}"] = observed[sample].to_numpy(dtype=int)
         diagnostics[f"site_coverage__{sample}"] = fractions[sample].to_numpy(dtype=float)
 
-    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_log2.index]
+    supplied_source = eligible_log2 if mode == "robust_site_median" else source
     supplied = supplied_source[sample_cols].notna().assign(
+        Protein_group=supplied_source['Protein_group'].to_numpy()
+    ).groupby('Protein_group')[sample_cols].sum().reindex(group_order, fill_value=0)
+    measured = (supplied_source[sample_cols].notna()
+                & numeric.loc[supplied_source.index, sample_cols].notna()).assign(
         Protein_group=supplied_source['Protein_group'].to_numpy()
     ).groupby('Protein_group')[sample_cols].sum().reindex(group_order, fill_value=0)
     for sample in sample_cols:
         diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
+        diagnostics[f"site_measured__{sample}"] = measured[sample].to_numpy(dtype=int)
     data_phosprot = annotations.merge(values, on="Protein_group", how="left")
     data_phosprot = data_phosprot.merge(diagnostics, on="Protein_group", how="left")
 
@@ -961,7 +971,10 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
     This generic helper cannot infer the
     biological dataset level from an arbitrary dataframe.
 
-    Reference: the downshifted-normal model and its defaults follow Perseus (Tyanova et
+    Methods: "quantile" (default) draws around the q-quantile of the observed values
+    with adj_std times their standard deviation, in the spirit of MinProb (Lazar et
+    al. 2016, doi:10.1021/acs.jproteome.5b00981). "numerical" is the downshifted
+    normal with Perseus defaults, mean - down_shift * SD and width * SD (Tyanova et
     al. 2016, doi:10.1038/nmeth.3901).
     """
     _validate_meta_samples(meta)
@@ -971,6 +984,8 @@ def impute_values(data: pd.DataFrame, meta: pd.DataFrame, q=0.01, adj_std=0.3, r
         method = "quantile"
     if method not in {"quantile", "numerical"}:
         raise ValueError("Imputation method must be 'quantile' or 'numerical'.")
+    if not float(adj_std if method == "quantile" else width) > 0:
+        raise ValueError("Adjust standard deviation must be greater than 0.")
     rng = np.random.default_rng(seed)
     data = data.copy()
     annotated_columns = meta["sample"].tolist()
@@ -1806,30 +1821,6 @@ def _prepare_pca_matrix(data, meta, *, plot_3d=False):
     return transposed_expr, n_components
 
 
-def resolve_feature_scaling(scaling="auto", method="PCA"):
-    """How features are weighted before a projection.
-
-    ``centered`` subtracts each feature's mean across samples and stops there,
-    so a feature contributes in proportion to its variance. ``unit_variance``
-    also divides by the standard deviation, giving every feature equal weight.
-
-    ``auto`` keeps each method's established default: PCA on the centred matrix,
-    UMAP and t-SNE on unit-variance features because both read distances and are
-    sensitive to feature scale. The two answer different questions, so a run that
-    mixes them without saying which was used is not reproducible.
-    """
-    requested = str(scaling or "auto").strip().lower()
-    if requested in {"centered", "centred"}:
-        return "centered"
-    if requested in {"unit_variance", "scaled"}:
-        return "unit_variance"
-    if requested != "auto":
-        raise ValueError(
-            "Unsupported scaling. Choose 'auto', 'centered', or 'unit_variance'."
-        )
-    return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
-
-
 def pca_scores(data, meta, plot_3d=False, scaling="auto"):
     """The PCA coordinates `pca_plot` draws, as a table.
 
@@ -2360,7 +2351,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     Pass `observed` (the matrix before `impute_values`) when `data` is imputed:
     the result then gains `n_imputed__<condition>` and `imputed_values`, the
     number of imputed values behind each row. Imputed values are tested as if
-    measured. Phosphoprotein tables with site_observed__ columns get the counts
+    measured. Phosphoprotein tables with site-contribution columns get the counts
     without it.
     """
     if condition1 == condition2:
@@ -2435,6 +2426,9 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
 
+    no_variation = without_variation([np.round(diffs, 9)] if is_paired else [arr_x, arr_y])
+    pvals = np.where(no_variation, np.nan, pvals)
+
     # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
     # significance is called on (raw when `uncorrected`), as in the web app.
     adj_pvals = _adjust_finite_pvalues(pvals)
@@ -2453,8 +2447,10 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         "selected_pval": selected_pvals,
         "significance": significance,
         "neg_log10_selected_pval": negative_log10(selected_pvals),
-        # This warning does not change the test result.
-        "zero_variance": constant_within_group(arr_x) | constant_within_group(arr_y),
+        # Marks constant groups (paired: constant differences); rows where every
+        # group is constant have no p-value at all.
+        "zero_variance": (constant_differences(diffs) if is_paired
+                          else constant_within_group(arr_x) | constant_within_group(arr_y)),
     }
 
     if workflow == "Phosphoprotein":
@@ -2605,6 +2601,11 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         t_stat = _guarded_t_statistic(log2fc, se)
         pvals = 2 * t.sf(np.abs(t_stat), dfree)
 
+    no_variation = without_variation(
+        [np.round(diffs, 9), *control_arrays] if is_paired else [arr_x, arr_y, *control_arrays]
+    )
+    pvals = np.where(no_variation, np.nan, pvals)
+
     # `adj_pval` is always Benjamini-Hochberg; `selected_pval` is the one
     # significance is called on (raw when `uncorrected`), as in the web app.
     adj_pvals = _adjust_finite_pvalues(pvals)
@@ -2669,7 +2670,7 @@ def _volcano_plot_base(volcano_df, condition1, condition2, in_pval, in_log2fc, u
 
     One trace per significance class, and a second, ringed one for the features
     named in `highlight_terms` (matched on the part of a name before `_`, case
-    ignored). A class with no points gets no trace. The R package's
+    ignored). A class with no points gets no trace. The R functions'
     `.volcano_plot_base` draws the same figure.
     """
     if highlight_terms is not None and not isinstance(highlight_terms, list):
@@ -2807,7 +2808,8 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
 
     # f_oneway returns NaN only for a row that is constant throughout; those are
     # dropped. A row constant within every condition but different between them
-    # gets an infinite (or enormous) F and p = 0; it stays, flagged zero_variance.
+    # gets an infinite (or enormous) F; it stays, flagged zero_variance, but gets
+    # no p-value -- the same rule the volcano applies to rows without variation.
     finite = np.isfinite(pvals)
     df = df.loc[finite].copy()
     groups = [group[finite] for group in groups]
@@ -2819,15 +2821,22 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
         for condition, group in zip(condition_cols.keys(), groups)
     }, index=df.index)
 
+    # No variation within any condition: an infinite F says only that the
+    # variance is absent, not that the difference is large. No p-value, out of
+    # the BH family, shown as Unavailable.
+    zero_variance = np.logical_and.reduce([constant_within_group(group) for group in groups])
+    pvals = np.where(zero_variance, np.nan, pvals)
+
     out = df[cols_to_use].copy()
     out["f_statistic"] = f_stat
     out["pval"] = pvals
     out["adj_pval"] = _adjust_finite_pvalues(pvals)
     out["selected_pval"] = pvals if uncorrected else out["adj_pval"].to_numpy()
-    out["significance"] = np.where(out["selected_pval"] < in_pval, "Significant", "Not significant")
+    significance = np.where(out["selected_pval"] < in_pval, "Significant", "Not significant").astype(object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
+    out["significance"] = significance
     out["neg_log10_selected_pval"] = -np.log10(np.clip(out["selected_pval"], np.finfo(float).tiny, None))
-    # No variation within any condition: significance from absent variance.
-    out["zero_variance"] = np.logical_and.reduce([constant_within_group(group) for group in groups])
+    out["zero_variance"] = zero_variance
 
     for condition in means.columns:
         out[f"mean_{condition}"] = means[condition].to_numpy()
@@ -2837,7 +2846,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
 
     # Benjamini-Hochberg ties many features to the same adjusted p, so sorting on
     # it alone leaves the order within those groups to whichever sort the
-    # language happens to use -- the R package returned a different one. Raw p
+    # language happens to use -- the R functions returned a different one. Raw p
     # then the label makes the order identical across all three pipelines.
     try:
         sort_keys = ["selected_pval", "pval", _auto_label_col(out)]
@@ -2850,7 +2859,7 @@ def row_zscore(matrix):
     """Row-wise z-scores with the sample standard deviation (ddof=1).
 
     The one definition every heatmap in the package uses, and the same one
-    the web application and the R package use: ddof=1, a row with no spread
+    the web application and the R functions use: ddof=1, a row with no spread
     (or a non-finite SD) centred and left at zero rather than made undefined.
     """
     values = np.asarray(matrix, dtype=float)
@@ -3028,7 +3037,7 @@ def _normalization_sample_columns(data, meta):
 
 MISSINGNESS_GAP = 0.10
 MISSINGNESS_MIN_COMPLETE = 20
-_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization"}
+_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization", "vsn": "VSN"}
 
 
 def missingness_imbalance(data, meta, min_gap=MISSINGNESS_GAP, min_complete=MISSINGNESS_MIN_COMPLETE):
@@ -3072,8 +3081,8 @@ def missingness_imbalance(data, meta, min_gap=MISSINGNESS_GAP, min_complete=MISS
 def missingness_imbalance_warning(table, method, min_gap=MISSINGNESS_GAP):
     """The warning for `missingness_imbalance`, or None when there is nothing to say.
 
-    Only median centering and quantile normalization are concerned: both are
-    computed from each sample's observed values.
+    Median centering, quantile normalization and VSN are concerned: all are
+    fitted on each sample's observed values.
     """
     label = _MISSINGNESS_METHOD_LABELS.get(str(method or "none").strip().lower())
     if label is None or table.empty or not bool(table["flagged"].any()):
@@ -3115,7 +3124,7 @@ def normalize_data(data, meta, method="none", linear_source=None):
     VSN is delegated to Bioconductor rather than reimplemented: a Python port
     matched the reference on well-conditioned data but diverged by up to 2.2 log2
     units on wide-dynamic-range input, because vsn's profile likelihood is flat
-    and multimodal. It is available in the R package and the web app; from this
+    and multimodal. It is available in the R functions and the web app; from this
     package, use one of those.
 
     References: quantile normalization follows the method of Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185;
@@ -3140,7 +3149,7 @@ def normalize_data(data, meta, method="none", linear_source=None):
     elif resolved == "vsn":
         raise ValueError(
             "VSN is not available in the notebook package because it delegates to "
-            "Bioconductor vsn. Use the R package or the web app, or choose "
+            "Bioconductor vsn. Use the R functions or the web app, or choose "
             "'median' or 'quantile'."
         )
     else:
@@ -3212,10 +3221,12 @@ def imputed_cell_mask(values, observed=None):
 def site_observed_imputed_mask(frame, sample_columns):
     """Classify direct per-sample site contributions, not cross-sample centering effects.
 
-    Both site_observed__ and site_supplied__ counts are required. Without them
-    provenance is unknown, not evidence of no imputation.
+    Measured contributors (site_measured__, or site_observed__ in older tables)
+    and site_supplied__ counts are required. Without them provenance is unknown,
+    not evidence of no imputation. Coverage counts remain separate in new tables.
     """
-    columns = [f"site_observed__{sample}" for sample in sample_columns]
+    prefix = "site_measured__" if any(str(c).startswith("site_measured__") for c in frame.columns) else "site_observed__"
+    columns = [f"{prefix}{sample}" for sample in sample_columns]
     supplied_columns = [f"site_supplied__{sample}" for sample in sample_columns]
     if not all(column in frame.columns for column in columns + supplied_columns):
         return None
@@ -3254,7 +3265,7 @@ def _imputed_counts_for(data, observed, groups):
 
     `observed` is the pre-imputation matrix the caller passed (e.g. the filtered
     data that was given to `impute_values`); without it a phosphoprotein table's
-    own site_observed__ columns are used when present.
+    own site-contribution columns are used when present.
     """
     samples = list(dict.fromkeys(c for cols in groups.values() for c in cols))
     if observed is not None:
@@ -3271,63 +3282,19 @@ def _imputed_counts_for(data, observed, groups):
     return None if mask is None else imputed_value_counts(mask, groups)
 
 
-def _significance_pval_column(table):
-    """The p-value column significance is called on: `selected_pval`, or `adj_pval` in older tables."""
-    for column in ("selected_pval", "adj_pval"):
-        if column in table.columns:
-            return column
-    return None
+
+def constant_differences(differences):
+    """`constant_within_group` for paired differences, ignoring float subtraction noise."""
+    return constant_within_group(np.round(np.asarray(differences, dtype=float), 9))
 
 
-def constant_within_group(values):
-    """True per row where every observed replicate in the group holds one value.
+def without_variation(groups):
+    """Rows where every variance component is constant: the standard error is zero.
 
-    Such a row has no measured within-group variation, so the standard error
-    collapses and the t-statistic explodes: a fold change of 0.05 can reach
-    p = 2e-54 and outrank every genuine effect at the top of a volcano. The
-    p-value itself is correct and matches `scipy.stats.ttest_ind`; what the flag
-    marks is that the significance comes from absent variation rather than
-    effect size. Values reported at a detection floor, rounded exports and
-    imputation filling one value across replicates all produce it.
-
-    Tested with min == max rather than variance == 0, which is exact regardless
-    of floating-point representation: 14.05 repeated three times has a variance
-    of 4.7e-30, not 0, so a zero test would miss it.
+    The t statistic is then undefined, so such rows get no p-value
+    (significance "Unavailable") instead of p = 0.
     """
-    numeric = np.asarray(values, dtype=float)
-    observed = np.isfinite(numeric)
-    counts = observed.sum(axis=1)
-    masked = np.where(observed, numeric, np.nan)
-    with warnings.catch_warnings():
-        # A row with nothing observed is an all-NaN slice; numpy warns and
-        # returns NaN, and the count check below already excludes it.
-        warnings.simplefilter("ignore", RuntimeWarning)
-        low = np.nanmin(masked, axis=1)
-        high = np.nanmax(masked, axis=1)
-    return (counts > 0) & (low == high)
-
-
-def condition_mean(data, columns, min_present=1):
-    """Mean across a condition's replicates, blanked where too few were observed.
-
-    `mean(axis=1)` skips missing values silently, so a condition mean resting on
-    one replicate is plotted and correlated at the same weight as a fully
-    observed one. Measured on 2000 features with 30% poor coverage, the
-    single-replicate means were off by 0.28 log2 on average and 1.21 at worst
-    against the same features' fully observed means.
-
-    `min_present` is the smallest number of observations a mean may rest on. The
-    default of 1 reports every mean, which is the long-standing behaviour and keeps
-    previously generated results reproducible. Pass 2 or more to require that a
-    mean rest on enough replicates to carry spread information.
-
-    Returns (means, counts) so the caller can report how many features were
-    excluded rather than dropping them silently.
-    """
-    numeric = data[list(columns)].apply(pd.to_numeric, errors="coerce")
-    counts = numeric.notna().sum(axis=1)
-    means = numeric.mean(axis=1)
-    return means.where(counts >= int(min_present)), counts
+    return np.logical_and.reduce([constant_within_group(group) for group in groups])
 
 
 def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None):
@@ -3424,20 +3391,6 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
     return out.sort_values(["tukey_pval", label_col, "comparison"]).reset_index(drop=True)
-
-def _auto_label_col(frame: pd.DataFrame) -> str:
-    if "Phosphoprotein" in frame.columns:
-        return "Phosphoprotein"
-    if "ProteinNames" in frame.columns:
-        return "ProteinNames"
-    if "PTM_Collapse_key" in frame.columns:
-        return "PTM_Collapse_key"
-    if "Gene_group" in frame.columns:
-        return "Gene_group"
-    if "GeneNames" in frame.columns:
-        return "GeneNames"
-    raise ValueError("No supported label column was found.")
-
 
 def anova_plot(
     anova_df,
@@ -4221,6 +4174,14 @@ def proteins_in_pathway(
 
 def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                      workflow="Protein", mod_var=1, mod_n=0):
+    """A what-if projection of the volcano, not a power calculation.
+
+    The observed mean fold changes are held fixed and the pooled t-test is
+    recomputed with the variance multiplied by `mod_var` and, when `mod_n` > 1,
+    `mod_n` replicates per group. Nothing is drawn at random. The observed fold
+    changes include noise, so the projection is optimistic for effects that look
+    large, and it does not estimate the probability of detecting a true effect.
+    """
     annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
     annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
     label_col = "ProteinNames" if workflow == "Protein" else "PTM_Collapse_key"
@@ -4251,6 +4212,10 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     t_stat = _guarded_t_statistic(mean1 - mean2, se)
     df = n1 + n2 - 2
     pvals = 2 * t.sf(np.abs(t_stat), df)
+    # Rows without variation in either group: no p-value at any projected n,
+    # out of the BH family -- the volcano's rule, so the projection at the
+    # observed n reproduces the volcano table.
+    pvals = np.where(without_variation([x_data.to_numpy(dtype=float), y_data.to_numpy(dtype=float)]), np.nan, pvals)
     adj_pvals = _adjust_finite_pvalues(pvals)
     log2fc = mean1 - mean2
     significance = np.where((adj_pvals < in_pval) & (log2fc > in_log2fc), "Upregulated",
@@ -5024,9 +4989,6 @@ def compare_prot_line(data, meta, conditions, inputs, id=True, header=True, lege
     for cond in conditions:
         ordered_samples.extend(meta.loc[meta["condition"] == cond, "new_sample"].tolist())
 
-    if workflow == "Protein":
-        data_melted[key_col] = data_melted[key_col].apply(lambda x: x.split(";")[0])
-
     data_melted["Value"] = pd.to_numeric(data_melted["Value"], errors="coerce").replace(
         [np.inf, -np.inf], np.nan
     )
@@ -5163,7 +5125,7 @@ def boxplot_int_single_prot(data, meta, protein, outliers=False, dots=False, hea
     ax.set_xlabel("Condition")
     ax.set_ylabel("log2 Intensity")
     if header:
-        display_protein = protein.split(";")[0]
+        display_protein = protein
         suffix = f"\none median per sample across {values.attrs['source_rows']} matching source row(s)" if values.attrs['source_rows'] > 1 else ""
         ax.set_title(f"Measured {display_protein} intensity values (log2){suffix}")
     if legend:
@@ -5744,7 +5706,7 @@ def _missing_bar(counts, bin, title, header, text, text_size, color, width=10, h
     """Bar chart of how many features miss how many samples.
 
     `counts` holds one missing-value count per feature. With `bin` > 0 every
-    count above it is pooled into one `>bin` bar. The R package's `.missing_bar`
+    count above it is pooled into one `>bin` bar. The R functions' `.missing_bar`
     draws the same chart.
     """
     if bin > 0:
@@ -5840,7 +5802,7 @@ def _quantified_rows(frame, samples):
     A feature missing in every selected sample says nothing about how complete
     those samples are -- it was identified elsewhere, or never quantified -- so
     the completeness heatmap, tables and overall percentage leave it out, as the
-    web app and the R package do. `missing_value_plot` already drops its bar.
+    web app and the R functions do. `missing_value_plot` already drops its bar.
     """
     return frame.loc[frame[samples].notna().any(axis=1)]
 

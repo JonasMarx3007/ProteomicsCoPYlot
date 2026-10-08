@@ -19,11 +19,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
 from app.services.annotation_store import get_annotation
-from app.services.viewer_bootstrap import load_viewer_state
 
 FLAG = "centredPhosprotValues"
 

@@ -2,7 +2,7 @@
 
 A peptide report lists precursors in runs where they were not quantified. A
 peptide with no quantity above 0 in any run was not observed, so it no longer
-covers sequence -- in the web app, the pip package and the R package alike.
+covers sequence -- in the web app, the pip package and the R functions alike.
 """
 from __future__ import annotations
 

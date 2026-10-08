@@ -251,7 +251,7 @@ def test_interactive_abundance_matches_original_and_runs_offline(coverage_data, 
 
 
 def test_dense_interactive_abundance_preserves_svg_fallback(coverage_data, monkeypatch):
-    from app.services import data_tools, plot_images
+    from app.services import plot_images
     from app.services.plot_webgl import force_svg_rendering
     from app.services.notebook_interactive import render_abundance
     from app.services.annotation_store import get_annotation

@@ -1,5 +1,6 @@
 
 import { oraListExportRows } from "../stats/oraExport";
+import { collectColumns, csvDataUrl, rowsToQuotedCsv } from "../../lib/tableData";
 import { linkedConditionsParam } from "./linkedConditions";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
@@ -227,22 +228,6 @@ function toUnique(values: string[]) {
   return Array.from(new Set(values.map((item) => item.trim()).filter(Boolean)));
 }
 
-function csvDataUrl(rows: Record<string, unknown>[]): string | null {
-  if (rows.length === 0) return null;
-  const columns = Array.from(
-    rows.reduce((set, row) => {
-      Object.keys(row).forEach((key) => set.add(key));
-      return set;
-    }, new Set<string>())
-  );
-  const lines = [
-    columns.join(","),
-    ...rows.map((row) =>
-      columns.map((column) => `"${String(row[column] ?? "").replaceAll("\"", "\"\"")}"`).join(",")
-    ),
-  ];
-  return `data:text/csv;charset=utf-8,${encodeURIComponent(lines.join("\n"))}`;
-}
 
 function textDataUrl(values: string[]): string {
   return `data:text/plain;charset=utf-8,${encodeURIComponent(values.join("\n"))}`;
@@ -1448,7 +1433,7 @@ function OraListTile({
   }
 
   const oraTermRows = completed && result ? oraListExportRows(completed, result) : [];
-  const oraCsvUrl = csvDataUrl(oraTermRows);
+  const oraCsvUrl = oraTermRows.length ? csvDataUrl(rowsToQuotedCsv(oraTermRows, collectColumns(oraTermRows))) : null;
 
   return (
     <div>
@@ -2003,6 +1988,7 @@ function VolcanoPointsPanel({
         <span>Up: {data.upregulatedCount}</span>
         <span>Down: {data.downregulatedCount}</span>
         <span>Not significant: {data.notSignificantCount}</span>
+        <span>No p-value: {data.unavailableCount ?? 0}</span>
           <button
             type="button"
             onClick={() =>

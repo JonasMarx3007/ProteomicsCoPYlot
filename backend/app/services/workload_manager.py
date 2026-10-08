@@ -280,7 +280,7 @@ class ProviderWorkloadMiddleware:
                 }
                 seconds = _positive_env_float(
                     "COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT" if management else "COPYLOT_PROVIDER_TIMEOUT_SECONDS",
-                    1800 if management else 180,
+                    1800 if management else 600,
                 )
                 token = provider_deadline.set(time.monotonic() + seconds)
                 started = False

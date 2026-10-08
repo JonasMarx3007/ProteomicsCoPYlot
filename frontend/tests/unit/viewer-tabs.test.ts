@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * A viewer sees the published project, not the tools that change it.
  *

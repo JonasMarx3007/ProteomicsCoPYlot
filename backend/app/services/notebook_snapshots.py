@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import Future
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import json
 import secrets
-from threading import RLock
+from threading import RLock, get_ident
 import time
 
 from app.services.notebook_archive import NotebookRecipe
@@ -96,6 +97,7 @@ class NotebookSnapshots:
         self.clock = clock
         self._lock = RLock()
         self._entries: OrderedDict[str, _Snapshot] = OrderedDict()
+        self._preparing: dict[str, tuple[int, Future[None]]] = {}
 
     def _expire(self):
         now = self.clock()
@@ -151,12 +153,34 @@ class NotebookSnapshots:
 
     def get(self, session: str, token: str) -> NotebookRecipe:
         """The finished recipe, preparing the original-file replay on first use."""
-        item = self._entry(session, token)
-        if isinstance(item, PendingRecipe):
-            finished = item.finish()
-            self.replace_recipe(session, token, finished)
-            return deepcopy(finished)
-        return deepcopy(item)
+        with self._lock:
+            item = self._entry(session, token)
+            if not isinstance(item, PendingRecipe):
+                return deepcopy(item)
+            pending = self._preparing.get(token)
+            owner = pending is None
+            if pending is None:
+                future: Future[None] = Future()
+                self._preparing[token] = (get_ident(), future)
+            else:
+                if any(thread == get_ident() for thread, _ in self._preparing.values()):
+                    raise RuntimeError("Notebook preparation cannot wait on another nested preparation.")
+                _, future = pending
+        if owner:
+            try:
+                finished = item.finish()
+                self.replace_recipe(session, token, finished)
+                future.set_result(None)
+            except BaseException as exc:
+                future.set_exception(exc)
+                raise
+            finally:
+                with self._lock:
+                    self._preparing.pop(token, None)
+        else:
+            future.result()
+        # Do not return a recipe cleared, expired or evicted while preparing/waiting.
+        return deepcopy(self._entry(session, token))
 
     def peek(self, session: str, token: str) -> NotebookRecipe:
         """The recipe as captured, without preparing it: for reading its tables."""
@@ -168,8 +192,9 @@ class NotebookSnapshots:
         with self._lock:
             self._expire()
             snapshot = self._entries.get(token)
-            if snapshot is not None and snapshot.session == session:
-                self._admit(token, replace(snapshot, recipe=deepcopy(recipe), size=recipe_size(recipe), retained=()))
+            if snapshot is None or snapshot.session != session:
+                raise KeyError("Notebook snapshot unavailable; render the plot again.")
+            self._admit(token, replace(snapshot, recipe=deepcopy(recipe), size=recipe_size(recipe), retained=()))
 
     def clear_session(self, session: str):
         with self._lock:

@@ -1,4 +1,5 @@
 import { AssistantInput, AssistantSelect } from "../AssistantFields";
+import { isHexColor } from "../../lib/textAndColor";
 import { useEffect, useState, type ReactNode } from "react";
 import type { AdvancedPlotSettings, AdvancedTextElementSettings } from "../../lib/types";
 
@@ -1517,9 +1518,6 @@ function KnownOverrideRows({
   );
 }
 
-function isHexColor(value: string): boolean {
-  return /^#[0-9a-fA-F]{6}$/.test(value.trim());
-}
 
 function TextElementCard({
   title,

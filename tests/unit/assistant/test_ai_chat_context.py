@@ -116,7 +116,7 @@ def test_assistant_empty_evidence_is_not_available():
     assert _bounded_evidence("plot", "plot_data|status=empty").status == "unavailable"
 
 
-@pytest.mark.parametrize("profile,count,characters", [("compact", 2, 600), ("standard", 4, 1000), ("extended", 4, 1200), ("unknown", 2, 600)])
+@pytest.mark.parametrize("profile,count,characters", [("compact", 2, 600), ("standard", 4, 1000), ("extended", 6, 2000), ("unknown", 2, 600)])
 def test_assistant_execution_profiles(monkeypatch, profile, count, characters):
     from types import SimpleNamespace
     from app.schemas.assistant import AssistantRequest
@@ -145,7 +145,8 @@ def test_assistant_other_module_uses_disclosed_defaults(monkeypatch):
 def test_assistant_cv_method_and_normalization_provenance():
     text = ai_functions.qc_cov_plot()["data"]["text"]
     assert "SD=sample_standard_deviation_ddof_1" in text
-    assert "source=normalized_unfiltered_non_imputed_data_back_transformed_to_linear" in text
+    # The fixture applies no normalization, so the source is the uploaded data.
+    assert "normalization=none|source=uploaded_unnormalized_non_imputed_data_back_transformed_to_linear" in text
     assert "normalization_scope=within_this_application_only" in ai_functions.general_proteomics_context()["data"]["text"]
 
 
@@ -203,21 +204,65 @@ def test_tool_numbers_are_rendered_unchanged_and_hypotheses_labelled(monkeypatch
     assert "2.588e-07" in result.answer and "not established" in result.answer and "not every row of it" in result.answer
 
 
-def test_capability_classification_never_invents_a_tested_rating(monkeypatch):
+def test_capability_classification_uses_observations_then_inference(monkeypatch):
     from app.services import assistant_profiles as profiles
-    assert profiles.classify_model("ollama", "unknown:80b", 80, 131072)[0:2] == ("compact", "unknown")
+    # Models observed in this project's conversations (local/AI_REVIEW.md, glm5 replays).
+    assert profiles.classify_model("ollama", "qwen3.5:4b", 4.7, 262144)[0:2] == ("compact", "observed")
+    assert profiles.classify_model("ollama", "qwen3.5:9b", 9.65, 262144)[0:2] == ("standard", "observed")
+    assert profiles.classify_model("ollama", "ministral-3:8b", 8.92, 262144)[0:2] == ("standard", "observed")
+    assert profiles.classify_model("openai_compatible", "glm5", 320.8, 131072)[0:2] == ("extended", "observed")
+    # Inference: generation, size, context and quantization.
     assert profiles.classify_model("ollama", "llama3.1:8b", 8, 131072)[0:2] == ("compact", "inferred")
-    assert profiles.classify_model("ollama", "ministral-3:8b", 8.92, 262144)[0:2] == ("compact", "inferred")
-    assert profiles.classify_model("ollama", "ai-infrastructure-qwen3.5:9b", 9.65, 262144)[0:2] == ("compact", "unknown")
     assert profiles.classify_model("ollama", "qwen3:32b", 32, 131072)[0:2] == ("standard", "inferred")
     assert profiles.classify_model("ollama", "qwen3:32b", 32, 4096)[0] == "compact"
+    assert profiles.classify_model("ollama", "llama3.3:70b", 70, 131072)[0] == "extended"
+    assert profiles.classify_model("ollama", "llama3.3:70b", 70, 12288)[0] == "standard"
+    assert profiles.classify_model("ollama", "llama3.3:70b", 70, 131072, quantization="Q2_K")[0] == "standard"
+    assert profiles.classify_model("ollama", "deepseek-r1:7b", 7.6, 131072)[0] == "compact"
+    assert profiles.classify_model("openai_compatible", "glm-4.6")[0] == "extended"
+    # An unknown family is judged by its reported size but never given the whole toolbox.
+    assert profiles.classify_model("ollama", "unknown:80b", 80, 131072)[0:2] == ("standard", "inferred")
+    assert profiles.classify_model("ollama", "mystery-model")[0:2] == ("compact", "unknown")
+    # Cloud lines.
+    assert profiles.classify_model("openai", "gpt-5")[0] == "extended"
+    assert profiles.classify_model("openai", "gpt-4o-mini")[0] == "standard"
+    assert profiles.classify_model("anthropic", "claude-haiku-4-5")[0] == "standard"
+    assert profiles.classify_model("gemini", "gemini-2.5-pro")[0] == "extended"
+    # The operator's setting wins over everything but the user's own choice.
+    monkeypatch.setenv("COPYLOT_AI_MODEL_LEVELS", "qwen3.5:4b=advanced")
+    assert profiles.classify_model("ollama", "qwen3.5:4b", 4.7, 262144)[0:2] == ("extended", "configured")
     exact = ("ollama", "qwen3:32b", "Q4_K_M")
     monkeypatch.setitem(profiles.TESTED_MODELS, exact, ("extended", "synthetic-evaluation"))
     assert profiles.classify_model(*exact[:2], quantization=exact[2])[1] == "tested"
-    assert profiles.classify_model(*exact[:2], quantization="Q3_K_M")[1] == "inferred"
-    variant = ("ollama", "qwen3:32b-variant", "Q4_K_M")
-    monkeypatch.setitem(profiles.RELATED_MODELS, variant, exact)
-    assert profiles.classify_model(*variant[:2], quantization=variant[2])[1] == "inferred"
+
+
+def test_the_users_level_wins_and_reasoning_models_get_room_to_think(monkeypatch):
+    from types import SimpleNamespace
+    from app.schemas.assistant import AssistantRequest
+    from app.services import assistant_profiles as profiles
+    from app.services import scientific_assistant as assistant
+    monkeypatch.setattr(assistant, "model_capability", lambda *args: SimpleNamespace(contextTier="extended"))
+    request = AssistantRequest(message="test", view={"module": "qc.cv"}, assistantLevel="basic")
+    assert assistant._execution_profile(request)[0] == "compact"
+    assert profiles.output_tokens("compact", False) == 1024
+    assert profiles.output_tokens("extended", True) > 8000
+    assert profiles.output_tokens("extended", True, context=8192) <= 8192 // 3
+    assert profiles.reasoning_model("openai_compatible", "glm5") and not profiles.reasoning_model("ollama", "qwen3:8b")
+
+
+def test_a_local_server_model_is_classified_at_its_own_address(monkeypatch):
+    from app.schemas.assistant import AssistantRequest
+    from app.services import scientific_assistant as assistant
+    seen = []
+    def capability(provider, model, endpoint=None):
+        seen.append((provider, endpoint))
+        from types import SimpleNamespace
+        return SimpleNamespace(contextTier="extended")
+    monkeypatch.setattr(assistant, "model_capability", capability)
+    request = AssistantRequest(message="test", view={"module": "qc.cv"}, provider="openai_compatible", model="glm5",
+                               localServerUrl="http://127.0.0.1:8084/v1", ollamaUrl="http://127.0.0.1:11434")
+    assert assistant._execution_profile(request)[0] == "extended"
+    assert seen == [("openai_compatible", "http://127.0.0.1:8084/v1")]
 
 
 @pytest.mark.parametrize("selection", ['{"source":"method:completeness.missingPlot","query":""}', '{"source":"unsupported","query":""}', '{"source":"invented","query":""}', '{"source":"method:qc.cv","query":"","actions":[]}'])

@@ -391,7 +391,9 @@ test_that("paired volcano matches samples by pair_id", {
     )
     stopifnot(identical(pair_result$n_pairs, c(3L, 4L, 4L, 4L)))
     stopifnot(isTRUE(all.equal(pair_result$log2FC, c(-5, 0, -2, -1))))
-    stopifnot(is.na(pair_result$pval[2]), pair_result$pval[3] == 0)
+    # Identical pair differences: no variation, so no p-value (not p = 0).
+    stopifnot(is.na(pair_result$pval[2]), is.na(pair_result$pval[3]),
+      pair_result$significance[3] == "Unavailable")
     reordered_result <- volcano_data_f(
       pair_data,
       pair_meta[c(8, 2, 5, 1, 6, 4, 7, 3), ],

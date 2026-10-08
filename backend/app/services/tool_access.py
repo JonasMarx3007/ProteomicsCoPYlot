@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import logging
 
-import hashlib
 import json
 import os
 import secrets
 from pathlib import Path
 from threading import RLock
 
-from app.services.password_hashing import validate_password_hash, verify_password
+from app.services.password_hashing import normalize_sha256, sha256_hex, validate_password_hash, verify_password
 from app.services.session_context import get_session_id
 from app.services.env_settings import env_flag
 
@@ -47,17 +46,6 @@ def _access_file_path(project_root: Path | None = None) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
-
-
-def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _normalize_sha256(value: str) -> str:
-    text = str(value or "").strip().lower()
-    if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
-        raise ValueError("sha256 values must be 64-character lowercase hex digests.")
-    return text
 
 
 def _load_access(project_root: Path | None = None) -> dict[str, object]:
@@ -103,9 +91,9 @@ def _token_hashes(data: dict[str, object]) -> list[str]:
     hashes: list[str] = []
     for item in values:
         if isinstance(item, str):
-            hashes.append(_normalize_sha256(item))
+            hashes.append(normalize_sha256(item))
         elif isinstance(item, dict):
-            hashes.append(_normalize_sha256(str(item.get("token_sha256", ""))))
+            hashes.append(normalize_sha256(str(item.get("token_sha256", ""))))
         else:
             raise ValueError("Tool access token entries must be strings or objects.")
     return hashes
@@ -150,7 +138,7 @@ def authenticate_tool_password(password: str, *, project_root: Path | None = Non
 
 def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> str:
     data = _load_access(project_root)
-    digest = _sha256(str(token or ""))
+    digest = sha256_hex(str(token or ""))
     if not any(secrets.compare_digest(digest, expected) for expected in _token_hashes(data)):
         raise ValueError("Invalid tool access token.")
     return _grant_authenticated_session()

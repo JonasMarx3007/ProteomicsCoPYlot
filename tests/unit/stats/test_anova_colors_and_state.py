@@ -24,14 +24,14 @@ from app.services.condition_palette_store import (
     set_condition_palette,
 )
 from app.services.stats_tools import anova_png
-from app.services.viewer_bootstrap import load_viewer_state
 
 
 def _hex_counts(png: bytes) -> set[str]:
     from PIL import Image
 
-    image = Image.open(io.BytesIO(png)).convert("RGB")
-    counts = Counter(image.getdata())
+    with Image.open(io.BytesIO(png)) as image:
+        pixels = image.convert("RGB").tobytes()
+    counts = Counter(zip(pixels[::3], pixels[1::3], pixels[2::3]))
     return {"#%02X%02X%02X" % rgb for rgb, _ in counts.most_common(500)}
 
 

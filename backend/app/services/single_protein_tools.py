@@ -137,10 +137,7 @@ def _build_sample_labels(meta: pd.DataFrame, include_id: bool) -> pd.DataFrame:
 
 
 def _feature_label(value: object, kind: AnnotationKind) -> str:
-    text = str(value)
-    if kind == "protein":
-        return text.split(";")[0].strip()
-    return text
+    return str(value).strip()
 
 
 def _feature_options(
@@ -166,9 +163,6 @@ def _feature_options(
         .sort_values()
         .tolist()
     )
-    if kind == "protein":
-        # Keep workflow selection compact and human-readable.
-        values = sorted({value.split(";")[0].strip() for value in values if value})
     return values
 
 
@@ -188,8 +182,6 @@ def _feature_match_mask(
 
         return text_values.apply(_has_gene)
 
-    if kind == "protein":
-        return text_values.str.split(";").str[0].str.strip().isin(selected)
     # Stripped, because _feature_options strips before it offers a value: an
     # unstripped compare here would make a legitimate selection match nothing.
     return text_values.str.strip().isin(selected)
@@ -209,8 +201,6 @@ def _unmatched_names(
     text_values = values.astype(str)
     if identifier == "genes":
         keys = {token.casefold() for value in text_values for token in _gene_tokens(value)}
-    elif kind == "protein":
-        keys = set(text_values.str.split(";").str[0].str.strip())
     else:
         keys = set(text_values.str.strip())
     names = dict.fromkeys(str(item).strip() for item in selected if str(item).strip())
@@ -226,8 +216,8 @@ def unmatched_lineplot_names(
     """Selected proteins/sites/genes the lineplot cannot draw, because no row has them.
 
     The lineplot draws what matches and leaves the rest out; these are named
-    under the plot so a typo or a full group name ("P1;P2", where the leading
-    accession "P1" is what is matched) does not vanish without a word.
+    under the plot so a typo or a partial group name does not vanish without
+    a word. Workflow selections match the complete group identifier.
     """
     frame, _, _ = _analysis_frame(kind, data_source=data_source)
     resolved_identifier = _normalize_identifier(identifier)

@@ -13,11 +13,10 @@ umap-learn
 seaborn>=0.12,<1
 matplotlib-venn>=1.0,<2
 plotly>=5.15,<8
-statsmodels>=0.14,<1
 Pillow
-# statsmodels is required, not optional: functions.py imports it for the
-# Benjamini-Hochberg correction and falls back to a local implementation when it
-# is absent, so leaving it out silently changes which code computes your FDR.
+# statsmodels is not a runtime dependency: the Benjamini-Hochberg correction has
+# one implementation (stats_core.bh_adjust; multipletests in the pip package),
+# compared with statsmodels by the reference tests (requirements-dev.txt).
 #
 # pyinstaller is not listed here. It is a build tool, and the Windows and macOS
 # packaging scripts install it themselves.

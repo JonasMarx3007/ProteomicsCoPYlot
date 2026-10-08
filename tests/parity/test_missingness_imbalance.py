@@ -6,7 +6,7 @@ and is shifted down. The bundled phosphosite report shows it: the five GRK
 samples miss 20-31 % of sites against 5-6 % for WT, and after median centring
 the sites measured in every sample sit 0.42 log2 lower in GRK. The check names
 the samples, measures that shift and says when one condition carries it; the
-backend, the pip package and the R package compute the same table and message.
+backend, the pip package and the R functions compute the same table and message.
 """
 from __future__ import annotations
 
@@ -31,16 +31,7 @@ COLUMNS = ["sample", "condition", "missing_fraction", "reference_missing_fractio
            "complete_features", "complete_offset"]
 
 
-def _rscript() -> str | None:
-    try:
-        from app.services.r_runtime import detect_r_runtime
-    except Exception:
-        return None
-    runtime = detect_r_runtime()
-    return str(runtime["executable"]) if runtime.get("available") else None
-
-
-RSCRIPT = _rscript()
+from _r_runtime import RSCRIPT
 
 
 def _simulated(missing_b: float = 0.30, seed: int = 11) -> tuple[pd.DataFrame, pd.DataFrame]:

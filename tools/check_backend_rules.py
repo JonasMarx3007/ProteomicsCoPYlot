@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ROUTES = ROOT / "backend" / "app" / "api"
-SERVICES = ROOT / "backend" / "app" / "services"
 
 # Names a service uses for a filesystem location. A user-facing message that
 # prints one tells whoever triggered it how the server is laid out; printing

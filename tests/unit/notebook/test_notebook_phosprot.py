@@ -6,39 +6,18 @@ import subprocess
 import sys
 from zipfile import ZipFile
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from app.schemas.annotation import AnnotationFilterConfig, AnnotationGenerateRequest
-from app.schemas.data_tools import ImputationRunRequest
-from app.services.annotation_store import save_annotation, get_annotation
-from app.services.dataset_store import save_table_dataset, get_current_dataset
-from app.services.data_tools import run_imputation
+from app.services.annotation_store import get_annotation
+from app.services.dataset_store import get_current_dataset
 from app.services.phosprot_tools import aggregate_from_phospho
 from app.services.notebook_pca import render_pca
 from app.services.notebook_provenance import NotebookProvenanceError
 from app.services.notebook_qc import snapshots
 from app.services.notebook_archive import build_notebook_archive
 from app.services.session_context import get_session_id
-
-
-@pytest.fixture
-def phosphosites():
-    samples = [f'{group}{i}' for group in 'AB' for i in range(1, 5)]
-    frame = pd.DataFrame(np.random.default_rng(17).normal(12, 2, (12, 8)), columns=samples)
-    frame['Protein_group'] = [f'P{i // 3}' for i in range(12)]
-    frame['Gene_group'] = frame['Protein_group']
-    frame['PTM_Collapse_key'] = [f'K{i}' for i in range(12)]
-    frame['PTM_localization'] = [f'S{i}' for i in range(12)]
-    frame['UPD_seq'] = [f'SEQ{i}' for i in range(12)]
-    frame.loc[0, samples[0]] = np.nan
-    save_table_dataset('sites.csv', 'phospho', frame)
-    save_annotation(kind='phospho', source_data=frame, log2_data=frame, filtered_data=frame,
-        metadata=pd.DataFrame({'sample': samples, 'condition': ['A'] * 4 + ['B'] * 4}),
-        is_log2_transformed=True, metadata_source='manual', filter_config=AnnotationFilterConfig(),
-        auto_detected=False, warnings=[])
-    run_imputation(ImputationRunRequest(kind='phospho', seed=87, sampleWise=False))
 
 
 @pytest.mark.parametrize('source', ['non_imputed', 'imputed'])

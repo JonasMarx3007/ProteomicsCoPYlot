@@ -18,7 +18,6 @@ from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_qc import snapshots
 from app.services.notebook_single import render_box
 from app.services.session_context import get_session_id
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.fixture

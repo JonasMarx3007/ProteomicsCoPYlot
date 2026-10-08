@@ -18,7 +18,7 @@ from app.main import (
 )
 from app.services.chat_tools import _normalize_ollama_endpoint
 from app.services.session_context import session_isolation_enabled
-from app.services.password_hashing import hash_password, verify_password
+from app.services.password_hashing import hash_password, verify_password, validate_password_hash
 from app.services.restore_state import RestoreStateError, decode_restore_blob
 import launch
 from launch import _host_is_loopback, _validate_network_binding
@@ -256,10 +256,66 @@ def test_the_two_login_realms_count_separately() -> None:
 
 def test_pbkdf2_password_hash_round_trip_and_iteration_cap() -> None:
     encoded = hash_password("correct horse battery staple", iterations=100_000)
+    validate_password_hash(encoded)
     assert verify_password("correct horse battery staple", encoded)
     assert not verify_password("wrong", encoded)
     with pytest.raises(ValueError, match="parameters"):
         verify_password("password", "2000001$00112233445566778899aabbccddeeff$" + "11" * 32)
+
+
+@pytest.mark.parametrize('encoded,message', [
+    ('', 'format'), ('100000$11', 'format'), ('100000$11$22$33', 'format'),
+    ('invalid$11$' + '22' * 32, 'malformed'),
+    ('100000$xyz$' + '22' * 32, 'malformed'),
+    ('100000$11$xyz', 'malformed'),
+    ('99999$11$' + '22' * 32, 'parameters'),
+    ('2000001$11$' + '22' * 32, 'parameters'),
+    ('100000$$' + '22' * 32, 'parameters'),
+    ('100000$11$22', 'parameters'),
+])
+def test_both_password_consumers_reject_invalid_hashes_before_derivation(monkeypatch, encoded, message):
+    from app.services import password_hashing
+
+    def unexpected_derivation(*args):
+        pytest.fail('Invalid hash reached expensive password derivation')
+
+    monkeypatch.setattr(password_hashing.hashlib, 'pbkdf2_hmac', unexpected_derivation)
+    for consumer in (validate_password_hash, lambda value: verify_password('password', value)):
+        with pytest.raises(ValueError, match=message):
+            consumer(encoded)
+
+
+@pytest.mark.parametrize('salt,digest', [('00' * 16, '11' * 32), ('11' * 16, '00' * 32)])
+def test_configuration_still_rejects_placeholder_hashes(salt, digest):
+    encoded = f'100000${salt}${digest}'
+    with pytest.raises(ValueError, match='placeholder'):
+        validate_password_hash(encoded)
+    assert verify_password('not-the-password', encoded) is False
+
+
+@pytest.mark.parametrize('iterations', [100_000, 2_000_000])
+def test_valid_iteration_boundaries_keep_constant_time_comparison(monkeypatch, iterations):
+    from app.services import password_hashing
+
+    salt, digest = b'\x11' * 16, b'\x22' * 32
+    derivations, comparisons = [], []
+    compare = password_hashing.secrets.compare_digest
+
+    def derive(*args):
+        derivations.append(args)
+        return digest
+
+    def compared(actual, expected):
+        comparisons.append((actual, expected))
+        return compare(actual, expected)
+
+    monkeypatch.setattr(password_hashing.hashlib, 'pbkdf2_hmac', derive)
+    monkeypatch.setattr(password_hashing.secrets, 'compare_digest', compared)
+    encoded = f'  {iterations}${salt.hex()}${digest.hex()}  '
+    validate_password_hash(encoded)
+    assert verify_password('password', encoded)
+    assert derivations == [('sha256', b'password', salt, iterations)]
+    assert comparisons == [(digest, digest)]
 
 
 def test_protected_backend_rejects_shell_bypass_and_anonymous_session_flood(
@@ -452,7 +508,7 @@ def test_ollama_override_requires_local_or_explicitly_allowed_origin(monkeypatch
     monkeypatch.delenv("COPYLOT_OLLAMA_URL", raising=False)
     monkeypatch.delenv("COPYLOT_OLLAMA_ALLOWED_ENDPOINTS", raising=False)
     assert _normalize_ollama_endpoint("localhost:11434") == "http://localhost:11434"
-    with pytest.raises(ValueError, match="not allowed"):
+    with pytest.raises(ValueError, match=r"^This Ollama server is not permitted\.$"):
         _normalize_ollama_endpoint("http://169.254.169.254/latest")
 
     monkeypatch.setenv("COPYLOT_OLLAMA_ALLOWED_ENDPOINTS", "https://ollama.example:11434")

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { displayLabel, visibleColumns } from "../lib/columnLabels";
 import { collectColumns, formatCellValue } from "../lib/tableData";
 
 type Props = {
@@ -6,6 +7,9 @@ type Props = {
   emptyText?: string;
   pageSize?: number;
   maxHeightClassName?: string;
+  /** Header text for columns whose shared label does not fit this table. */
+  labels?: Record<string, string>;
+  plotSummary?: boolean;
 };
 
 export default function PaginatedTable({
@@ -13,11 +17,14 @@ export default function PaginatedTable({
   emptyText = "No rows available.",
   pageSize = 50,
   maxHeightClassName = "max-h-[28rem]",
+  labels,
+  plotSummary = false,
 }: Props) {
   const resolvedPageSize = Math.max(1, Math.round(pageSize));
   const [requestedPage, setRequestedPage] = useState(1);
 
-  const columns = useMemo(() => collectColumns(rows), [rows]);
+  // Data keys stay as they are (the CSV downloads use them); the header shows the label.
+  const columns = useMemo(() => visibleColumns(collectColumns(rows), plotSummary), [rows, plotSummary]);
 
   const totalPages = Math.max(1, Math.ceil(rows.length / resolvedPageSize));
   const page = Math.min(requestedPage, totalPages);
@@ -73,8 +80,9 @@ export default function PaginatedTable({
                 <th
                   key={column}
                   className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-600"
+                  title={column}
                 >
-                  {column}
+                  {displayLabel(column, labels)}
                 </th>
               ))}
             </tr>

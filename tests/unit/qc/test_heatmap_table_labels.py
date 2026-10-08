@@ -57,7 +57,7 @@ def _first_drawable(options) -> tuple[str, list[str]]:
             continue
         if not table.empty:
             return protein, conditions
-    pytest.skip("no phosphoprotein group in this project produces a heatmap")
+    pytest.fail("The bundled fixture must provide a drawable phosphoprotein heatmap")
 
 
 # --- both labels are present, and both are true -------------------------------

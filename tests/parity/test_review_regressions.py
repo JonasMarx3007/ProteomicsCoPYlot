@@ -26,6 +26,74 @@ def _sites():
     return samples, meta, observed, supplied
 
 
+def _mean_sites():
+    samples, meta, _, _ = _sites()
+    supplied = pd.DataFrame({
+        'Protein_group': ['P', 'P', 'P', 'Q'], 'Gene_group': ['G', 'G', 'G', 'H'],
+        'UPD_seq': ['AS', 'AT', 'AY', 'AS'], 'PTM_localization': [.9] * 4,
+        'PTM_Collapse_key': ['P_S1', 'P_T2', 'P_Y3', 'Q_S1'],
+        'A1': [10., 20., 1., 2.], 'A2': [12., 22., 2., 3.],
+        'B1': [11., 21., 3., 4.], 'B2': [13., 23., np.nan, np.nan],
+    })
+    observed = supplied.copy()
+    observed.loc[2, 'A1'] = np.nan  # Imputed, but excluded from every mean.
+    observed.loc[1, 'A2'] = np.nan  # One of two contributing sites was imputed.
+    observed.loc[:1, 'B1'] = np.nan  # Both contributing sites were imputed.
+    return samples, meta, observed, supplied
+
+
+@pytest.mark.parametrize('scale', ['linear', 'log2'])
+def test_mean_provenance_counts_only_contributors(scale):
+    samples, meta, observed, supplied = _mean_sites()
+    frames = []
+    for collapse, module in ((transform_phosprot, functions), (notebook.transform_phosprot, notebook)):
+        frame = collapse(supplied, meta, mode='mean', data_scale=scale, coverage_data=observed)
+        frames.append(frame)
+        p = frame.set_index('Phosphoprotein').loc['P']
+        assert p[[f'site_supplied__{s}' for s in samples]].tolist() == [2, 2, 2, 2]
+        assert p[[f'site_measured__{s}' for s in samples]].tolist() == [2, 1, 0, 2]
+        assert p[[f'site_observed__{s}' for s in samples]].tolist() == [2, 2, 1, 2]
+        assert p['site_num_eligible'] == 3
+        states = module.site_observed_imputed_mask(frame, samples)
+        assert states.iloc[0].tolist() == [0, 2, 1, 0]
+        assert states.iloc[1].tolist() == [-1] * 4  # No complete site for Q.
+        counts = module.imputed_value_counts(states, {'A': samples[:2], 'B': samples[2:]})
+        assert counts[['n_measured__A', 'n_fully_imputed__A', 'n_partially_imputed__A']].iloc[0].tolist() == [1, 0, 1]
+        assert counts[['n_measured__B', 'n_fully_imputed__B', 'n_partially_imputed__B']].iloc[0].tolist() == [1, 1, 0]
+        expected = np.log2((np.exp2(supplied.loc[:1, samples]) if scale == 'log2'
+                            else supplied.loc[:1, samples]).mean(axis=0))
+        np.testing.assert_allclose(p[samples].astype(float), expected)
+    pd.testing.assert_frame_equal(*frames, check_dtype=False)
+
+
+@pytest.mark.requires_r('jsonlite')
+def test_mean_contributor_counts_match_r(tmp_path, rscript):
+    samples, meta, observed, supplied = _mean_sites()
+    for name, frame in [('observed', observed), ('supplied', supplied), ('metadata', meta)]:
+        frame.to_csv(tmp_path / f'{name}.csv', index=False)
+    source = Path(__file__).resolve().parents[2] / 'proteomicscopylot/notebook_functions.R'
+    script = f'''
+source({json.dumps(source.as_posix())})
+setwd({json.dumps(tmp_path.as_posix())})
+observed <- read.csv('observed.csv', check.names=FALSE)
+supplied <- read.csv('supplied.csv', check.names=FALSE)
+meta <- read.csv('metadata.csv', check.names=FALSE)
+for (scale in c('linear', 'log2')) {{
+  collapsed <- transform_phosprot(supplied, meta, mode='mean', data_scale=scale, coverage_data=observed)
+  states <- site_observed_imputed_mask(collapsed, meta$sample)
+  stopifnot(all(states[1,] == c(0,2,1,0)), all(states[2,] == -1))
+  write.csv(collapsed, paste0(scale, '.csv'), row.names=FALSE)
+}}
+'''
+    result = subprocess.run([rscript, '-e', script], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    for scale in ('linear', 'log2'):
+        expected = transform_phosprot(supplied, meta, mode='mean', data_scale=scale, coverage_data=observed)
+        actual = pd.read_csv(tmp_path / f'{scale}.csv')
+        columns = samples + [c for c in expected.columns if c.startswith('site_')]
+        np.testing.assert_allclose(actual[columns], expected[columns], equal_nan=True)
+
+
 @pytest.mark.parametrize('mode', ['mean', 'sum_ignore_na', 'sum_propagate_na', 'robust_site_median'])
 def test_collapse_and_contribution_categories_match_python(mode):
     samples, meta, observed, supplied = _sites()

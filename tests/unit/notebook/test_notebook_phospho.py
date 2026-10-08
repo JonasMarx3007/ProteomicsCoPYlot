@@ -14,7 +14,6 @@ from app.services.notebook_phospho import render_counts, count_module, render_co
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.mark.parametrize('plot,site_num,trim', [('distribution', False, 0), ('distribution', False, .25),

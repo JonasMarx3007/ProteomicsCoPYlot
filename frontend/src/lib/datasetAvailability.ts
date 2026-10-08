@@ -65,7 +65,7 @@ export type AnnotationKindOption = {
   label: string;
 };
 
-export function availableAnnotationKinds(
+function availableAnnotationKinds(
   datasets: CurrentDatasetsResponse | null
 ): AnnotationKind[] {
   const kinds: AnnotationKind[] = [];
@@ -75,7 +75,7 @@ export function availableAnnotationKinds(
   return kinds;
 }
 
-export function annotationKindOptions(
+function annotationKindOptions(
   kinds: AnnotationKind[]
 ): AnnotationKindOption[] {
   return kinds.map((kind) => ({

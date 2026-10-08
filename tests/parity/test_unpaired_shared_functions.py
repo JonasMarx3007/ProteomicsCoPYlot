@@ -399,8 +399,6 @@ STILL_ONLY_VISUAL = frozenset(
         "pca_plot_interactive",
         "rt_vs_pred_rt_plot",
         "volcano_plot_h",
-        "resource_path",
-        "resource_path_manual",
         "format_value",
         "rename_cols",
         # Both build on `volcano_data_f_control`, which IS compared numerically
@@ -416,7 +414,7 @@ STILL_ONLY_VISUAL = frozenset(
 def test_the_uncovered_list_is_honest() -> None:
     """Every name here must still be a function in both packages.
 
-    The pip package is imported and asked; the R package is sourced and asked
+    The pip package is imported and asked; the R functions are sourced and asked
     which of the names it defined as functions in its own environment, so a
     base-R function of the same name cannot stand in for a removed one.
     """

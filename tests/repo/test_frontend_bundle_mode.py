@@ -124,10 +124,8 @@ def test_no_configured_bundle_is_not_an_error(monkeypatch) -> None:
     [
         "windows/run_viewer.bat",
         "windows/run_viewer_ai.bat",
-        "linux/run_viewer_linux.sh",
-        "linux/run_viewer_ai_linux.sh",
-        "macos/run_viewer_macos.sh",
-        "macos/run_viewer_ai_macos.sh",
+        "unix/run_viewer.sh",
+        "unix/run_viewer_ai.sh",
     ],
 )
 def test_every_viewer_launcher_sets_viewer_mode(script: str) -> None:

@@ -4,9 +4,14 @@ import inspect
 import logging
 import sys
 from collections import OrderedDict
+from concurrent.futures import Future
 from copy import deepcopy
-from threading import RLock
+from itertools import chain
+from threading import RLock, get_ident
 from typing import Any, Callable, TypeVar
+
+import pandas as pd
+from pydantic import BaseModel
 
 from app.services.session_context import get_session_id
 from app.services.plot_export import plot_output_format
@@ -20,6 +25,7 @@ _CACHE_VERSION = 0
 _GLOBAL_VERSION = 0
 _SESSION_VERSIONS: dict[str, int] = {}
 _CACHE: "OrderedDict[tuple[Any, ...], Any]" = OrderedDict()
+_IN_FLIGHT: dict[tuple[Any, ...], tuple[int, Future[tuple[Any] | None]]] = {}
 _MAX_ENTRIES = 128
 _MAX_ENTRY_BYTES = 12 * 1024 * 1024
 
@@ -59,8 +65,6 @@ def _freeze(value: Any) -> Any:
         return tuple(sorted(_freeze(item) for item in value))
     if hasattr(value, "model_dump") and callable(value.model_dump):
         return _freeze(value.model_dump())
-    if hasattr(value, "dict") and callable(value.dict):
-        return _freeze(value.dict())
     raise UnfreezableArgument(
         f"{type(value).__name__} cannot be represented exactly in a cache key"
     )
@@ -91,33 +95,44 @@ def _copy_for_caller(value: Any) -> Any:
 
 
 def _estimate_size_bytes(value: Any) -> int:
-    if isinstance(value, bytes):
-        return len(value)
-    if isinstance(value, str):
-        return len(value.encode("utf-8", errors="ignore"))
-    memory_usage = getattr(value, "memory_usage", None)
-    if callable(memory_usage):
-        try:
-            usage = memory_usage(deep=True)
-            if hasattr(usage, "sum"):
-                return int(usage.sum())
-            return int(usage)
-        except Exception:
-            pass
-    # Pydantic responses carry their payload in nested fields (for example
-    # VolcanoResultResponse.rows), which sys.getsizeof does not see - it reports
-    # only the shallow object. Serialize instead so the entry cap actually applies.
-    for dump in ("model_dump_json", "json"):
-        dumper = getattr(value, dump, None)
-        if callable(dumper):
-            try:
-                return len(dumper().encode("utf-8", errors="ignore"))
-            except Exception:
-                pass
+    """Estimate retained contents, stopping once the entry cap is exceeded.
+
+    Count each visited object once, including dictionary keys and model fields.
+    Pandas supplies its own deep estimate (shared buffers can be overcounted);
+    this is a cache admission estimate, not an exact process-RAM measurement.
+    Unknown payload types or failed sizing skip caching rather than count as zero.
+    """
+    seen: set[int] = set()
+    pending = [iter((value,))]
+    size = 0
     try:
-        return int(sys.getsizeof(value))
+        while pending:
+            try:
+                item = next(pending[-1])
+            except StopIteration:
+                pending.pop()
+                continue
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            if isinstance(item, (pd.DataFrame, pd.Series)):
+                usage = item.memory_usage(deep=True)
+                size += int(usage.sum()) if isinstance(usage, pd.Series) else int(usage)
+            else:
+                size += sys.getsizeof(item)
+                if isinstance(item, dict):
+                    pending.append(chain(item.keys(), item.values()))
+                elif isinstance(item, (list, tuple, set, frozenset)):
+                    pending.append(iter(item))
+                elif isinstance(item, BaseModel):
+                    pending.append(iter((item.__dict__, item.__pydantic_extra__, item.__pydantic_private__)))
+                elif not isinstance(item, (str, bytes, bytearray, int, float, complex, bool, type(None))):
+                    return _MAX_ENTRY_BYTES + 1
+            if size > _MAX_ENTRY_BYTES:
+                return size
     except Exception:
-        return 0
+        return _MAX_ENTRY_BYTES + 1
+    return size
 
 
 def invalidate_runtime_cache(reason: str = "", *, all_sessions: bool = False) -> int:
@@ -160,9 +175,8 @@ def cached_call(
     that the caller then shares the cached object.
     """
     session_id = get_session_id()
-    version = runtime_cache_version()
     try:
-        key = (namespace, version, session_id, plot_output_format.get(), _freeze(key_data))
+        frozen = _freeze(key_data)
     except UnfreezableArgument:
         # No exact key is possible, so a cache hit could serve the wrong result.
         # Recomputing is slower and correct; guessing is faster and wrong.
@@ -170,24 +184,50 @@ def cached_call(
         return factory()
 
     with _LOCK:
-        cached = _CACHE.get(key)
-        if cached is not None:
+        version = _SESSION_VERSIONS.get(session_id, _GLOBAL_VERSION)
+        key = (namespace, version, session_id, plot_output_format.get(), frozen)
+        if key in _CACHE:
+            cached = _CACHE[key]
             _CACHE.move_to_end(key)
             return _copy_for_caller(cached) if copy_result else cached
+        pending = _IN_FLIGHT.get(key)
+        owner = pending is None
+        # Nested calculations must not wait on one another (including themselves).
+        nested = any(thread == get_ident() for thread, _ in _IN_FLIGHT.values())
+        if pending is None:
+            future: Future[tuple[T] | None] = Future()
+            _IN_FLIGHT[key] = (get_ident(), future)
+        else:
+            _, future = pending
 
-    result = factory()
-    result_size = _estimate_size_bytes(result)
-    if result_size > _MAX_ENTRY_BYTES:
-        return result
+    if not owner:
+        if nested:
+            return factory()
+        shared = future.result()
+        if runtime_cache_version() != version:
+            return cached_call(namespace, key_data, factory, copy_result=copy_result)
+        # Oversized/unknown objects retain the existing uncached behavior.
+        if shared is None:
+            return factory()
+        return _copy_for_caller(shared[0]) if copy_result else shared[0]
 
-    with _LOCK:
-        if _SESSION_VERSIONS.get(session_id, _GLOBAL_VERSION) == version:
-            _CACHE[key] = result
-            _CACHE.move_to_end(key)
-            while len(_CACHE) > _MAX_ENTRIES:
-                _CACHE.popitem(last=False)
-
-    return _copy_for_caller(result) if copy_result else result
+    try:
+        result = factory()
+        cacheable = _estimate_size_bytes(result) <= _MAX_ENTRY_BYTES
+        with _LOCK:
+            if cacheable and _SESSION_VERSIONS.get(session_id, _GLOBAL_VERSION) == version:
+                _CACHE[key] = result
+                _CACHE.move_to_end(key)
+                while len(_CACHE) > _MAX_ENTRIES:
+                    _CACHE.popitem(last=False)
+            future.set_result((result,) if cacheable else None)
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _LOCK:
+            _IN_FLIGHT.pop(key, None)
+    return _copy_for_caller(result) if cacheable and copy_result else result
 
 
 def cached_function(

@@ -289,7 +289,7 @@ def test_omitted_causal_and_scale_questions_are_filled_by_application():
     catalogue, values = answer_catalogue(evidence, "qc.cv", "Compare CV, explain its calculation and scale. Does that prove a batch effect?")
     answer = assemble_answer(ScientificAnswer(observations=["e0r2"]), catalogue, values, evidence)
     assert "sample standard deviation" in answer and "linear intensities" in answer
-    assert "before application normalization and imputation" in answer
+    assert "before application of imputation" in answer
     assert "cannot establish or rule out a batch effect" in answer
     assert "One possible explanation" not in answer
 

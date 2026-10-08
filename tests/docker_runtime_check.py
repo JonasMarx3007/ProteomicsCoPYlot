@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 
-import httpx
+import httpx2 as httpx
 import numpy as np
 import pandas as pd
 

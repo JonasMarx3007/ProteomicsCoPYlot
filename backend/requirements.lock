@@ -25,9 +25,9 @@ fastapi==0.141.1
 fastjsonschema==2.22.2
 fonttools==4.63.0
 h11==0.16.0
-httpcore==1.0.9
+httpcore2==2.13.1
 httptools==0.8.0
-httpx==0.28.1
+httpx2==2.13.1
 id==1.6.1
 idna==3.19
 iniconfig==2.3.0
@@ -98,6 +98,7 @@ statsmodels==0.14.6
 threadpoolctl==3.6.0
 tqdm==4.70.0
 traitlets==5.16.1
+truststore==0.10.4
 twine==7.0.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4

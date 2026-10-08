@@ -1,4 +1,6 @@
-import { useId, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import SelectField from "../../components/SelectField";
+import { isHexColor } from "../../lib/textAndColor";
 import {
   getConditionPalette,
   getQcPlotOptions,
@@ -23,9 +25,6 @@ const DEFAULT_PALETTE = [
 
 type ColorMap = Record<string, string>;
 
-function isHexColor(value: string): boolean {
-  return /^#[0-9a-fA-F]{6}$/.test(value.trim());
-}
 
 function fallbackColor(index: number): string {
   return DEFAULT_PALETTE[index % DEFAULT_PALETTE.length];
@@ -199,7 +198,7 @@ export default function ColorsPage() {
         </p>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <SelectField
+          <SelectField assistant={false}
             label="Dataset level"
             value={kindOptions.length === 0 ? "" : kind}
             onChange={(value) => setKind(value as AnnotationKind)}
@@ -220,7 +219,7 @@ export default function ColorsPage() {
 
         {kindOptions.length > 1 ? (
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <SelectField
+            <SelectField assistant={false}
               label="Copy colors to dataset level"
               value={copyTargetKind}
               onChange={(value) => setCopyTargetKind(value as AnnotationKind)}
@@ -313,35 +312,3 @@ export default function ColorsPage() {
 // The shared `components/SelectField` renders an `AssistantSelect`, which
 // registers the control for the assistant -- a behaviour change, not a
 // refactor, so it is a decision rather than a cleanup.
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-}) {
-  const fieldId = useId();
-  return (
-    <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select id={fieldId}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}

@@ -1,18 +1,20 @@
 import PlotImage from "../../components/PlotImage";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
+import OptionsLayout from "../../components/OptionsLayout";
 import InteractivePlot from "../../components/InteractivePlot";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
-import { AssistantSelect } from "../../components/AssistantFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
+import { SizeRow, MultiSelectField } from "../../components/PlotFields";
+import CheckboxField from "../../components/CheckboxField";
+import NumberField from "../../components/NumberField";
 import { collectColumns } from "../../lib/tableData";
-import { rowsToCsv } from "../../lib/tableData";
+import { csvDataUrl, rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { TEST_TYPE_VALUES, TEST_TYPE_LABELS } from "../../lib/statisticalTests";
 import { buildPlotUrl, getPhosphoOptions, getPhosphoTable, isAbortError, pairingIsReady } from "../../lib/api";
 import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
@@ -532,7 +534,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     if (tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
     if (columns.length === 0) return null;
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
+    return csvDataUrl(rowsToCsv(tableRows, columns));
   }, [tableRows]);
 
 
@@ -564,24 +566,8 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
           {hasPhosphoDataset && plotView && plotView.type === "image" ? (
             <div className="flex flex-wrap items-center gap-2">
-              <AssistantSelect
-                value={downloadFormat}
-                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-              >
-                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </AssistantSelect>
-              <a
-                href={plotDownloadUrl}
-                download={plotDownloadFilename}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+                href={plotDownloadUrl} filename={plotDownloadFilename} />
               {notebookSupported ? <NotebookDownload plotUrl={plotView.url} rendered={notebook} /> : null}
             </div>
           ) : hasPhosphoDataset && plotView ? (
@@ -660,7 +646,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               {tableError}
             </div>
           ) : (
-            <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." />
+            <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." plotSummary />
           )}
         </div>
       </section>
@@ -672,9 +658,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "phosphositePlot") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={phosphositePlot.widthCm}
               heightCm={phosphositePlot.heightCm}
@@ -690,7 +676,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "coverage") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[
             <SelectField
               key="mode"
@@ -708,7 +694,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             />,
             ...(coverage.mode === "Summary"
               ? [
-                  <NumericField
+                  <NumberField
                     key="randomSeed"
                     label="Random Seed"
                     value={coverage.randomSeed}
@@ -720,9 +706,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               : []),
           ]}
           toggles={[
-            <Checkbox key="id" label="Toggle ID" checked={coverage.includeId} onChange={(value) => setCoverage({ ...coverage, includeId: value })} />,
+            <CheckboxField key="id" label="Toggle ID" checked={coverage.includeId} onChange={(value) => setCoverage({ ...coverage, includeId: value })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={coverage.widthCm}
               heightCm={coverage.heightCm}
@@ -738,9 +724,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "distribution") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[
-            <NumericField
+            <NumberField
               key="cutoff"
               label="Upper-tail trim (fraction of proteins)"
               value={distribution.cutoff}
@@ -749,7 +735,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           ]}
           toggles={[
           ]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={distribution.widthCm}
               heightCm={distribution.heightCm}
@@ -765,7 +751,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     if (activeTab === "phosprotRegulation") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[
             <SelectField
               key="dataSource"
@@ -798,13 +784,13 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
               options={conditionOptions}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, condition2: value })}
             />,
-            <NumericField
+            <NumberField
               key="pValueThreshold"
               label="P-value Threshold"
               value={phosprotRegulation.pValueThreshold}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, pValueThreshold: Math.max(1e-12, Math.min(1, value)) })}
             />,
-            <NumericField
+            <NumberField
               key="log2fcThreshold"
               label="log2 FC Threshold"
               value={phosprotRegulation.log2fcThreshold}
@@ -832,7 +818,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
                   </div>,
                 ]
               : []),
-            <NumericField
+            <NumberField
               key="maxHoverSites"
               label="Max Sites in Table"
               value={phosprotRegulation.maxHoverSites}
@@ -840,10 +826,10 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             />,
           ]}
           toggles={[
-            <Checkbox key="uncorrected" label="Use Uncorrected P-values" checked={phosprotRegulation.useUncorrected} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, useUncorrected: value })} />,
-            <Checkbox key="showSites" label="Show Phosphosites in Table" checked={phosprotRegulation.showPhosphosites} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, showPhosphosites: value })} />,
+            <CheckboxField key="uncorrected" label="Use Uncorrected P-values" checked={phosprotRegulation.useUncorrected} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, useUncorrected: value })} />,
+            <CheckboxField key="showSites" label="Show Phosphosites in Table" checked={phosprotRegulation.showPhosphosites} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, showPhosphosites: value })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={phosprotRegulation.widthCm}
               heightCm={phosprotRegulation.heightCm}
@@ -858,11 +844,11 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     }
 
     return (
-      <OptionsLayout
+      <OptionsLayout columns={2}
         fields={[]}
         toggles={[
         ]}
-        sizeRow={
+        size={
           <SizeRow
             widthCm={sty.widthCm}
             heightCm={sty.heightCm}
@@ -883,22 +869,4 @@ function plotTitle(tab: PhosphoTab): string {
   if (tab === "distribution") return "Phosphosite Distribution";
   if (tab === "phosprotRegulation") return "Phosphoprotein Regulation";
   return "STY Plot";
-}
-
-function OptionsLayout({
-  fields,
-  toggles,
-  sizeRow,
-}: {
-  fields: ReactNode[];
-  toggles?: ReactNode[];
-  sizeRow: ReactNode;
-}) {
-  return (
-    <div className="space-y-4">
-      {fields.length > 0 ? <div className="grid gap-4 lg:grid-cols-2">{fields}</div> : null}
-      {toggles && toggles.length > 0 ? <div className="flex flex-wrap gap-3">{toggles}</div> : null}
-      <div>{sizeRow}</div>
-    </div>
-  );
 }

@@ -41,7 +41,8 @@ def test_cv_and_abundance_use_the_normalized_qc_matrix(monkeypatch, method, log2
     They used to read the raw upload, so with normalization on they reported
     variance the pipeline had already removed while the boxplot beside them
     showed aligned medians. Now they are 2 ** the normalized, unfiltered,
-    non-imputed log2 matrix: a scale choice, not a matrix choice.
+    non-imputed log2 matrix: a scale choice, not a matrix choice. After VSN
+    they read the unnormalized data, because glog values are not intensities.
     """
     from app.services import plot_images, table_functions
     from app.services.annotation_processor import prepare_normalized_log2_data
@@ -59,8 +60,11 @@ def test_cv_and_abundance_use_the_normalized_qc_matrix(monkeypatch, method, log2
     normalized = prepare_normalized_log2_data(uploaded, columns, log2_upload, method)
     annotation = SimpleNamespace(source_data=uploaded, metadata=meta,
         is_log2_transformed=log2_upload, log2_data=normalized,
-        filtered_data=normalized.iloc[:1], imputed_data=normalized.fillna(50))
-    expected = normalized.copy()
+        filtered_data=normalized.iloc[:1], imputed_data=normalized.fillna(50),
+        filter_config=SimpleNamespace(normalization=method))
+    # VSN output is not a linear intensity: CV and abundance read the unnormalized data then.
+    expected = (prepare_normalized_log2_data(uploaded, columns, log2_upload, "none")
+                if method == "vsn" else normalized.copy())
     expected[columns] = np.power(2.0, expected[columns].apply(pd.to_numeric, errors="coerce"))
     from app.services import data_tools
 
@@ -68,16 +72,14 @@ def test_cv_and_abundance_use_the_normalized_qc_matrix(monkeypatch, method, log2
     # the matrix is patched once, where both the plots and the tables read it.
     monkeypatch.setattr(data_tools, "get_annotation", lambda kind: annotation)
     monkeypatch.setattr(data_tools, "qc_matrix", lambda kind: (normalized.copy(), meta.copy()))
-    monkeypatch.setattr(plot_images, "get_annotation", lambda kind: annotation)
-    monkeypatch.setattr(plot_images, "_get_current_frame", lambda kind: annotation.imputed_data)
     for module in [plot_images, table_functions]:
         monkeypatch.setattr(module, "_get_sample_columns", lambda kind, frame: columns)
         pd.testing.assert_frame_equal(module.linear_qc_frame("protein"), expected)
     cv = table_functions.prepare_cov_df(table_functions.linear_qc_frame("protein")[columns], meta)
     expected_cv = table_functions.prepare_cov_df(expected[columns], meta)
     pd.testing.assert_frame_equal(cv, expected_cv)
-    if method == "none":
-        # With no normalization the QC matrix is the upload itself.
+    if method in {"none", "vsn"}:
+        # With no normalization (or VSN) the linear QC matrix is the upload itself.
         pd.testing.assert_frame_equal(expected[columns], linear[columns])
     abundance, _, _, _ = plot_images._abundance_mean_intensities("protein")
     np.testing.assert_allclose(abundance.A, np.log10(expected[columns].mean(axis=1).dropna()))

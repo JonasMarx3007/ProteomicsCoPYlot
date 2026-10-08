@@ -4,7 +4,7 @@ import re
 
 from app.schemas.assistant import Evidence, ScientificAnswer
 from app.services.assistant_answers import answer_facts, _comparison, render_hypotheses, evidence_qualifications, evidence_entity_names
-from app.services.assistant_methods import METHODS
+from app.services.assistant_methods import cv_method_text, METHODS
 
 _TOPICS = {
     "method": (r"\b(how|calculat\w*|formula|method|berechn\w*)\b", "method explanation"),
@@ -261,7 +261,7 @@ def answer_catalogue(evidence: list[Evidence], module: str, question: str, *, me
                     if detailed or method_only or re.search(r"whisker|outlier|calculat|formula", question, re.I):
                         text += " Whiskers end at the outermost observed values within 1.5 times the interquartile range below the first quartile or above the third. Observations outside those fences are outliers."
                 elif label == "cov_formula":
-                    text = METHODS["qc.cv"]
+                    text = cv_method_text(fields.get("normalization"))
                     tags += ["scale"]
                 elif label == "coverage_formula":
                     text = "Each bar counts detected features in that sample; missing measurements are not counted as detections."

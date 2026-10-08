@@ -96,7 +96,7 @@ const MARKER_COLOR_KEYS = [
   "volcanoHighlightColor",
 ] as const;
 
-export function compactMarkerSettings(
+function compactMarkerSettings(
   settings: AdvancedPlotSettings
 ): Partial<AdvancedPlotSettings> {
   const next: Record<string, number | string> = {};
@@ -130,7 +130,7 @@ export function compactMarkerSettings(
 // The element settings that are neither markers nor part of the older
 // hand-written lists. Same reason as the markers: one place, spliced into every
 // compactor, so a new key cannot be forgotten by two of the three.
-export function compactElementSettings(
+function compactElementSettings(
   settings: AdvancedPlotSettings
 ): Partial<AdvancedPlotSettings> {
   const next: Record<string, string | boolean> = {};

@@ -40,6 +40,11 @@ def test_memory_budget_override_and_safe_detection_fallback(monkeypatch):
     assert limits.upload_max_frame_bytes() == 1024**3
 
 
+def test_memory_detection_without_sysconf_uses_safe_fallback(monkeypatch):
+    monkeypatch.setattr(limits, 'os', SimpleNamespace(name='posix'))
+    assert limits._memory_capacity_bytes() is None
+
+
 @pytest.mark.parametrize('v2,v1,expected', [('max', 'max', 256), (str(16 * 1024**3), 'max', 16),
                                          ('max', str(8 * 1024**3), 8)])
 def test_visible_container_memory_limit_is_respected(monkeypatch, v2, v1, expected):

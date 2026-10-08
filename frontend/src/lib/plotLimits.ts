@@ -7,8 +7,8 @@ export const MIN_PLOT_DIMENSION_CM = Math.max(limits.MIN_PLOT_WIDTH_CM, limits.M
 export const MAX_PLOT_DIMENSION_CM = Math.min(limits.MAX_PLOT_WIDTH_CM, limits.MAX_PLOT_HEIGHT_CM);
 export const MIN_PLOT_DPI = limits.MIN_PLOT_DPI;
 export const MAX_PLOT_DPI = limits.MAX_PLOT_DPI;
-export const MAX_PLOT_PIXELS = limits.MAX_PLOT_PIXELS;
-export const HTML_LAYOUT_DPI = limits.HTML_LAYOUT_DPI;
+const MAX_PLOT_PIXELS = limits.MAX_PLOT_PIXELS;
+const HTML_LAYOUT_DPI = limits.HTML_LAYOUT_DPI;
 
 export function clampPlotDimensionCm(value: number): number {
   if (!Number.isFinite(value)) return MIN_PLOT_DIMENSION_CM;
@@ -79,4 +79,12 @@ export function normalizePlotSizeParams(
     }
   }
   return normalized;
+}
+
+/** Frame height in px for an interactive plot drawn `heightCm` tall, with room for its controls. */
+export function iframeHeightForPlot(
+  heightCm: number, { fallbackCm, minPx, paddingPx }: { fallbackCm: number; minPx: number; paddingPx: number },
+): number {
+  const basePx = ((Number.isFinite(heightCm) ? heightCm : fallbackCm) * 96) / 2.54;
+  return Math.max(minPx, Math.round(basePx + paddingPx));
 }

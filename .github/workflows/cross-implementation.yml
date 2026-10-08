@@ -1,6 +1,6 @@
 name: cross-implementation
 
-# The web app, the pip package and the R package are three hand-maintained
+# The web app, the pip package and the R functions are three hand-maintained
 # implementations of the same analyses. These tests are the only thing that
 # checks they still agree numerically, so they need a runner with R on it.
 
@@ -94,7 +94,7 @@ jobs:
           pip install -r backend/requirements.lock
           pip install --no-deps -e .
 
-      - name: Run the R package's own tests (testthat)
+      - name: Run the R functions' own tests (testthat)
         run: Rscript tests/r/test_notebook_functions.R
 
       # COPYLOT_REQUIRE_R turns "R or an R package is missing" from a skip into

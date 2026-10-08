@@ -19,22 +19,6 @@ from app.services.plot_images import qc_peptide_coverage_plot, _peptide_coverage
 from app.services.session_context import get_session_id
 
 
-@pytest.fixture
-def peptide_input(tmp_path):
-    frame = pd.DataFrame({
-        'File.Name': ['run1'] * 5 + ['run2'] * 4 + ['outside3'],
-        'Stripped.Sequence': ['AAA', 'AAA', 'AAA', 'BBB', 'CCC', 'AAA', 'AAA', 'BBB', 'CCC', 'OUT'],
-        'Precursor.Id': ['AAA2', 'AAA2', 'AAA3', 'BBB2', 'CCC2', 'AAA2', 'AAA3', 'BBB2', 'CCC2', 'OUT2'],
-        'Precursor.Quantity': [1., 2., 3., 0., np.inf, 4., 5., 6., np.nan, 10.],
-        'Alternative.Quantity': [0., 0., 0., 7., 0., 0., 0., 8., 0., 99.],
-    })
-    path = tmp_path / 'peptides.csv'
-    frame.to_csv(path, index=False)
-    save_peptide_path(str(path))
-    save_peptide_metadata('metadata.csv', pd.DataFrame({'sample': ['run1', 'run2'], 'condition': ['A', 'B']}))
-    return path
-
-
 @pytest.mark.parametrize('level,counts,total', [('peptide', [1, 2], 2), ('precursor', [2, 3], 3)])
 @pytest.mark.parametrize('include_id', [False, True])
 def test_coverage_counts_parity_and_independent_notebook(peptide_input, tmp_path, level, counts, total, include_id):

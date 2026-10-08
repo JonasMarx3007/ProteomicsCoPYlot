@@ -508,6 +508,102 @@ def _bootstrap_annotation(
         )
 
 
+# A published project is read and processed once per configuration file and
+# version; every visitor gets the result, not a fresh load. Measured on 10k x
+# 100 data, a fresh load took 0.6-0.9 s and ~55 MB per visitor.
+_SHARED_STORES = ("dataset", "metadata", "annotation", "condition_palette", "peptide_metadata",
+                  "localization_cutoff")
+_SHARED_TEMPLATES: dict[str, tuple[dict[str, Any], ViewerBootstrapResult]] = {}
+_SHARED_TEMPLATE_LIMIT = 8
+_SHARED_TEMPLATE_LOCK = RLock()
+
+
+def _shared_template_key(config_path: Path) -> str:
+    try:
+        stamp = config_path.stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    return f"{config_path.resolve()}@{stamp}"
+
+
+def _session_copy(snapshot: Any) -> Any:
+    """A session's own copy of a loaded project; the matrices themselves are shared.
+
+    pandas >= 3 always copies on write, so a shallow frame copy keeps every
+    session's changes to itself while the values are stored once. Older pandas
+    has no copy-on-write, so there each session gets deep frame copies: the
+    project is still read and parsed only once.
+    """
+    import copy
+
+    deep = int(pd.__version__.split(".", 1)[0]) < 3
+    memo: dict[int, Any] = {}
+
+    def collect(value: Any, depth: int = 0) -> None:
+        if depth > 8 or value is None or id(value) in memo:
+            return
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            memo[id(value)] = value.copy(deep=deep)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                collect(item, depth + 1)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                collect(item, depth + 1)
+        elif hasattr(value, "__dict__"):
+            for item in vars(value).values():
+                collect(item, depth + 1)
+
+    collect(snapshot)
+    return copy.deepcopy(snapshot, memo)
+
+
+def load_viewer_state_shared(config_path: Path, *, force_reload: bool = False) -> ViewerBootstrapResult:
+    """Copy a shared project into this session, rebuilding it on explicit refresh."""
+    from app.services import restore_state
+    from app.services.session_context import reset_session_id, set_session_id
+
+    key = _shared_template_key(config_path)
+    with _SHARED_TEMPLATE_LOCK:
+        template = _SHARED_TEMPLATES.get(key)
+        if template is None or force_reload:
+            import hashlib
+
+            template_session = "viewertemplate_" + hashlib.sha256(key.encode()).hexdigest()[:32]
+            token = set_session_id(template_session)
+            try:
+                for store in _SHARED_STORES:
+                    getattr(restore_state, f"restore_{store}_session_state")(None)
+                result = load_viewer_state(config_path)
+                snapshots = {store: getattr(restore_state, f"snapshot_{store}_session_state")()
+                             for store in _SHARED_STORES}
+            finally:
+                try:
+                    # Also discard partially loaded state if rebuilding fails.
+                    for store in _SHARED_STORES:
+                        getattr(restore_state, f"restore_{store}_session_state")(None)
+                finally:
+                    reset_session_id(token)
+            template = (snapshots, result)
+            for stale in [name for name in _SHARED_TEMPLATES if name.split("@")[0] == key.split("@")[0]]:
+                _SHARED_TEMPLATES.pop(stale, None)
+            while len(_SHARED_TEMPLATES) >= _SHARED_TEMPLATE_LIMIT:
+                _SHARED_TEMPLATES.pop(next(iter(_SHARED_TEMPLATES)))
+            _SHARED_TEMPLATES[key] = template
+    snapshots, result = template
+    for store in _SHARED_STORES:
+        getattr(restore_state, f"restore_{store}_session_state")(_session_copy(snapshots[store]))
+    return ViewerBootstrapResult(loaded_datasets=list(result.loaded_datasets),
+                                 loaded_annotations=list(result.loaded_annotations),
+                                 warnings=list(result.warnings))
+
+
+def forget_shared_viewer_templates() -> None:
+    with _SHARED_TEMPLATE_LOCK:
+        _SHARED_TEMPLATES.clear()
+
+
 def _extract_named_dataset_packages(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw = config.get("datasets")
     if not isinstance(raw, dict):
@@ -1176,12 +1272,8 @@ def _normalize_imputation_mode(raw: str, warnings: list[str] | None = None) -> s
     return "none"
 
 
-def _viewer_mode_enabled() -> bool:
-    return env_flag("COPYLOT_VIEWER_MODE")
-
-
 def viewer_mode_enabled() -> bool:
-    return _viewer_mode_enabled()
+    return env_flag("COPYLOT_VIEWER_MODE")
 
 
 def _viewer_portal_enabled() -> bool:
@@ -1233,7 +1325,7 @@ def bootstrap_current_viewer_session(*, force_reload: bool = False) -> ViewerBoo
         if already_loaded and _session_still_loaded():
             return None
 
-    result = load_viewer_state(config_path)
+    result = load_viewer_state_shared(config_path, force_reload=force_reload)
     with _SESSION_BOOTSTRAP_LOCK:
         _SESSION_BOOTSTRAP_CONFIG[session_id] = config_key
     return result

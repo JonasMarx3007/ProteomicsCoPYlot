@@ -10,7 +10,7 @@ export type AssistantControl = {
   value: ControlValue; options: string[]; optionCount: number; min?: number; max?: number;
   optionQuery?: string; optionMatchCount?: number;
 };
-export type AssistantAction = { type: "navigate" | "set_control" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles"; target: string; value: ControlValue };
+export type AssistantAction = { type: "navigate" | "set_control" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles" | "save_style" | "apply_style"; target: string; value: ControlValue };
 type Element = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type Binding = { read: () => AssistantControl | null; apply: (value: ControlValue) => void; commit: () => void };
 const controls = new Map<string, Binding>();
@@ -165,6 +165,16 @@ export function useAssistantControl<T extends Element>(onChange: ((event: Change
   return ref;
 }
 
+// Settings of the data pipeline -- how data are filtered, normalized, imputed or
+// transformed, and the session-wide phosphosite localization cutoff -- are never
+// offered to the assistant and never set by it, at any level, with or without
+// approval. The backend enforces the same rule (assistant_safety.py).
+export const PIPELINE_CONTROL = /\b(?:normali[sz]\w*|imput\w*|filter\w*|transform\w*|localization probability|valid values?)\b/i;
+
+export function isPipelineControl(label: string): boolean {
+  return PIPELINE_CONTROL.test(label);
+}
+
 export function readAssistantControls(question = "", searches: Record<string, string> = {}): AssistantControl[] {
   // Identifiers are short and end sentences: "K7." must still surface K7 and
   // K70-K79 among the 40 advertised options.
@@ -172,7 +182,7 @@ export function readAssistantControls(question = "", searches: Record<string, st
     .filter(word => word.length > 2 || (word.length > 1 && /\d/.test(word)));
   return [...controls.values(), ...buttons.values()].flatMap(binding => {
     const control = binding.read();
-    if (!control) return [];
+    if (!control || isPipelineControl(control.label)) return [];
     if (!["select", "multiple"].includes(control.type)) return [control];
     const optionText = (option: string) => `${option} ${control.optionLabels?.[option] ?? ""}`.toLowerCase();
     if (searches[control.id] !== undefined) {
@@ -328,6 +338,9 @@ export function applyAssistantControls(actions: AssistantAction[], onApplied: (r
   for (const action of actions) {
     const control = controls.get(action.target)?.read();
     if (action.type !== "set_control" || !control) throw new Error("The plot controls changed. Please retry.");
+    if (isPipelineControl(control.label)) {
+      throw new Error("The assistant never changes how data are filtered, normalized, imputed or transformed. Nothing was changed.");
+    }
     validate(control, action.value);
   }
   const receipts: string[] = [];

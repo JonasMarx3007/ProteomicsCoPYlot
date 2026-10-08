@@ -11,15 +11,11 @@ ARG FRONTEND_APP_MODE=analysis
 ARG FRONTEND_AI_ENABLED=0
 ARG FRONTEND_BASE_PATH=/
 ARG FRONTEND_API_BASE=
-ARG FRONTEND_VIEWER_PORTAL_AUTH=0
-ARG FRONTEND_TOOL_ACCESS_AUTH=0
 ARG FRONTEND_RESET_ON_BROWSER_LOAD=0
 ENV VITE_APP_MODE=${FRONTEND_APP_MODE}
 ENV VITE_AI_ENABLED=${FRONTEND_AI_ENABLED}
 ENV VITE_BASE_PATH=${FRONTEND_BASE_PATH}
 ENV VITE_API_BASE_URL=${FRONTEND_API_BASE}
-ENV VITE_VIEWER_PORTAL_AUTH=${FRONTEND_VIEWER_PORTAL_AUTH}
-ENV VITE_TOOL_ACCESS_AUTH=${FRONTEND_TOOL_ACCESS_AUTH}
 ENV VITE_RESET_ON_BROWSER_LOAD=${FRONTEND_RESET_ON_BROWSER_LOAD}
 RUN npm run build
 
@@ -72,6 +68,8 @@ COPY launch_viewer.py /app/launch_viewer.py
 COPY viewer_config.json /app/viewer_config.json
 COPY proteomicscopylot/example_data /app/proteomicscopylot/example_data
 COPY proteomicscopylot/notebook_functions.py /app/proteomicscopylot/notebook_functions.py
+# The arithmetic the backend shares with the pip package (app.services.copylot_core).
+COPY proteomicscopylot/_core.py /app/proteomicscopylot/_core.py
 COPY LICENSE /app/LICENSE
 RUN mkdir -p /app/data /app/viewer_data /app/local
 COPY data/db /app/data/db
@@ -84,7 +82,7 @@ COPY --from=frontend-build /build/frontend/dist /app/frontend_dist
 # This reads the list from the code, so adding a font without installing it
 # fails the build instead of shipping a menu entry that does nothing.
 RUN python -c "import sys; sys.path.insert(0, '/app/backend'); \
-from app.services.plot_images import verify_fonts_installed; \
+from app.services.plot_styling import verify_fonts_installed; \
 print(verify_fonts_installed())"
 
 RUN groupadd --system --gid 10001 copylot \

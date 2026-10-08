@@ -58,6 +58,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     # Reviewed and left open on purpose; see the review report's security
     # appendix, where each is written up with the argument on both sides.
     ("POST", "/api/chat/assistant"): "the assistant is offered in viewer builds",
+    ("POST", "/api/chat/local-models"): "reads a local AI server's model list; a POST only so a key stays out of URLs",
     ("POST", "/api/chat/cloud-consent/{provider}/grant"): "consent for that assistant",
     ("POST", "/api/chat/cloud-consent/{provider}/revoke"): "withdrawing it",
 }

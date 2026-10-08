@@ -32,9 +32,12 @@ def viewer_session(monkeypatch, tmp_path):
     config = tmp_path / "viewer_config.json"
     config.write_text('{"datasets": {}}', encoding="utf-8")
     monkeypatch.setattr(viewer_bootstrap, "_resolve_config_path", lambda: config)
-    loads: list[Path] = []
+    loads: list[tuple[Path, bool]] = []
+    # The per-session step; reading the files themselves is shared between
+    # sessions (test_viewer_project_is_shared.py).
     monkeypatch.setattr(
-        viewer_bootstrap, "load_viewer_state", lambda path: loads.append(Path(path))
+        viewer_bootstrap, "load_viewer_state_shared",
+        lambda path, *, force_reload=False: loads.append((Path(path), force_reload))
     )
     # Loads are only counted here, so nothing fills the dataset store; report
     # it as loaded so these tests isolate the config-change rule.
@@ -73,11 +76,12 @@ def test_an_edited_config_is_loaded_again(viewer_session) -> None:
 
 
 def test_a_forced_reload_still_reloads_an_unchanged_config(viewer_session) -> None:
-    """Login and the browser-session reset both force one."""
+    """The browser-session reset explicitly rebuilds the shared project."""
     _config, loads = viewer_session
     viewer_bootstrap.bootstrap_current_viewer_session()
     viewer_bootstrap.bootstrap_current_viewer_session(force_reload=True)
     assert len(loads) == 2
+    assert [force for _, force in loads] == [False, True]
 
 
 def test_the_marker_is_per_session(viewer_session, monkeypatch) -> None:

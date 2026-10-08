@@ -8,7 +8,6 @@ services:
         FRONTEND_AI_ENABLED: "0"
         FRONTEND_BASE_PATH: "/viewer/"
         FRONTEND_API_BASE: "/viewer"
-        FRONTEND_VIEWER_PORTAL_AUTH: "1"
         FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     image: proteomics-copylot-viewer:latest
     container_name: proteomics-viewer
@@ -62,7 +61,6 @@ services:
         FRONTEND_AI_ENABLED: "1"
         FRONTEND_BASE_PATH: "/viewer-ai/"
         FRONTEND_API_BASE: "/viewer-ai"
-        FRONTEND_VIEWER_PORTAL_AUTH: "1"
         FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     image: proteomics-copylot-viewer-ai:latest
     container_name: proteomics-viewer-ai

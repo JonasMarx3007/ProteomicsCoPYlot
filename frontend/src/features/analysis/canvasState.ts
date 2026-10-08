@@ -23,7 +23,7 @@ export function asNumber(value: unknown, fallback: number): number {
  */
 export type VolcanoStyle = AdvancedPlotSettings;
 
-export const CANVAS_VOLCANO_DEFAULTS = {
+const CANVAS_VOLCANO_DEFAULTS = {
   up: "#dc2626",
   down: "#2563eb",
   other: "#94a3b8",
@@ -109,7 +109,7 @@ export function restoredOraState(value: unknown): OraState {
   };
 }
 
-export function isCompletedOra(value: unknown): value is CompletedOra {
+function isCompletedOra(value: unknown): value is CompletedOra {
   const record = (item: unknown): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item));
   const strings = (item: unknown): item is string[] => Array.isArray(item) && item.every(value => typeof value === "string");
   const numbers = (item: Record<string, unknown>, keys: string[]) => keys.every(key => typeof item[key] === "number" && Number.isFinite(item[key]) && Number(item[key]) >= 0);

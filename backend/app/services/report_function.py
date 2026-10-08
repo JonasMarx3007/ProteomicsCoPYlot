@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.services.method_references import cite
 from app.services.html_security import GENERATED_HTML_META
 from app.services.notebook_report import report_plot, report_table, record_sample_mapping
 
@@ -25,6 +26,7 @@ from app.schemas.summary import (
     SummaryReportResponse,
     SummaryVolcanoEntry,
 )
+from app.services.column_labels import HIDDEN_TABLE_COLUMNS, display_labels
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_current_dataset
 from app.services.peptide_metadata_store import get_peptide_metadata
@@ -171,8 +173,12 @@ def _plotly_to_iframe(plot_html: str, height_px: int = 740) -> str:
 
 
 def _table_to_html(title: str, frame: pd.DataFrame) -> str:
-    safe = frame.copy().where(pd.notna(frame), "")
-    table_html = safe.to_html(index=False, border=0, justify="left")
+    # The frame's columns are the data contract (CSV, API, notebooks); the
+    # reader gets the display label, and numbers rounded to two decimals.
+    shown = frame.drop(columns=[c for c in HIDDEN_TABLE_COLUMNS if c in frame.columns])
+    safe = shown.rename(columns=display_labels(shown.columns))
+    safe = safe.where(pd.notna(safe), "")
+    table_html = safe.to_html(index=False, border=0, justify="left", float_format=lambda v: f"{v:.2f}")
     return (
         f"<h3>{html.escape(title)}</h3>"
         "<div style='max-height:320px;overflow:auto;border:1px solid #d6d6d6;border-radius:8px;padding:8px;margin-bottom:16px;'>"
@@ -607,20 +613,22 @@ def _imputation_paragraphs(kind: str) -> list[str]:
             (
                 "For analyses based on imputed data, missing values were sampled from a shifted normal "
                 f"distribution with a downshift of {down_shift} standard deviations and width "
-                f"{width} times the observed standard deviation."
+                f"{width} times the observed standard deviation ({cite('imputation_downshift')})."
             )
         ]
     elif template_paragraphs:
         rendered = [
             paragraph.replace("{qValue}", q_value).replace("{adjustStd}", adjust_std)
+            .replace("{citation}", cite("imputation_quantile"))
             for paragraph in template_paragraphs
             if paragraph.strip()
         ]
     else:
         rendered = [
             (
-                "For analyses based on imputed data, missing values were sampled from a shifted normal "
-                f"distribution with q = {q_value} and adjusted standard deviation = {adjust_std}."
+                "For analyses based on imputed data, missing values were sampled from a normal "
+                f"distribution centred on the q = {q_value} quantile of the observed values, with "
+                f"{adjust_std} times their standard deviation ({cite('imputation_quantile')})."
             )
         ]
 
@@ -640,12 +648,12 @@ _NORMALIZATION_REPORT_LABELS = {
     "median": "Samples were median-centred on the log2 values (applied globally, before filtering).",
     "quantile": (
         "Samples were quantile-normalized on the log2 values (applied globally, before "
-        "filtering; Bolstad et al. 2003, doi:10.1093/bioinformatics/19.2.185)."
+        f"filtering; {cite('quantile_normalization')})."
     ),
     "vsn": (
-        "Variance-stabilizing normalization (VSN, Bioconductor vsn; Huber et al. 2002, "
-        "doi:10.1093/bioinformatics/18.suppl_1.S96) replaced the plain log2 transform "
-        "(applied globally, before filtering)."
+        f"Variance-stabilizing normalization (VSN, Bioconductor vsn; {cite('vsn')}) replaced "
+        "the plain log2 transform (applied globally, before filtering). The CV and abundance "
+        "plots use the unnormalized data, because VSN output is not on a linear intensity scale."
     ),
 }
 
@@ -654,7 +662,7 @@ _NORMALIZATION_REPORT_LABELS = {
 # identical whichever was used.
 _TEST_TYPE_REPORT_LABELS = {
     "unpaired": "unpaired two-sample t-test (pooled variance)",
-    "unpaired_welch": "unpaired two-sample t-test (Welch, unequal variance)",
+    "unpaired_welch": f"unpaired two-sample t-test (Welch, unequal variance; {cite('welch_t')})",
     "paired": "paired t-test (on within-pair differences)",
 }
 
@@ -811,10 +819,10 @@ def _report_data_source(value: Any) -> str:
 
 
 # What the two colours of the phosphosite coverage plots mean. The threshold is
-# fixed (Olsen et al. 2006), unlike the session's localization cutoff.
+# fixed, unlike the session's localization cutoff.
 CLASS_I_SENTENCE = (
-    "Class I sites have a localization probability of at least 0.75; sites without a "
-    "localization probability are shown as Unclassified."
+    f"Class I sites have a localization probability of at least 0.75 ({cite('localization_class_i')}); "
+    "sites without a localization probability are shown as Unclassified."
 )
 
 
@@ -977,12 +985,14 @@ def _volcano_counts_html(
     down = int(result.downregulatedCount)
     total = int(result.totalRows)
     not_significant = int(result.notSignificantCount)
+    unavailable = int(getattr(result, "unavailableCount", 0) or 0)
     # log2FC is condition1 - condition2, so "up" means higher in condition1.
     description = (
         f"{up:,} {plural if up != 1 else singular} upregulated in "
         f"{entry.condition1} and {down:,} downregulated "
         f"(higher in {entry.condition2}), out of {total:,} tested "
-        f"{plural if total != 1 else singular}; {not_significant:,} not significant."
+        f"{plural if total != 1 else singular}; {not_significant:,} not significant"
+        + (f"; {unavailable:,} without a p-value." if unavailable else ".")
     )
     significant = [
         row
@@ -1006,8 +1016,7 @@ def _volcano_statistics_html(entry: SummaryVolcanoEntry) -> str:
     correction = (
         "uncorrected p-values (no multiple-testing correction)"
         if uncorrected
-        else "Benjamini-Hochberg adjusted p-values (Benjamini & Hochberg 1995, "
-             "doi:10.1111/j.2517-6161.1995.tb02031.x)"
+        else f"Benjamini-Hochberg adjusted p-values ({cite('benjamini_hochberg')})"
     )
     threshold_name = "p" if uncorrected else "adjusted p"
     description = (
@@ -1376,8 +1385,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
             [
                 f"<p class='toc-group'>{phospho_block}. Phosphosite Level Plots</p>",
                 f"<p class='toc-item'>{phospho_block}.1 Overview Phosphosites</p>",
-                f"<p class='toc-item'>{phospho_block}.2 Coverage Plot (Number)</p>",
-                f"<p class='toc-item'>{phospho_block}.3 Coverage Plot (Quality)</p>",
+                f"<p class='toc-item'>{phospho_block}.2 Coverage Plot (per sample)</p>",
+                f"<p class='toc-item'>{phospho_block}.3 Coverage Plot (per condition)</p>",
                 f"<p class='toc-item'>{phospho_block}.4 Missing Value Plot</p>",
                 f"<p class='toc-item'>{phospho_block}.5 Histogram Intensity</p>",
                 f"<p class='toc-item'>{phospho_block}.6 Boxplot Intensity</p>",
@@ -1576,8 +1585,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         kind="protein",
                         summary=_to_bool(protein_coverage.get("summary"), False),
                     ),
-                    title="Coverage Summary Table",
-                    fallback_title="Protein Coverage Summary Table",
+                    title="Coverage Table (per sample)",
+                    fallback_title="Protein Coverage Table",
                     warnings=warnings,
                 )
             ),
@@ -1837,7 +1846,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{phospho_block}.2",
-            title="Coverage Plot (Number)",
+            title="Coverage Plot (per sample)",
             description=None,
             general_comment_key="Coverage(Number)Phos",
             comments_override=[*GENERAL_COMMENTS.get("Coverage(Number)Phos", []), CLASS_I_SENTENCE],
@@ -1858,8 +1867,8 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
                         kind="phospho",
                         summary=_to_bool(phospho_coverage.get("summary"), False),
                     ),
-                    title="Coverage Summary Table",
-                    fallback_title="Phospho Coverage Summary Table",
+                    title="Coverage Table (per sample)",
+                    fallback_title="Phospho Coverage Table",
                     warnings=warnings,
                 )
             ),
@@ -1867,7 +1876,7 @@ def report_function(payload: SummaryReportRequest) -> SummaryReportResponse:
         _append_plot_section(
             html_parts=html_parts,
             section_id=f"{phospho_block}.3",
-            title="Coverage Plot (Quality)",
+            title="Coverage Plot (per condition)",
             description=None,
             general_comment_key="Coverage(Quality)Phos",
             comments_override=[*GENERAL_COMMENTS.get("Coverage(Quality)Phos", []), CLASS_I_SENTENCE],

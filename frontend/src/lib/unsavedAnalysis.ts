@@ -57,7 +57,7 @@ export function isAnalysisMutation(url: string, method = "GET"): boolean {
     /\/api\/data-tools\/condition-colors\//.test(path) ||
     path.endsWith("/api/data-tools/imputation/run") ||
     path.endsWith("/api/data-tools/id-translation/run") ||
-    path.endsWith("/api/data-tools/id-translation/run") ||
+    path.endsWith("/api/data-tools/phospho-localization-cutoff") ||
     path.endsWith("/api/restore/import");
 }
 

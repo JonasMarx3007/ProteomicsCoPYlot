@@ -1,17 +1,17 @@
 import { SizeRow } from "../../components/PlotFields";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
 import PlotImage from "../../components/PlotImage";
 import InteractivePlot from "../../components/InteractivePlot";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { withoutStaticSize } from "../../lib/plotRenderType";
-import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
+import { restorePlotDimensionCm, restorePlotDpi, iframeHeightForPlot } from "../../lib/plotLimits";
 import { AssistantSelect } from "../../components/AssistantFields";
 import { collectColumns } from "../../lib/tableData";
-import { rowsToCsv } from "../../lib/tableData";
+import { csvDataUrl, rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getComparisonOptions, getComparisonTable, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
@@ -449,7 +449,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     if (tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
     if (columns.length === 0) return null;
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
+    return csvDataUrl(rowsToCsv(tableRows, columns));
   }, [tableRows]);
 
   const modePool = activeTab === "pearson"
@@ -515,24 +515,8 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             <h3 className="text-lg font-semibold text-slate-900">{activeTab === "pearson" ? "Pearson Correlation" : "Venn Diagram"}</h3>
             {plotView?.renderMode === "image" ? (
               <div className="flex flex-wrap items-center gap-2">
-                <AssistantSelect
-                  value={downloadFormat}
-                  onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                  className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-                >
-                  {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </AssistantSelect>
-                <a
-                  href={plotDownloadUrl}
-                  download={plotDownloadFilename}
-                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-                >
-                  Download Plot
-                </a>
+                <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+                  href={plotDownloadUrl} filename={plotDownloadFilename} />
                 <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
               </div>
             ) : plotView?.renderMode === "html" ? (
@@ -600,7 +584,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
                 {tableError}
               </div>
             ) : (
-              <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." />
+              <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." plotSummary />
             )}
           </div>
         </section>
@@ -767,6 +751,5 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
 
 
 function cmToIframeHeight(heightCm: number): number {
-  const basePx = Number.isFinite(heightCm) ? (heightCm * 96) / 2.54 : (12 * 96) / 2.54;
-  return Math.max(860, Math.round(basePx + 280));
+  return iframeHeightForPlot(heightCm, { fallbackCm: 12, minPx: 860, paddingPx: 280 });
 }

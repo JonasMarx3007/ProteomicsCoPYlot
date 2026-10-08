@@ -40,3 +40,8 @@ export function rowsToQuotedCsv(rows: Record<string, unknown>[], columns: string
   ];
   return lines.join("\n");
 }
+
+/** A CSV text as a `data:` URL for a download link. */
+export function csvDataUrl(csv: string): string {
+  return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+}

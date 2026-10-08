@@ -152,6 +152,26 @@ def test_sum_propagate_na_uses_a_fixed_eligible_set_and_exports_coverage() -> No
     assert out.loc[0, "site_coverage__s3"] == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize("mode", ["sum_ignore_na", "mean"])
+def test_shared_site_modes_cannot_flip_a_fold_change(mode: str) -> None:
+    """Both sites change by +1 log2 (A -> B); condition B detects one more site.
+
+    Summing whatever was observed gave B a larger sum for the coverage, not the
+    biology: +1.0 per site came out as a negative protein fold change. Over the
+    sites quantified in every sample the protein change is the sites' change.
+    """
+    data = _sites(
+        [
+            [100.0, 100.0, 200.0, 200.0],  # quantified everywhere, doubles in B
+            [np.nan, np.nan, 20.0, 20.0],  # detected in B only
+        ]
+    )
+    out = transform_phosprot(data, META, mode=mode)
+    values = out.loc[0, SAMPLES].to_numpy(dtype=float)
+    assert values[2] - values[0] == pytest.approx(1.0)
+    assert out.loc[0, "site_supplied__s3"] == 1  # the B-only site did not contribute
+
+
 @pytest.mark.parametrize(
     "mode,expected",
     [
@@ -305,3 +325,25 @@ def test_aggregate_from_phospho_records_the_mode_it_used(mode: str) -> None:
 # The Annotation page offers exactly these modes and sources and starts on these
 # defaults: frontend/tests/unit/phosprot-aggregation-defaults.test.tsx compares it
 # with PhosprotAggregateRequest in the generated OpenAPI schema.
+
+
+@pytest.mark.parametrize("implementation", ["app", "pip"])
+def test_mean_uses_only_sites_quantified_in_every_sample(implementation: str) -> None:
+    """A strong site seen only in control must not reverse a site that rises in treatment."""
+    from proteomicscopylot import notebook_functions
+
+    data = _sites(
+        [
+            [10.0, 10.0, 12.0, 12.0],      # complete site, up in treated
+            [1000.0, 1000.0, np.nan, np.nan],  # high site observed only in control
+        ]
+    )
+    collapse = transform_phosprot if implementation == "app" else notebook_functions.transform_phosprot
+    out = collapse(data, META, mode="mean", data_scale="linear")
+    values = out.loc[0, SAMPLES].to_numpy(dtype=float)
+    assert values == pytest.approx(np.log2([10.0, 10.0, 12.0, 12.0]))
+    assert values[2] > values[0]
+
+    only_partial = _sites([[1.0, np.nan, 2.0, 2.0], [np.nan, 1.0, 2.0, 2.0]])
+    out = collapse(only_partial, META, mode="mean", data_scale="linear")
+    assert np.isnan(out.loc[0, SAMPLES].to_numpy(dtype=float)).all()

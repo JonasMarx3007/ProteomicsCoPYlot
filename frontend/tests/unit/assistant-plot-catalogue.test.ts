@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Every view that shows a plot or a result is one the assistant can explain.
  *

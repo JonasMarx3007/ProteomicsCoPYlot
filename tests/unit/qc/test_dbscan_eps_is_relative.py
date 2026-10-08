@@ -44,7 +44,6 @@ def test_effective_eps_scales_with_the_projection():
 
 
 def test_default_factor_finds_the_two_groups_where_an_absolute_radius_found_noise():
-    pytest.importorskip("sklearn")
     from sklearn.cluster import DBSCAN
 
     absolute = DBSCAN(eps=0.5, min_samples=2).fit_predict(EMBEDDING)

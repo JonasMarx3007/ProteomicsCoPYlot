@@ -150,6 +150,8 @@ def transform_phosprot(
     on magnitude-based scale guessing. ``coverage_data`` may supply the aligned
     pre-imputation matrix so diagnostics describe real observations rather than
     filled values. It fixes site eligibility, not per-sample value availability.
+    ``site_observed__`` retains overall coverage; ``site_measured__`` and
+    ``site_supplied__`` count only the sites used by the selected collapse.
     """
     missing = [column for column in _REQUIRED_PHOSPHO_COLUMNS if column not in data.columns]
     if missing:
@@ -278,6 +280,13 @@ def transform_phosprot(
                 "mode must be one of: robust_site_median, sum_propagate_na, "
                 "sum_ignore_na, mean."
             )
+        if mode in ("mean", "sum_ignore_na"):
+            # Only sites quantified in every sample: each sample's value then comes
+            # from the same sites, so a change in which sites were observed cannot
+            # flip a fold change. Summing over whatever happened to be observed
+            # used to turn a +1 log2 site change into -0.37 when the other condition
+            # had more detected sites. Proteins without such a site stay missing.
+            source = source.loc[source[sample_columns].apply(pd.to_numeric, errors="coerce").notna().all(axis=1)]
         values = source.groupby("Protein_group", as_index=False).agg(
             {column: summarizer for column in sample_columns}
         )
@@ -292,18 +301,17 @@ def transform_phosprot(
             aggregated = aggregated.mask(aggregated <= 0)
         values[sample_columns] = np.log2(aggregated)
 
-    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_index]
+    supplied_source = eligible_log2 if mode == "robust_site_median" else source
     supplied = supplied_source[sample_columns].notna().assign(
+        Protein_group=supplied_source['Protein_group'].to_numpy()
+    ).groupby('Protein_group')[sample_columns].sum().reindex(diagnostics['Protein_group'], fill_value=0)
+    measured = (supplied_source[sample_columns].notna()
+                & diagnostic_source.loc[supplied_source.index, sample_columns].notna()).assign(
         Protein_group=supplied_source['Protein_group'].to_numpy()
     ).groupby('Protein_group')[sample_columns].sum().reindex(diagnostics['Protein_group'], fill_value=0)
     for sample in sample_columns:
         diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
-    supplied_source = eligible_log2 if mode == "robust_site_median" else linear_source.loc[eligible_index]
-    supplied = supplied_source[sample_columns].notna().assign(
-        Protein_group=supplied_source['Protein_group'].to_numpy()
-    ).groupby('Protein_group')[sample_columns].sum().reindex(diagnostics['Protein_group'], fill_value=0)
-    for sample in sample_columns:
-        diagnostics[f"site_supplied__{sample}"] = supplied[sample].to_numpy(dtype=int)
+        diagnostics[f"site_measured__{sample}"] = measured[sample].to_numpy(dtype=int)
     phosprot = annotations.merge(values, on="Protein_group", how="left")
     phosprot = phosprot.merge(diagnostics, on="Protein_group", how="left")
     phosprot = phosprot.rename(
@@ -444,6 +452,8 @@ def aggregate_from_phospho(
     selected_source, log2_source = choose_best_source(
         filtered_source, phospho_annotation.log2_data, phospho_annotation.log2_data,
     )
+    if selected_source == "raw":
+        raise ValueError("Phosphoprotein aggregation needs annotated phospho data. Generate the phospho annotation first.")
     if selected_source == "filtered":
         source_label = "normalized, filtered, non-imputed phospho data"
     else:
@@ -507,11 +517,16 @@ def aggregate_from_phospho(
             " collapsed by the within-protein median. A sample value requires at least"
             f" {ROBUST_SITE_MIN_FRACTION:.0%} of the fixed eligible site set."
         )
-    elif mode in {"sum_ignore_na", "mean"}:
+    elif mode == "mean":
         method_note = (
-            f" Aggregation mode '{mode}' is sensitive to phosphosite coverage: protein values"
-            " can change when the observed site set changes. Inspect the exported"
-            " site_observed and site_coverage columns before interpreting results."
+            " Each protein value is the mean over the sites quantified in every sample;"
+            " proteins without such a site are missing."
+        )
+    elif mode == "sum_ignore_na":
+        method_note = (
+            " Each protein value is the linear-scale sum over the sites quantified in"
+            " every sample, so every sample sums the same sites; proteins without such"
+            " a site are missing."
         )
     elif mode == "sum_propagate_na":
         method_note = (
@@ -549,6 +564,17 @@ def upload_phosprot(
     filename: str,
     is_log2_transformed: bool | None = None,
 ) -> object:
+    """Store a phosphoprotein matrix made earlier as the current phosphoprotein data.
+
+    The alternative to `aggregate_from_phospho`: instead of collapsing the
+    session's phosphosite data, a user brings back a phosphoprotein matrix they
+    collapsed before (for example in an earlier session or another tool), so an
+    analysis can be reproduced on exactly that matrix. Deliberately kept
+    (design decision D17). It needs the phospho annotation, whose sample sheet
+    the phosphoprotein level shares; the matrix is recorded with aggregation
+    "uploaded" and no collapse lineage. `is_log2_transformed=None` detects the
+    scale from the values.
+    """
     _shared_phospho_annotation()
     warning_prefix = (
         "Phosphoprotein dataset was uploaded manually. "

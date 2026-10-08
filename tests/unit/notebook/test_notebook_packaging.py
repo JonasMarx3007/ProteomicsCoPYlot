@@ -24,6 +24,7 @@ def source_bundle(tmp_path, monkeypatch):
     for name in names:
         shutil.copyfile(ROOT / 'backend/app/services' / name, destination / name)
     shutil.copyfile(ROOT / 'proteomicscopylot/notebook_functions.py', destination / 'notebook_functions.py')
+    shutil.copyfile(ROOT / 'proteomicscopylot/_core.py', destination / '_core.py')
     shutil.copyfile(ROOT / 'LICENSE', destination / 'LICENSE')
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)

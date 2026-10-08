@@ -2,7 +2,7 @@
 
 CoPYlot ships the same analysis three times on purpose -- `stats_tools.py` for
 the web app, `notebook_functions.py` for the pip package, `notebook_functions.R`
-for the R package -- and `test_triplicate_parity.py` checks that the *names* line
+for the R functions -- and `test_triplicate_parity.py` checks that the *names* line
 up. Names are not results: the app once returned the same 7,430 rows as the
 packages in a different order, because a sort fix reached three of four places.
 
@@ -24,10 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from app.schemas.stats import AnovaRequest
 from app.services.stats_tools import _anova_dataframe, _stats_source
-from app.services.viewer_bootstrap import load_viewer_state
 from proteomicscopylot import notebook_functions as pip_package
 
-RSCRIPT = __import__("shutil").which("Rscript")
 NUMERIC = ("f_statistic", "pval", "adj_pval")
 
 
@@ -121,7 +119,7 @@ def test_phosphoprotein_carries_the_gene_and_site_columns() -> None:
 
 
 @pytest.mark.requires_r()
-def test_the_r_pipeline_agrees_with_python(loaded, tables, tmp_path) -> None:
+def test_the_r_pipeline_agrees_with_python(loaded, tables, tmp_path, rscript) -> None:
     frame, metadata = loaded
     frame.to_csv(tmp_path / "data.csv", index=False)
     metadata.to_csv(tmp_path / "meta.csv", index=False)
@@ -134,7 +132,7 @@ def test_the_r_pipeline_agrees_with_python(loaded, tables, tmp_path) -> None:
                 {str(tmp_path / 'r.csv')!r}, row.names = FALSE)
     """
     result = subprocess.run(
-        [RSCRIPT, "-e", script], capture_output=True, text=True, timeout=900
+        [rscript, "-e", script], capture_output=True, text=True, timeout=900
     )
     assert result.returncode == 0, result.stderr[-2000:]
 

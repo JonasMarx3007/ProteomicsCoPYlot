@@ -5,8 +5,8 @@
 #   pre-commit run --all-files    # once, to see where you stand
 #
 # Deliberately not here: `ruff format` (reformatting the tree today touches 147
-# files, so it is opt-in per file -- see CONTRIBUTING.md), mypy (around 75
-# pre-existing findings, so it would block every commit), and pytest (too slow
+# files, so it is opt-in per file -- see CONTRIBUTING.md), mypy (CI runs it with a per-module
+# baseline in pyproject.toml; too slow for every commit), and pytest (too slow
 # for a commit hook; CI and `pytest tests/unit tests/repo -q` cover it).
 #
 # `pre-commit autoupdate` bumps the pinned revisions below.

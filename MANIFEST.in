@@ -1,3 +1,4 @@
 include CHANGELOG.md
 include data/db/all_go_terms_genes.csv
 include data/db/README.md
+include data/db/PACKAGED_README.md

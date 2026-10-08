@@ -6,14 +6,14 @@ import { coercePlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plo
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import PairingEditor from "../../components/PairingEditor";
 import { oraExportRows } from "./oraExport";
-import { buildPlotUrl, getOraNotebookTables, getStatisticalOptions, isAbortError, pairingIsReady, runAnovaAnalysis, runEnrichmentAnalysis } from "../../lib/api";
+import { buildPlotUrl, getStatisticalOptions, getOraNotebookTables, isAbortError, pairingIsReady, runAnovaAnalysis, runEnrichmentAnalysis } from "../../lib/api";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { fetchPlot } from "../../lib/fetchPlot";
 import { useDatasetRevision } from "../../lib/datasetAvailability";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, EnrichmentOrganism, EnrichmentRequest, EnrichmentResultResponse, StatsTestType, StatisticalOptionsResponse, DataSource } from "../../lib/types";
+import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, EnrichmentOrganism, EnrichmentRequest, EnrichmentResultResponse, StatsTestType, DataSource, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions, ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
@@ -21,7 +21,8 @@ import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
-import { ImageSection, InfoSection, Notice, SummarySection, TableSection } from "./statsShared";
+import { keepCondition, useStatisticalOptionsLoader } from "./useStatisticalOptions";
+import { ImageSection, InfoSection, Notice, SummarySection, TableSection, ConditionPicker } from "./statsShared";
 import { ANOVA_CLUSTER_METHOD_OPTIONS, conditionOptions, hasGeneNameSupport, isPairedTestType, restoreClusterCount, restoreClusterMethod, restorePValueThreshold, sanitizeFilenamePart } from "./statsHelpers";
 import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
@@ -209,25 +210,20 @@ export function OraPanel({
     [options]
   );
 
-  useEffect(() => {
-    if (!kindAvailable) return;
-    const controller = new AbortController();
-    getStatisticalOptions(kind, { signal: controller.signal })
-      .then((data) => {
-        setOptions(data);
-        applyDataSourceChoices(data);
-        setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition2Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setError(err instanceof Error ? err.message : "Failed to load statistical options");
-        }
-      });
-    return () => controller.abort();
-  }, [kind, kindAvailable, applyDataSourceChoices]);
+  useStatisticalOptionsLoader(
+    kind,
+    kindAvailable,
+    (data) => {
+      setOptions(data);
+      applyDataSourceChoices(data);
+      setCondition1(keepCondition(data.availableConditions));
+      setCondition2(keepCondition(data.availableConditions));
+      setCondition1Control(keepCondition(data.availableConditions));
+      setCondition2Control(keepCondition(data.availableConditions));
+    },
+    setError,
+  );
+
 
   const geneNamesAvailable = hasGeneNameSupport(options);
   const roundedClusterCount = Math.max(1, Math.round(nClusters));
@@ -587,29 +583,15 @@ export function OraPanel({
                   options={oraDataSourceOptions}
                 />
               </div>
-              {sourceMode === "volcano_control" ? (
-                <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-                  <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-                  <SelectField
-                    label="Condition 1 Control"
-                    value={condition1Control}
-                    onChange={setCondition1Control}
-                    options={conditionOptions(options)}
-                  />
-                  <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-                  <SelectField
-                    label="Condition 2 Control"
-                    value={condition2Control}
-                    onChange={setCondition2Control}
-                    options={conditionOptions(options)}
-                  />
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                  <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-                  <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-                </div>
-              )}
+              <ConditionPicker
+                conditions={conditionOptions(options)}
+                condition1={{ value: condition1, onChange: setCondition1 }}
+                condition2={{ value: condition2, onChange: setCondition2 }}
+                controls={sourceMode === "volcano_control" ? {
+                  condition1: { value: condition1Control, onChange: setCondition1Control },
+                  condition2: { value: condition2Control, onChange: setCondition2Control },
+                } : undefined}
+              />
               <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                 <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
                 <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />

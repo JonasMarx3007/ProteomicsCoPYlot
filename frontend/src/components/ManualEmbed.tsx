@@ -4,6 +4,8 @@ import Modal from "./Modal";
 type ManualEmbedProps = {
   pdfPath: string;
   title: string;
+  /** The complete manual, offered next to the chapter. */
+  fullManualPath?: string;
   summaryLabel?: string;
   buttonLabel?: string;
   defaultOpen?: boolean;
@@ -12,6 +14,7 @@ type ManualEmbedProps = {
 export default function ManualEmbed({
   pdfPath,
   title,
+  fullManualPath,
   summaryLabel = "Module Manual",
   buttonLabel = "Manual",
   defaultOpen = false,
@@ -42,6 +45,16 @@ export default function ManualEmbed({
                   <h2 id={titleId} className="text-sm font-semibold text-slate-900">{title}</h2>
                 </div>
                 <div className="flex items-center gap-2">
+                  {fullManualPath ? (
+                    <a
+                      href={fullManualPath}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Complete manual
+                    </a>
+                  ) : null}
                   <a
                     href={pdfPath}
                     target="_blank"

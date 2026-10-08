@@ -87,6 +87,7 @@ build_binary() {
       --add-data "proteomicscopylot/example_data:proteomicscopylot/example_data" \
       --add-data "viewer_config.json:." \
       --add-data "proteomicscopylot/notebook_functions.py:notebook_sources" \
+      --add-data "proteomicscopylot/_core.py:notebook_sources" \
       "${notebook_source_args[@]}" \
       "${notebook_metadata_args[@]}" \
       --add-data "LICENSE:notebook_sources" \

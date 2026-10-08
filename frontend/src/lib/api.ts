@@ -76,7 +76,7 @@ import { syncSummaryReportStateWithDatasets } from "./reportState";
 import { emitDatasetStateChanged } from "./datasetEvents";
 import { normalizePlotSizeParams } from "./plotLimits";
 import { isAnalysisMutation, unsavedAnalysis } from "./unsavedAnalysis";
-import { TAB_API_PREFIX } from "./tabSession";
+import { TAB_API_BASE as API_BASE } from "./tabSession";
 
 // Local wrapper only (not a global fetch replacement). A failed/aborted write
 // remains conservatively dirty because the server may already have committed it.
@@ -120,8 +120,6 @@ export function apiErrorMessage(data: unknown, fallback: string): string {
   return [...new Set(messages)].slice(0, 3).join("; ") || fallback;
 }
 
-const API_BASE = `${import.meta.env.VITE_API_BASE_URL ?? ""}${TAB_API_PREFIX}`;
-
 export type AssistantView = {
   module: string; workflow: string; mode: ContextMode;
   controls: import("./assistantControls").AssistantControl[];
@@ -133,13 +131,25 @@ export type AssistantResult = {
   stoppedEarly?: boolean;
   explainAfterChanges?: boolean;
   needsClarification?: boolean;
+  // Changes allowed in this request at the model's assistant level.
+  actionBudget?: number;
+  finished?: boolean;
+  reviewAfter?: boolean;
   model: string; answer: string; revision: number;
   actions: import("./assistantControls").AssistantAction[];
   evidence: { tool: string; status: string; text: string }[];
 };
 
+// A progress poll never raises: a missed poll only leaves the previous line on screen.
+export function getAssistantProgress(progressId: string): Promise<{ phase: string; tokens: number; seconds: number; calls: number }> {
+  const unknown = { phase: "unknown", tokens: 0, seconds: 0, calls: 0 };
+  return fetch(`${API_BASE}/api/chat/assistant-progress/${encodeURIComponent(progressId)}`)
+    .then(response => (response.ok ? response.json() : unknown))
+    .catch(() => unknown);
+}
+
 export async function assistantStep(
-  payload: { message: string; messages?: ChatMessage[]; provider?: ChatProvider; model?: string; gpuEnabled?: boolean; apiKey?: string; ollamaUrl?: string; view: AssistantView; receipts: string[]; notes?: string[]; answerOnly?: boolean; conversationState?: import("./assistantConversation").ConversationState | null },
+  payload: { message: string; messages?: ChatMessage[]; provider?: ChatProvider; model?: string; gpuEnabled?: boolean; apiKey?: string; ollamaUrl?: string; localServerUrl?: string; assistantLevel?: "auto" | "basic" | "standard" | "advanced"; plotImage?: string; progressId?: string; reviewing?: boolean; savedStyles?: string[]; view: AssistantView; receipts: string[]; notes?: string[]; answerOnly?: boolean; conversationState?: import("./assistantConversation").ConversationState | null },
   signal: AbortSignal,
 ): Promise<AssistantResult> {
   const response = await fetch(`${API_BASE}/api/chat/assistant`, {
@@ -1049,10 +1059,7 @@ export async function getQcTable(
   params?: Record<string, string | number | boolean>,
   requestOptions: ApiRequestOptions = {}
 ): Promise<QcTableResponse> {
-  let path = `/api/plots/qc/${kind}/${tab}-table`;
-  if (tab === "coverage") path = `/api/plots/qc/${kind}/coverage-table`;
-  if (tab === "boxplot") path = `/api/plots/qc/${kind}/boxplot-table`;
-  if (tab === "cv") path = `/api/plots/qc/${kind}/cv-table`;
+  const path = `/api/plots/qc/${kind}/${tab}-table`;
 
   const data = await requestUrl(buildPlotUrl(path, params), {
     signal: requestOptions.signal,
@@ -1195,7 +1202,7 @@ export async function runAnalysisVolcanoData(
 function normalizeCloudAiConsentStatus(value: unknown): CloudAiConsentStatus {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const provider: ChatProvider =
-    raw.provider === "openai" || raw.provider === "anthropic" || raw.provider === "gemini"
+    raw.provider === "openai" || raw.provider === "anthropic" || raw.provider === "gemini" || raw.provider === "openai_compatible"
       ? raw.provider
       : "ollama";
   return {
@@ -1259,13 +1266,43 @@ export async function getOllamaGpuStatus(endpoint?: string): Promise<OllamaGpuSt
   };
 }
 
-/** The server's default model per cloud provider: one list, kept on the backend. */
-export async function getProviderDefaultModels(): Promise<Record<string, string>> {
+export type AiOperatorPolicy = { providers: string[]; models: Record<string, string[]>; modelManagement: boolean };
+
+/** The server's default model per cloud provider, what the operator allows, and
+ * the operator's preset local OpenAI-compatible server ("" when none). */
+export async function getProviderDefaults(): Promise<{ models: Record<string, string>; policy: AiOperatorPolicy; localServerUrl: string }> {
   const data = await requestUrl(`${API_BASE}/api/chat/provider-defaults`, { fallback: "Failed to load default models" });
-  const models = (data && typeof data === "object" ? (data as Record<string, unknown>).models : null) ?? {};
-  return Object.fromEntries(
-    Object.entries(models as Record<string, unknown>).map(([provider, model]) => [provider, String(model ?? "")]),
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const models = Object.fromEntries(
+    Object.entries((raw.models ?? {}) as Record<string, unknown>).map(([provider, model]) => [provider, String(model ?? "")]),
   );
+  const policy = (raw.policy ?? {}) as Record<string, unknown>;
+  return {
+    models,
+    policy: {
+      providers: Array.isArray(policy.providers) ? policy.providers.map(String) : ["ollama", "openai_compatible", "openai", "anthropic", "gemini"],
+      models: Object.fromEntries(Object.entries((policy.models ?? {}) as Record<string, unknown>)
+        .map(([provider, list]) => [provider, Array.isArray(list) ? list.map(String) : []])),
+      modelManagement: policy.modelManagement !== false,
+    },
+    localServerUrl: String(raw.localServerUrl ?? ""),
+  };
+}
+
+/** Models of a local OpenAI-compatible server (llama.cpp, vLLM, LM Studio). A POST,
+ * so a typed API key never travels in a URL. */
+export async function getLocalServerModels(endpoint?: string, apiKey?: string): Promise<OllamaModelsResponse> {
+  const data = await request(`/api/chat/local-models`, {
+    method: "POST",
+    json: { endpoint: endpoint?.trim() || null, apiKey: apiKey?.trim() || null },
+    fallback: "Failed to load the local AI server's models",
+  });
+  const raw = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  return {
+    models: Array.isArray(raw.models) ? raw.models.map((item) => String(item)) : [],
+    selectedModel: raw.selectedModel == null ? null : String(raw.selectedModel),
+    warnings: Array.isArray(raw.warnings) ? raw.warnings.map((item) => String(item)) : [],
+  };
 }
 
 export async function getOllamaModels(endpoint?: string): Promise<OllamaModelsResponse> {
@@ -1518,7 +1555,7 @@ export async function getModelCapability(
   endpoint?: string
 ): Promise<ModelCapabilityResponse> {
   const params = new URLSearchParams({ provider, model: model.trim() });
-  if (provider === "ollama" && endpoint?.trim()) {
+  if ((provider === "ollama" || provider === "openai_compatible") && endpoint?.trim()) {
     params.set("endpoint", endpoint.trim());
   }
   const data = await request(`/api/chat/model-capability?${params.toString()}`, {
@@ -1530,7 +1567,8 @@ export async function getModelCapability(
     provider,
     model: String(raw.model ?? model),
     level: level === 3 ? 3 : level === 2 ? 2 : 1,
-    assessment: raw.assessment === "tested" ? "tested" : raw.assessment === "inferred" ? "inferred" : "unknown",
+    assessment: raw.assessment === "tested" || raw.assessment === "observed" || raw.assessment === "configured"
+      || raw.assessment === "inferred" ? raw.assessment : "unknown",
     label: raw.label === "High" ? "High" : raw.label === "Medium" ? "Medium" : "Low",
     contextTier:
       raw.contextTier === "extended"
@@ -1551,6 +1589,9 @@ export async function getModelCapability(
             ? "configured"
             : "fallback",
     reason: String(raw.reason ?? "Capability estimate unavailable"),
+    levelName: raw.levelName === "Advanced" ? "Advanced" : raw.levelName === "Standard" ? "Standard" : "Basic",
+    reasoning: Boolean(raw.reasoning),
+    outputTokens: Number.isFinite(Number(raw.outputTokens)) ? Number(raw.outputTokens) : 1024,
   };
 }
 

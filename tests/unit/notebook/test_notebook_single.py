@@ -14,8 +14,6 @@ from app.services.notebook_single import render_box, render_line, render_heatmap
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_volcano import inputs
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.mark.parametrize('source', ['data', 'filtered', 'imputed'])
@@ -107,6 +105,10 @@ def test_lineplot_exact_standalone_replay(inputs, tmp_path, source, identifier, 
         conditions=['B', 'A'], identifier=identifier, include_id=True, data_source=source, dpi=80,
         advanced={'titleElement': {'text': 'Selected features', 'size': 15, 'bold': True},
                   'xTickLabelRotation': 35, 'legendFontSize': 8})
+    if source == 'imputed' and identifier == 'workflow':
+        frame = get_annotation('protein').imputed_data
+        frame['ProteinNames'] = frame['ProteinNames'].replace({'P1': 'P1;P2', 'P2': 'P1;P3'})
+        options['proteins'] = ['P1;P2', 'P1;P3']
     image, token = render_line(**options)
     assert image == single.single_protein_lineplot_plot(**options)
     recipe = snapshots.get(get_session_id(), token)
@@ -170,6 +172,11 @@ def test_boxplot_exact_figure_table_and_isolated_replay(inputs, tmp_path, source
         dots=True, outliers=True, sample_n=False, random_seed=17,
         advanced={'conditionLabels': {'A': 'Treatment'}, 'boxMedianColor': '#ab1234',
                   'xTickLabelRotation': 30})
+    if source == 'imputed' and identifier == 'workflow':
+        from app.services.annotation_store import get_annotation
+        frame = get_annotation('protein').imputed_data
+        frame['ProteinNames'] = frame['ProteinNames'].replace({'P1': 'P1;P2', 'P2': 'P1;P3'})
+        options['protein'] = 'P1;P2'
     expected = single.single_protein_boxplot_plot(**options)
     actual, token = render_box(**options)
     assert actual == expected

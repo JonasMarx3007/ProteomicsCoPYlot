@@ -3,13 +3,12 @@
 The ANOVA heatmaps used the population SD (ddof=0) while the pathway and
 phosphosite heatmaps used the sample SD (ddof=1); every colour bar said
 "Z-score". The shared helper uses ddof=1 -- the convention of the tool's other
-statistics and of the R package -- and leaves a row with no spread at zero.
+statistics and of the R functions -- and leaves a row with no spread at zero.
 """
 
 from __future__ import annotations
 
 import subprocess
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -166,14 +165,14 @@ def test_every_app_heatmap_draws_sample_sd_z_scores(example_project, monkeypatch
 
 
 @pytest.mark.requires_r()
-def test_r_helper_agrees(tmp_path) -> None:
+def test_r_helper_agrees(tmp_path, rscript) -> None:
     pd.DataFrame(MATRIX).to_csv(tmp_path / "m.csv", index=False)
     script = f'''
       source("{(ROOT / "proteomicscopylot" / "notebook_functions.R").as_posix()}")
       m <- as.matrix(read.csv("{(tmp_path / "m.csv").as_posix()}"))
       write.csv(row_zscore(m), "{(tmp_path / "z.csv").as_posix()}", row.names = FALSE)
     '''
-    result = subprocess.run(["Rscript", "-e", script], capture_output=True, text=True, timeout=120)
+    result = subprocess.run([rscript, "-e", script], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
     r_z = pd.read_csv(tmp_path / "z.csv").to_numpy(dtype=float)
     assert np.allclose(r_z, clustering_tools.row_zscore(MATRIX), equal_nan=True)

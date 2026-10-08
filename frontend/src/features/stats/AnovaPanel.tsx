@@ -1,12 +1,12 @@
 // ANOVA panel: omnibus test, Tukey follow-up and clustering of significant rows.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getStatisticalOptions, isAbortError, runAnovaAnalysis } from "../../lib/api";
+import { buildPlotUrl, isAbortError, runAnovaAnalysis } from "../../lib/api";
 import { useDatasetRevision } from "../../lib/datasetAvailability";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, AnovaPostHoc, AnovaSource, StatsIdentifier, StatisticalOptionsResponse, DataSource } from "../../lib/types";
+import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, AnovaPostHoc, AnovaSource, StatsIdentifier, DataSource, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import SelectField from "../../components/SelectField";
@@ -14,6 +14,7 @@ import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
+import { keepIdentifier, useStatisticalOptionsLoader } from "./useStatisticalOptions";
 import { InfoSection, Notice, SummarySection } from "./statsShared";
 import AnovaOutput from "./AnovaOutput";
 import { ANOVA_CLUSTER_METHOD_OPTIONS, conditionOptions, removeSourceUsageWarnings, restoreClusterCount, restoreClusterMethod, restorePValueThreshold } from "./statsHelpers";
@@ -168,30 +169,25 @@ export function AnovaPanel({
     [availableClusters, clusterSizes]
   );
 
-  useEffect(() => {
-    if (!kindAvailable) return;
-    const controller = new AbortController();
-    getStatisticalOptions(kind, { signal: controller.signal })
-      .then((data) => {
-        setOptions(data);
-        applyDataSourceChoices(data);
-        setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
-        setPostHocCondition1((current) =>
-          data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""
-        );
-        setPostHocCondition2((current) =>
-          data.availableConditions.includes(current) && current !== data.availableConditions[0]
-            ? current
-            : data.availableConditions[1] ?? ""
-        );
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setError(err instanceof Error ? err.message : "Failed to load statistical options");
-        }
-      });
-    return () => controller.abort();
-  }, [kind, kindAvailable, applyDataSourceChoices]);
+  useStatisticalOptionsLoader(
+    kind,
+    kindAvailable,
+    (data) => {
+      setOptions(data);
+      applyDataSourceChoices(data);
+      setIdentifier(keepIdentifier(data));
+      setPostHocCondition1((current) =>
+        data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""
+      );
+      setPostHocCondition2((current) =>
+        data.availableConditions.includes(current) && current !== data.availableConditions[0]
+          ? current
+          : data.availableConditions[1] ?? ""
+      );
+    },
+    setError,
+  );
+
 
   // Changing a setting invalidates the result, so the plot and tables vanish
   // while the new one is computed. Tukey HSD on a large matrix takes tens of

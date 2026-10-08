@@ -1,22 +1,12 @@
 # Installation, Running, and Packaging
 
+Every environment variable, with its default, is listed in [Environment variables](ENVIRONMENT.md).
+
 Run commands from the repository root unless a section says otherwise.
-
-## Notebook export memory
-
-Notebook exports default to one eighth of physical RAM per session and one
-quarter across the server, constrained by a detected container memory limit.
-A 32 GiB machine therefore allows about 4 GiB per session and 8 GiB total.
-Override these with `COPYLOT_NOTEBOOK_SESSION_MEMORY_MB` and
-`COPYLOT_NOTEBOOK_MEMORY_MB` (MiB); the session limit must not exceed the total.
-Budgets include retained source tables, counted once when shared between exports,
-and are rechecked after deferred preparation. Archive resources use the same
-session budget rather than a separate 128 MiB ceiling. Other application data
-and transient ZIP-building allocations need additional RAM.
 
 ## Prerequisites
 
-- Python 3.10 or newer
+- Python 3.10 or newer (an exported notebook requires the Python minor version it was exported with, or newer)
 - Node.js 24 LTS and npm
 - Optional: [Ollama](https://ollama.com) for AI mode
 - Optional: R with `Rscript` for the R notebook-compatible helpers
@@ -77,22 +67,15 @@ terminate an existing process to free a port.
 
 AI launchers accept an optional model name. Select the Ollama endpoint in AI settings; remote origins must be allowed with `COPYLOT_OLLAMA_ALLOWED_ENDPOINTS` in the backend environment.
 
-### macOS
+### macOS and Linux
+
+One set of launchers serves both systems; only the way the browser is opened differs (`open` on macOS, `xdg-open` on Linux).
 
 ```bash
-bash packaging/macos/run_app_macos.sh
-bash packaging/macos/run_viewer_macos.sh
-bash packaging/macos/run_app_ai_macos.sh [MODEL]
-bash packaging/macos/run_viewer_ai_macos.sh [MODEL] [--project NAME]
-```
-
-### Linux
-
-```bash
-bash packaging/linux/run_app_linux.sh
-bash packaging/linux/run_viewer_linux.sh
-bash packaging/linux/run_app_ai_linux.sh [MODEL]
-bash packaging/linux/run_viewer_ai_linux.sh [MODEL] [--project NAME]
+bash packaging/unix/run_app.sh
+bash packaging/unix/run_viewer.sh
+bash packaging/unix/run_app_ai.sh [MODEL]
+bash packaging/unix/run_viewer_ai.sh [MODEL] [--project NAME]
 ```
 
 Viewer projects can be selected with `--project NAME`, `--project=NAME`, or the existing shorthand `--NAME`.
@@ -128,15 +111,6 @@ this policy against the forwarded client address.
 
 ## Request and upload limits
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `COPYLOT_SESSION_ISOLATION` | `1` | Each browser session gets its own datasets, annotations and caches. |
-| `COPYLOT_ALLOWED_HOSTS` | loopback names | Extra `Host` header values the server will answer to, comma separated. |
-| `COPYLOT_UPLOAD_MAX_BYTES` | 64 GiB | Size limit applied to the upload as it arrives. |
-| `COPYLOT_UPLOAD_MAX_CELLS` | 10,000,000,000 | Row x column limit applied to the parsed table. |
-| `COPYLOT_UPLOAD_MAX_FRAME_BYTES` | 25% of physical/container RAM, at most 128 GiB | Parsed-table memory budget; explicit byte values override automatic sizing. If RAM cannot be detected, the fallback is 1 GiB. |
-| `COPYLOT_UPLOAD_MAX_COLUMNS` | 20,000 | Protects against malformed or accidentally transposed files. |
-
 **Session isolation is on by default and required by the browser UI.** Each tab
 has its own API namespace and path-scoped HttpOnly cookie, so tabs can open
 different projects. Refresh resets only that tab. The routing ID in a plot or
@@ -153,39 +127,17 @@ single-user API clients; the tab-scoped browser UI refuses it. Password-protecte
 deployments also refuse this configuration. Existing direct `/api/` clients
 continue to use their original cookie/header session behavior.
 
-**Host header allowlist.** The server answers only to `localhost`, `127.0.0.1`
-and `::1` (written `[::1]` in a URL), with or without a port. This is the standard
-defence against DNS rebinding, where a page you visit re-points its own hostname
-at `127.0.0.1` and then talks to this server from your browser: the request
-genuinely originates from loopback and is same-origin, so neither the peer-address
-check nor CORS applies, and the hostname is the only thing left to test.
-`0.0.0.0` is not on the list: it is an address to listen on, not a name a browser
-sends, so `http://0.0.0.0:...` is refused. When serving under a real name, or
-reaching the server from another machine, add the name or address you type in
-the browser:
+**Host header allowlist.** Localhost is allowed by default. For remote access,
+add the hostname or address used in the browser to `COPYLOT_ALLOWED_HOSTS`:
 
 ```bash
 COPYLOT_ALLOWED_HOSTS=proteomics.institute.example
 ```
 
-**Upload limits.** The byte limit measures the upload as received, which is
-compressed for parquet and xlsx — a 0.28 MB parquet can expand past 1 GB once
-parsed. `COPYLOT_UPLOAD_MAX_CELLS` bounds the parsed shape instead. For parquet
-the check reads the file's own metadata, so an oversized table is refused before
-it is materialised.
-
-These defaults admit large precursor reports: 500 samples × 100,000 precursors
-× 70 columns represent 3.5 billion cells. File size and cell count are not a
-promise that the data fits in RAM. The current analysis engine materializes
-tables and creates processing copies; it is not an out-of-core engine. On a
-32 GiB machine the automatic parsed-table budget is about 8 GiB, while a
-256 GiB server permits about 64 GiB. Multiple sessions also share that RAM.
-Raise the explicit memory budget only with sufficient memory for parsing and
-analysis copies. For files beyond one Excel worksheet's row limit, use TSV or
-Parquet. Keep the reverse proxy's request limit aligned with the file limit,
-including multipart overhead; the supplied nginx example allows 65 GiB requests.
-Existing deployed proxy settings must be updated separately. Save-state and
-notebook-export limits remain separate from data-upload limits.
+**Large datasets.** Analysis runs in memory, so available RAM can limit dataset
+size even when an upload is accepted. Upload, restore and notebook-export limits
+are configurable in [Environment variables](ENVIRONMENT.md). Match your reverse
+proxy's request limit to the upload limit, allowing for multipart overhead.
 
 ## Frontend modes
 
@@ -198,45 +150,13 @@ cmd /c "set VITE_APP_MODE=viewer&& npm run build"
 ```
 
 AI builds additionally set `VITE_AI_ENABLED=1`. Runtime AI mode requires
-`COPYLOT_AI_MODE=1` and either an available Ollama endpoint or a configured cloud
-provider. Cloud requests require consent.
+`COPYLOT_AI_MODE=1` and either an available Ollama endpoint, a local server with
+the OpenAI-compatible API, or a configured cloud provider. Cloud requests require
+consent.
 
-Provider responses are limited by `COPYLOT_PROVIDER_RESPONSE_MAX_BYTES` (default
-8 MiB). This applies to each buffered HTTP response and accepts positive byte
-counts. Oversized responses fail rather than being silently
-truncated. These are output-size limits, not total request deadlines or a promise
-that disconnecting cancels work already accepted by a provider.
-
-Provider routes have a separate per-process concurrency budget:
-`COPYLOT_PROVIDER_MAX_CONCURRENCY` (default 4), `COPYLOT_PROVIDER_MAX_QUEUE`
-(default 8, 0 disables waiting), and `COPYLOT_PROVIDER_QUEUE_TIMEOUT_SECONDS`
-(default 20). A slot remains occupied through the assistant step and cleanup. Saturation
-returns HTTP 503 with a retry hint; scientific analysis uses its own budget.
-Chat's Stop button aborts the browser request, but cannot guarantee cancellation
-of work already accepted by an external model service.
-
-`COPYLOT_PROVIDER_TIMEOUT_SECONDS` (default 180) sets the admitted provider
-operation's time budget, shared across metadata lookups, planning and explanation
-within one assistant step. A multi-step UI request uses separate admitted steps.
-Model installation/removal instead uses `COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT`
-(default 1800). Queue waiting has its own timeout. Connected HTTP responses have
-a deadline watchdog that shuts down stalled/trickling connections. The response
-lifecycle is also timed. System DNS resolution and external provider cancellation are not
-guaranteed to obey this application deadline.
-
-Model-management command output is collected incrementally using the response
-byte limit above. Commands are killed and reaped on timeout or excessive output;
-failed command diagnostics are not exposed verbatim to clients. This terminates
-the CLI process, not necessarily work already accepted by the Ollama daemon.
-
-Static Matplotlib PDF downloads are serialized directly from the figure, with
-embedded TrueType fonts and vector drawing objects. Browser previews remain PNG;
-image-based plot elements (such as image-rendered heatmaps) can still contain
-pixels inside a native PDF. The notebook and interactive Plotly export paths are
-unchanged. Static exports preserve their figure canvas dimensions (bitmap output
-is rounded to whole pixels). Layout is fitted within that canvas, without
-silently shrinking fonts. If labels cannot fit, increase the figure dimensions
-or reduce text size; the export fails explicitly rather than clipping content.
+AI timeouts and concurrency settings are listed in
+[Environment variables](ENVIRONMENT.md#ai-assistant). Stopping a chat request
+does not guarantee cancellation of work already accepted by the model provider.
 
 ## Windows one-file builds
 
@@ -300,14 +220,15 @@ macOS variant builds are under `packaging/macos/`.
 
 ## Python package
 
-Install the notebook-facing package locally:
+Install the notebook-facing package from a checkout of this repository:
 
 ```bash
-python -m pip install -e ".[bio]"
+python -m pip install ".[bio]"
 ```
 
-The `bio` extra enables enrichment and FASTA parsing. Install the packages used by
-the complete R helper from an R session:
+Add `-e` for an editable development install. The `bio` extra adds Biopython for
+FASTA parsing (sequence coverage). Install the packages the R functions use from an
+R session:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
@@ -362,7 +283,7 @@ Project data belongs in `viewer_data/<ProjectName>/`. Private local-only project
 For an isolated runtime check (Docker running; backend development environment active):
 
 ```bash
-docker build --build-arg FRONTEND_TOOL_ACCESS_AUTH=1 --build-arg FRONTEND_RESET_ON_BROWSER_LOAD=1 -t copylot-runtime-check .
+docker build --build-arg FRONTEND_RESET_ON_BROWSER_LOAD=1 -t copylot-runtime-check .
 python tests/docker_runtime_check.py copylot-runtime-check
 ```
 
@@ -423,28 +344,12 @@ editing the Compose files:
 - viewer services: `COPYLOT_VIEWER_MEMORY_LIMIT` (default `6g`),
   `COPYLOT_VIEWER_CPUS` (default `2.0`), and `COPYLOT_VIEWER_TMPFS_SIZE` (default `1g`).
 
-Request limits are also configurable. Defaults allow 64 GiB per ordinary/replacement upload,
-128 GiB across restore replacements, 64 MiB compressed and 256 MiB expanded restore state, and
-128 MiB for plot conversion. The corresponding variables are `COPYLOT_UPLOAD_MAX_BYTES`,
-`COPYLOT_RESTORE_REPLACEMENT_MAX_BYTES`, `COPYLOT_RESTORE_REPLACEMENTS_TOTAL_MAX_BYTES`,
-`COPYLOT_RESTORE_UPLOAD_MAX_BYTES`, `COPYLOT_RESTORE_EXPANDED_MAX_BYTES`, and
-`COPYLOT_PLOT_CONVERSION_MAX_BYTES`. Embedded restore tables additionally default to five
-million rows, 50,000 columns, and 50 million cells; adjust
-`COPYLOT_RESTORE_TABLE_MAX_ROWS`, `COPYLOT_RESTORE_TABLE_MAX_COLUMNS`, and
-`COPYLOT_RESTORE_TABLE_MAX_CELLS` only when a legitimate saved project requires it.
-
 Regular save states retain absolute dataset paths so they can reopen data on the same machine.
 Before sharing a state file or moving it to another system, use **Save Portable State**. Portable
 states omit those paths and prompt the user to supply the referenced dataset files during restore.
 
-Heavy parsing, analysis, and plot requests are admitted through a bounded queue before FastAPI
-dispatches their synchronous calculation code to worker threads. Defaults allow two simultaneous
-heavy jobs, eight waiting jobs, a 20-second queue wait, and 16 total synchronous worker threads.
-Tune `COPYLOT_HEAVY_MAX_CONCURRENCY`, `COPYLOT_HEAVY_MAX_QUEUE`,
-`COPYLOT_HEAVY_QUEUE_TIMEOUT_SECONDS`, and `COPYLOT_THREAD_WORKERS` together with the container
-CPU/memory limits. Raising concurrency can increase throughput on a large host but also multiplies
-peak DataFrame and plot memory. A full or timed-out queue returns HTTP 503 with `Retry-After` rather
-than allowing unbounded requests to exhaust the service.
+For busy servers, tune the [work queues](ENVIRONMENT.md#work-queues) alongside
+container resources. Higher concurrency requires more memory.
 
 The login limiter ignores forwarded client addresses unless the direct reverse-proxy peer is
 listed in `COPYLOT_TRUSTED_PROXY_IPS` (single addresses or CIDR ranges, comma-separated). The
@@ -469,4 +374,38 @@ storage.
 6. Add that exact origin to `COPYLOT_OLLAMA_ALLOWED_ENDPOINTS`, then enter it in the
    application's AI settings.
 
-Do not commit private endpoints, credentials, or machine-specific configuration.
+## Local servers with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio)
+
+Many local model servers speak only the OpenAI-compatible API (`/v1/models`,
+`/v1/chat/completions`) and not Ollama's (`/api/tags`, `/api/chat`); entering
+such a server as an Ollama endpoint fails. Choose **Local server
+(OpenAI-compatible)** in the AI settings instead:
+
+1. Check the server from the machine running CoPYlot: `GET http://HOST:PORT/v1/models`
+   lists its models.
+2. On a deployment, or when using a server-stored API key, allow the endpoint on
+   the CoPYlot server: `COPYLOT_LOCAL_AI_ALLOWED_ENDPOINTS=http://HOST:PORT`,
+   or preset it with `COPYLOT_LOCAL_AI_URL=http://HOST:PORT/v1` (which also pre-fills it).
+3. In the AI settings enter `http://HOST:PORT/v1` and pick the model the server lists.
+   Enter an API key only if the server requires one (or set `COPYLOT_LOCAL_AI_API_KEY`).
+
+Such a server is treated like Ollama: it receives the full analysis context and no
+cloud consent is asked. On a desktop run the user is the operator; a deployment only
+reaches the addresses its operator allowed, so visitors cannot send its data elsewhere. Its context
+size is fixed when it starts (`llama-server -c 16384`, for example); CoPYlot reads it
+from llama.cpp's `/props` and otherwise uses `COPYLOT_LOCAL_AI_CONTEXT_TOKENS`.
+Manage model installation and GPU settings on the model server itself.
+
+### Assistant levels
+
+CoPYlot automatically selects Basic, Standard or Advanced to adapt the assistant
+to the model. Basic and Standard use more constrained steps and answers;
+Advanced allows more flexible explanations and combined visual changes.
+Override the choice with **Assistant level** in AI settings, or set defaults
+with `COPYLOT_AI_MODEL_LEVELS`.
+
+The assistant can explain results, navigate views and adjust plot appearance.
+It cannot change filtering, normalization, imputation, transformation or the
+phosphosite localization cutoff. Changing a plot's data source requires your
+approval. Review scientific interpretations regardless of the selected level.
+

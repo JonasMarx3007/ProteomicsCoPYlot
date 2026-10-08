@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import json
-import warnings
 from dataclasses import dataclass
 from statistics import NormalDist
 from typing import Literal
@@ -36,28 +35,41 @@ FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 ChosenSource = Literal["filtered", "log2", "raw"]
 
 AUTO_SAMPLE_PATTERN = re.compile(r"20\d{6}")
-_SAMPLE_DOTTED_SUFFIX = re.compile(
-    r"(?:(?:\.(?:PG|GG|EG|FG|PEP|PR|Precursor|Protein|Peptide))?\."
-    r"(?:(?:Avg|Average)?Log[._\s-]*2(?:Normal(?:i[sz]ed|isation|ization))?"
-    r"(?:Quantity|Intensity|Abundance)|Normal(?:i[sz]ed|isation|ization)"
-    r"(?:Quantity|Intensity|Abundance)?|Max[._\s-]*LFQ(?:Quantity|Intensity|Abundance)?|"
-    r"TotalQuantity|Quantity|Intensity|Abundance))$",
+# Match the trailing measurement field, not words inside the acquisition name.
+_AUTO_QUANTITY_PATTERN = re.compile(r"(?:quantity|intensity|abundance|area|lfq)\s*$", re.IGNORECASE)
+_AUTO_STATISTIC_PATTERN = re.compile(
+    r"(?:^|[._\s-])(?:q[._ -]?value|p[._ -]?value|nrof\w*|"
+    r"[a-z]*counts?|identified|[a-z]*score|pep)\s*$",
     re.IGNORECASE,
 )
-_SAMPLE_TEXT_SUFFIX = re.compile(
-    r"[\s._-]+(?:(?:Max[\s._-]*LFQ[\s._-]+)?"
-    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Intensity|"
-    r"(?:Unique[\s._-]+|Total[\s._-]+|Razor[\s._-]+)?Spectral[\s._-]+Count|"
-    r"PSMs?|Percent[\s._-]+PSMs?|LFQ[\s._-]+Intensity|iBAQ|"
-    r"MS\s*/\s*MS[\s._-]+Count|MS[12][\s._-]+(?:Intensity|Count)|"
-    r"Razor\s*\+\s*Unique[\s._-]+Peptides|Unique[\s._-]+Peptides|Peptides|"
-    r"Sequence[\s._-]+Coverage(?:[\s._-]*\[%\])?|"
-    r"Log[._\s-]*2[\s._-]*(?:Quantity|Intensity|Abundance|Ratio)|"
-    r"(?:Quantity|Abundance|Ratio))$",
-    re.IGNORECASE,
+
+
+def _auto_sample_columns(columns) -> list[str]:
+    """Dated columns that hold sample quantities, for annotation without conditions."""
+    dated = [
+        str(column) for column in columns
+        if AUTO_SAMPLE_PATTERN.search(str(column)) and not _AUTO_STATISTIC_PATTERN.search(str(column))
+    ]
+    quantities = [column for column in dated if _AUTO_QUANTITY_PATTERN.search(column)]
+    return quantities or dated
+
+
+# <shared-core> proteomicscopylot/_core.py, one copy for the app and the pip
+# package. Notebook exports inline these definitions here (notebook_qc._source).
+from app.services.copylot_core import (  # re-exported: `name as name`
+    _SAMPLE_DOTTED_SUFFIX as _SAMPLE_DOTTED_SUFFIX,
+    _SAMPLE_TEXT_SUFFIX as _SAMPLE_TEXT_SUFFIX,
+    _SAMPLE_ACQUISITION_SUFFIX as _SAMPLE_ACQUISITION_SUFFIX,
+    _SAMPLE_NUMBER as _SAMPLE_NUMBER,
+    strip_sample_measurement_suffix as strip_sample_measurement_suffix,
+    extract_sample_id as extract_sample_id,
+    _significance_pval_column as _significance_pval_column,
+    constant_within_group as constant_within_group,
+    condition_mean as condition_mean,
+    resolve_feature_scaling as resolve_feature_scaling,
+    _auto_label_col as _auto_label_col,
 )
-_SAMPLE_ACQUISITION_SUFFIX = re.compile(r"\.(?:d|htrms|raw|wiff2?|mzml|mzxml)$", re.IGNORECASE)
-_SAMPLE_NUMBER = re.compile(r"\d+")
+# </shared-core>
 
 
 @dataclass
@@ -81,22 +93,6 @@ class ImputationDiagnostics:
     after_imputed: np.ndarray
     draw_components: list[tuple[float, float, int]]
     skipped_samples: list[str]
-
-
-def strip_sample_measurement_suffix(value):
-    sample = re.split(r"[\\/]", str(value).strip())[-1]
-    previous = None
-    while sample != previous:
-        previous = sample
-        sample = _SAMPLE_DOTTED_SUFFIX.sub("", sample).rstrip()
-        sample = _SAMPLE_TEXT_SUFFIX.sub("", sample).rstrip()
-    return _SAMPLE_ACQUISITION_SUFFIX.sub("", sample).rstrip()
-
-
-def extract_sample_id(value):
-    original = str(value).strip()
-    numbers = _SAMPLE_NUMBER.findall(strip_sample_measurement_suffix(original))
-    return numbers[-1] if numbers else original
 
 
 # What a row of each dataset level actually is. Reports and explanations should
@@ -289,18 +285,26 @@ def resolve_test_type(value) -> tuple[bool, str]:
     return _TEST_TYPES[mode]
 
 
+def effective_test_type(test_type, *, with_controls: bool) -> str:
+    """The test a control-corrected volcano actually runs.
+
+    With controls, the "unpaired" (pooled Student's t) choice is computed as a
+    Welch-type test: the four groups' variances are propagated separately with
+    Satterthwaite degrees of freedom, because a pooled two-group standard error
+    would omit the controls' uncertainty. The page sends "unpaired_welch" for
+    that case already; this makes any other caller record the same name, so the
+    notebook settings and the assistant evidence state the test that ran.
+    """
+    mode = str(test_type).strip().lower()
+    if with_controls and mode == "unpaired":
+        return "unpaired_welch"
+    return mode
+
+
 def comparison_contrast(condition1, condition2, condition1_control=None, condition2_control=None) -> str:
     if condition1_control and condition2_control:
         return f"({condition1} - {condition1_control}) - ({condition2} - {condition2_control})"
     return f"{condition1} - {condition2}"
-
-
-def paired_test_enabled(value) -> bool:
-    return resolve_test_type(value)[0]
-
-
-def variance_model(value) -> str:
-    return resolve_test_type(value)[1]
 
 
 def paired_t_test(differences: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -355,7 +359,7 @@ def build_metadata_from_conditions(
 
     if conditions:
         raise ValueError("No valid condition assignments were provided. Select samples and name their conditions.")
-    auto_columns = [str(col) for col in data.columns if AUTO_SAMPLE_PATTERN.search(str(col))]
+    auto_columns = _auto_sample_columns(data.columns)
     if not auto_columns:
         raise ValueError(
             "No valid condition assignments were provided and no auto-detectable sample "
@@ -363,6 +367,25 @@ def build_metadata_from_conditions(
         )
     auto_rows = [{"sample": col, "condition": "sample"} for col in auto_columns]
     return MetadataBuildResult(metadata=pd.DataFrame(auto_rows), auto_detected=True)
+
+
+def condition_cvs(values: pd.DataFrame, meta: pd.DataFrame) -> list[tuple[str, pd.Series]]:
+    """Per-condition coefficient of variation in percent: 100 * SD / mean of each
+    row's observed linear values (sample SD, ddof = 1). Conditions with fewer than
+    two samples are skipped and non-finite CVs are dropped. The CV plot and its
+    table both use this."""
+    result: list[tuple[str, pd.Series]] = []
+    conditions = meta["condition"].astype(str)
+    for condition in conditions.dropna().unique().tolist():
+        cols = meta.loc[conditions == condition, "sample"].tolist()
+        if len(cols) < 2:
+            continue
+        subset = values[cols]
+        cv = subset.std(axis=1, skipna=True) / subset.mean(axis=1, skipna=True) * 100.0
+        cv = cv[np.isfinite(cv)]
+        if len(cv):
+            result.append((condition, cv))
+    return result
 
 
 def raw_zero_to_nan(data: pd.DataFrame, sample_columns: list[str]) -> pd.DataFrame:
@@ -571,7 +594,7 @@ def normalize_data(
 
 MISSINGNESS_GAP = 0.10
 MISSINGNESS_MIN_COMPLETE = 20
-_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization"}
+_MISSINGNESS_METHOD_LABELS = {"median": "Median centering", "quantile": "Quantile normalization", "vsn": "VSN"}
 
 
 def missingness_imbalance(
@@ -624,8 +647,8 @@ def missingness_imbalance_warning(
 ) -> str | None:
     """The warning for `missingness_imbalance`, or None when there is nothing to say.
 
-    Only median centering and quantile normalization are concerned: both are
-    computed from each sample's observed values.
+    Median centering, quantile normalization and VSN are concerned: all are
+    fitted on each sample's observed values.
     """
     label = _MISSINGNESS_METHOD_LABELS.get(str(method or "none").strip().lower())
     if label is None or table.empty or not bool(table["flagged"].any()):
@@ -1159,10 +1182,13 @@ def imputed_cell_mask(values, observed=None):
 def site_observed_imputed_mask(frame, sample_columns):
     """Classify direct per-sample site contributions, not cross-sample centering effects.
 
-    Both observed and supplied site counts are required. Without them provenance
+    Measured contributors and supplied site counts are required. Without them provenance
     is unknown, not evidence of no imputation. Missing/unknown cells are -1.
+    Older tables only carry site_observed__ counts; new collapses keep coverage
+    there and record actual measured contributors separately in site_measured__.
     """
-    columns = [f"site_observed__{sample}" for sample in sample_columns]
+    prefix = "site_measured__" if any(str(c).startswith("site_measured__") for c in frame.columns) else "site_observed__"
+    columns = [f"{prefix}{sample}" for sample in sample_columns]
     supplied_columns = [f"site_supplied__{sample}" for sample in sample_columns]
     if not all(column in frame.columns for column in columns + supplied_columns):
         return None
@@ -1194,63 +1220,22 @@ def imputed_value_counts(mask, groups):
     return counts
 
 
-def _significance_pval_column(table):
-    """The p-value column significance is called on: `selected_pval`, or `adj_pval` in older tables."""
-    for column in ("selected_pval", "adj_pval"):
-        if column in table.columns:
-            return column
-    return None
+def constant_differences(differences):
+    """`constant_within_group` for paired differences, ignoring float subtraction noise.
 
-
-def constant_within_group(values):
-    """True per row where every observed replicate in the group holds one value.
-
-    Such a row has no measured within-group variation, so the standard error
-    collapses and the t-statistic explodes: a fold change of 0.05 can reach
-    p = 2e-54 and outrank every genuine effect at the top of a volcano. The
-    p-value itself is correct and matches `scipy.stats.ttest_ind`; what the flag
-    marks is that the significance comes from absent variation rather than
-    effect size. Values reported at a detection floor, rounded exports and
-    imputation filling one value across replicates all produce it.
-
-    Tested with min == max rather than variance == 0, which is exact regardless
-    of floating-point representation: 14.05 repeated three times has a variance
-    of 4.7e-30, not 0, so a zero test would miss it.
+    14.05 - 12.0 and 15.05 - 13.0 differ in the last bits, so the differences
+    are compared at nine decimals, far below any measured log2 difference.
     """
-    numeric = np.asarray(values, dtype=float)
-    observed = np.isfinite(numeric)
-    counts = observed.sum(axis=1)
-    masked = np.where(observed, numeric, np.nan)
-    with warnings.catch_warnings():
-        # A row with nothing observed is an all-NaN slice; numpy warns and
-        # returns NaN, and the count check below already excludes it.
-        warnings.simplefilter("ignore", RuntimeWarning)
-        low = np.nanmin(masked, axis=1)
-        high = np.nanmax(masked, axis=1)
-    return (counts > 0) & (low == high)
+    return constant_within_group(np.round(np.asarray(differences, dtype=float), 9))
 
 
-def condition_mean(data, columns, min_present=1):
-    """Mean across a condition's replicates, blanked where too few were observed.
+def without_variation(groups):
+    """Rows where every variance component is constant: the standard error is zero.
 
-    `mean(axis=1)` skips missing values silently, so a condition mean resting on
-    one replicate is plotted and correlated at the same weight as a fully
-    observed one. Measured on 2000 features with 30% poor coverage, the
-    single-replicate means were off by 0.28 log2 on average and 1.21 at worst
-    against the same features' fully observed means.
-
-    `min_present` is the smallest number of observations a mean may rest on. The
-    default of 1 reports every mean, which is the long-standing behaviour and keeps
-    previously generated results reproducible. Pass 2 or more to require that a
-    mean rest on enough replicates to carry spread information.
-
-    Returns (means, counts) so the caller can report how many features were
-    excluded rather than dropping them silently.
+    The t statistic is then undefined, not infinite, so these rows get no
+    p-value (shown as "Unavailable") instead of p = 0 ranking them first.
     """
-    numeric = data[list(columns)].apply(pd.to_numeric, errors="coerce")
-    counts = numeric.notna().sum(axis=1)
-    means = numeric.mean(axis=1)
-    return means.where(counts >= int(min_present)), counts
+    return np.logical_and.reduce([constant_within_group(group) for group in groups])
 
 
 def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, label_col=None, pair=None):
@@ -1375,30 +1360,6 @@ def anova_posthoc_data(anova_df, meta, in_pval=0.05, only_significant=True, labe
     out = pd.concat(frames, ignore_index=True)
     return out.sort_values(["tukey_pval", label_col, "comparison"]).reset_index(drop=True)
 
-def resolve_feature_scaling(scaling="auto", method="PCA"):
-    """How features are weighted before a projection.
-
-    ``centered`` subtracts each feature's mean across samples and stops there,
-    so a feature contributes in proportion to its variance. ``unit_variance``
-    also divides by the standard deviation, giving every feature equal weight.
-
-    ``auto`` keeps each method's established default: PCA on the centred matrix,
-    UMAP and t-SNE on unit-variance features because both read distances and are
-    sensitive to feature scale. The two answer different questions, so a run that
-    mixes them without saying which was used is not reproducible.
-    """
-    requested = str(scaling or "auto").strip().lower()
-    if requested in {"centered", "centred"}:
-        return "centered"
-    if requested in {"unit_variance", "scaled"}:
-        return "unit_variance"
-    if requested != "auto":
-        raise ValueError(
-            "Unsupported scaling. Choose 'auto', 'centered', or 'unit_variance'."
-        )
-    return "centered" if str(method or "PCA").strip().lower() == "pca" else "unit_variance"
-
-
 def intensity_unit_label(centered=False, scale="log2", workflow=""):
     unit = "Ratio to Site Median" if centered else "Intensity"
     return " ".join(part for part in (scale, workflow, unit) if part)
@@ -1413,20 +1374,6 @@ def abundance_axis_label(workflow, centered=False):
     workflows, hold real abundances.
     """
     return intensity_unit_label(centered, scale="log10", workflow=workflow)
-
-
-def _auto_label_col(frame: pd.DataFrame) -> str:
-    if "Phosphoprotein" in frame.columns:
-        return "Phosphoprotein"
-    if "ProteinNames" in frame.columns:
-        return "ProteinNames"
-    if "PTM_Collapse_key" in frame.columns:
-        return "PTM_Collapse_key"
-    if "Gene_group" in frame.columns:
-        return "Gene_group"
-    if "GeneNames" in frame.columns:
-        return "GeneNames"
-    raise ValueError("No supported label column was found.")
 
 
 def histogram(values: np.ndarray, bins: int = 30) -> list[tuple[float, float, int]]:

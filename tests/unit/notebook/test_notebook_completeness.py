@@ -18,8 +18,6 @@ from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_completeness import render_completeness
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_phosprot import phosphosites  # Shared real collapse/imputation fixture.
-from test_notebook_peptide import peptide_input
 
 
 @pytest.fixture(autouse=True)

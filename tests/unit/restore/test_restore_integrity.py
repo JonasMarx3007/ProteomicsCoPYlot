@@ -55,6 +55,61 @@ def _metadata() -> pd.DataFrame:
     return pd.DataFrame({"sample": ["S1", "S2"], "condition": ["a", "b"]})
 
 
+@pytest.mark.parametrize('setting,limit', [
+    ('COPYLOT_RESTORE_TABLE_MAX_ROWS', 2),
+    ('COPYLOT_RESTORE_TABLE_MAX_COLUMNS', 3),
+    ('COPYLOT_RESTORE_TABLE_MAX_CELLS', 6),
+])
+def test_export_and_import_share_table_limits(monkeypatch, setting, limit):
+    frame = pd.DataFrame([[1, 2, 3], [4, 5, 6]])
+    monkeypatch.setenv(setting, str(limit))
+    payload = restore_state._frame_to_payload(frame)
+    restored = restore_state._frame_from_payload(payload)
+    pd.testing.assert_frame_equal(restored, frame.rename(columns=str))
+    monkeypatch.setenv(setting, str(limit - 1))
+    for operation in (lambda: restore_state._frame_to_payload(frame),
+                      lambda: restore_state._frame_from_payload(payload)):
+        with pytest.raises(restore_state.RestoreStateError, match=setting):
+            operation()
+
+
+@pytest.mark.parametrize('expanded', [False, True])
+def test_export_and_import_share_byte_limits(monkeypatch, expanded):
+    payload = {'format': restore_state._STATE_FORMAT, 'uiState': {'label': '\u03b1' * 1000}}
+    blob = restore_state._serialize_state_payload(payload)
+    setting = 'COPYLOT_RESTORE_EXPANDED_MAX_BYTES' if expanded else 'COPYLOT_RESTORE_UPLOAD_MAX_BYTES'
+    size = len(gzip.decompress(blob)) if expanded else len(blob)
+    monkeypatch.setenv(setting, str(size))
+    assert restore_state.decode_restore_blob(restore_state._serialize_state_payload(payload)) == payload
+    monkeypatch.setenv(setting, str(size - 1))
+    with pytest.raises(restore_state.RestoreStateError, match=setting):
+        restore_state._serialize_state_payload(payload)
+    with pytest.raises(restore_state.RestoreStateError, match='limit'):
+        restore_state.decode_restore_blob(blob)
+
+
+@pytest.mark.parametrize('portable', [False, True])
+@pytest.mark.parametrize('setting', [
+    'COPYLOT_RESTORE_TABLE_MAX_CELLS', 'COPYLOT_RESTORE_EXPANDED_MAX_BYTES',
+    'COPYLOT_RESTORE_UPLOAD_MAX_BYTES',
+])
+def test_oversized_export_is_actionable_and_keeps_session(tmp_path, monkeypatch, caplog, portable, setting):
+    from fastapi import HTTPException
+    from app.api.routes_restore import export_restore_state
+    from app.schemas.restore import RestoreExportRequest
+
+    _save_protein(tmp_path, with_imputation=True)
+    before = get_annotation('protein').imputed_data.copy(deep=True)
+    monkeypatch.setenv(setting, '1')
+    with pytest.raises(HTTPException) as failure:
+        export_restore_state(RestoreExportRequest(portable=portable))
+    assert failure.value.status_code == 400
+    assert 'restore size limits' in failure.value.detail
+    assert 'server log' in failure.value.detail
+    assert setting in caplog.text
+    pd.testing.assert_frame_equal(get_annotation('protein').imputed_data, before)
+
+
 def _save_protein(tmp_path: Path, *, with_imputation: bool) -> Path:
     source = _source()
     path = tmp_path / "protein.tsv"
@@ -316,3 +371,85 @@ def test_an_upload_that_only_has_a_temp_copy_is_still_not_derived(tmp_path, monk
     assert "frame" not in entry and entry["path"] == str(copy)
     assert routes_datasets._table_upload_dir().name == "table_uploads"
     assert restore_state._table_backup_dir().name == "table_derived"
+
+
+# --- 4. an imputed matrix must belong to the recomputed annotation ---------
+
+
+def _save_filtered_with_imputation(tmp_path: Path, *, min_present: int) -> None:
+    from app.services.annotation_processor import compute_annotation_from_metadata
+
+    source = pd.DataFrame({
+        "ProteinNames": ["P1", "P2", "P3", "P4"],
+        "S1": [10.0, 11.0, 12.0, float("nan")], "S2": [10.5, float("nan"), 12.5, float("nan")],
+        "S3": [10.2, 11.2, float("nan"), 13.0], "S4": [10.4, 11.4, 12.4, float("nan")],
+    })
+    path = tmp_path / "protein.tsv"
+    source.to_csv(path, sep="\t", index=False)
+    save_table_dataset("protein.tsv", "protein", source, source_path=str(path))
+    metadata = pd.DataFrame({"sample": ["S1", "S2", "S3", "S4"], "condition": ["a", "a", "b", "b"]})
+    computed = compute_annotation_from_metadata(
+        data=source, metadata=metadata, is_log2_transformed=True, min_present=min_present, filter_mode="per_group",
+    )
+    imputed = computed.filtered_data.copy()
+    imputed[["S1", "S2", "S3", "S4"]] = imputed[["S1", "S2", "S3", "S4"]].fillna(9.0)
+    save_annotation(
+        kind="protein", source_data=source, metadata=computed.metadata, log2_data=computed.log2_data,
+        filtered_data=computed.filtered_data, is_log2_transformed=True, metadata_source="manual",
+        filter_config=AnnotationFilterConfig(minPresent=min_present, mode="per_group"), auto_detected=False,
+        warnings=[], imputation=AnnotationImputationInfo(mode="numerical", applied=True, seed=1), imputed_data=imputed,
+    )
+
+
+def test_an_imputed_matrix_with_other_rows_than_the_filter_is_discarded_with_a_warning(tmp_path):
+    _save_filtered_with_imputation(tmp_path, min_present=1)
+    state = _export()
+    entry = state["backend"]["packages"][0]["annotations"][0]
+    assert entry["imputedFrame"] is not None
+    # Saved under one filter, restored under a stricter one: the filtered
+    # matrix shrinks, the saved imputed matrix does not.
+    entry["filter"]["minPresent"] = 2
+    reset_all_annotations()
+    reset_all_datasets()
+    result = restore_state.apply_restore_state(state, {})
+    assert any("Discarded stale imputed data" in w and "rows" in w for w in result.warnings), result.warnings
+    annotation = get_annotation("protein")
+    assert annotation.imputed_data.empty
+    assert annotation.imputation is not None and annotation.imputation.applied is False
+
+
+def test_an_imputed_matrix_one_row_short_is_discarded(tmp_path):
+    _save_filtered_with_imputation(tmp_path, min_present=1)
+    state = _export()
+    entry = state["backend"]["packages"][0]["annotations"][0]
+    entry["imputedFrame"]["data"] = entry["imputedFrame"]["data"][:-1]
+    reset_all_annotations()
+    reset_all_datasets()
+    result = restore_state.apply_restore_state(state, {})
+    assert any("Discarded stale imputed data" in w for w in result.warnings)
+    assert get_annotation("protein").imputed_data.empty
+
+
+def test_a_matching_imputed_matrix_is_kept_without_a_warning(tmp_path):
+    _save_filtered_with_imputation(tmp_path, min_present=1)
+    state = _export()
+    reset_all_annotations()
+    reset_all_datasets()
+    result = restore_state.apply_restore_state(state, {})
+    assert not any("Discarded stale imputed data" in w for w in result.warnings), result.warnings
+    annotation = get_annotation("protein")
+    assert not annotation.imputed_data.empty and annotation.imputation.applied is True
+
+
+def test_restore_does_not_resurrect_imputed_rows_after_filter_excludes_everything(tmp_path):
+    _save_filtered_with_imputation(tmp_path, min_present=1)
+    state = _export()
+    state["backend"]["packages"][0]["annotations"][0]["filter"]["minPresent"] = 3
+    reset_all_annotations()
+    reset_all_datasets()
+    result = restore_state.apply_restore_state(state, {})
+    assert any("Discarded stale imputed data" in w for w in result.warnings)
+    annotation = get_annotation("protein")
+    assert annotation.filtered_data.empty
+    assert annotation.imputed_data.empty
+    assert annotation.imputation.applied is False

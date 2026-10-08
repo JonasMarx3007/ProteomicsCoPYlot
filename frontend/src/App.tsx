@@ -8,6 +8,7 @@ import { AssistantAppearanceMount, AssistantSurface } from "./components/Assista
 import { usePlotLabels } from "./lib/usePlotLabels";
 import TopTabs from "./components/TopTabs";
 import ManualEmbed from "./components/ManualEmbed";
+import { FULL_MANUAL, MANUAL_CHAPTERS } from "./lib/manualChapters";
 import ModuleLoadBoundary from "./components/ModuleLoadBoundary";
 import type {
   AdvancedPlotControlDefaults,
@@ -80,6 +81,7 @@ import {
   setAdvancedPlotMode,
   setAdvancedPlotSettingsByKey,
 } from "./lib/appSettings";
+import { registerStyleStore, styleTemplate, withStyle } from "./lib/plotStyles";
 
 const AdvancedPlotOptions = lazy(() => import("./components/plots/AdvancedPlotOptions"));
 const AnalysisPage = lazy(() => import("./features/analysis/AnalysisPage"));
@@ -129,6 +131,7 @@ type SaveStateStatus = {
 const EMPTY_ADVANCED_PLOT_SETTINGS: AdvancedPlotSettings = {};
 
 const manualPath = (filename: string) => withBasePath(`/manuals/${filename}`);
+
 
 export default function App() {
   const {
@@ -211,8 +214,29 @@ export default function App() {
       activeSingleProteinTab, activePhosphoTab, activeComparisonTab]
   );
   const activeAdvancedSettings = activeAdvancedPlotKey
-    ? advancedByKey[activeAdvancedPlotKey] ?? EMPTY_ADVANCED_PLOT_SETTINGS
+    ? advancedByKey[activeAdvancedPlotKey] ?? styleTemplate() ?? EMPTY_ADVANCED_PLOT_SETTINGS
     : EMPTY_ADVANCED_PLOT_SETTINGS;
+  // Named styles and "this style on every plot" (lib/plotStyles.ts) reach these settings here.
+  const styleStoreState = useRef({ key: activeAdvancedPlotKey, byKey: advancedByKey });
+  useEffect(() => { styleStoreState.current = { key: activeAdvancedPlotKey, byKey: advancedByKey }; }, [activeAdvancedPlotKey, advancedByKey]);
+  useEffect(() => registerStyleStore("app", {
+    active: () => {
+      const { key, byKey } = styleStoreState.current;
+      return key ? byKey[key] ?? styleTemplate() ?? {} : null;
+    },
+    setActive: (settings) => {
+      const key = styleStoreState.current.key;
+      if (!key) return;
+      setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(settings));
+      setAdvancedByKey((prev) => ({ ...prev, [key]: settings }));
+    },
+    setAll: (style) => {
+      const { key, byKey } = styleStoreState.current;
+      if (key) setActiveAdvancedPlotSettings(compactAdvancedPlotSettings(withStyle(byKey[key], style)));
+      setAdvancedByKey((prev) => Object.fromEntries(Object.entries(prev).map(([plot, value]) => [plot, withStyle(value, style)])));
+      return Object.keys(byKey).length;
+    },
+  }), []);
   // What the frame and grid controls show untouched: the plot as each renderer
   // actually draws it. See lib/plotControlDefaults.ts for where each value
   // comes from.
@@ -453,62 +477,37 @@ export default function App() {
   }, [activePhosphoTab, visiblePhosphoTabs]);
 
   const topManual = useMemo(() => {
-    if (activeSection === "data") {
-      return null;
-    }
-    if (activeSection === "qc") {
-      if (activeQcTab === "coverage") return { title: "Coverage Plot Manual", path: manualPath("CoveragePlotManual.pdf") };
-      if (activeQcTab === "histogram") return { title: "Histogram Intensity Manual", path: manualPath("HistogramIntensityManual.pdf") };
-      if (activeQcTab === "boxplot") return { title: "Boxplot Intensity Manual", path: manualPath("BoxplotIntensityManual.pdf") };
-      if (activeQcTab === "cv") return { title: "Coefficient of Variation Plot Manual", path: manualPath("CoefficientofVariationPlotManual.pdf") };
-      if (activeQcTab === "pca") return { title: "Principal Component Analysis Plot Manual", path: manualPath("PrincipalComponentAnalysisPlotManual.pdf") };
-      if (activeQcTab === "abundance") return { title: "Abundance Plot Manual", path: manualPath("AbundancePlotManual.pdf") };
-      if (activeQcTab === "correlation") return { title: "Correlation Plot Manual", path: manualPath("CorrelationPlotManual.pdf") };
-      return null;
-    }
-    if (activeSection === "completeness") {
-      if (activeCompletenessTab === "missingPlot") return { title: "Missing Value Plot Manual", path: manualPath("MissingValuePlotManual.pdf") };
-      if (activeCompletenessTab === "heatmap") return { title: "Missing Value Heatmap Manual", path: manualPath("MissingValueHeatmapManual.pdf") };
-      if (activeCompletenessTab === "tables") return { title: "Missing Value Tables Manual", path: manualPath("MissingValueTablesManual.pdf") };
-      return null;
-    }
-    if (activeSection === "stats") {
-      if (activeStatsTab === "volcano") {
-        return { title: "Volcano Plot Manual", path: manualPath("VolcanoPlotManual.pdf") };
-      }
-      return null;
-    }
-    if (activeSection === "singleProtein") {
-      if (activeSingleProteinTab === "boxplot") return { title: "Protein Boxplot Manual", path: manualPath("ProteinBoxplotManual.pdf") };
-      if (activeSingleProteinTab === "lineplot") return { title: "Protein Lineplot Manual", path: manualPath("ProteinLineplotManual.pdf") };
-      return null;
-    }
-    if (activeSection === "phospho") {
-      if (activePhosphoTab === "phosphositePlot") return { title: "Phosphosite Plot Manual", path: manualPath("PhossitePlotManual.pdf") };
-      if (activePhosphoTab === "coverage") return { title: "Phosphosite Coverage Plot Manual", path: manualPath("PhossiteCoveragePlotManual.pdf") };
-      if (activePhosphoTab === "distribution") return { title: "Phosphosite Distribution Manual", path: manualPath("PhossiteDistributionPlotManual.pdf") };
-      if (activePhosphoTab === "phosprotRegulation") return { title: "Phosphoprotein Regulation Manual", path: manualPath("PhosprotRegulationPlotManual.pdf") };
-      return null;
-    }
-    if (activeSection === "comparison") {
-      if (activeComparisonTab === "pearson") return { title: "Pearson Correlation Plot Manual", path: manualPath("PearsonCorrelationPlotManual.pdf") };
-      if (activeComparisonTab === "venn") return { title: "Venn Diagram Manual", path: manualPath("VennDiagramManual.pdf") };
-      return null;
-    }
-    return null;
+    const tab = {
+      data: activeDataTab,
+      qc: activeQcTab,
+      completeness: activeCompletenessTab,
+      stats: activeStatsTab,
+      peptide: activePeptideTab,
+      singleProtein: activeSingleProteinTab,
+      phospho: activePhosphoTab,
+      comparison: activeComparisonTab,
+      summary: activeSummaryTab,
+      external: activeExternalTab,
+    }[activeSection as string];
+    const chapter = tab ? MANUAL_CHAPTERS[`${activeSection}.${tab}`] : undefined;
+    return chapter ? { title: `${chapter.title} Manual`, path: manualPath(`${chapter.file}.pdf`) } : null;
   }, [
     activeSection,
+    activeDataTab,
     activeQcTab,
     activeCompletenessTab,
     activeStatsTab,
+    activePeptideTab,
     activeSingleProteinTab,
     activePhosphoTab,
     activeComparisonTab,
+    activeSummaryTab,
+    activeExternalTab,
   ]);
 
   const topManualButton = useMemo(
     () => topManual ? (
-      <ManualEmbed pdfPath={topManual.path} title={topManual.title} buttonLabel="Manual" />
+      <ManualEmbed pdfPath={topManual.path} title={topManual.title} fullManualPath={manualPath(FULL_MANUAL)} buttonLabel="Manual" />
     ) : null,
     [topManual]
   );

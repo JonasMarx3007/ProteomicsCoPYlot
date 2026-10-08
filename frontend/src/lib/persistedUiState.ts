@@ -35,6 +35,3 @@ export function writePersistedUiState(key: string, value: unknown): void {
     // ignore sessionStorage failures
   }
 }
-
-export const readPersistedSessionUiState = readPersistedUiState;
-export const writePersistedSessionUiState = writePersistedUiState;

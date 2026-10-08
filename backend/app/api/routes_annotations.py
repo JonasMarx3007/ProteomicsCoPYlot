@@ -48,6 +48,7 @@ from app.services.metadata_upload_store import (
 from app.services.phosprot_tools import aggregate_from_phospho
 from app.services.upload_limits import ensure_upload_size
 from app.api.download_headers import attachment_disposition
+from app.services.json_records import json_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,8 +57,7 @@ router = APIRouter(prefix="/api/annotations", tags=["annotations"])
 
 
 def _to_preview(df: pd.DataFrame, max_rows: int) -> list[dict[str, object]]:
-    subset = df.head(max_rows).where(pd.notna(df.head(max_rows)), None)
-    return subset.to_dict(orient="records")
+    return json_records(df, max_rows)
 
 
 def _response_from_stored(stored) -> AnnotationResultResponse:
@@ -89,7 +89,6 @@ def _metadata_upload_response(
     *,
     profile_names: list[str] | None = None,
 ) -> MetadataUploadResponse:
-    preview = stored.frame.head(30).where(pd.notna(stored.frame.head(30)), None)
     active_profile = get_active_profile()
     return MetadataUploadResponse(
         kind=stored.kind,
@@ -100,7 +99,7 @@ def _metadata_upload_response(
         rows=len(stored.frame),
         columns=len(stored.frame.columns),
         createdAt=stored.created_at,
-        preview=preview.to_dict(orient="records"),
+        preview=json_records(stored.frame, 30),
     )
 
 

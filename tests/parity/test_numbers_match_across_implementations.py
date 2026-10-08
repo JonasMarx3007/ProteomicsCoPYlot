@@ -1,4 +1,4 @@
-"""The app, the pip package and the R package compute the same numbers.
+"""The app, the pip package and the R functions compute the same numbers.
 
 `test_cross_implementation.py` covers the statistics (volcano, ANOVA, Tukey,
 KSEA, normalization, filtering). This file covers what it did not:
@@ -31,14 +31,7 @@ from proteomicscopylot import notebook_functions as pip_package  # noqa: E402
 KINDS = ("protein", "phospho")
 
 
-def _rscript() -> str | None:
-    from app.services.r_runtime import detect_r_runtime
-
-    runtime = detect_r_runtime()
-    return str(runtime["executable"]) if runtime.get("available") else None
-
-
-RSCRIPT = _rscript()
+from _r_runtime import RSCRIPT
 pytestmark = pytest.mark.usefixtures("example_project")
 requires_r = pytest.mark.requires_r()
 
@@ -71,12 +64,12 @@ def _single_input(kind):
     label = "ProteinNames" if kind == "protein" else "PTM_Collapse_key"
     samples = metadata["sample"].astype(str).tolist()
     values = frame[samples].apply(pd.to_numeric, errors="coerce")
-    # The app selects a protein group by its first member; the packages match the
-    # whole label. Single-member labels mean the same thing to both.
-    values = values[~frame[label].astype(str).str.contains(";")]
     partly_missing = frame.loc[values.index[values.isna().any(axis=1) & values.notna().sum(axis=1).ge(4)], label]
     complete = frame.loc[values.index[values.notna().all(axis=1)], label]
     features = [str(complete.iloc[0]), str(partly_missing.iloc[0])]
+    groups = frame.loc[frame[label].astype(str).str.contains(";", regex=False), label]
+    if not groups.empty:
+        features = list(dict.fromkeys([*features, str(groups.iloc[0])]))
     return frame, metadata, label, features
 
 

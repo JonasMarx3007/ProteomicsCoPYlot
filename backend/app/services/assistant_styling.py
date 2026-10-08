@@ -17,11 +17,32 @@ Colours use a hex value, or a standard colour name. Labels are display names onl
 "Call/name the plot ..." changes title/text, not an axis label. "Rotate x-axis
 labels" means x ticks/rotation, not the axis title. x label and y label are axis titles.
 Never change scientific settings, selections or data. Never invent journal requirements.
+plotParts says what the visible parts are: "the bars" on a coverage plot are the condition colours.
 Completed receipts describe changes already made in this request; omit them.
 When all requested edits are complete, return task=ui, styles=[].
 For several requested edits include each once. Do not claim changes have happened.
 If an explanation is also requested, set explainAfterChanges=true.
 """
+
+
+NO_INVENTED_JOURNALS = "Never invent journal requirements.\n"
+assert NO_INVENTED_JOURNALS in INSTRUCTIONS
+
+# Advanced level only: the model designs, within the same boundaries.
+ADVANCED = """Advanced design. You may plan many visual changes at once (styles), using every listed element.
+When the user asks you to improve the plot or to choose a style yourself, design it as a whole: one
+sans-serif font family; a clear size hierarchy (title >= axis labels >= ticks and legend); a thin frame;
+white or minimal background; condition colours taken from palettes unless the user names colours, every
+condition clearly distinguishable. Explain your choices in designNote (one or two sentences, about the
+design only, no claims about the data). A user's explicit wish always wins over your taste.
+You change presentation only: never data, selections, statistical settings, thresholds or what is shown.
+If plotParts shows that the part the user describes does not match (e.g. "the red bars" but the bars are
+grey and the reference line is red), ask with clarification=control instead of guessing, and put your
+own short question in question: what you found and what you need to know."""
+LOOKUPS = """Before planning you may ask up to {rounds} round(s) of read-only lookups with task=lookup:
+preset (query = preset key: the exact edits it makes here), preview (styles: what they would change and any
+problem, nothing is applied), evidence (the current plot's numerical summary), settings (query = a word:
+matching settings and current values). Results arrive in lookupResults. Plan directly when you can."""
 
 
 def identity(control: UiControl) -> tuple[str, str]:
@@ -76,15 +97,28 @@ def style_controls(request: AssistantRequest) -> dict[tuple[str, str], UiControl
     return result
 
 
-def catalogue(request: AssistantRequest, keep: list[int] | None = None) -> list[dict]:
+def catalogue(request: AssistantRequest, keep: list[int] | None = None, narrow: bool = True) -> list[dict]:
     allowed = None if keep is None else {request.view.controls[index].id for index in keep}
-    rows = [{"element": element, "property": prop, "type": c.type, "current": c.value,
+    from app.services.assistant_plot_parts import condition_colours
+
+    # A condition colour without an override is drawn in the plot's palette; its
+    # picker only shows a placeholder grey, which is not what is drawn.
+    overrides = condition_colours(request)
+    rows = [{"element": element, "property": prop, "type": c.type,
+             "current": (overrides.get(element.split(":", 1)[1]) or "default palette colour")
+             if element.startswith("condition:") and prop == "color" else c.value,
              **({"choices": c.options, "names": c.optionLabels} if c.options else {})}
             for (element, prop), c in style_controls(request).items()
             if (allowed is None or c.id in allowed)
             and not any(receipt.startswith(f"Set {c.label} to ") for receipt in request.receipts)]
+    if not narrow:
+        return rows
+    from app.services.assistant_plot_parts import names_all_conditions
+
     message = request.message.lower()
     named = set()
+    if names_all_conditions(request):
+        named.update(row["element"] for row in rows if row["element"].startswith("condition:"))
     for row in rows:
         element = re.sub(r"^tile \d+ / ", "", row["element"].lower())
         if ':' in element:
@@ -144,7 +178,10 @@ def resolve(request: AssistantRequest, edits: list[StyleEdit]) -> list[UiAction]
             if control.type != "number" or value != "":
                 raise ValueError("Relative styling requires a numeric setting and no explicit value.")
             current = _number(control.value)
-            step = max(1, abs(current) * .2)
+            # 20 %, at least one unit (sizes, offsets); a thin line's width moves by 20 % only,
+            # so 1.5 becomes 1.2 rather than 0.5.
+            fine = re.search(r"\b(?:width|opacity|alpha)\b", edit.property) and 0 < abs(current) < 5
+            step = abs(current) * .2 if fine else max(1, abs(current) * .2)
             number = current + (step if edit.operation == "increase" else -step)
             if control.min is not None: number = max(control.min, number)
             elif edit.property == "size": number = max(1, number)

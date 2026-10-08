@@ -14,7 +14,7 @@ import { IS_VIEWER_MODE } from "../../lib/appMode";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, StatsIdentifier, StatsTestType, StatisticalOptionsResponse, VolcanoResultResponse, SummaryVolcanoEntry, DataSource, VolcanoRenderType } from "../../lib/types";
+import type { ContextMode, AnnotationKind, StatsIdentifier, StatsTestType, VolcanoResultResponse, SummaryVolcanoEntry, DataSource, VolcanoRenderType, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions, VOLCANO_RENDER_TYPE_OPTIONS } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
@@ -22,7 +22,8 @@ import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
 import NumberField from "../../components/NumberField";
-import { ImageSection, InfoSection, Notice, PlotFrame, SummarySection, TableSection } from "./statsShared";
+import { keepCondition, keepIdentifier, useStatisticalOptionsLoader } from "./useStatisticalOptions";
+import { ImageSection, InfoSection, Notice, PlotFrame, SummarySection, TableSection, ConditionPicker } from "./statsShared";
 import { conditionOptions, isPairedTestType, removeSourceUsageWarnings, restorePValueThreshold, sanitizeFilenamePart } from "./statsHelpers";
 import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 
@@ -170,26 +171,21 @@ export function VolcanoPanel({
     [options]
   );
 
-  useEffect(() => {
-    if (!kindAvailable) return;
-    const controller = new AbortController();
-    getStatisticalOptions(kind, { signal: controller.signal })
-      .then((data) => {
-        setOptions(data);
-        applyDataSourceChoices(data);
-        setCondition1((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition2((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition1Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setCondition2Control((current) => (data.availableConditions.includes(current) ? current : data.availableConditions[0] ?? ""));
-        setIdentifier((current) => (data.availableIdentifiers.some((item) => item.key === current) ? current : data.availableIdentifiers[0]?.key ?? "workflow"));
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setError(err instanceof Error ? err.message : "Failed to load statistical options");
-        }
-      });
-    return () => controller.abort();
-  }, [kind, kindAvailable, applyDataSourceChoices]);
+  useStatisticalOptionsLoader(
+    kind,
+    kindAvailable,
+    (data) => {
+      setOptions(data);
+      applyDataSourceChoices(data);
+      setCondition1(keepCondition(data.availableConditions));
+      setCondition2(keepCondition(data.availableConditions));
+      setCondition1Control(keepCondition(data.availableConditions));
+      setCondition2Control(keepCondition(data.availableConditions));
+      setIdentifier(keepIdentifier(data));
+    },
+    setError,
+  );
+
 
   const controlSelectionValid =
     sourceMode !== "volcano_control" ||
@@ -549,19 +545,15 @@ export function VolcanoPanel({
             options={volcanoDataSourceOptions}
           />
         </div>
-        {sourceMode === "volcano_control" ? (
-          <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-            <SelectField label="Condition 1 Control" value={condition1Control} onChange={setCondition1Control} options={conditionOptions(options)} />
-            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-            <SelectField label="Condition 2 Control" value={condition2Control} onChange={setCondition2Control} options={conditionOptions(options)} />
-          </div>
-        ) : (
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <SelectField label="Condition 1" value={condition1} onChange={setCondition1} options={conditionOptions(options)} />
-            <SelectField label="Condition 2" value={condition2} onChange={setCondition2} options={conditionOptions(options)} />
-          </div>
-        )}
+        <ConditionPicker
+          conditions={conditionOptions(options)}
+          condition1={{ value: condition1, onChange: setCondition1 }}
+          condition2={{ value: condition2, onChange: setCondition2 }}
+          controls={sourceMode === "volcano_control" ? {
+            condition1: { value: condition1Control, onChange: setCondition1Control },
+            condition2: { value: condition2Control, onChange: setCondition2Control },
+          } : undefined}
+        />
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <SelectField
@@ -633,7 +625,15 @@ export function VolcanoPanel({
           </div>
         ) : null}
 
-        {sourceMode === "volcano" && !IS_VIEWER_MODE ? (
+        {sourceMode === "volcano" && !IS_VIEWER_MODE && kind === "phosprot" ? (
+          // The report has no phosphoprotein section (it covers protein and
+          // phospho); rather than accept an entry it would then drop in
+          // silence, the panel says so and offers nothing to click.
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            Phosphoprotein volcano plots cannot be added to the report.
+          </div>
+        ) : null}
+        {sourceMode === "volcano" && !IS_VIEWER_MODE && kind !== "phosprot" ? (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -651,7 +651,7 @@ export function VolcanoPanel({
                 Remove Volcano From Report
               </button>
               <span className="text-sm text-slate-600">
-                Saved entries for {kind}: {reportEntryCount}
+                Saved entries for {kindOptions.find((option) => option.value === kind)?.label ?? kind}: {reportEntryCount}
               </span>
             </div>
             {reportLogMessage ? (
@@ -668,7 +668,7 @@ export function VolcanoPanel({
       ) : null}
       {canRun && result && displayedResult ? (
         <>
-          <SummarySection items={[{ label: "Rows", value: String(displayedResult.totalRows) }, { label: "Upregulated", value: String(displayedResult.upregulatedCount) }, { label: "Downregulated", value: String(displayedResult.downregulatedCount) }, { label: "Not Significant", value: String(displayedResult.notSignificantCount) }]} warnings={removeSourceUsageWarnings(Array.from(new Set([...(displayedResult.warnings ?? []), ...(result.warnings ?? [])])))} />
+          <SummarySection items={[{ label: "Rows", value: String(displayedResult.totalRows) }, { label: "Upregulated", value: String(displayedResult.upregulatedCount) }, { label: "Downregulated", value: String(displayedResult.downregulatedCount) }, { label: "Not Significant", value: String(displayedResult.notSignificantCount) }, { label: "No p-value", value: String(displayedResult.unavailableCount ?? 0) }]} warnings={removeSourceUsageWarnings(Array.from(new Set([...(displayedResult.warnings ?? []), ...(result.warnings ?? [])])))} />
           {renderType === "Normal" ? (
             <ImageSection
               title="Volcano Plot"

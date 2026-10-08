@@ -67,7 +67,7 @@ def test_a_reply_that_fills_the_window_is_named_as_such(ollama_limits, monkeypat
     from app.schemas.chat import ChatRequest
     sent = {}
 
-    def open_request(payload, *, messages, output_schema=None, num_ctx=None):
+    def open_request(payload, *, messages, output_schema=None, num_ctx=None, **_):
         sent["num_ctx"] = num_ctx
         body = {"message": {"content": '{"task":"ui","actions":[{"ty'}, "done_reason": "length",
                 "prompt_eval_count": 8164, "eval_count": 28}
@@ -170,7 +170,7 @@ def test_overview_evidence_keeps_each_module_labelled_and_scoped(monkeypatch, st
     monkeypatch.setattr(assistant, "_module_evidence", module_evidence)
     request = AssistantRequest(message="Summarise QC and the volcano", view=_view("qc.cv", mode={"kind": "phospho", "x": 1}))
     evidence = assistant.scientific_evidence(request, AssistantPlan(task="results_overview", modules=["qc.cv", "stats.volcano", "bogus", "qc.cv"]))
-    assert [item.tool for item in evidence[1:]] == ["overview: QC Pipeline / Cov Plot", "overview: Statistical Analysis / Volcano Plot"]
+    assert [item.tool for item in evidence[1:]] == ["overview: QC Pipeline / CV Plot", "overview: Statistical Analysis / Volcano Plot"]
     assert seen == [("qc.cv", {"kind": "phospho", "x": 1}), ("stats.volcano", None)]
     assert "current selections" in evidence[1].text and "default module settings" in evidence[2].text
     assert all(item.status == status for item in evidence[1:])
@@ -178,7 +178,7 @@ def test_overview_evidence_keeps_each_module_labelled_and_scoped(monkeypatch, st
         return
     catalogue, values = answer_catalogue(evidence, "qc.cv", "Summarise QC and the volcano")
     answer = assemble_answer(ScientificAnswer(observations=[catalogue["observations"][0]["id"]]), catalogue, values, evidence)
-    assert "QC Pipeline / Cov Plot:" in answer and "Statistical Analysis / Volcano Plot:" in answer
+    assert "QC Pipeline / CV Plot:" in answer and "Statistical Analysis / Volcano Plot:" in answer
 
 
 def test_larger_models_get_a_page_map_when_it_fits(assistant_rig):
@@ -186,13 +186,13 @@ def test_larger_models_get_a_page_map_when_it_fits(assistant_rig):
     profile["value"] = ("standard", 4, 1000)
     run(['{"task":"ui","actions":[]}'], message="Take me somewhere I can judge sample quality.", view=_view())
     destinations = calls[0]["data"]["view"]["destinations"]
-    assert destinations["qc.cv"].startswith("QC Pipeline / Cov Plot - CV = 100")
+    assert destinations["qc.cv"].startswith("QC Pipeline / CV Plot - CV = 100")
 
 
 def test_small_models_keep_bare_page_labels(assistant_rig):
     run, calls = assistant_rig.run, assistant_rig.records
     run(['{"task":"ui","actions":[]}'], message="Take me somewhere I can judge sample quality.", view=_view())
-    assert calls[0]["data"]["view"]["destinations"]["qc.cv"] == "QC Pipeline / Cov Plot"
+    assert calls[0]["data"]["view"]["destinations"]["qc.cv"] == "QC Pipeline / CV Plot"
 
 
 def test_a_displayed_option_name_keeps_its_control_when_trimming(monkeypatch):

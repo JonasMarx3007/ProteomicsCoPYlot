@@ -159,7 +159,7 @@ def test_generate_endpoint_detects_after_condition_mapping() -> None:
             files={"file": ("protein.csv", csv, "text/csv")},
         )
         assert upload.status_code == 200
-        assert upload.json()["suggestedIsLog2Transformed"] is None
+        assert "suggestedIsLog2Transformed" not in upload.json()  # never set; the detect route decides
 
         detected = client.post(
             "/api/annotations/log2-detect",

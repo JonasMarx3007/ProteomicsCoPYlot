@@ -34,10 +34,23 @@ def test_go_database_is_available_to_source_and_wheel_builds() -> None:
     assert (ROOT / "data" / "db" / "README.md").is_file()
     setup_text = (ROOT / "setup.py").read_text(encoding="utf-8")
     assert "all_go_terms_genes.csv" in setup_text
-    assert '"README.md"' in setup_text
+    # The wheel ships only the GO table, so it gets the notice written for it alone.
+    assert '"PACKAGED_README.md"' in setup_text
     manifest_text = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     assert "data/db/README.md" in manifest_text
+    assert "data/db/PACKAGED_README.md" in manifest_text
     assert Path(sys.prefix).is_dir()
+
+
+def test_packaged_go_notice_states_the_shipped_file_checksum() -> None:
+    import hashlib
+
+    digest = hashlib.sha256((ROOT / "data" / "db" / "all_go_terms_genes.csv").read_bytes()).hexdigest()
+    packaged = (ROOT / "data" / "db" / "PACKAGED_README.md").read_text(encoding="utf-8")
+    repository = (ROOT / "data" / "db" / "README.md").read_text(encoding="utf-8")
+    assert digest in packaged and digest in repository
+    for other in ("BioNamesDB.txt", ".fasta"):
+        assert other not in packaged
 
 
 def test_ora_requires_an_explicit_experiment_background(monkeypatch) -> None:

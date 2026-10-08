@@ -5,7 +5,6 @@ import re
 import subprocess
 import sys
 from zipfile import ZipFile
-from pathlib import Path
 
 import numpy as np
 import pandas as pd

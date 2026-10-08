@@ -16,20 +16,21 @@ from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import save_table_dataset
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_comparison import render_comparison
-from app.services.notebook_preprocessing import with_original_preprocessing
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
 
 
-@pytest.mark.parametrize('normalization', ['none', 'median', 'quantile', 'vsn'])
+@pytest.mark.parametrize('normalization', [
+    'none', 'median', 'quantile', pytest.param('vsn', marks=pytest.mark.requires_r('vsn')),
+])
 @pytest.mark.parametrize('log2', [False, True])
 def test_original_upload_replay(tmp_path, normalization, log2):
     environment = os.environ.copy()
     if normalization == 'vsn':
         from app.services.r_vsn import vsn_availability
         from app.services.r_runtime import detect_r_runtime
-        if not vsn_availability()['available']:
-            pytest.skip('R/Bioconductor vsn is not installed')
+        availability = vsn_availability()
+        assert availability['available'], availability
         environment['PATH'] = str(Path(detect_r_runtime()['executable']).parent) + os.pathsep + environment.get('PATH', '')
     rows = 200 if normalization == 'vsn' else 12
     raw = pd.DataFrame(np.random.default_rng(9).uniform(5, 15, (rows, 6)),
@@ -46,7 +47,8 @@ def test_original_upload_replay(tmp_path, normalization, log2):
         conditions=[{'name': g, 'columns': [f'{g}{i}' for i in range(1, 4)]} for g in 'AB'],
         filter=AnnotationFilterConfig(normalization=normalization, minPresent=2)))
     content, token = render_comparison('pearson', kind='protein', sample1='A1', sample2='B1', dpi=80)
-    recipe = with_original_preprocessing(snapshots.get(get_session_id(), token))
+    # Download preparation: the first get finishes the deferred original-file replay.
+    recipe = snapshots.get(get_session_id(), token)
     assert recipe.provenance['inputReplay'] == 'original-file'
     _, blob = build_notebook_archive(recipe)
     with ZipFile(io.BytesIO(blob)) as archive:

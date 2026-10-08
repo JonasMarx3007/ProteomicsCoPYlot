@@ -194,6 +194,8 @@ function Invoke-PyInstallerBuild {
     $pyInstallerArgs += @("--copy-metadata", $notebookDistribution)
   }
   $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "proteomicscopylot\notebook_functions.py");notebook_sources")
+  # The arithmetic the backend shares with the pip package; app.services.copylot_core loads it from here.
+  $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "proteomicscopylot\_core.py");notebook_sources")
   $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "LICENSE");notebook_sources")
   $pyInstallerArgs += $EntryPoint
 

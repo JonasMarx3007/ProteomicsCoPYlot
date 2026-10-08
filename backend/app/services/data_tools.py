@@ -35,12 +35,10 @@ from app.services.functions import (
     normal_fit_curve,
     qc_matrix,
     qqnorm_plot_data,
+    raw_zero_to_nan,
 )
 from app.services.runtime_cache import apply_cached_wrappers
-
-
-def _preview(df: pd.DataFrame, rows: int = 20) -> list[dict[str, object]]:
-    return df.head(rows).where(pd.notna(df.head(rows)), None).to_dict(orient="records")
+from app.services.json_records import json_records
 
 
 def _get_current_frame(kind: AnnotationKind) -> pd.DataFrame:
@@ -61,16 +59,39 @@ def log2_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
     return qc_matrix(kind)[0]
 
 
-def linear_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
-    """The normalized, unfiltered, non-imputed QC matrix back-transformed to linear.
+VSN_LINEAR_QC_NOTICE = (
+    "VSN output is not on a linear intensity scale, so this plot uses the unnormalized data."
+)
 
-    CV and abundance use the same processed values as the other QC plots.
-    This does not reconstruct instrument-raw intensities after normalization.
+
+def linear_qc_uses_unnormalized(kind: AnnotationKind) -> bool:
+    """True when the annotation is VSN-normalized: CV and abundance then read unnormalized data."""
+    annotation = get_annotation(kind)
+    config = getattr(annotation, "filter_config", None) if annotation is not None else None
+    return str(getattr(config, "normalization", "") or "").strip().lower() == "vsn"
+
+
+def linear_qc_frame(kind: AnnotationKind) -> pd.DataFrame:
+    """The unfiltered, non-imputed QC matrix back-transformed to linear.
+
+    CV and abundance use the same processed values as the other QC plots,
+    normalized as chosen. VSN is the exception: its glog output back-transformed
+    is not a linear intensity, so these two plots read the unnormalized data of
+    the same rows instead (the GUI says so under the plot). This does not
+    reconstruct instrument-raw intensities after normalization.
     """
     frame, meta = qc_matrix(kind)
     columns = [column for column in meta["sample"].astype(str).tolist() if column in frame.columns]
     if not columns:
         return frame.copy()
+    if linear_qc_uses_unnormalized(kind):
+        from app.services.annotation_processor import prepare_normalized_log2_data
+
+        annotation = get_annotation(kind)
+        unnormalized = prepare_normalized_log2_data(
+            annotation.source_data, columns, annotation.is_log2_transformed, "none")
+        frame = frame.copy()
+        frame[columns] = unnormalized[columns].reindex(frame.index)
     return inverse_log2_transform_data(frame, columns).reindex(columns=frame.columns)
 
 
@@ -141,6 +162,9 @@ def _best_imputation_source(kind: AnnotationKind) -> tuple[ResolvedSource, pd.Da
     warnings: list[str] = []
     if source == "raw":
         warnings.append("Using raw data because filtered/log2 data is unavailable.")
+        if not bool(getattr(annotation, "is_log2_transformed", False)):
+            # A raw linear zero is a missing measurement, as everywhere else.
+            frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
     return source, frame, warnings
 
 
@@ -270,9 +294,7 @@ def run_imputation(payload: ImputationRunRequest) -> ImputationResultResponse:
             for start, end, left, right in after_hist
         ],
         warnings=warnings + skipped_sample_warnings(diagnostics),
-        preview=diagnostics.imputed_data.head(20).astype(object).where(
-            diagnostics.imputed_data.head(20).notna(), None
-        ).to_dict(orient="records"),
+        preview=json_records(diagnostics.imputed_data, 20),
     )
 
 
@@ -389,7 +411,6 @@ def update_condition_palette_config(
 apply_cached_wrappers(
     globals(),
     [
-        "run_imputation",
         "imputed_dataframe",
         "distribution_summary",
     ],

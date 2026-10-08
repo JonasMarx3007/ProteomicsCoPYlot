@@ -34,6 +34,23 @@ class AnnotationComputationResult:
 class Log2ScaleDetection:
     is_log2_transformed: bool | None
     reason: str
+    # True when the negative-value test and the magnitude test disagree: the
+    # call is still made, but the user is told to check it.
+    conflict: bool = False
+
+
+def _range_votes(usable: list[np.ndarray]) -> tuple[int, int]:
+    """Per-column votes from the value range: log2 intensities sit roughly in
+    0-60, linear intensities far above."""
+    log2_votes = 0
+    linear_votes = 0
+    for finite in usable:
+        q50, q95, column_q99 = np.nanquantile(finite, [0.50, 0.95, 0.99])
+        if q95 > 50 or column_q99 > 100:
+            linear_votes += 1
+        elif q50 <= 35 and q95 <= 45 and column_q99 <= 60:
+            log2_votes += 1
+    return log2_votes, linear_votes
 
 
 # "log2" as a token, so a run dated `log2024` is not read as a scale marker.
@@ -58,6 +75,24 @@ def log2_scale_hint(data: pd.DataFrame, sample_columns: list[str]) -> str | None
     finite = numbers[np.isfinite(numbers)]
     if finite.size < 30:
         return None
+    negative_fraction = float(np.mean(finite < 0))
+    if negative_fraction >= 0.001:
+        # Negative values make the detector say log2. When the magnitude says
+        # linear instead (background-subtracted intensities with a few negative
+        # cells), say so here, where the box is -- the detector's reason alone
+        # is only shown after the annotation was generated.
+        numeric = data[columns].apply(pd.to_numeric, errors="coerce")
+        usable = [numeric[column].to_numpy(dtype=float) for column in columns]
+        usable = [values[np.isfinite(values)] for values in usable]
+        usable = [values for values in usable if values.size >= 3]
+        log2_votes, linear_votes = _range_votes(usable)
+        if usable and linear_votes >= max(1, (len(usable) + 1) // 2) and linear_votes > log2_votes:
+            return (
+                f"{negative_fraction:.1%} of the values are negative, which suggests transformed data, "
+                f"but the values are large (median {float(np.median(finite)):.3g}), which looks like "
+                "linear intensities -- for example background-subtracted ones. The box is ticked because "
+                "of the negative values; untick it if these are linear values."
+            )
     whole = float(np.mean(np.isclose(finite, np.round(finite), rtol=0, atol=1e-9)))
     if whole >= 0.95 and float(finite.min()) >= 0:
         return (
@@ -127,7 +162,23 @@ def _value_scale_detection(
 
     combined = np.concatenate(usable)
     negative_fraction = float(np.mean(combined < 0))
+    log2_votes, linear_votes = _range_votes(usable)
+    required_votes = max(1, (len(usable) + 1) // 2)
     if negative_fraction >= 0.001:
+        # Negative values favour log2 in this heuristic. The magnitude test
+        # still runs: when it says linear (a
+        # background-subtracted linear matrix with a few negative cells, say),
+        # the call stands, but the reason says that the two tests disagree, so
+        # the page can warn instead of staying silent.
+        if linear_votes >= required_votes and linear_votes > log2_votes:
+            return Log2ScaleDetection(
+                True,
+                f"{negative_fraction:.1%} of the selected sample values are negative, which suggests "
+                "transformed data, but their magnitude (median "
+                f"{float(np.nanmedian(combined)):.3g}) looks like linear intensities; the negative "
+                "values decided. Check the scale and set it explicitly if these are linear values",
+                conflict=True,
+            )
         return Log2ScaleDetection(
             True,
             "selected sample values include a reproducible negative-value signal",
@@ -140,16 +191,6 @@ def _value_scale_detection(
             "non-negative values are confined to 0-2, which can represent either ratios or transformed data",
         )
 
-    log2_votes = 0
-    linear_votes = 0
-    for finite in usable:
-        q50, q95, column_q99 = np.nanquantile(finite, [0.50, 0.95, 0.99])
-        if q95 > 50 or column_q99 > 100:
-            linear_votes += 1
-        elif q50 <= 35 and q95 <= 45 and column_q99 <= 60:
-            log2_votes += 1
-
-    required_votes = max(1, (len(usable) + 1) // 2)
     if log2_votes >= required_votes and log2_votes > linear_votes:
         return Log2ScaleDetection(
             True,
@@ -192,7 +233,9 @@ def _vsn_label() -> str:
         "VSN was applied globally, replacing the plain log2 transform. It is computed by the "
         f"Bioconductor 'vsn' package{suffix} rather than a reimplementation. Note that the vsn "
         "fit can be sensitive to tiny changes in the input on some datasets, so re-running it "
-        "on data exported and re-imported through a text format may not reproduce it exactly."
+        "on data exported and re-imported through a text format may not reproduce it exactly. "
+        "The CV and abundance plots use the unnormalized data, because VSN output is not on a "
+        "linear intensity scale."
     )
 
 
@@ -211,8 +254,8 @@ def _normalization_warning(normalization: str) -> str:
 
 
 def _missingness_warning(log2_data: pd.DataFrame, metadata: pd.DataFrame, normalization: str) -> str | None:
-    """Warn when median or quantile normalization met very uneven missingness."""
-    if str(normalization or "none").strip().lower() not in {"median", "quantile"}:
+    """Warn when median, quantile or VSN normalization met very uneven missingness."""
+    if str(normalization or "none").strip().lower() not in {"median", "quantile", "vsn"}:
         return None
     return missingness_imbalance_warning(missingness_imbalance(log2_data, metadata), normalization)
 
@@ -300,7 +343,79 @@ def resolve_log2_state(
         f"Sample scale was auto-detected as {scale_label} from {len(sample_columns)} "
         f"selected sample column(s): {detection.reason}."
     )
+    if detection.conflict:
+        warning = "Check the data scale. " + warning
     return detection.is_log2_transformed, True, warning
+
+
+# One of these has to exist for the statistics pages to label a row. The
+# upload aliases the common export names (Spectronaut, DIA-NN, MaxQuant,
+# FragPipe) onto them; anything else used to pass annotation and then fail on
+# every statistics page with a 400 that did not say what was missing.
+_IDENTIFIER_COLUMNS = ("ProteinNames", "GeneNames", "PTM_Collapse_key", "UPD_seq", "Phosphoprotein", "Gene_group")
+
+
+def _identifier_warning(data: pd.DataFrame) -> str | None:
+    columns = {str(column) for column in data.columns}
+    if columns & set(_IDENTIFIER_COLUMNS):
+        return None
+    return (
+        "No identifier column was recognised (none of " + ", ".join(_IDENTIFIER_COLUMNS) + "). "
+        "QC plots work without one, but the statistics pages need a column to label each row: "
+        "rename the protein or site identifier column in the file (for example 'Protein' to "
+        "'ProteinNames') and upload it again."
+    )
+
+
+_RUN_COLUMNS = ("File.Name", "Run", "R.FileName")
+_DECOY_PREFIXES = ("REV__", "CON__", "rev_", "con_")
+
+
+def _table_shape_warnings(data: pd.DataFrame) -> list[str]:
+    """Rows that will mislead a reader without being wrong for the arithmetic.
+
+    Three things an upload used to accept in silence: a long-format precursor
+    report taken for a protein table (one row per precursor and run, so the
+    same protein repeats and a "sample" column holds every run's values), an
+    identifier that occurs on several rows (both rows become identically
+    labelled points), and MaxQuant decoy/contaminant rows (``REV__``/``CON__``
+    identifiers, or a ``+`` in the Reverse / Potential contaminant columns).
+    Nothing is removed; the warning says what is there.
+    """
+    warnings: list[str] = []
+    columns = [str(column) for column in data.columns]
+    label = next((column for column in _IDENTIFIER_COLUMNS if column in columns), None)
+    labels = data[label].dropna().astype(str) if label is not None else None
+    run_column = next((column for column in _RUN_COLUMNS if column in columns), None)
+    if run_column is not None and labels is not None and labels.duplicated().any():
+        warnings.append(
+            f"This table has a run column ({run_column}) and the same {label} on several rows, which "
+            "looks like a long-format precursor or peptide report (one row per precursor and run). "
+            "Upload it on the Peptide page, or use the protein-group matrix export (one row per "
+            "protein, one column per run) here."
+        )
+    elif labels is not None:
+        duplicated = int(labels.duplicated().sum())
+        if duplicated:
+            warnings.append(
+                f"{duplicated:,} rows repeat a {label} already used by another row; they are kept and "
+                "will appear as identically labelled points. Check the export for isoform or "
+                "duplicate entries."
+            )
+    flagged = np.zeros(len(data), dtype=bool)
+    if label is not None:
+        flagged |= data[label].fillna("").astype(str).str.startswith(_DECOY_PREFIXES).to_numpy(dtype=bool)
+    for column in ("Reverse", "Potential contaminant", "Only identified by site"):
+        if column in columns:
+            flagged |= data[column].astype(str).str.strip().eq("+").to_numpy(dtype=bool)
+    decoys = int(flagged.sum())
+    if decoys:
+        warnings.append(
+            f"{decoys:,} rows look like decoy or contaminant entries (REV__/CON__ identifiers or a '+' in "
+            "Reverse / Potential contaminant / Only identified by site); they are kept. Remove them from "
+            "the export if they should not enter the analysis."
+        )
+    return warnings
 
 
 def _unparseable_sample_columns(
@@ -567,6 +682,26 @@ def split_uploaded_metadata_profiles(
     return profiles
 
 
+def _refuse_unreadable_samples(
+    data: pd.DataFrame, sample_columns: list[str], unparseable: list[tuple[str, int, int]]
+) -> None:
+    """Refuse a matrix in which no sample value could be read as a number.
+
+    A European export with decimal commas parses to a matrix of missing values.
+    Auto-detection then asked for an explicit scale, and with one the annotation
+    "succeeded" with zero rows. Neither helps; the locale is the problem.
+    """
+    numeric = data[[c for c in sample_columns if c in data.columns]].apply(pd.to_numeric, errors="coerce")
+    if numeric.size and numeric.notna().any().any():
+        return
+    if unparseable:
+        raise ValueError(
+            "No sample value could be read as a number. " + _unparseable_warning(unparseable)
+            + " Export the file with a decimal point and upload it again."
+        )
+    raise ValueError("The selected sample columns contain no numeric values.")
+
+
 def _unparseable_warning(unparseable: list[tuple[str, int, int]]) -> str:
     detail = ", ".join(
         f"{column} ({lost} of {total})" for column, lost, total in unparseable[:6]
@@ -612,6 +747,13 @@ def compute_annotation(
     if not sample_columns:
         raise ValueError("No sample columns could be determined for metadata.")
 
+    # Both annotation paths must report the same data-quality problems. Wiring
+    # these into only one caller is how a locale-mangled column reached a volcano
+    # plot with an empty warning list. Checked before the scale: a file whose
+    # numbers could not be read has no scale to detect, and the error has to
+    # say so rather than ask for an explicit scale setting.
+    unparseable_columns = _unparseable_sample_columns(data, sample_columns)
+    _refuse_unreadable_samples(data, sample_columns, unparseable_columns)
     resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
         data,
         sample_columns,
@@ -638,10 +780,6 @@ def compute_annotation(
         min_percentage=min_percentage,
     )
 
-    # Both annotation paths must report the same data-quality problems. Wiring
-    # these into only one caller is how a locale-mangled column reached a volcano
-    # plot with an empty warning list.
-    unparseable_columns = _unparseable_sample_columns(data, sample_columns)
     annotated = {str(sample) for sample in sample_columns}
     # A name that only differed by surrounding whitespace was matched, not lost,
     # so it must not be reported as dropped.
@@ -656,6 +794,10 @@ def compute_annotation(
     warnings: list[str] = []
     if unparseable_columns:
         warnings.append(_unparseable_warning(unparseable_columns))
+    identifier_warning = _identifier_warning(data)
+    if identifier_warning:
+        warnings.append(identifier_warning)
+    warnings.extend(_table_shape_warnings(data))
     if dropped_columns:
         warnings.append(
             _dropped_samples_warning(
@@ -706,6 +848,7 @@ def compute_annotation_from_metadata(
     # a balanced 6-vs-6 design into 6-vs-3, and every test result changes.
     unmatched_metadata_samples = _unmatched_metadata_samples(data, metadata, sample_columns)
     unparseable_columns = _unparseable_sample_columns(data, sample_columns)
+    _refuse_unreadable_samples(data, sample_columns, unparseable_columns)
 
     resolved_log2, log2_auto_detected, log2_warning = resolve_log2_state(
         data,
@@ -732,6 +875,10 @@ def compute_annotation_from_metadata(
     warnings = ["Using uploaded metadata table for annotation."]
     if unparseable_columns:
         warnings.append(_unparseable_warning(unparseable_columns))
+    identifier_warning = _identifier_warning(data)
+    if identifier_warning:
+        warnings.append(identifier_warning)
+    warnings.extend(_table_shape_warnings(data))
     if unmatched_metadata_samples:
         warnings.append(
             _dropped_samples_warning(

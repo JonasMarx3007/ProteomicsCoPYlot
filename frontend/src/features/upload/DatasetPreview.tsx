@@ -1,3 +1,4 @@
+import { truncateText } from "../../lib/textAndColor";
 import type { DatasetPreviewResponse } from "../../lib/types";
 
 type DatasetPreviewProps = {
@@ -90,9 +91,4 @@ function wrapEveryNCharacters(text: string, chunkSize: number): string {
   }
 
   return chunks.join("\n");
-}
-
-function truncateText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength)}…`;
 }

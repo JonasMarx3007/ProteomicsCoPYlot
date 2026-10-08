@@ -1,7 +1,6 @@
 """Compare displayed QC values, not just matching function names or signatures."""
 
 import json
-import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace

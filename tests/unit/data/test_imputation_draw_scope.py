@@ -40,7 +40,7 @@ def test_every_pipeline_draws_per_sample_by_default() -> None:
 def test_the_r_package_also_draws_per_sample_by_default(rscript) -> None:
     """The R default is read from the sourced function and confirmed by a call.
 
-    `formals()` gives the default the R package actually declares; the call
+    `formals()` gives the default the R functions actually declare; the call
     without `sample_wise` must then give exactly the per-sample result, and a
     different one from the global draw on a frame whose samples sit at
     different levels.
@@ -64,7 +64,7 @@ def test_the_r_package_also_draws_per_sample_by_default(rscript) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     answers = dict(line.split()[:2] for line in result.stdout.splitlines() if line.strip())
     message = (
-        "the R package still draws globally by default; the three implementations "
+        "the R functions still draw globally by default; the three implementations "
         "must agree on this or the same call gives different numbers per language"
     )
     assert answers["FORMAL"] == "TRUE", message

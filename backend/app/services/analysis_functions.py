@@ -56,10 +56,6 @@ def _selection_label(
         tokens = _gene_tokens(text)
         return tokens[0] if tokens else text
 
-    if kind == "protein":
-        head = text.split(";")[0].strip()
-        return head or text
-
     return text
 
 
@@ -193,6 +189,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
         upregulatedCount=result.upregulatedCount,
         downregulatedCount=result.downregulatedCount,
         notSignificantCount=result.notSignificantCount,
+        unavailableCount=result.unavailableCount,
         points=points,
         warnings=result.warnings,
     )

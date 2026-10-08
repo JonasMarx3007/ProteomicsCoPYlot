@@ -8,11 +8,11 @@ marker, so `pytest -m parity` or `pytest -m "not integration"` works too.
 | `unit/<area>/` | One function or module: `stats`, `data`, `qc`, `plots`, `report`, `phospho`, `peptide`, `assistant`, `security`, `restore`, `notebook`, `package` |
 | `reference/` | Our numbers against an established implementation (scipy, statsmodels), with the reason in each docstring |
 | `integration/api/`, `integration/viewer/` | Requests through the app, or a loaded viewer project, end to end |
-| `parity/` | The web app, the pip package and the R package agree; R scripts they drive are in `parity/r/` |
+| `parity/` | The web app, the pip package and the R functions agree; R scripts they drive are in `parity/r/` |
 | `contracts/` | The frontend and the backend agree: the generated API files are current, and the advanced plot settings reach the renderers |
 | `repo/` | Repository layout, packaging and release hygiene |
 | `fixtures/` | Test-owned data and configuration (see `fixtures/README.md`) |
-| `r/` | The R package's own testthat tests (`Rscript tests/r/test_notebook_functions.R`) and `renv.lock` |
+| `r/` | The R functions' own testthat tests (`Rscript tests/r/test_notebook_functions.R`) and `renv.lock` |
 
 Shared fixtures live in `conftest.py`:
 
@@ -26,9 +26,10 @@ when R or a package is missing, and fail instead with `COPYLOT_REQUIRE_R=1`.
 
 ## What is checked where
 
-Tests check behaviour: they call the function, send the request, or mount the
-component. None reads a source file to look for a string. Three other
-mechanisms carry what is not behaviour:
+Scientific and UI tests check behaviour: they call the function, send the
+request, or mount the component. Repository checks also inspect manifests,
+launchers and code structure where these are the contract being tested. Three
+other mechanisms help keep the layers aligned:
 
 - **Generated contracts.** `tools/export_openapi.py` (`npm --prefix frontend run
   generate:api`) writes the backend's OpenAPI schema and plot size limits to
@@ -51,3 +52,31 @@ check against: `fixtures/pca_default_scaling.json`,
 `browser_server.py` and `docker_runtime_check.py` are tools, not tests: the
 first serves the app for the Playwright tests in `frontend/tests/browser/`, the
 second checks a built Docker image.
+
+## Keeping tests efficient without weakening them
+
+- Use the Node environment for frontend tests of pure helpers; retain jsdom
+  for components, storage and browser-dependent behaviour. Keep per-file
+  isolation enabled.
+- Share expensive, read-only reference results when several assertions use
+  exactly the same inputs. Do not share mutable analysis state or replace
+  standalone notebook execution with an in-process mock.
+- The root `fresh_runtime_cache` fixture resets every session before and after
+  each test. Additional resets are needed for changes *within* a test, not for
+  duplicate setup/teardown fixtures.
+- Close test-created figures after their assertions, including on failure.
+- Mark individual R-dependent parameter cases with `requires_r`, not just
+  whole functions. The R CI job selects this marker, and `COPYLOT_REQUIRE_R=1`
+  makes a missing dependency fail. Use the `rscript`/`require_r` fixtures for
+  the executable as well as prerequisite checking.
+- Required Python dependencies must fail when missing, rather than silently
+  skipping numerical-reference checks.
+- Fixed scientific fixtures must fail if they stop exercising the intended
+  result; empty output is not a reason to silently skip a reference comparison.
+- Fixed scientific fixtures must fail if they stop exercising the intended
+  result; empty output is not a reason to silently skip a reference comparison.
+
+Measure Python runtime with `pytest --durations=40`. Keep the full CI matrix,
+parameter cases, numerical tolerances and coverage floor intact when improving
+setup costs; a shorter run achieved by silently selecting fewer checks is not
+an equivalent optimization.

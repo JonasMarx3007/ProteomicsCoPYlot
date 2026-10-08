@@ -116,6 +116,7 @@ from app.services.plot_images import (
 )
 from app.services.upload_limits import ensure_upload_size
 from app.api.download_headers import attachment_disposition
+from app.services.json_records import json_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -480,7 +481,7 @@ def stats_anova_snapshot_tables(kind: AnnotationKind, snapshot: str):
     result = json.loads(recipe.resources["summary.json"])
     for key in ("rows", "clusterRows", "postHocRows"):
         table = pd.read_parquet(io.BytesIO(recipe.resources[f"{key}.parquet"]))
-        result[key] = table.astype(object).where(pd.notna(table), None).to_dict(orient="records")
+        result[key] = json_records(table)
     return AnovaResultResponse(**result)
 
 
@@ -1025,10 +1026,21 @@ def _qc_snapshot_table(kind: str, plot: str, snapshot: str, **settings):
     return _table_rows(pd.read_parquet(io.BytesIO(recipe.resources["table.parquet"])))
 
 
+def _note_vsn_linear_qc(kind: str) -> None:
+    """CV and abundance read unnormalized data after VSN; say so under the plot."""
+    from app.services.data_tools import VSN_LINEAR_QC_NOTICE, linear_qc_uses_unnormalized
+    from app.services.plot_export import note_plot_notice
+
+    if kind in {"protein", "phospho", "phosprot"} and linear_qc_uses_unnormalized(kind):
+        note_plot_notice(VSN_LINEAR_QC_NOTICE)
+
+
 def _qc_paired_plot(plot: str, *, kind: str, **options) -> Response:
     renderer = {"coverage": qc_coverage_plot, "boxplot": qc_boxplot_plot, "cv": qc_cv_plot,
                 "histogram": qc_intensity_histogram_plot, "abundance": qc_abundance_plot,
                 "correlation": qc_correlation_plot, "pca": qc_pca_plot}[plot]
+    if plot in {"cv", "abundance"}:
+        _note_vsn_linear_qc(kind)
     eligible = kind in {"protein", "phospho", "phosprot"}
     if eligible:
         from app.services.notebook_qc import render_qc
@@ -1417,6 +1429,7 @@ def qc_abundance_interactive_route(
     advanced: str = "",
 ) -> HTMLResponse:
     with plot_errors("Failed to render interactive abundance plot", optional_dependency=True):
+        _note_vsn_linear_qc(kind)
         if kind in {"protein", "phospho", "phosprot"}:
             from app.services.notebook_interactive import render_abundance
             from app.services.notebook_provenance import NotebookProvenanceError

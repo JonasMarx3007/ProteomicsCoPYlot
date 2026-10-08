@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+from app.services.peptide_quantity import resolve_peptide_quantity_column
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
     cm_to_inch as _cm_to_inch,
@@ -11,21 +12,20 @@ from app.services.plot_export import (
 )
 
 import math
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
-from app.services.annotation_store import get_annotation
-from app.services.data_tools import _get_current_frame, _get_sample_columns, require_imputable_kind, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
+from app.services.data_tools import _get_sample_columns, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
 from app.services.functions import (
     _phosprot_values_are_centred,
     intensity_unit_label,
     resolve_feature_scaling,
     abundance_axis_label,
+    condition_cvs,
     select_matrix,
-    choose_best_source,
     extract_sample_id as _extract_id_or_number,
     impute_values_with_diagnostics,
     QQ_MAX_POINTS,
@@ -57,16 +57,10 @@ def _make_fig(plt, width_cm: float, height_cm: float):
 
 
 def _imputation_source(kind: AnnotationKind):
-    require_imputable_kind(kind)
-    raw = _get_current_frame(kind)
-    annotation = get_annotation(kind)
-    filtered = annotation.filtered_data if annotation is not None else None
-    log2 = annotation.log2_data if annotation is not None else None
-    source_name, frame = choose_best_source(filtered, log2, raw)
-    if source_name == "raw" and not bool(
-        getattr(annotation, "is_log2_transformed", False)
-    ):
-        frame = raw_zero_to_nan(frame, _get_sample_columns(kind, frame))
+    """The matrix imputation runs on: the one resolver in `data_tools`, so previews match runs."""
+    from app.services.data_tools import _best_imputation_source
+
+    source_name, frame, _ = _best_imputation_source(kind)
     return source_name, frame
 
 
@@ -88,14 +82,6 @@ def _peptide_sequence_column(frame: pd.DataFrame) -> str:
         if "stripped" in normalized and "sequence" in normalized:
             return str(column)
     raise ValueError("Peptide dataset is missing a stripped-sequence column.")
-
-
-def _peptide_quantity_column(frame: pd.DataFrame, requested: str | None = None) -> str:
-    # Kept as a private compatibility alias for AI/report callers. The actual
-    # policy lives in one shared in-app resolver.
-    from app.services.peptide_quantity import resolve_peptide_quantity_column
-
-    return resolve_peptide_quantity_column(frame, requested=requested)
 
 
 def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
@@ -166,21 +152,6 @@ def fitted_group_ellipse(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, fl
     if float(np.min(axes)) <= 0:
         return None
     return center, axes, angle
-
-
-def ellipse_skip_message(groups: Sequence[str]) -> str:
-    """What to say under the plot about the groups that got no ellipse."""
-    names = [str(group) for group in groups if str(group).strip()]
-    if not names:
-        return ""
-    listed = ", ".join(names)
-    subject = "group" if len(names) == 1 else "groups"
-    return (
-        f"No ellipse was drawn for {subject} {listed}: {'its' if len(names) == 1 else 'their'} "
-        "points have no spread in one direction -- they fall on a line, or two "
-        "samples share the same position -- so there is no enclosing ellipse to fit. "
-        "The points themselves are unaffected."
-    )
 
 
 def _feature_context(
@@ -777,7 +748,7 @@ def _peptide_coverage_data(include_id=False, quantity_column=None, level="peptid
         seq_col = _peptide_precursor_column(frame)
     else:
         seq_col = _peptide_sequence_column(frame)
-    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
+    quantity_col = resolve_peptide_quantity_column(frame, requested=quantity_column)
     meta = _peptide_coverage_metadata(frame, include_id=include_id)
 
     pivot = frame.pivot_table(
@@ -1117,21 +1088,9 @@ def qc_cv_plot(
 
     meta = _metadata_for_kind(kind, frame, sample_columns)
     numeric = raw_zero_to_nan(frame, sample_columns)[sample_columns]
-    valid_conditions: list[str] = []
-    cv_data: list[np.ndarray] = []
-    for condition in meta["condition"].astype(str).dropna().unique().tolist():
-        cols = meta.loc[meta["condition"] == condition, "sample"].tolist()
-        if len(cols) < 2:
-            continue
-        subset = numeric[cols]
-        means = subset.mean(axis=1, skipna=True)
-        sds = subset.std(axis=1, skipna=True)
-        cv = (sds / means) * 100.0
-        cv = cv[np.isfinite(cv)].to_numpy(dtype=float)
-        if cv.size == 0:
-            continue
-        valid_conditions.append(condition)
-        cv_data.append(cv)
+    cvs = condition_cvs(numeric, meta)
+    valid_conditions = [condition for condition, _ in cvs]
+    cv_data = [cv.to_numpy(dtype=float) for _, cv in cvs]
 
     if not cv_data:
         raise ValueError("No numeric values available for CV plot.")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.annotation import AnnotationKind, ResolvedSource
 
@@ -111,6 +111,15 @@ class ImputationRunRequest(BaseModel):
     width: float = Field(default=0.3, ge=0.0)
     seed: int = Field(default=1337, ge=0, le=2_147_483_647)
     sampleWise: bool = True
+
+    @model_validator(mode="after")
+    def _spread_is_positive(self):
+        # A spread of 0 gives every imputed value in a sample the same number, and
+        # such constant replicates make the later t-test undefined.
+        spread = self.adjustStd if self.method == "quantile" else self.width
+        if spread <= 0:
+            raise ValueError("Adjust standard deviation must be greater than 0.")
+        return self
 
 
 class ImputationResultResponse(BaseModel):

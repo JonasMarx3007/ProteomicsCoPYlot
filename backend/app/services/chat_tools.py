@@ -23,7 +23,7 @@ from app.schemas.chat import (
     OllamaModelManageResponse,
     OllamaModelsResponse,
 )
-from app.services.assistant_profiles import classify_model
+from app.services.assistant_profiles import LEVEL_NAMES, LEVELS, classify_model, input_limit, output_tokens, reasoning_model
 from app.services.cloud_ai_consent import require_cloud_ai_consent
 from app.services.workload_manager import provider_deadline
 from app.services.env_settings import env_flag, env_float, env_int
@@ -74,6 +74,18 @@ class _TimedResponse:
             raise ValueError("Provider operation exceeded its time limit.")
         return result
 
+    def readline(self, size=-1):
+        if time.monotonic() >= self.connection.deadline:
+            raise ValueError("Provider operation exceeded its time limit.")
+        return self.response.readline(size)
+
+    def __iter__(self):
+        # A streamed reply (server-sent events) is read line by line, each under the deadline.
+        while True:
+            line = self.readline()
+            if not line:
+                return
+            yield line
 
     def close(self):
         self.connection.watchdog.cancel()
@@ -210,9 +222,75 @@ def ai_mode_enabled() -> bool:
 
 def _resolve_provider(payload_provider: str | None) -> ChatProvider:
     value = str(payload_provider or "").strip().lower()
-    if value in {"openai", "anthropic", "gemini", "ollama"}:
+    if value in _ALL_PROVIDERS:
         return value
     return "ollama"
+
+
+_ALL_PROVIDERS = ("ollama", "openai_compatible", "openai", "anthropic", "gemini")
+# Providers on machines the operator controls: the analysis context goes in
+# full and no cloud consent is asked for (see local_ai_server).
+LOCAL_PROVIDERS = ("ollama", "openai_compatible")
+
+
+def allowed_ai_providers() -> list[str]:
+    """Providers the operator allows: COPYLOT_AI_ALLOWED_PROVIDERS (comma list), else all."""
+    raw = str(os.getenv("COPYLOT_AI_ALLOWED_PROVIDERS", "")).strip().lower()
+    if not raw:
+        return list(_ALL_PROVIDERS)
+    chosen = {item.strip() for item in raw.split(",") if item.strip()}
+    return [provider for provider in _ALL_PROVIDERS if provider in chosen]
+
+
+def allowed_ai_models() -> dict[str, list[str]]:
+    """Models the operator allows per provider, from COPYLOT_AI_ALLOWED_MODELS.
+
+    Entries are "provider:model", comma-separated. A provider without an entry
+    is unrestricted, so an operator can pin the cloud models a server key may
+    spend while leaving local models open.
+    """
+    allowed: dict[str, list[str]] = {}
+    for item in str(os.getenv("COPYLOT_AI_ALLOWED_MODELS", "")).split(","):
+        provider, _, model = item.strip().partition(":")
+        provider = provider.strip().lower()
+        if provider in _ALL_PROVIDERS and model.strip():
+            allowed.setdefault(provider, []).append(model.strip())
+    return allowed
+
+
+def check_ai_operator_policy(provider: str, model: str) -> None:
+    """Refuse a provider or model the operator has not allowed on this server."""
+    if provider not in allowed_ai_providers():
+        raise ValueError(f"This server does not allow the AI provider '{provider}'.")
+    models = allowed_ai_models().get(provider)
+    if models is not None and model not in models:
+        raise ValueError(
+            f"This server does not allow the model '{model}' for '{provider}'. Allowed: {', '.join(models)}.")
+
+
+def ollama_model_management_allowed() -> bool:
+    """Installing or removing Ollama models changes the whole server.
+
+    COPYLOT_OLLAMA_MODEL_MANAGEMENT decides; without it, management is allowed
+    on a local desktop run and refused on any deployment with tool passwords,
+    a viewer or a viewer portal, where the operator manages models instead.
+    """
+    raw = str(os.getenv("COPYLOT_OLLAMA_MODEL_MANAGEMENT", "")).strip()
+    if raw:
+        return env_flag("COPYLOT_OLLAMA_MODEL_MANAGEMENT")
+    return not any(env_flag(name) for name in (
+        "COPYLOT_TOOL_ACCESS_ENABLED", "COPYLOT_VIEWER_MODE", "COPYLOT_VIEWER_PORTAL_ENABLED"))
+
+
+def ai_operator_policy() -> dict[str, object]:
+    return {"providers": allowed_ai_providers(), "models": allowed_ai_models(),
+            "modelManagement": ollama_model_management_allowed()}
+
+
+def local_server_models(endpoint: str | None = None, api_key: str | None = None):
+    from app.services import local_ai_server
+
+    return local_ai_server.server_models(endpoint, api_key)
 
 
 def provider_default_models() -> dict[str, str]:
@@ -230,10 +308,24 @@ def _default_model_for_provider(provider: ChatProvider) -> str:
 def _resolve_chat_model(payload: ChatRequest, provider: ChatProvider) -> str:
     if provider == "ollama":
         return _resolve_model(payload.model, payload.ollamaUrl)
+    if provider == "openai_compatible":
+        return _resolve_local_server_model(payload)
     chosen = str(payload.model or "").strip()
     if chosen:
         return chosen
     return _default_model_for_provider(provider)
+
+
+def _resolve_local_server_model(payload: ChatRequest) -> str:
+    from app.services import local_ai_server
+
+    chosen = str(payload.model or "").strip()
+    if chosen:
+        return chosen
+    listed = local_ai_server.server_models(payload.localServerUrl, payload.apiKey)
+    if listed.selectedModel:
+        return listed.selectedModel
+    raise ValueError(listed.warnings[0] if listed.warnings else "No model is selected for the local AI server.")
 
 
 def _resolve_api_key(payload: ChatRequest, provider: ChatProvider) -> str:
@@ -247,7 +339,7 @@ def _resolve_api_key(payload: ChatRequest, provider: ChatProvider) -> str:
     The field is still accepted, because the UI offers it and removing it would
     break single-user installs that have no server configuration.
     """
-    if provider == "ollama":
+    if provider in LOCAL_PROVIDERS:
         return ""
     env_name = {
         "openai": "OPENAI_API_KEY",
@@ -311,8 +403,7 @@ def _normalize_ollama_endpoint(value: str | None) -> str:
     if requested_origin not in allowed_origins:
         if normalized_host not in allowed_hosts:
             raise ValueError(
-                "Ollama endpoint override is not allowed. Configure it with "
-                "COPYLOT_OLLAMA_URL or COPYLOT_OLLAMA_ALLOWED_ENDPOINTS."
+                "This Ollama server is not permitted."
             )
         # Loopback is allowed implicitly, but only Ollama's own port: the
         # server makes requests to this address on the client's behalf, and
@@ -510,7 +601,9 @@ def model_capability(
     model_name = str(model or "").strip()
     if not model_name:
         raise ValueError("A model must be selected before its capabilities can be detected.")
-    cache_key = f"{provider}|{_resolve_ollama_base_url(endpoint_override) if provider == 'ollama' else ''}|{model_name}"
+    endpoint_key = (_resolve_ollama_base_url(endpoint_override) if provider == "ollama"
+                    else str(endpoint_override or "") if provider == "openai_compatible" else "")
+    cache_key = f"{provider}|{endpoint_key}|{model_name}"
     cached, generation = _cache_get(_MODEL_CAPABILITY_CACHE, cache_key, _MODEL_CAPABILITY_CACHE_TTL_SECONDS)
     if cached is not None:
         return cached
@@ -522,6 +615,7 @@ def model_capability(
     source: str = "fallback"
 
     metadata = {}
+    metadata_found: dict = {}
     if provider == "ollama":
         try:
             metadata = _ollama_model_metadata(model_name, endpoint_override)
@@ -557,10 +651,25 @@ def model_capability(
             parameter_count_b = _model_name_parameter_count(model_name)
             if source == "fallback" and parameter_count_b is not None:
                 source = "model_name"
+    elif provider == "openai_compatible":
+        from app.services import local_ai_server
+
+        # llama.cpp reports the parameter count and image support; others may
+        # not, and then the model's name is all there is.
+        metadata_found = local_ai_server.model_metadata(endpoint_override, model_name)
+        context_window = metadata_found.get("context") or local_ai_server.context_tokens(endpoint_override)
+        parameter_count_b = metadata_found.get("params_b")
+        supports_vision = metadata_found.get("vision")
+        source = "metadata" if parameter_count_b is not None else "fallback"
+        if parameter_count_b is None:
+            parameter_count_b = _model_name_parameter_count(model_name)
+            source = "model_name" if parameter_count_b is not None else "fallback"
     quantization = str(metadata.get("details", {}).get("quantization_level", "")) if provider == "ollama" and isinstance(metadata.get("details"), dict) else ""
     context_tier, assessment, reason = classify_model(provider, model_name, parameter_count_b, context_window, supports_tools, quantization)
     level = {"compact": 1, "standard": 2, "extended": 3}[context_tier]
     label = {1: "Low", 2: "Medium", 3: "High"}[level]
+    thinks = reasoning_model(provider, model_name) or bool(
+        provider == "openai_compatible" and metadata_found.get("reasoning"))
     result = ModelCapabilityResponse(
         provider=provider,
         model=model_name,
@@ -574,6 +683,9 @@ def model_capability(
         source=source,  # type: ignore[arg-type]
         assessment=assessment,
         reason=reason,
+        levelName=LEVEL_NAMES[context_tier],  # type: ignore[arg-type]
+        reasoning=thinks,
+        outputTokens=output_tokens(context_tier, thinks, context_window),
     )
     _cache_put(_MODEL_CAPABILITY_CACHE, cache_key, result, generation)
     return result
@@ -842,6 +954,8 @@ def _open_ollama_request(
     messages: list[dict[str, str]],
     output_schema: dict | None = None,
     num_ctx: int | None = None,
+    num_predict: int = 1024,
+    image: str | None = None,
 ):
     endpoint_override = payload.ollamaUrl
     model = _resolve_model(payload.model, endpoint_override)
@@ -867,13 +981,15 @@ def _open_ollama_request(
     options: dict[str, float | int] = {
         "temperature": 0,
         "top_p": env_float("COPYLOT_OLLAMA_TOP_P", 0.9),
-        "num_predict": 1024,
+        "num_predict": num_predict,
         "num_ctx": int(num_ctx or _ollama_context_floor()),
         "repeat_penalty": env_float("COPYLOT_OLLAMA_REPEAT_PENALTY", 1.1),
     }
     if num_gpu is not None:
         options["num_gpu"] = num_gpu
 
+    if image and messages and messages[-1]["role"] == "user":
+        messages[-1] = {**messages[-1], "images": [image.split(",", 1)[1]]}  # type: ignore[dict-item]
     request_body = {
         "model": model,
         "messages": messages,
@@ -891,7 +1007,7 @@ def _open_ollama_request(
         method="POST",
     )
 
-    response = _open_provider_request(request, timeout=180)
+    response = _open_provider_request(request, timeout=_provider_call_timeout())
     return model, response
 
 
@@ -944,6 +1060,19 @@ def _read_json_response(response, invalid_json_message: str) -> dict[str, object
     return parsed
 
 
+def _provider_call_timeout() -> float:
+    """Seconds one model reply may take (`COPYLOT_AI_CALL_TIMEOUT`, default 300)."""
+    return float(env_int("COPYLOT_AI_CALL_TIMEOUT", 300, minimum=30))
+
+
+def _with_image(messages: list[dict[str, str]], image: str | None, part) -> list[dict]:
+    """The last user message with the plot image added in the provider's format."""
+    sent: list[dict] = [dict(message) for message in messages]
+    if image and sent and sent[-1].get("role") == "user":
+        sent[-1]["content"] = part(str(sent[-1]["content"]), image)
+    return sent
+
+
 def _openai_chat_text(
     *,
     model: str,
@@ -951,14 +1080,19 @@ def _openai_chat_text(
     messages: list[dict[str, str]],
     temperature: float,
     max_tokens: int,
+    image: str | None = None,
 ) -> str:
-    request_body = {
+    request_body: dict[str, object] = {
         "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "messages": _with_image(messages, image, lambda text, url: [
+            {"type": "text", "text": text}, {"type": "image_url", "image_url": {"url": url}}]),
+        # max_completion_tokens is accepted by every current chat model and is the
+        # only limit reasoning models (o-series, GPT-5) accept.
+        "max_completion_tokens": max_tokens,
         "stream": False,
     }
+    if not reasoning_model("openai", model):
+        request_body["temperature"] = temperature
     request = urllib.request.Request(
         _OPENAI_CHAT_ENDPOINT,
         data=json.dumps(request_body).encode("utf-8"),
@@ -968,7 +1102,7 @@ def _openai_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=180, provider="OpenAI")
+    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI")
     parsed = _read_json_response(response, "OpenAI returned invalid JSON.")
     choices = parsed.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -992,11 +1126,15 @@ def _anthropic_chat_text(
     messages: list[dict[str, str]],
     temperature: float,
     max_tokens: int,
+    image: str | None = None,
 ) -> str:
     system_text, dialogue = _extract_system_and_dialogue(messages)
     request_body: dict[str, object] = {
         "model": model,
-        "messages": dialogue,
+        "messages": _with_image(dialogue, image, lambda text, url: [
+            {"type": "image", "source": {"type": "base64", "media_type": url[5:url.index(";")],
+                                         "data": url.split(",", 1)[1]}},
+            {"type": "text", "text": text}]),
         "max_tokens": max_tokens,
     }
     # Use provider defaults: recent Anthropic models reject sampling overrides.
@@ -1012,7 +1150,7 @@ def _anthropic_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=180, provider="Anthropic")
+    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="Anthropic")
     parsed = _read_json_response(response, "Anthropic returned invalid JSON.")
     blocks = parsed.get("content")
     if not isinstance(blocks, list) or not blocks:
@@ -1039,6 +1177,7 @@ def _gemini_chat_text(
     messages: list[dict[str, str]],
     temperature: float,
     max_tokens: int,
+    image: str | None = None,
 ) -> str:
     system_text, dialogue = _extract_system_and_dialogue(messages)
     contents: list[dict[str, object]] = []
@@ -1053,6 +1192,9 @@ def _gemini_chat_text(
                 "parts": [{"text": text}],
             }
         )
+    if image and contents and contents[-1]["role"] == "user":
+        contents[-1]["parts"] = [*contents[-1]["parts"], {"inline_data": {  # type: ignore[misc]
+            "mime_type": image[5:image.index(";")], "data": image.split(",", 1)[1]}}]
     request_body: dict[str, object] = {
         "contents": contents,
         "generationConfig": {
@@ -1073,7 +1215,7 @@ def _gemini_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=180, provider="Gemini")
+    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="Gemini")
     parsed = _read_json_response(response, "Gemini returned invalid JSON.")
     candidates = parsed.get("candidates")
     if not isinstance(candidates, list) or not candidates:
@@ -1158,6 +1300,50 @@ def _ollama_context_limits(model: str, endpoint_override: str | None = None) -> 
     return floor, ceiling
 
 
+def assistant_profile(payload: ChatRequest) -> str:
+    """The planner profile for this request: the user's level, else the model's."""
+    chosen = LEVELS.get(getattr(payload, "assistantLevel", "auto") or "auto")
+    if chosen:
+        return chosen
+    provider = _resolve_provider(payload.provider)
+    try:
+        model = _resolve_chat_model(payload, provider) if provider != "ollama" else _resolve_model(payload.model, payload.ollamaUrl)
+        endpoint = payload.ollamaUrl if provider == "ollama" else payload.localServerUrl
+        return model_capability(provider, model, endpoint).contextTier
+    except Exception:  # the profile is an optimisation; the safe level still works
+        return "compact"
+
+
+def assistant_output_tokens(payload: ChatRequest) -> int:
+    """Reply budget for this request: its level's room plus thinking room for reasoning models."""
+    provider = _resolve_provider(payload.provider)
+    profile = assistant_profile(payload)
+    try:
+        model = _resolve_chat_model(payload, provider) if provider != "ollama" else _resolve_model(payload.model, payload.ollamaUrl)
+        endpoint = payload.ollamaUrl if provider == "ollama" else payload.localServerUrl
+        capability = model_capability(provider, model, endpoint)
+        thinks, window = bool(getattr(capability, "reasoning", False)), capability.contextWindow
+    except Exception:
+        thinks, window = False, None
+    return output_tokens(profile, thinks, window)
+
+
+def assistant_input_limit(payload: ChatRequest) -> int:
+    """Characters one prompt may carry: 24,000, more for an Advanced model with a large window."""
+    provider = _resolve_provider(payload.provider)
+    try:
+        model = _resolve_chat_model(payload, provider) if provider != "ollama" else _resolve_model(payload.model, payload.ollamaUrl)
+        endpoint = payload.ollamaUrl if provider == "ollama" else payload.localServerUrl
+        window = model_capability(provider, model, endpoint).contextWindow
+    except Exception:
+        window = None
+    return input_limit(assistant_profile(payload), window)
+
+
+def assistant_output_reserve(payload: ChatRequest) -> int:
+    return assistant_output_tokens(payload) + 128
+
+
 def assistant_prompt_budget(payload: ChatRequest) -> tuple[int, int]:
     """(preferred, maximum) prompt tokens for this provider/model, reply reserve excluded.
 
@@ -1167,6 +1353,12 @@ def assistant_prompt_budget(payload: ChatRequest) -> tuple[int, int]:
     size is still bounded by ASSISTANT_INPUT_MAX_CHARS.
     """
     provider = _resolve_provider(payload.provider)
+    if provider == "openai_compatible":
+        from app.services import local_ai_server
+
+        window = local_ai_server.context_tokens(payload.localServerUrl, payload.apiKey)
+        reserve = assistant_output_reserve(payload)
+        return window - reserve, window - reserve
     if provider != "ollama":
         return _CLOUD_PROMPT_TOKENS, _CLOUD_PROMPT_TOKENS
     try:
@@ -1174,12 +1366,14 @@ def assistant_prompt_budget(payload: ChatRequest) -> tuple[int, int]:
     except ValueError:
         model = ""
     floor, ceiling = _ollama_context_limits(model, payload.ollamaUrl)
-    return floor - ASSISTANT_OUTPUT_RESERVE, ceiling - ASSISTANT_OUTPUT_RESERVE
+    reserve = assistant_output_reserve(payload)
+    return floor - reserve, ceiling - reserve
 
 
-def _ollama_num_ctx(model: str, endpoint_override: str | None, prompt_tokens: int) -> int:
+def _ollama_num_ctx(model: str, endpoint_override: str | None, prompt_tokens: int,
+                    reserve: int = ASSISTANT_OUTPUT_RESERVE) -> int:
     floor, ceiling = _ollama_context_limits(model, endpoint_override)
-    needed = prompt_tokens + ASSISTANT_OUTPUT_RESERVE
+    needed = prompt_tokens + reserve
     key = f"{_resolve_ollama_base_url(endpoint_override)}|{model}"
     if needed <= floor:
         with _NUM_CTX_LOCK:
@@ -1198,13 +1392,24 @@ def _ollama_num_ctx(model: str, endpoint_override: str | None, prompt_tokens: in
     return chosen
 
 
-def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, schema=None) -> tuple[str, str]:
-    """Bounded completion for the assistant's planner or evidence explanation."""
+def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, schema=None,
+                         image: str | None = None, effort: str | None = None) -> tuple[str, str]:
+    """Bounded completion for the assistant's planner or evidence explanation.
+
+    The reply budget follows the model's level and whether it thinks first
+    (`assistant_output_tokens`). ``image`` (a data URL of the rendered plot)
+    goes with the user message to providers that accept images."""
+    from app.services import assistant_progress
+
     provider = _resolve_provider(payload.provider)
+    max_tokens = assistant_output_tokens(payload)
+    reserve = max_tokens + 128
     require_cloud_ai_consent(provider)
-    if len(data) > ASSISTANT_INPUT_MAX_CHARS:
+    assistant_progress.update(getattr(payload, "progressId", None), "waiting")
+    assistant_progress.next_call(getattr(payload, "progressId", None))
+    if len(data) > assistant_input_limit(payload):
         raise ValueError("This assistant request is too large. Ask a shorter, more focused question.")
-    if provider != "ollama":
+    if provider not in LOCAL_PROVIDERS:
         # The instruction carries generated context too (controls, labels), so
         # both messages are checked before anything leaves the machine.
         _validate_cloud_analysis_context(instruction)
@@ -1215,10 +1420,12 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
             model_name = _resolve_model(payload.model, payload.ollamaUrl)
         except ValueError:
             model_name = ""  # _open_ollama_request reports the missing model
+        check_ai_operator_policy(provider, model_name)
         num_ctx = _ollama_num_ctx(model_name, payload.ollamaUrl,
-                                  estimate_tokens(instruction, data))
+                                  estimate_tokens(instruction, data), reserve)
         model, response = _open_ollama_request(
             payload, messages=messages, output_schema=schema, num_ctx=num_ctx,
+            num_predict=max_tokens, image=image,
         )
         parsed = _read_json_response(response, "Ollama returned invalid JSON.")
         # Reasoning text is not an answer or an executable plan.
@@ -1233,12 +1440,135 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
                 f"The request filled the model's {num_ctx}-token context window before the reply was complete. "
                 "Nothing was changed. Ask a narrower question or collapse the advanced plot options.")
         if parsed.get("done_reason") == "length":
-            raise ValueError("The assistant response was incomplete. Ask for a smaller step.")
+            raise ValueError(f"The model used its whole reply budget ({max_tokens} tokens) before it finished. "
+                             "Nothing was changed. Ask for a smaller step.")
+    elif provider == "openai_compatible":
+        from app.services import local_ai_server
+
+        model = _resolve_local_server_model(payload)
+        check_ai_operator_policy(provider, model)
+        window = local_ai_server.context_tokens(payload.localServerUrl, payload.apiKey)
+        if estimate_tokens(instruction, data) + reserve > window:
+            raise AssistantContextExhausted(
+                f"This request needs about {estimate_tokens(instruction, data) + reserve} tokens "
+                f"but the local AI server's context is {window}. Nothing was changed. Ask a narrower question, "
+                "collapse the advanced plot options, or start the server with a larger context.")
+        text = local_ai_server.chat_text(payload, messages, model=model, schema=schema, context_window=window,
+                                         max_tokens=max_tokens, image=image, effort=effort)
     else:
         model = _resolve_chat_model(payload, provider)
+        check_ai_operator_policy(provider, model)
         completion = {"openai": _openai_chat_text, "anthropic": _anthropic_chat_text, "gemini": _gemini_chat_text}[provider]
         text = completion(model=model, api_key=_resolve_api_key(payload, provider), messages=messages,
-                          temperature=0, max_tokens=1024)
+                          temperature=0, max_tokens=max_tokens, image=image)
     if not isinstance(text, str) or not text.strip():
         raise ValueError("The assistant returned no usable answer.")
     return model, text.strip()
+
+
+
+class NativeToolsUnavailable(ValueError):
+    """This provider or model does not take tool calls; the JSON plan is used instead."""
+
+
+def native_tools_supported(payload: ChatRequest) -> bool:
+    """Whether the assistant may offer this model native tools (Advanced models only, see assistant_tools)."""
+    if not env_flag("COPYLOT_AI_NATIVE_TOOLS", True):
+        return False
+    provider = _resolve_provider(payload.provider)
+    try:
+        if provider == "openai_compatible":
+            from app.services import local_ai_server
+
+            model = _resolve_local_server_model(payload)
+            return bool(local_ai_server.model_metadata(payload.localServerUrl, model, payload.apiKey).get("tools"))
+        if provider == "ollama":
+            model = _resolve_model(payload.model, payload.ollamaUrl)
+            return bool(model_capability("ollama", model, payload.ollamaUrl).supportsTools)
+        return provider == "openai"
+    except ValueError:
+        return False
+
+
+def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[dict], *,
+                        image: str | None = None, effort: str | None = None) -> tuple[str, dict]:
+    """One model turn with tools; returns (model, assistant message with any tool_calls).
+
+    Same budget, consent, operator policy and context checks as assistant_completion."""
+    from app.services import assistant_progress
+
+    provider = _resolve_provider(payload.provider)
+    require_cloud_ai_consent(provider)
+    text = json.dumps(messages)
+    if len(text) > assistant_input_limit(payload) * 2:
+        raise ValueError("This assistant request is too large. Ask a shorter, more focused question.")
+    if provider not in LOCAL_PROVIDERS:
+        _validate_cloud_analysis_context(text)
+    max_tokens = assistant_output_tokens(payload)
+    progress = getattr(payload, "progressId", None)
+    assistant_progress.update(progress, "waiting")
+    assistant_progress.next_call(progress)
+    if provider == "openai_compatible":
+        from app.services import local_ai_server
+
+        model = _resolve_local_server_model(payload)
+        check_ai_operator_policy(provider, model)
+        window = local_ai_server.context_tokens(payload.localServerUrl, payload.apiKey)
+        if estimate_tokens(text) + max_tokens + 128 > window:
+            raise AssistantContextExhausted(
+                f"This request needs more than the local AI server's {window}-token context. Nothing was changed.")
+        try:
+            message = local_ai_server.chat_message(payload, messages, model=model, schema=None, context_window=window,
+                                                   max_tokens=max_tokens, image=image, tools=tools, effort=effort)
+        except local_ai_server.ToolsUnsupported as exc:
+            raise NativeToolsUnavailable(str(exc)) from exc
+        return model, message
+    if provider == "ollama":
+        model = _resolve_model(payload.model, payload.ollamaUrl)
+        check_ai_operator_policy(provider, model)
+        num_ctx = _ollama_num_ctx(model, payload.ollamaUrl, estimate_tokens(text), max_tokens + 128)
+        sent = [dict(message) for message in messages]
+        for message in sent:  # Ollama takes tool arguments as objects
+            for call in message.get("tool_calls") or []:
+                function = call.get("function", {})
+                if isinstance(function.get("arguments"), str):
+                    function["arguments"] = json.loads(function["arguments"] or "{}")
+        if image and sent and sent[-1].get("role") == "user":
+            sent[-1]["images"] = [image.split(",", 1)[1]]
+        body = {"model": model, "messages": sent, "tools": tools, "stream": False,
+                "think": env_flag("COPYLOT_OLLAMA_THINK", False),
+                "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": num_ctx}}
+        request = urllib.request.Request(_resolve_endpoint(payload.ollamaUrl), data=json.dumps(body).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        parsed = _read_json_response(_open_provider_request(request, timeout=_provider_call_timeout()),
+                                     "Ollama returned invalid JSON.")
+        message = parsed.get("message") if isinstance(parsed.get("message"), dict) else {}
+        if parsed.get("done_reason") == "length":
+            raise ValueError(f"The model used its whole reply budget ({max_tokens} tokens) before it finished. "
+                             "Nothing was changed. Ask for a smaller step.")
+        for call in message.get("tool_calls") or []:
+            function = call.get("function", {})
+            if not isinstance(function.get("arguments"), str):
+                function["arguments"] = json.dumps(function.get("arguments") or {})
+        return model, message
+    if provider == "openai":
+        model = _resolve_chat_model(payload, provider)
+        check_ai_operator_policy(provider, model)
+        body = {"model": model, "messages": _with_image(messages, image, lambda content, url: [
+            {"type": "text", "text": content}, {"type": "image_url", "image_url": {"url": url}}]),
+            "tools": tools, "tool_choice": "required", "max_completion_tokens": max_tokens, "stream": False}
+        if not reasoning_model("openai", model):
+            body["temperature"] = 0
+        request = urllib.request.Request(_OPENAI_CHAT_ENDPOINT, data=json.dumps(body).encode("utf-8"), headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {_resolve_api_key(payload, provider)}"},
+            method="POST")
+        parsed = _read_json_response(_open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI"),
+                                     "OpenAI returned invalid JSON.")
+        choices = parsed.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        if first.get("finish_reason") == "length":
+            raise ValueError(f"The model used its whole reply budget ({max_tokens} tokens) before it finished. "
+                             "Nothing was changed. Ask for a smaller step.")
+        message = first.get("message")
+        return model, message if isinstance(message, dict) else {}
+    raise NativeToolsUnavailable(f"{provider} is used through the JSON plan.")

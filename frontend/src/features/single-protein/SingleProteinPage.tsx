@@ -1,14 +1,17 @@
 import PlotImage from "../../components/PlotImage";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
+import OptionsLayout from "../../components/OptionsLayout";
 import { AssistantSelect } from "../../components/AssistantFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { SizeRow, MultiSelectField, NumericField, Checkbox } from "../../components/PlotFields";
+import { SizeRow, MultiSelectField } from "../../components/PlotFields";
+import CheckboxField from "../../components/CheckboxField";
+import NumberField from "../../components/NumberField";
 import { collectColumns } from "../../lib/tableData";
-import { rowsToCsv } from "../../lib/tableData";
+import { csvDataUrl, rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildPlotUrl, getSingleProteinOptions, getSingleProteinTable, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot, useDatasetRevision } from "../../lib/datasetAvailability";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
@@ -508,7 +511,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     if (tableRows.length === 0) return null;
     const columns = collectColumns(tableRows);
     if (columns.length === 0) return null;
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableRows, columns))}`;
+    return csvDataUrl(rowsToCsv(tableRows, columns));
   }, [tableRows]);
   const tableWarnings = useMemo(
     () =>
@@ -613,24 +616,8 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           <h3 className="text-lg font-semibold text-slate-900">{plotTitle(activeTab)}</h3>
           {plotView ? (
             <div className="flex flex-wrap items-center gap-2">
-              <AssistantSelect
-                value={downloadFormat}
-                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-              >
-                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </AssistantSelect>
-              <a
-                href={plotDownloadUrl}
-                download={plotDownloadFilename}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+                href={plotDownloadUrl} filename={plotDownloadFilename} />
               <NotebookDownload plotUrl={plotView.url} rendered={notebook} />
             </div>
           ) : null}
@@ -686,7 +673,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               {tableError}
             </div>
           ) : (
-            <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." />
+            <PreviewTable rows={tableRows} emptyText="No table rows available for the current selection." plotSummary />
           )}
         </div>
       </section>
@@ -703,7 +690,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
 
     if (activeTab === "boxplot") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[
             <SelectField
               key="identifier"
@@ -731,7 +718,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             />,
             ...(box.dots
               ? [
-                  <NumericField
+                  <NumberField
                     key="randomSeed"
                     label="Random Seed"
                     value={box.randomSeed}
@@ -743,11 +730,11 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
               : []),
           ]}
           toggles={[
-            <Checkbox key="dots" label="Toggle Dots" checked={box.dots} onChange={(value) => setBox({ ...box, dots: value })} />,
-            <Checkbox key="sampleN" label="Toggle Sample n" checked={box.sampleN} onChange={(value) => setBox({ ...box, sampleN: value })} />,
-            <Checkbox key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(value) => setBox({ ...box, outliers: value })} />,
+            <CheckboxField key="dots" label="Toggle Dots" checked={box.dots} onChange={(value) => setBox({ ...box, dots: value })} />,
+            <CheckboxField key="sampleN" label="Toggle Sample n" checked={box.sampleN} onChange={(value) => setBox({ ...box, sampleN: value })} />,
+            <CheckboxField key="outliers" label="Toggle Outliers" checked={box.outliers} onChange={(value) => setBox({ ...box, outliers: value })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={box.widthCm}
               heightCm={box.heightCm}
@@ -763,7 +750,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
 
     if (activeTab === "lineplot") {
       return (
-        <OptionsLayout
+        <OptionsLayout columns={2}
           fields={[
             <SelectField
               key="identifier"
@@ -791,10 +778,10 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
             />,
           ]}
           toggles={[
-            <Checkbox key="id" label="Toggle ID" checked={line.includeId} onChange={(value) => setLine({ ...line, includeId: value })} />,
-            <Checkbox key="na-low" label="Show NA as low" checked={line.showNaLow} onChange={(value) => setLine({ ...line, showNaLow: value })} />,
+            <CheckboxField key="id" label="Toggle ID" checked={line.includeId} onChange={(value) => setLine({ ...line, includeId: value })} />,
+            <CheckboxField key="na-low" label="Show NA as low" checked={line.showNaLow} onChange={(value) => setLine({ ...line, showNaLow: value })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               widthCm={line.widthCm}
               heightCm={line.heightCm}
@@ -809,7 +796,7 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
     }
 
     return (
-      <OptionsLayout
+      <OptionsLayout columns={2}
         fields={[
           <SelectField
             key="identifier"
@@ -851,12 +838,12 @@ export default function SingleProteinPage({ activeTab, onContextModeChange, adva
           />,
         ]}
         toggles={[
-          <Checkbox key="id" label="Toggle ID" checked={heatmap.includeId} onChange={(value) => setHeatmap({ ...heatmap, includeId: value })} />,
-          <Checkbox key="filter" label="Filter *_M1" checked={heatmap.filterM1} onChange={(value) => setHeatmap({ ...heatmap, filterM1: value })} />,
-          <Checkbox key="rows" label="Cluster Rows" checked={heatmap.clusterRows} onChange={(value) => setHeatmap({ ...heatmap, clusterRows: value })} />,
-          <Checkbox key="cols" label="Cluster Columns" checked={heatmap.clusterCols} onChange={(value) => setHeatmap({ ...heatmap, clusterCols: value })} />,
+          <CheckboxField key="id" label="Toggle ID" checked={heatmap.includeId} onChange={(value) => setHeatmap({ ...heatmap, includeId: value })} />,
+          <CheckboxField key="filter" label="Filter *_M1" checked={heatmap.filterM1} onChange={(value) => setHeatmap({ ...heatmap, filterM1: value })} />,
+          <CheckboxField key="rows" label="Cluster Rows" checked={heatmap.clusterRows} onChange={(value) => setHeatmap({ ...heatmap, clusterRows: value })} />,
+          <CheckboxField key="cols" label="Cluster Columns" checked={heatmap.clusterCols} onChange={(value) => setHeatmap({ ...heatmap, clusterCols: value })} />,
         ]}
-        sizeRow={
+        size={
           <SizeRow
             widthCm={heatmap.widthCm}
             heightCm={heatmap.heightCm}
@@ -875,22 +862,4 @@ function plotTitle(tab: SingleProteinTab): string {
   if (tab === "boxplot") return "Protein Boxplot";
   if (tab === "lineplot") return "Protein Lineplot";
   return "Phosphosites on Protein Heatmap";
-}
-
-function OptionsLayout({
-  fields,
-  toggles,
-  sizeRow,
-}: {
-  fields: ReactNode[];
-  toggles: ReactNode[];
-  sizeRow: ReactNode;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-2">{fields}</div>
-      <div className="flex flex-wrap gap-3">{toggles}</div>
-      <div>{sizeRow}</div>
-    </div>
-  );
 }

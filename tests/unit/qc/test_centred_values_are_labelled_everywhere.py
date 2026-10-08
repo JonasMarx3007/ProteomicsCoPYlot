@@ -29,7 +29,6 @@ matplotlib.use("Agg")
 from app.services import plot_images as P
 from app.services.annotation_store import get_annotation
 from app.services.functions import intensity_unit_label
-from app.services.viewer_bootstrap import load_viewer_state
 
 RATIO = "Ratio to Site Median"
 

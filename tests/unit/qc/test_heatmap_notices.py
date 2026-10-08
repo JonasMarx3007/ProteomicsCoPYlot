@@ -1,7 +1,6 @@
 """Notices travel with the actual rendered matrix, including report/cache output."""
 
 import copy
-from pathlib import Path
 from urllib.parse import unquote
 
 import numpy as np

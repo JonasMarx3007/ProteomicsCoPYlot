@@ -86,6 +86,10 @@ if __name__ == "__main__":
                         reply["module"] = "stats.ora"
                 elif "source" in kwargs["schema"]["properties"]:
                     reply = {"source": "current_result", "query": ""}
+                elif "answer" in kwargs["schema"]["properties"]:
+                    # An Advanced model's written answer: the stub declines, so the
+                    # application's sentence catalogue answers and the evidence checks hold.
+                    raise ValueError("scripted stub writes no prose")
                 else:
                     catalogue = json.loads(data)["catalogue"]
                     role = "observations" if catalogue["observations"] else "methods"

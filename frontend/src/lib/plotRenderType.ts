@@ -13,7 +13,7 @@
  * `frontend/tests/unit/plot-render-type-rule.test.tsx` holds every pair to this.
  */
 
-export const STATIC_SIZE_KEYS = ["widthCm", "heightCm", "dpi"] as const;
+const STATIC_SIZE_KEYS = ["widthCm", "heightCm", "dpi"] as const;
 
 type StaticSizeKey = (typeof STATIC_SIZE_KEYS)[number];
 

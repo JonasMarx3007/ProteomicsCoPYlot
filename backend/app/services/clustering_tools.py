@@ -117,7 +117,7 @@ def row_zscore(matrix):
     One definition for every heatmap: the ANOVA heatmaps used the population
     SD (ddof=0) while the pathway and phosphosite heatmaps used ddof=1, and all
     three said "z-score". ddof=1 is the convention of the tool's other
-    statistics and of the R package. A row with no spread (or a non-finite SD)
+    statistics and of the R functions. A row with no spread (or a non-finite SD)
     is centred and left at zero rather than made undefined, as R does.
     """
     values = np.asarray(matrix, dtype=float)

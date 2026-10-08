@@ -61,9 +61,13 @@ def rename_cols(df: pd.DataFrame) -> pd.DataFrame:
         "pgproteingroups": "ProteinNames",
         "proteinids": "ProteinNames",
         "proteinnames": "ProteinNames",
+        # FragPipe combined_protein.tsv: "Protein" (the full FASTA header) and
+        # "Gene". "Protein ID" (the bare accession) stays as it is.
+        "protein": "ProteinNames",
         "genes": "GeneNames",
         "genenames": "GeneNames",
         "pggenes": "GeneNames",
+        "gene": "GeneNames",
         "pepstrippedsequence": "Stripped.Sequence",
         "egmodifiedsequence": "Modified.Sequence",
         "fgquantity": "Precursor.Quantity",

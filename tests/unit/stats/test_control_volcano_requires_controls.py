@@ -4,13 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.main import app
 from app.services import stats_tools
-from app.services.viewer_bootstrap import load_viewer_state
 
 BASE = {
     "kind": "protein",

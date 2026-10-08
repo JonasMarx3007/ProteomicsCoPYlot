@@ -10,11 +10,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 
 from app.services import stats_tools as st
-from app.services.functions import (
-    paired_test_enabled,
-    resolve_test_type,
-    variance_model,
-)
+from app.services.functions import resolve_test_type
+# The legacy `paired="Paired"/"Unpaired"` argument lives only in the notebook packages.
+from proteomicscopylot.notebook_functions import paired_test_enabled, variance_model
 
 UNPAIRED_MODELS = ["unpaired", "unpaired_welch"]
 

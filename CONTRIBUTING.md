@@ -29,9 +29,8 @@ need to reproduce a CI result exactly.
 
 ## Running the checks
 
-Everything below except `mypy` is what CI runs, so a green local run should mean
-a green pull request. `mypy` is a local tool for the code you touch (see "Type
-checking" below).
+Everything below is what CI runs, so a green local run should mean a green pull
+request.
 
 ```bash
 # All Python tests (CI: every Python 3.10-3.13, plus Windows; the package
@@ -42,13 +41,13 @@ pytest -q
 ruff check .
 python tools/check_backend_rules.py   # backend code-shape rules ruff lacks
 
-# Types (Python) -- local only, not run in CI; see "Type checking" below
-mypy backend/app/services/your_module.py
+# Types (Python) -- CI pins mypy 2.3.1; see "Type checking" below
+mypy
 
 # Coverage -- CI fails below `fail_under` in pyproject.toml
 pytest --cov --cov-report=term-missing
 
-# The R package's own tests (testthat)
+# The R functions' own tests (testthat)
 Rscript tests/r/test_notebook_functions.R
 ```
 
@@ -123,16 +122,12 @@ moved and why.
 
 ### Type checking
 
-`mypy` is configured leniently and is **not** run in CI. It reports around 360
-pre-existing findings (October 2026), so treat it as a tool you point at the
-code you touched rather than a build step:
-
-```bash
-mypy backend/app/services/your_module.py
-```
-
-Please do not add to the count. Tightening a module is welcome as its own
-change, via a `[[tool.mypy.overrides]]` block.
+`mypy` is configured leniently and runs in CI. It is being adopted module by
+module: the modules that had findings when it entered CI (October 2026) are
+listed in `pyproject.toml` under `[[tool.mypy.overrides]]` with
+`ignore_errors = true`, and every other module must stay clean. To adopt a
+module, delete its line from that list and fix what `mypy` then reports, as a
+change of its own. Never add a module to the list.
 
 ## Pull requests
 
@@ -141,9 +136,11 @@ change, via a `[[tool.mypy.overrides]]` block.
 - Leave `CHANGELOG.md` as a placeholder until the first official release.
   After that, record changes under `## [Unreleased]`, marking changes to
   previously released numbers or labels as **Changed (breaking)**.
-- Do not edit the plot manuals (`frontend/public/manuals/`) or their build
-  copies. They are maintained separately, and a user-facing rename that
-  desynchronises them is a coordinated change, not an incidental one.
+- Do not edit the manual PDFs (`frontend/public/manuals/`) by hand. They are
+  built from the manual's LaTeX sources, which are maintained separately: one
+  PDF per page of the app (mapped in `frontend/src/lib/manualChapters.ts`) and
+  the complete book. A user-facing rename that desynchronises them is a
+  coordinated change, not an incidental one.
 
 ## Reporting a bug
 

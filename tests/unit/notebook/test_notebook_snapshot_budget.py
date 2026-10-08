@@ -8,6 +8,8 @@ the server-wide ceiling sits far above one session's share.
 from __future__ import annotations
 
 import pytest
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Barrier, Event
 
 from app.services.notebook_archive import NotebookRecipe
 from app.services.notebook_snapshots import NotebookSnapshots
@@ -17,6 +19,97 @@ from app.services.notebook_source import NotebookSource
 def _recipe(size: int) -> NotebookRecipe:
     return NotebookRecipe(plot_name="p", source=NotebookSource("", (), ()), calculation="", settings={},
         provenance={}, original_filename="", resources={"input.parquet": b"x" * size})
+
+
+@pytest.mark.parametrize('outcome', ['success', 'error', 'cancel', 'budget', 'logout', 'expired', 'evicted'])
+def test_simultaneous_downloads_prepare_once_and_recheck_access(monkeypatch, outcome):
+    from app.services import notebook_snapshots
+    from app.services.notebook_snapshots import PendingRecipe
+
+    started, waiting, release = Event(), Event(), Event()
+    now = [0.0]
+    store = NotebookSnapshots(max_bytes=1000, max_total_bytes=2000, per_session=1, ttl=10, clock=lambda: now[0])
+    calls = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiting.set()
+            return super().result(timeout=5)
+
+    monkeypatch.setattr(notebook_snapshots, 'Future', ObservedFuture)
+
+    def finish():
+        calls.append(1)
+        started.set()
+        assert release.wait(5)
+        if outcome == 'error':
+            raise ValueError('Failed preparation')
+        if outcome == 'cancel':
+            raise KeyboardInterrupt('Cancelled preparation')
+        return _recipe(3000 if outcome == 'budget' else 100)
+
+    pending = PendingRecipe(_recipe(10), finish)
+    token = store.capture('alice', pending)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(store.get, 'alice', token)
+        try:
+            assert started.wait(5)
+            with pytest.raises(KeyError):
+                store.get('mallory', token)
+            second = pool.submit(store.get, 'alice', token)
+            assert waiting.wait(5)
+            if outcome == 'logout':
+                store.clear_session('alice')
+            elif outcome == 'expired':
+                now[0] = 11
+            elif outcome == 'evicted':
+                store.capture('alice', _recipe(10))
+        finally:
+            release.set()
+        if outcome == 'success':
+            a, b = first.result(timeout=5), second.result(timeout=5)
+            assert a.resources == b.resources == {'input.parquet': b'x' * 100}
+            a.settings['changed'] = True
+            assert not b.settings and not store.get('alice', token).settings
+        else:
+            error = KeyboardInterrupt if outcome == 'cancel' else ValueError if outcome in ('error', 'budget') else KeyError
+            for task in (first, second):
+                with pytest.raises(error):
+                    task.result(timeout=5)
+    assert calls == [1]
+    assert not store._preparing
+    if outcome in ('error', 'cancel', 'budget'):
+        pending.finish = lambda: _recipe(20)
+        assert store.get('alice', token).resources['input.parquet'] == b'x' * 20
+    elif outcome != 'success':
+        with pytest.raises(KeyError):
+            store.get('alice', token)
+
+
+def test_independent_notebooks_prepare_concurrently():
+    from app.services.notebook_snapshots import PendingRecipe
+
+    store = NotebookSnapshots()
+    both = Barrier(2)
+
+    def finish():
+        both.wait(timeout=5)
+        return _recipe(20)
+
+    tokens = [store.capture('alice', PendingRecipe(_recipe(10), finish)) for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda token: store.get('alice', token), tokens))
+    assert all(item.resources['input.parquet'] == b'x' * 20 for item in results)
+
+
+def test_recursive_notebook_preparation_fails_without_hanging():
+    from app.services.notebook_snapshots import PendingRecipe
+
+    store = NotebookSnapshots()
+    token = store.capture('alice', PendingRecipe(_recipe(10), lambda: store.get('alice', token)))
+    with pytest.raises(RuntimeError, match='nested preparation'):
+        store.get('alice', token)
+    assert not store._preparing
 
 
 def test_one_session_cannot_evict_another_sessions_exports() -> None:

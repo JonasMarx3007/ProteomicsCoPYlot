@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * The statistical tests the UI offers are the ones the backend runs.
  *

@@ -60,7 +60,11 @@ def test_notebook_degenerate_families_match_backend_and_r(tmp_path, family, monk
         # log2FC is condition1 - condition2, so B being the higher condition
         # makes this feature downregulated.
         assert actual.loc["P1;P2", "significance"] == "Downregulated"
-        assert actual.loc["unequal", "neg_log10_selected_pval"] == 300
+        # Constant in both groups (1,1,1 vs 5,5,5): no variation, so no p-value
+        # at any projected n -- the volcano's rule, in all three implementations.
+        assert actual.loc["unequal", "significance"] == "Unavailable"
+        assert np.isnan(actual.loc["unequal", "pval"]) and np.isnan(actual.loc["unequal", "adj_pval"])
+        assert expected.loc["unequal", "significance"] == "Unavailable"
     else:
         assert anova.empty
     pd.testing.assert_frame_equal(data, before)
@@ -109,16 +113,7 @@ TEST_TYPES = (
 )
 
 
-def _rscript() -> str | None:
-    try:
-        from app.services.r_runtime import detect_r_runtime
-    except Exception:
-        return None
-    runtime = detect_r_runtime()
-    return str(runtime["executable"]) if runtime.get("available") else None
-
-
-RSCRIPT = _rscript()
+from _r_runtime import RSCRIPT
 requires_r = pytest.mark.requires_r()
 
 
@@ -515,8 +510,7 @@ def test_volcano_variance_models_agree(results, test_type: str) -> None:
 def test_anova_posthoc_agrees(results) -> None:
     python_result = results["python"]["anova_posthoc"]
     r_result = results["r"]["anova_posthoc"]
-    if python_result.empty and r_result.empty:
-        pytest.skip("no ANOVA-significant rows in the fixture")
+    assert not python_result.empty and not r_result.empty, "The fixture must exercise post-hoc comparisons"
     key = ["ProteinNames", "comparison"]
     merged = python_result.merge(r_result, on=key, suffixes=("_py", "_r"))
     assert len(merged) == len(python_result) == len(r_result), "post-hoc row sets differ"
@@ -854,10 +848,12 @@ def test_paired_constant_and_missing_edges(tmp_path) -> None:
     np.testing.assert_allclose(actual[["log2FC", "pval", "adj_pval", "n_pairs"]],
                                expected[["log2FC", "pval", "adj_pval", "n_pairs"]], rtol=1e-9, atol=1e-12)
     _, counts, backend_p = paired_t_test(differences[:6])
-    np.testing.assert_allclose(actual.pval, backend_p, rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(actual.pval.iloc[4:], backend_p[4:], rtol=1e-9, atol=1e-12)
     np.testing.assert_array_equal(actual.n_pairs, counts)
-    assert actual.pval.iloc[:2].tolist() == [0., 0.]
-    assert np.isnan(actual.pval.iloc[2])
-    assert 0 < actual.pval.iloc[3] < 1e-30
+    # Identical differences (also within float noise, row 3) have no variation:
+    # no p-value in every implementation, where the bare t-test gives 0 or ~1e-47.
+    assert np.isnan(actual.pval.iloc[:4]).all()
+    assert (actual.significance.iloc[:4] == "Unavailable").all()
+    assert 0 < backend_p[3] < 1e-30
     np.testing.assert_allclose(actual.pval.iloc[4:],
                                [ttest_1samp(row[np.isfinite(row)], 0).pvalue for row in differences[4:6]])

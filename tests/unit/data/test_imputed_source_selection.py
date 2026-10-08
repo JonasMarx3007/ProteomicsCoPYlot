@@ -3,7 +3,6 @@
 Split out of test_small_bugs.py (2026-10-02)."""
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import numpy as np
@@ -12,11 +11,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.services import upload_limits
-from app.services.completeness_tools import (
-    _missing_value_plot_from_matrix,
-    _peptide_quantity_column,
-)
 
 
 

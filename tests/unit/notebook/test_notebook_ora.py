@@ -13,8 +13,6 @@ from app.schemas.stats import EnrichmentRequest, EnrichmentResultResponse, Enric
 from app.services import stats_tools
 from app.services.notebook_archive import NotebookRecipe, build_notebook_archive, dataframe_bytes
 from app.services.notebook_ora import ora_module, ora_source
-from test_notebook_volcano import inputs
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.fixture

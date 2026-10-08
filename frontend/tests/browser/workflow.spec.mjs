@@ -145,6 +145,7 @@ test(`phosphosite ${name} and table export the same notebook`, async ({ page }, 
   const plot = page.getByRole('img', { name: title, exact: true });
   const previousImage = await plot.getAttribute('src');
   await field(page, 'Width (cm)', 'input').fill('17');
+  await field(page, 'Width (cm)', 'input').press('Tab');  // number fields commit on leaving the field
   await expect(plot).not.toHaveAttribute('src', previousImage);
   await expect(buttons.nth(1)).toBeEnabled();
   const ready = page.waitForEvent('download');
@@ -153,6 +154,7 @@ test(`phosphosite ${name} and table export the same notebook`, async ({ page }, 
   await page.route(`**/api/plots/phospho/${endpoint}.png*`, route =>
     route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ detail: 'Unavailable plot' }) }));
   await field(page, 'Width (cm)', 'input').fill('18');
+  await field(page, 'Width (cm)', 'input').press('Tab');  // number fields commit on leaving the field
   await expect(buttons.nth(0)).toBeDisabled();
   await expect(buttons.nth(1)).toBeDisabled();
 });
@@ -165,12 +167,22 @@ test('regulation interactive plot and table export the same notebook', async ({ 
   await field(page, 'Condition 1').selectOption('A');
   await field(page, 'Condition 2').selectOption('B');
   await field(page, 'P-value Threshold', 'input').fill('0.9');
+  // Number fields commit on blur, and the plot re-renders after a debounce.
+  // Blur the last field and wait for the render that carries both thresholds;
+  // otherwise the first click commits the value, and the plot's export button
+  // still hands out the notebook of the previous render.
+  const rerendered = page.waitForResponse(r =>
+    r.url().includes('/api/plots/phospho/phosprot-regulation.html')
+    && /[?&]log2fcThreshold=0(&|$)/.test(r.url()) && /[?&]pValueThreshold=0\.9(&|$)/.test(r.url()));
   await field(page, 'log2 FC Threshold', 'input').fill('0');
+  await page.keyboard.press('Tab');
+  await rerendered;
   const buttons = page.getByRole('button', { name: 'Export notebook', exact: true });
   await expect(buttons).toHaveCount(2);
+  await expect(buttons.nth(0)).toBeEnabled();
+  await expect(buttons.nth(1)).toBeEnabled();
   const archives = [];
   for (const index of [0, 1]) {
-    await expect(buttons.nth(index)).toBeEnabled();
     const pending = page.waitForEvent('download');
     await buttons.nth(index).click();
     const download = await pending;
@@ -248,7 +260,7 @@ test('coverage plot and processed table download the same notebook snapshot', as
   expect(downloads[0].equals(downloads[1])).toBe(true);
   await page.getByLabel('Summary Type', { exact: true }).check();
   await expect(buttons.nth(1)).toBeEnabled();
-  await expect(page.getByRole('columnheader', { name: 'mean', exact: true })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Mean', exact: true })).toBeVisible();
   const pending = page.waitForEvent('download');
   await buttons.nth(1).click();
   const summary = await pending;
@@ -257,7 +269,7 @@ test('coverage plot and processed table download the same notebook snapshot', as
   for (const [name, filename, mode] of [
     ['Boxplot Intensity', 'Intensity_Boxplot.zip', 'Mean'],
     ['Boxplot Intensity', 'Intensity_Boxplot.zip', 'Single'],
-    ['Cov Plot', 'Coefficient_of_Variation.zip', null],
+    ['CV Plot', 'Coefficient_of_Variation.zip', null],
   ]) {
     await tab(page, name).click();
     if (mode) await page.getByLabel('Type', { exact: true }).selectOption(mode);
@@ -409,7 +421,7 @@ test('collapsed phosphoprotein QC plots and tables offer matching notebook expor
   for (const [module, filename, paired] of [
     ['Coverage Plot', 'Coverage_Plot.zip', true],
     ['Boxplot Intensity', 'Intensity_Boxplot.zip', true],
-    ['Cov Plot', 'Coefficient_of_Variation.zip', true],
+    ['CV Plot', 'Coefficient_of_Variation.zip', true],
     ['Histogram Intensity', 'Intensity_Distribution.zip', false],
     ['Abundance Plot', 'Abundance_Plot.zip', false],
     ['Correlation Plot', 'Sample_Correlation.zip', false],
@@ -736,7 +748,7 @@ test('heatmap notice follows the rendered result and disappears on replacement f
   await expect(page.locator('img[alt*="ANOVA"]')).toHaveCount(0);
 });
 
-test('scientific assistant navigates, selects an entity and applies cumulative plot styling', async ({ page }) => {
+test('scientific assistant navigates, selects an entity and applies cumulative plot styling', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; provider answers are synthetic.');
   await annotated(page);
   let calls = 0;
@@ -794,10 +806,45 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
   await expect.poll(() => typeof releaseStaleReply).toBe('function');
   await tab(page, 'Protein Lineplot').click();
   releaseStaleReply();
-  await expect(page.getByText('The view or analysis changed while I was working. Please retry.', { exact: true })).toBeVisible();
+  // The reason is written into the conversation itself (2026-10-07), after any completed changes.
+  await expect(page.getByText(/(?:No changes applied\.|I stopped here:) The view or analysis changed while I was working\. Please retry\./)).toBeVisible();
 });
 
-test('scientific assistant explains the updated view after a mixed request', async ({ page }) => {
+test('a local OpenAI-compatible server lists its models through the app and needs no cloud consent', { tag: '@ai' }, async ({ page }) => {
+  test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode.');
+  // A stand-in for llama.cpp's server: OpenAI-compatible /v1, no Ollama /api.
+  const { createServer } = await import('node:http');
+  const standIn = createServer((request, response) => {
+    const send = (status, body) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body)); };
+    if (request.url === '/v1/models') send(200, { object: 'list', data: [{ id: 'glm5', object: 'model', owned_by: 'llamacpp' }] });
+    else send(404, { error: { code: 404, message: 'File Not Found' } });
+  });
+  await new Promise(resolve => standIn.listen(0, '127.0.0.1', resolve));
+  const address = `http://127.0.0.1:${standIn.address().port}/v1`;
+  try {
+    await annotated(page);
+    let sent;
+    await page.route('**/api/chat/assistant', async route => {
+      sent = route.request().postDataJSON();
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ model: 'glm5', answer: 'Answered locally.', actions: [], evidence: [], revision: 1 }) });
+    });
+    await tab(page, 'Open chatbot sidebar').click();
+    await tab(page, 'Toggle AI settings').click();
+    await page.getByLabel('Select chatbot provider').selectOption('openai_compatible');
+    await page.getByLabel('Local AI server address').fill(address);
+    await page.getByLabel('Local AI server address').press('Enter');
+    await expect(page.getByLabel('Select chatbot model')).toHaveValue('glm5');
+    await page.getByPlaceholder('Ask about this analysis...').fill('Explain the current plot.');
+    await tab(page, 'Send').click();
+    await expect(page.getByText('Answered locally.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Confirm and send' })).toHaveCount(0);
+    expect(sent).toMatchObject({ provider: 'openai_compatible', model: 'glm5', localServerUrl: address });
+  } finally {
+    standIn.close();
+  }
+});
+
+test('scientific assistant explains the updated view after a mixed request', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; all assistant responses are scripted.');
   await annotated(page);
   const requests = [];
@@ -861,7 +908,7 @@ test('volcano lists the rows it could not test and offers them for download', as
   expect(csv).not.toContain('K2,');
 });
 
-test('scientific assistant can set multiline volcano highlight terms', async ({ page }) => {
+test('scientific assistant can set multiline volcano highlight terms', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; assistant responses are scripted.');
   await annotated(page);
   await tab(page, 'Statistical Analysis').click();
@@ -891,7 +938,7 @@ test('scientific assistant can set multiline volcano highlight terms', async ({ 
   expect(calls).toBe(2);
 });
 
-test('assistant changes are logged and the last one can be undone', async ({ page }) => {
+test('assistant changes are logged and the last one can be undone', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; assistant responses are scripted.');
   await annotated(page);
   await tab(page, 'Statistical Analysis').click();
@@ -937,7 +984,7 @@ test('assistant changes are logged and the last one can be undone', async ({ pag
 });
 
 for (const destination of ['stats.simulation', 'data.distribution', 'phospho.ksea', 'analysis.canvas']) {
-  test(`scientific assistant receives current context for ${destination}`, async ({ page }) => {
+  test(`scientific assistant receives current context for ${destination}`, { tag: '@ai' }, async ({ page }) => {
     test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; assistant responses are scripted.');
     await annotated(page);
     let calls = 0;
@@ -988,7 +1035,7 @@ async function askForRealEvidence(page) {
   return { request: response.request().postDataJSON(), ...payload };
 }
 
-test('end-to-end evidence reads uploaded KSEA values and preserves rendered settings', async ({ page }) => {
+test('end-to-end evidence reads uploaded KSEA values and preserves rendered settings', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   const annotation = await annotated(page);
   await tab(page, 'Phospho-specific').click();
@@ -1027,7 +1074,7 @@ test('end-to-end evidence reads uploaded KSEA values and preserves rendered sett
   expect(stale.evidence[0].status).toBe('unavailable');
 });
 
-test('end-to-end evidence follows canvas contrast and p-value changes', async ({ page }) => {
+test('end-to-end evidence follows canvas contrast and p-value changes', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   await annotated(page);
   await tab(page, 'Analysis').click();
@@ -1169,7 +1216,7 @@ test('end-to-end evidence follows canvas contrast and p-value changes', async ({
   expect(remaining.request.view.mode.tileEvidence.find(tile => tile.type === 'proteinBoxplot').settings.conditions).toEqual(['B', 'A']);
 });
 
-test('end-to-end evidence preserves canvas data sources and matches dedicated tables', async ({ page }) => {
+test('end-to-end evidence preserves canvas data sources and matches dedicated tables', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   await annotated(page);
   await tab(page, 'Imputation').click();
@@ -1239,7 +1286,7 @@ test('end-to-end evidence preserves canvas data sources and matches dedicated ta
   }
 });
 
-for (const kind of ['protein', 'phospho']) test(`end-to-end evidence feature focus resolves ${kind} and preserves scope and existing tiles`, async ({ page }) => {
+for (const kind of ['protein', 'phospho']) test(`end-to-end evidence feature focus resolves ${kind} and preserves scope and existing tiles`, { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   const feature = kind === 'protein' ? 'P0' : 'K0';
   const level = kind === 'protein' ? 'protein' : 'phosphosite';
@@ -1454,7 +1501,7 @@ test('canvas layout preserves automatic linking, order and collapsed state', asy
   await canvas.screenshot({ path: test.info().outputPath('canvas-layout-controls.png') });
 });
 
-test('end-to-end evidence follows completed ORA results and clearing', async ({ page }) => {
+test('end-to-end evidence follows completed ORA results and clearing', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   await annotated(page);
   await tab(page, 'Analysis').click();
@@ -1542,7 +1589,7 @@ test('end-to-end evidence follows completed ORA results and clearing', async ({ 
   await expect(exportLink).toHaveCount(0);
 });
 
-test('end-to-end evidence follows control volcano contrasts and removal', async ({ page }) => {
+test('end-to-end evidence follows control volcano contrasts and removal', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   const names = ['A', 'B', 'C', 'D'].flatMap(group => [1, 2, 3, 4].map(n => `${group}${n}`));
   const table = ['UPD_seq,PTM_localization,Protein_group,Gene_group,PTM_Collapse_key,' + names.join(','),
@@ -1583,7 +1630,7 @@ test('end-to-end evidence follows control volcano contrasts and removal', async 
   expect(removed.evidence.some(e => e.tool.includes('volcanoControl'))).toBe(false);
 });
 
-test('scientific assistant verifies typed canvas additions and stops', async ({ page }) => {
+test('scientific assistant verifies typed canvas additions and stops', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the local scripted provider.');
   await annotated(page);
   await tab(page, 'Analysis').click();
@@ -1610,7 +1657,7 @@ test('scientific assistant verifies typed canvas additions and stops', async ({ 
 });
 
 for (const remove of [false, true]) {
-  test(`scientific assistant adds a canvas tile and ${remove ? 'removes it after approval' : 'preserves it after refusal'}`, async ({ page }) => {
+  test(`scientific assistant adds a canvas tile and ${remove ? 'removes it after approval' : 'preserves it after refusal'}`, { tag: '@ai' }, async ({ page }) => {
     test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
     await annotated(page);
     await tab(page, 'Analysis').click();
@@ -1649,7 +1696,7 @@ for (const remove of [false, true]) {
   });
 }
 
-test('scientific assistant offers ambiguous feature candidates without selecting', async ({ page }) => {
+test('scientific assistant offers ambiguous feature candidates without selecting', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
   await annotated(page);
   await tab(page, 'Single Protein').click();
@@ -1676,7 +1723,7 @@ test('scientific assistant offers ambiguous feature candidates without selecting
 });
 
 for (const repeatSearch of [false, true]) {
-test(`scientific assistant ${repeatSearch ? 'stops repeated searches without changing selection' : 'searches beyond the advertised entity options without selecting first'}`, async ({ page }) => {
+test(`scientific assistant ${repeatSearch ? 'stops repeated searches without changing selection' : 'searches beyond the advertised entity options without selecting first'}`, { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; replies are scripted.');
   const table = [sites.split('\n')[0], ...Array.from({ length: 80 }, (_, i) =>
     [`SEQ${i}S`, `S${i}`, `P${i}`, `G${i}`, `K${i}`, ...samples.map((_, j) => 12 + i * .1 + j * .12)].join(','))].join('\n');
@@ -1709,7 +1756,7 @@ test(`scientific assistant ${repeatSearch ? 'stops repeated searches without cha
 }
 
 for (const approved of [false, true]) {
-  test(`scientific assistant ${approved ? 'applies approved' : 'preserves declined'} methodological changes`, async ({ page }) => {
+  test(`scientific assistant ${approved ? 'applies approved' : 'preserves declined'} methodological changes`, { tag: '@ai' }, async ({ page }) => {
     test.skip(process.env.VITE_AI_ENABLED !== '1', 'Requires AI mode; provider answers are synthetic.');
     await annotated(page);
     await tab(page, 'Statistical Analysis').click();

@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +80,7 @@ from app.services.peptide_metadata_store import (
     snapshot_peptide_metadata_session_state,
 )
 from app.services.session_context import get_session_id
+from app.services.env_settings import env_int
 from app.services.upload_limits import upload_max_bytes, upload_size_bytes
 
 TableKind = Literal["protein", "phospho", "phosprot"]
@@ -120,63 +120,56 @@ def _current_restore_lock() -> RLock:
         return lock
 
 
-def _positive_env_bytes(name: str, default: int) -> int:
-    raw = str(os.getenv(name, "")).strip()
-    if not raw:
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError:
-        return default
-    return max(1, parsed)
-
-
 def restore_upload_max_bytes() -> int:
-    return _positive_env_bytes(
+    return env_int(
         "COPYLOT_RESTORE_UPLOAD_MAX_BYTES",
         _DEFAULT_RESTORE_UPLOAD_LIMIT_BYTES,
+        minimum=1,
     )
 
 
 def restore_expanded_max_bytes() -> int:
-    return _positive_env_bytes(
+    return env_int(
         "COPYLOT_RESTORE_EXPANDED_MAX_BYTES",
         _DEFAULT_RESTORE_EXPANDED_LIMIT_BYTES,
+        minimum=1,
     )
 
 
 def restore_replacement_max_bytes() -> int:
-    return _positive_env_bytes("COPYLOT_RESTORE_REPLACEMENT_MAX_BYTES", upload_max_bytes())
+    return env_int("COPYLOT_RESTORE_REPLACEMENT_MAX_BYTES", upload_max_bytes(), minimum=1)
 
 
 def restore_replacements_total_max_bytes() -> int:
     per_file = restore_replacement_max_bytes()
-    return _positive_env_bytes("COPYLOT_RESTORE_REPLACEMENTS_TOTAL_MAX_BYTES", per_file * 2)
+    return env_int("COPYLOT_RESTORE_REPLACEMENTS_TOTAL_MAX_BYTES", per_file * 2, minimum=1)
 
 
 def restore_table_max_rows() -> int:
-    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_ROWS", _DEFAULT_RESTORE_TABLE_MAX_ROWS)
+    return env_int("COPYLOT_RESTORE_TABLE_MAX_ROWS", _DEFAULT_RESTORE_TABLE_MAX_ROWS, minimum=1)
 
 
 def restore_table_max_columns() -> int:
-    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_COLUMNS", _DEFAULT_RESTORE_TABLE_MAX_COLUMNS)
+    return env_int("COPYLOT_RESTORE_TABLE_MAX_COLUMNS", _DEFAULT_RESTORE_TABLE_MAX_COLUMNS, minimum=1)
 
 
 def restore_table_max_cells() -> int:
-    return _positive_env_bytes("COPYLOT_RESTORE_TABLE_MAX_CELLS", _DEFAULT_RESTORE_TABLE_MAX_CELLS)
+    return env_int("COPYLOT_RESTORE_TABLE_MAX_CELLS", _DEFAULT_RESTORE_TABLE_MAX_CELLS, minimum=1)
 
 
 def restore_replacement_max_files() -> int:
-    return _positive_env_bytes(
+    return env_int(
         "COPYLOT_RESTORE_REPLACEMENT_MAX_FILES",
         _DEFAULT_RESTORE_REPLACEMENT_MAX_FILES,
+        minimum=1,
     )
 
 
 def restore_manifest_max_chars() -> int:
-    return _positive_env_bytes(
+    return env_int(
         "COPYLOT_RESTORE_MANIFEST_MAX_CHARS",
         _DEFAULT_RESTORE_MANIFEST_MAX_CHARS,
+        minimum=1,
     )
 
 
@@ -221,11 +214,22 @@ class DeferredAutoMetadataRestore:
 
 
 def _frame_to_payload(frame: pd.DataFrame) -> dict[str, Any]:
+    _validate_table_dimensions(*frame.shape)
     safe = frame.copy().where(pd.notna(frame), None)
     return {
         "columns": [str(column) for column in safe.columns],
         "data": safe.values.tolist(),
     }
+
+
+def _validate_table_dimensions(row_count: int, column_count: int) -> None:
+    for count, limit, label, setting in (
+        (row_count, restore_table_max_rows(), "row", "COPYLOT_RESTORE_TABLE_MAX_ROWS"),
+        (column_count, restore_table_max_columns(), "column", "COPYLOT_RESTORE_TABLE_MAX_COLUMNS"),
+        (row_count * column_count, restore_table_max_cells(), "cell", "COPYLOT_RESTORE_TABLE_MAX_CELLS"),
+    ):
+        if count > limit:
+            raise RestoreStateError(f"Restore table exceeds the configured {label} limit. Adjust {setting} to support this state.")
 
 
 def _frame_from_payload(payload: Any) -> pd.DataFrame:
@@ -237,12 +241,7 @@ def _frame_from_payload(payload: Any) -> pd.DataFrame:
         raise RestoreStateError("Invalid table payload format in restore state.")
     row_count = len(data_raw)
     column_count = len(columns_raw)
-    if row_count > restore_table_max_rows():
-        raise RestoreStateError("Restore table exceeds the configured row limit.")
-    if column_count > restore_table_max_columns():
-        raise RestoreStateError("Restore table exceeds the configured column limit.")
-    if row_count * column_count > restore_table_max_cells():
-        raise RestoreStateError("Restore table exceeds the configured cell limit.")
+    _validate_table_dimensions(row_count, column_count)
     for row in data_raw:
         if not isinstance(row, list) or len(row) != column_count:
             raise RestoreStateError("Restore table rows do not match the declared columns.")
@@ -357,6 +356,32 @@ def _coerce_phosprot_lineage(payload):
         return PhosprotLineage.model_validate(payload)
     except ValueError:
         return None  # Legacy/invalid history must not be invented; exports remain unavailable.
+
+
+_IMPUTATION_LABEL_COLUMNS = ("ProteinNames", "PTM_Collapse_key", "Phosphoprotein", "Protein_group", "GeneNames")
+
+
+def _imputed_rows_mismatch(imputed: pd.DataFrame, filtered: pd.DataFrame | None, log2: pd.DataFrame | None) -> str | None:
+    """Why a saved imputed matrix no longer belongs to the recomputed annotation.
+
+    Imputation fills the filtered matrix (the log2 matrix when no filter was
+    applied), so the saved imputed frame must have that frame's rows. A blob
+    saved under other filter settings, or on a version whose filter semantics
+    moved, used to restore with ``applied=True`` and no warning, and every
+    "imputed data" analysis then ran on rows the current filter does not have.
+    """
+    basis = filtered if filtered is not None else log2
+    if basis is None:
+        return "the recomputed matrix is unavailable"
+    if len(imputed) != len(basis):
+        return f"it has {len(imputed):,} rows while the recomputed matrix has {len(basis):,}"
+    label = next((c for c in _IMPUTATION_LABEL_COLUMNS if c in imputed.columns and c in basis.columns), None)
+    if label is not None:
+        saved = imputed[label].astype(str).tolist()
+        current = basis[label].astype(str).tolist()
+        if saved != current:
+            return f"its {label} rows are not the recomputed matrix's rows"
+    return None
 
 
 def _coerce_phosprot_aggregation(payload: Any) -> str | None:
@@ -538,7 +563,18 @@ def describe_restore_version_warning(state: dict[str, Any]) -> str | None:
 
 def _serialize_state_payload(payload: dict[str, Any]) -> bytes:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return gzip.compress(raw, compresslevel=6)
+    if len(raw) > restore_expanded_max_bytes():
+        raise RestoreStateError(
+            "Expanded restore state exceeds the configured size limit. "
+            "Adjust COPYLOT_RESTORE_EXPANDED_MAX_BYTES to support this state."
+        )
+    blob = gzip.compress(raw, compresslevel=6)
+    if len(blob) > restore_upload_max_bytes():
+        raise RestoreStateError(
+            "Restore file exceeds the configured upload limit. "
+            "Adjust COPYLOT_RESTORE_UPLOAD_MAX_BYTES to support this state."
+        )
+    return blob
 
 
 def _export_profile_names(package_name: str) -> list[str]:
@@ -1379,6 +1415,16 @@ def _apply_prepared_restore_state(
                         min_percentage=filter_config.minPercentage,
                         normalization=filter_config.normalization,
                     )
+                    if not imputed_data.empty:
+                        mismatch = _imputed_rows_mismatch(imputed_data, computed.filtered_data, computed.log2_data)
+                        if mismatch:
+                            warnings.append(
+                                f"Discarded stale imputed data for {package_name}:{profile_name}:{kind} "
+                                f"because {mismatch}. Run imputation again before selecting imputed results."
+                            )
+                            imputed_data = pd.DataFrame()
+                            if imputation is not None:
+                                imputation = imputation.model_copy(update={"applied": False})
                     save_annotation(
                         kind=kind,
                         source_data=dataset.frame,

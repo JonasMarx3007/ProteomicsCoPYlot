@@ -21,3 +21,4 @@ function tabId(): string {
 }
 
 export const TAB_API_PREFIX = `/api/tabs/${tabId()}`;
+export const TAB_API_BASE = `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "")}${TAB_API_PREFIX}`;

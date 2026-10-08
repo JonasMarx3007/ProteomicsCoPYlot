@@ -11,14 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from app.schemas.stats import AnovaRequest
 from app.services import stats_tools as st
-from app.services.runtime_cache import invalidate_runtime_cache
 
-
-@pytest.fixture(autouse=True)
-def _isolate_runtime_cache():
-    invalidate_runtime_cache("test")
-    yield
-    invalidate_runtime_cache("test")
 
 REPS = 4
 CONDITIONS = ("A", "B", "C", "D")
@@ -103,15 +96,20 @@ def test_no_significant_rows_yields_no_post_hoc_and_says_so() -> None:
     assert any("No rows passed" in w for w in result.warnings)
 
 
-def test_significant_constant_groups_do_not_report_no_anova_hits():
+def test_constant_groups_get_no_p_value_and_no_tukey():
+    # Constant within every condition, different between them: the F statistic
+    # is infinite, so the row gets no p-value (as in the volcano) and Tukey has
+    # nothing to compare. The page says why.
     frame = _frame(n=1)
     for index, condition in enumerate(CONDITIONS):
         frame[[f"{condition}_{i}" for i in range(REPS)]] = 10. + 2 * index
     result = _run(frame, METADATA, postHoc="tukey")
-    assert result.significantCount == 1
+    assert result.significantCount == 0
+    assert result.rows[0]["significance"] == "Unavailable" and result.rows[0]["pval"] is None
+    assert result.rows[0]["zero_variance"] is True
     assert result.postHocRows == []
-    assert any("no usable Tukey HSD comparisons" in w for w in result.warnings)
-    assert not any("No rows passed" in w for w in result.warnings)
+    assert any("no variation within any condition, so no p-value" in w for w in result.warnings)
+    assert any("No rows passed" in w for w in result.warnings)
 
 
 def test_two_conditions_skip_tukey_with_an_explanation() -> None:
@@ -125,7 +123,7 @@ def test_two_conditions_skip_tukey_with_an_explanation() -> None:
 
 @pytest.mark.parametrize("missing_at", [None, 5], ids=["equal-n", "unequal-n"])
 def test_p_values_match_statsmodels(missing_at) -> None:
-    statsmodels = pytest.importorskip("statsmodels.stats.multicomp")
+    from statsmodels.stats import multicomp as statsmodels
     frame = _frame(missing_at=missing_at)
     result = _run(frame, METADATA, postHoc="tukey")
     post_hoc = pd.DataFrame(result.postHocRows)

@@ -80,7 +80,8 @@ describe("the unsaved-analysis state", () => {
 describe("which requests change the analysis", () => {
   const MUTATIONS = ["datasets/upload", "datasets/active", "annotations/generate", "annotations/pairing",
     "annotations/phosprot/aggregate", "annotations/metadata/current/phospho", "peptide/metadata/generate",
-    "data-tools/imputation/run", "data-tools/id-translation/run", "data-tools/condition-colors/protein", "restore/import"];
+    "data-tools/imputation/run", "data-tools/id-translation/run", "data-tools/condition-colors/protein",
+    "data-tools/phospho-localization-cutoff", "restore/import"];
   const READS = ["restore/export", "restore/browser-session-reset", "stats/volcano/run", "annotations/log2-detect",
     "data-tools/imputation/download", "data-tools/id-translation/download", "tool/auth/login", "chat/assistant"];
 

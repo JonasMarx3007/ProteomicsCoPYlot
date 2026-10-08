@@ -19,14 +19,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.main import app
 from app.services.annotation_store import get_annotation
 from app.services.table_functions import prepare_coverage_df
-from app.services.viewer_bootstrap import load_viewer_state
 
 KINDS = ("protein", "phospho", "phosprot")
 TOTAL = "All samples"

@@ -8,7 +8,7 @@ boxplot, the lineplot and the single-protein table beside it all used the exact
 sites under the heading of the one protein the user picked -- silently, because
 a heatmap with more rows than expected looks like a protein with more sites.
 
-The shipped example has no such collision (2,301 protein groups, none a
+The shipped example has no such collision (its phosphoprotein groups are none a
 substring of another), which is exactly why this survived: it is wrong on data
 nobody here has, and there is nothing in the output that says so. The project
 below plants the collision.
@@ -203,18 +203,71 @@ def _source_features(table: pd.DataFrame) -> set[str]:
 
 
 def test_the_lineplot_uses_the_same_exact_match(colliding_protein_project) -> None:
-    """Selecting `P12345` draws that group (and the group it leads), never the isoform.
-
-    A protein group is matched on its leading accession, so `P12345;Q67890`
-    belongs to the selection by design. `P12345-2` only contains the text.
-    """
+    """Selecting one group never includes another group with the same leader."""
     table = single_protein_lineplot_table("protein", [SELECTED], ["WT", "KO"])
-    assert _source_features(table) == {SELECTED, MULTI}
+    assert _source_features(table) == {SELECTED}
 
 
 def test_the_boxplot_uses_the_same_exact_match(colliding_protein_project) -> None:
     summary = single_protein_boxplot_table("protein", SELECTED, ["WT", "KO"])
-    assert _source_features(summary) == {SELECTED, MULTI}
+    assert _source_features(summary) == {SELECTED}
+
+
+def test_complete_protein_groups_remain_distinct_in_tables_and_exports(colliding_protein_project):
+    from app.services import notebook_single
+    from app.services.analysis_functions import _selection_label
+    from app.services.single_protein_tools import unmatched_lineplot_names
+    from proteomicscopylot import notebook_functions
+
+    frame = colliding_protein_project
+    meta = pd.DataFrame({"sample": list(frame.columns[2:]), "condition": ["WT"] * 3 + ["KO"] * 3})
+    options = single_protein_options("protein", tab="lineplot", identifier="workflow")
+    assert set(options["proteins"]) == set(PROTEIN_GROUPS)
+    assert unmatched_lineplot_names("protein", [MULTI, "P123"]) == ["P123"]
+    assert _selection_label(kind="protein", identifier="workflow", label_value=MULTI) == MULTI
+    table = single_protein_lineplot_table("protein", [SELECTED, MULTI], ["WT", "KO"])
+    assert set(table.Feature) == {SELECTED, MULTI}
+    assert table.groupby("Feature").Value.first().to_dict() == {SELECTED: 20.0, MULTI: 22.0}
+    for group, value in [(SELECTED, 20.0), (MULTI, 22.0)]:
+        summary = single_protein_boxplot_table("protein", group, ["WT", "KO"])
+        assert _source_features(summary) == {group}
+        assert (summary.SourceFeatureCount == 1).all()
+        portable, _, _, _ = notebook_single.box_module().prepare_table(frame, meta, "protein", group, [], "workflow")
+        assert all(np.array_equal(values, [value] * 3) for values in portable)
+        standalone = notebook_functions.single_protein_values(frame, meta, group)
+        assert standalone.value.tolist() == [value] * 6
+    import matplotlib.pyplot as plt
+    figure = notebook_functions.compare_prot_line(frame, meta, ["WT", "KO"], [SELECTED, MULTI], id=False)
+    try:
+        lines = figure.axes[0].get_lines()
+        assert {line.get_label(): list(line.get_ydata()) for line in lines} == {
+            SELECTED: [20.0] * 6, MULTI: [22.0] * 6,
+        }
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.requires_r()
+def test_r_keeps_colliding_protein_groups_separate(colliding_protein_project, tmp_path, rscript):
+    import subprocess
+    colliding_protein_project.to_csv(tmp_path / "data.csv", index=False)
+    script = f'''
+    source("{(ROOT / 'proteomicscopylot/notebook_functions.R').as_posix()}")
+    data <- read.csv("data.csv", check.names=FALSE)
+    meta <- data.frame(sample=names(data)[3:8], condition=rep(c("WT", "KO"), each=3))
+    stopifnot(all(single_protein_values(data, meta, "{SELECTED}")$value == 20))
+    stopifnot(all(single_protein_values(data, meta, "{MULTI}")$value == 22))
+    matplot <- function(x, ...) {{
+      stopifnot(identical(colnames(x), c("{SELECTED}", "{MULTI}")))
+      stopifnot(all(x[,1] == 20), all(x[,2] == 22))
+      graphics::matplot(x, ...)
+    }}
+    pdf("plot.pdf")
+    compare_prot_line(data, meta, c("WT", "KO"), c("{SELECTED}", "{MULTI}"), id=FALSE)
+    dev.off()
+    '''
+    result = subprocess.run([rscript, "-e", script], cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("fragment", ["P123", "12345", "p12345"])

@@ -44,7 +44,7 @@ function removeSessionString(key: string) {
   }
 }
 
-export function applyTheme(theme: AppTheme) {
+function applyTheme(theme: AppTheme) {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
   document.documentElement.dataset.theme = theme;

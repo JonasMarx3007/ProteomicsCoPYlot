@@ -21,6 +21,18 @@ def note_notebook_unavailable(reason) -> None:
     text = str(reason).strip()
     if holder is not None and text and "reason" not in holder:
         holder["reason"] = text
+
+
+plot_notices: ContextVar[list | None] = ContextVar("plot_notices", default=None)
+
+
+def note_plot_notice(text: str) -> None:
+    """Say something about this plot under it (GUI only, never in the figure or report)."""
+    holder = plot_notices.get()
+    text = str(text).strip()
+    if holder is not None and text and text not in holder:
+        holder.append(text)
+
 # Formats matplotlib writes as vectors rather than pixels.
 _VECTOR_FORMATS = frozenset({"pdf", "svg"})
 _SAVE_LOCK = RLock()

@@ -16,7 +16,6 @@ import pytest
 from app.services import notebook_preprocessing
 from app.services.notebook_qc import snapshots
 from app.services.notebook_snapshots import PendingRecipe
-from app.services.session_context import get_session_id
 
 
 def test_a_render_binds_the_replay_and_the_download_runs_it(client, monkeypatch):

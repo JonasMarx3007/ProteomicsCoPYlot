@@ -100,13 +100,22 @@ def _fallback_module(monkeypatch, path: Path, module_name: str):
 def test_the_statsmodels_free_fallback_matches_the_reference(
     monkeypatch, module_name: str, relative: str
 ) -> None:
+    # statsmodels is hidden: the package must not need it at all.
     module = _fallback_module(monkeypatch, ROOT / relative, module_name)
-    assert module.multipletests.__module__ == module_name, (
-        "statsmodels was still importable, so the fallback was not exercised"
-    )
+    assert module.multipletests.__module__ == module_name
 
     rng = np.random.default_rng(3)
     for _ in range(5):
         pvalues = np.concatenate([rng.uniform(0, 0.01, 4), rng.uniform(0, 1, 26)])
         adjusted = module.multipletests(pvalues, method="fdr_bh")[1]
         assert np.allclose(adjusted, _reference(pvalues), rtol=1e-12, atol=1e-15)
+
+
+def test_the_package_matches_statsmodels_where_both_exist() -> None:
+    statsmodels = pytest.importorskip("statsmodels.stats.multitest")
+    from proteomicscopylot.notebook_functions import multipletests
+
+    rng = np.random.default_rng(11)
+    pvalues = np.concatenate([rng.uniform(0, 0.01, 6), rng.uniform(0, 1, 40)])
+    np.testing.assert_allclose(multipletests(pvalues)[1], statsmodels.multipletests(pvalues, method="fdr_bh")[1],
+                               rtol=1e-12, atol=1e-15)

@@ -51,7 +51,7 @@ def _abundance_module():
 
 
 def render_abundance(kind: str, **options) -> tuple[str, str]:
-    from app.services.data_tools import linear_qc_frame, metadata_for_kind, _get_sample_columns
+    from app.services.data_tools import linear_qc_frame, linear_qc_uses_unnormalized, metadata_for_kind, _get_sample_columns
     from app.services.dataset_store import get_current_dataset
     from app.services.plot_images import qc_abundance_interactive_html
     from app.services.plot_styling import advanced_condition_colors
@@ -68,6 +68,7 @@ def render_abundance(kind: str, **options) -> tuple[str, str]:
         raise ValueError("Load and annotate a dataset first.")
     lineage, imputation, uses_imputed_input, imputation_text = input_history(kind, get_annotation(kind), dataset)
     data = linear_qc_frame(kind).copy(deep=True)
+    unnormalized = linear_qc_uses_unnormalized(kind)
     metadata = metadata_for_kind(kind, data, _get_sample_columns(kind, data)).copy(deep=True)
     bound = inspect.signature(qc_abundance_interactive_html).bind(kind, **options)
     bound.apply_defaults()
@@ -91,6 +92,7 @@ def render_abundance(kind: str, **options) -> tuple[str, str]:
                     "imputation": imputation.model_dump() if imputation else None,
                     "dataSource": "data", "filterAppliedToThisPlot": False, "filterScope": "after_collapse" if lineage else "within_this_annotation",
                     "imputationAppliedToThisPlot": uses_imputed_input,
+                    "linearQcUnnormalized": unnormalized,
                     "outputs": ["interactive plot"]},
         uses_imputed_input=uses_imputed_input, imputation_recipe=imputation_text,
         resources={"input.parquet": dataframe_bytes(data), "metadata.parquet": dataframe_bytes(metadata),
@@ -102,7 +104,7 @@ def render_abundance(kind: str, **options) -> tuple[str, str]:
                     "display(IFrame('reproduced.html', width='100%', height=600))",
         input_explanation=("The exact collapsed phosphoprotein matrix on linear scale is included, without post-collapse filtering. "
                           "Upstream processing and any imputation are recorded in upstreamCollapse; collapse is not rerun. "
-                          if lineage else "The exact normalized, unfiltered, non-imputed linear matrix is included. ") +
+                          if lineage else f"The exact {'unnormalized (VSN output is not a linear intensity)' if unnormalized else 'normalized'}, unfiltered, non-imputed linear matrix is included. ") +
                           "The notebook recalculates abundance ranks and verifies every Plotly trace and layout value. "
                           "Plotly JavaScript is embedded for offline viewing. Original-file preprocessing replay is not yet included.",
     )

@@ -4,31 +4,14 @@ The imputation, enrichment and clustering checks that used to live here were
 moved to their own files on 2026-10-02."""
 from __future__ import annotations
 
-import hashlib
 import importlib
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas.annotation import AnnotationFilterConfig, AnnotationImputationInfo
-from app.schemas.stats import (
-    AnovaRequest,
-    EnrichmentRequest,
-    ListEnrichmentRequest,
-    VolcanoControlRequest,
-)
-from app.services.annotation_store import get_annotation, save_annotation
-from app.services import stats_tools
-from app.services.functions import impute_values_with_diagnostics
-from app.services.plot_images import (
-    _imputation_density_histogram_spec,
-    _imputation_histogram_bin_edges,
-)
-from app.services.restore_state import _parse_state_blob, export_state_blob
+from app.services.annotation_store import get_annotation
 from app.services.viewer_bootstrap import load_viewer_state
 
 
@@ -178,7 +161,7 @@ def test_report_mentions_annotation_filtering() -> None:
     imputation_text = (
         "For analyses based on imputed data, missing values were sampled from a shifted "
         "normal distribution with a downshift of 1.8 standard deviations and width "
-        "0.3 times the observed standard deviation."
+        "0.3 times the observed standard deviation (Tyanova et al. 2016, doi:10.1038/nmeth.3901)."
     )
     assert imputation_text in report_html
     assert report_html.index(imputation_text) < report_html.index(

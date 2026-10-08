@@ -1,8 +1,11 @@
 -r requirements.txt
 pytest
 pytest-cov
-httpx
+# starlette.testclient (FastAPI TestClient) uses httpx2.
+httpx2
 build
 wheel
 ipython
 nbformat>=5.11.1
+# Reference tests compare the Benjamini-Hochberg and Tukey results with it.
+statsmodels>=0.14,<1

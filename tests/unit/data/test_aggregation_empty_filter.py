@@ -1,5 +1,4 @@
 """Excluded phosphosites must never re-enter through protein aggregation."""
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -68,8 +67,14 @@ def test_empty_filter_blocks_before_aggregation_or_imputed_lookup(rejected_sites
 @pytest.mark.parametrize("missing", [None, pd.DataFrame()])
 def test_absent_filter_still_allows_log2_source(rejected_sites, missing):
     rejected_sites.filtered_data = missing
-    result = phosprot_tools.aggregate_from_phospho("mean")
-    assert len(result.filtered_data) == 1
+    # The log2 source is used: the protein is built from its two sites. Neither
+    # site is quantified in every sample, so under the shared-site rule the sum
+    # has no value and the protein row stays missing rather than being assembled
+    # from complementary observations.
+    result = phosprot_tools.aggregate_from_phospho("sum_ignore_na")
+    assert len(result.source_data) == 1 and result.source_data.loc[0, "site_num"] == 2
+    assert result.source_data.loc[0, ["a1", "a2", "b1", "b2"]].isna().all()
+    assert len(result.filtered_data) == 0
 
 
 def test_nonempty_filter_excludes_rejected_sites(rejected_sites):

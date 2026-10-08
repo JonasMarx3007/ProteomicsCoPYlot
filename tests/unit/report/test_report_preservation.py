@@ -50,35 +50,48 @@ report = importlib.import_module('app.services.report_function')
 # rendered: <reason>". Renderer calls are identical; those three edits are the
 # whole HTML difference (diffed against the previous code). The rule is checked
 # by test_error_disclosure.py.
+# 2026-10-06: every case with data moved, because method sentences now cite
+# their method from `method_references`: the imputation line (here the
+# numerical downshift, Tyanova et al. 2016) and the phosphosite Class I line
+# (Olsen et al. 2006). Those citations are the whole HTML difference (diffed
+# against the previous code for every mode); renderer calls are identical.
+# 2026-10-08: every case that renders a table moved, because the report's
+# tables now show display labels instead of the frames' column names (Mean,
+# Lower whisker, ... instead of mean, lower_whisker, ...), round floats to two
+# decimals, and the per-sample coverage table is titled "Coverage Table (per
+# sample)" rather than "Coverage Summary Table". The labelling is covered by
+# tests/repo/test_column_labels_in_sync.py; the empty-kinds cases are unchanged.
+# Same day: the phosphosite coverage sections are titled "(per sample)" and
+# "(per condition)" instead of "(Number)" and "(Quality)" (TOC and headings).
 SNAPSHOTS = {
     'qc_custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'qc_custom:protein': 'c5f49ff787b95e1bdc9933909b3ea9a2151bda1f9645619fbb7cf76c80efc83b',
-    'qc_custom:phospho': '53dbbb98f87fc801c2e0e2bf77a217a68fbc000d14bc9c08772e560512f211f1',
-    'qc_custom:peptide,protein,phospho': '3f4defb6e4f34704ee11906ffa7dedc4b5b4f0ccaa606b8126c0ffed70d41b8e',
+    'qc_custom:protein': '70950de97e7dc1123c4c2e870217647365df969a4cb2e77d1d891454d35c5e95',
+    'qc_custom:phospho': '0a07d22afcb793081f97ea98fbf5a2bb6191d5b8c46514cbe661b8ec664c9c0f',
+    'qc_custom:peptide,protein,phospho': 'b4d92a7d2992415f11fe3fa36959e37806346a65c24f927e0d41e8919de3af11',
     'qc_invalid:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'qc_invalid:protein': '40bd71e1d540cd50b498888d0faca10d330a28d56fedd45e09a780b63eb81ea6',
-    'qc_invalid:phospho': '7be658abd2efbd6c27c683ca954254da2ff02b546f41f81ba4fedd3cdf56fea1',
-    'qc_invalid:peptide,protein,phospho': '6de9ed6b0105b9c82bc41c759ca01e1e701d54bca129c6c2458dd4f400214f12',
+    'qc_invalid:protein': '8c2641d57f8efdc2099f7ee4c90e9859715fe5b27a31120979e64252c6271fef',
+    'qc_invalid:phospho': 'aa5af5fc2d29ec003dd69f528f65baeff0f1df3acdc8a26c2247220b97193adb',
+    'qc_invalid:peptide,protein,phospho': '7fd7c96c40947e64b6e92d3633ca581a524d056657ab721e6aafcd26ab3d4aca',
     'default:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
     # The three `default` snapshots below changed when advanced mode stopped
     # gating the appearance settings: the case's custom PCA title now reaches
     # the PCA renderer with the panel closed, as it reaches the plot on screen.
     # That forwarded title is the whole difference.
-    'default:protein': 'd0fda776c96dfb5484a2aba24633e5d019897aeca747c4dfcfed10a07f8f1f72',
-    'default:phospho': '9fac7f7a4ed33fa3873d2edec98ae864189c2ec4e3a4f86d8379ca47c5363c39',
-    'default:peptide,protein,phospho': '68d467416f74a84887400bfdee617c5e84c39ab7340f7975eb80d0a726b39470',
+    'default:protein': 'b26db4017064c44af2642b76c1f0361a8ed874242cc3a5b5d5393a002b7e8fd8',
+    'default:phospho': 'f5cbc6146d851e322e0d48296a2f0766f0b77681d13e7abfaed3fdba75e58e7c',
+    'default:peptide,protein,phospho': '755e4f145e9f3c33319d2fe65d0d239656e6c6442b656cffb42c58d073cdb2d3',
     'custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'custom:protein': '09c20fb17d34cd7e107b0d948535d272197c1bc2a56f495f3479a7e8c6b386ff',
-    'custom:phospho': '4ae6cbc46e8433aff580b5fad7a9b5b5e3424709bb824bf5c991f7b1d518e243',
-    'custom:peptide,protein,phospho': '58e2fcfb6915445f2340dc5312c3b7eae65eb1de63e3c481bb2a7d5e02467569',
+    'custom:protein': 'e4c6b8161f4518c813ffb55932480d70256b4b304677f42b97af301786fcd78e',
+    'custom:phospho': 'df11c61b28c42fc4b956206e297133b8c79214e518d91f3e10c70b5a05e4f43b',
+    'custom:peptide,protein,phospho': '2218bee619ef487faa33a5cfb023ff796569788acd0dda120af391df9bd536d2',
     'interactive:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'interactive:protein': '30c6760a426e2b7e3fbb2eec64143a88d704b01d4c28af566c90660991da856e',
-    'interactive:phospho': '3b81b5d19890afaece80d6a54b6f5e70b34c2c32b8bf47af45e3d91fa9ca353f',
-    'interactive:peptide,protein,phospho': 'b81e3409f579fe9507eb307898681e9a0d449eb8fecbb68d83ea3206305fe771',
+    'interactive:protein': '6b4caba2b283d3abb6f9f37c8ee6caec6c0cc88544364b7bc8143c522133f727',
+    'interactive:phospho': '7e8ef00a4913b1fabf612ad9f12a946ab956cb361ddc06d05a698e212440b225',
+    'interactive:peptide,protein,phospho': '2f4b52f553a332f128ac60471fa61c025cabd5c801b3434ee05f08c3eb62a21c',
     'failure:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
-    'failure:protein': '1994d4414c61395f46a39857b0f2699956a7fbdfe7cfbbc7947dbf49cbccf51b',
-    'failure:phospho': '8edbbcba8c57435bde2c04ecb4a7a733bdef781e9bed06df1ebafe4c7ce27474',
-    'failure:peptide,protein,phospho': '0ddec4eebf1941d1c4395d3ed998a6a7346b5825f26640990581d008ee6336f1',
+    'failure:protein': '18aa405f6233dfa1465b0df2c73ea792de54d77d3a3bd79a4aa5722b0f21fb1b',
+    'failure:phospho': 'c74b61b93b2a536e0522d3aee08110b6e0bc3736068b15922f4711b03bad56b1',
+    'failure:peptide,protein,phospho': '09e63d9afacf135224feae54163ef5595fde462346af8c38c2a1a4c89b8c3015',
 }
 
 

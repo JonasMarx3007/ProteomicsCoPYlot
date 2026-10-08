@@ -166,11 +166,6 @@ def preprocessing_source(collapse=False, vsn=False):
     return extract_notebook_source(code, ('read_original_table', root))
 
 
-def with_original_preprocessing(recipe):
-    """Bind processing at render time and prepare the original-file replay at once."""
-    return bind_original_preprocessing(recipe)()
-
-
 def bind_original_preprocessing(recipe):
     """Read everything the replay needs from live state now; return the replay for later.
 
@@ -207,6 +202,9 @@ def bind_original_preprocessing(recipe):
         'filter': annotation.filter_config.model_dump(), 'localization_cutoff': get_localization_cutoff(),
         'linear_output': recipe.provenance.get('inputScale') in {'linear', 'linear ratios'},
         'id_translations': [step.model_dump() for step in dataset.id_translations]}
+    if recipe.provenance.get('linearQcUnnormalized'):
+        # CV and abundance after VSN read the unnormalized data (VSN is not linear).
+        config['normalization'] = 'none'
     original_filename = recipe.original_filename
     raw = annotation.source_data
     collapse = kind == 'phosprot' and annotation.phosprot_lineage is not None

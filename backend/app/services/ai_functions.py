@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, cast, get_args
+from app.services.peptide_quantity import resolve_peptide_quantity_column
 import json
 
 import pandas as pd
@@ -24,6 +25,7 @@ from app.services.functions import (
     DATA_SOURCES,
     comparison_contrast,
     _phosprot_values_are_centred,
+    effective_test_type,
     resolve_test_type,
 )
 from app.services.peptide_tools import _sample_rename_map as _peptide_sample_rename_map
@@ -1181,6 +1183,15 @@ def qc_boxplot_intensity(workflow: str = "protein", mode: ContextMode | None = N
     return _text_payload("qc_boxplot_intensity", "\n".join(lines))
 
 
+def _annotation_normalization(kind) -> str:
+    """The normalization the session applied at this level ("none" when unset)."""
+    from app.services.annotation_store import get_annotation
+
+    annotation = get_annotation(kind)
+    config = getattr(annotation, "filter_config", None) if annotation is not None else None
+    return str(getattr(config, "normalization", "") or "none").strip().lower() or "none"
+
+
 def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
@@ -1212,9 +1223,14 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     lines.append(
         "cov_processing|steps=extract_condition_samples_compute_featurewise_mean_and_sd_compute_cv_remove_undefined_values_build_condition_distribution"
     )
+    normalization = _annotation_normalization(_workflow_kind(workflow_key))
+    source = {
+        "none": "uploaded_unnormalized_non_imputed_data_back_transformed_to_linear",
+        "vsn": "unnormalized_data_of_the_same_rows_because_vsn_output_is_not_linear",
+    }.get(normalization, f"{normalization}_normalized_non_imputed_data_back_transformed_to_linear")
     lines.append(
         "cov_formula|CV=(SD/mean)*100|SD=sample_standard_deviation_ddof_1|"
-        "scale=linear_intensity|source=normalized_unfiltered_non_imputed_data_back_transformed_to_linear|"
+        f"scale=linear_intensity|normalization={normalization}|source={source}|"
         "log2_uploads=back_transformed_to_linear|missing=excluded_not_zero_filled|nonfinite_CV=excluded"
     )
     lines.append(
@@ -1625,7 +1641,7 @@ def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | Non
     quantity_col = (
         "Precursor.Quantity"
         if "Precursor.Quantity" in frame.columns
-        else _plot_images._peptide_quantity_column(frame)
+        else resolve_peptide_quantity_column(frame)
     )
 
     try:
@@ -1772,7 +1788,7 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | 
     quantity_col = (
         "Precursor.Quantity"
         if "Precursor.Quantity" in frame.columns
-        else _plot_images._peptide_quantity_column(frame)
+        else resolve_peptide_quantity_column(frame)
     )
 
     try:
@@ -2433,6 +2449,7 @@ def stats_volcano_plot(
             (condition2_control or "condition2_control") if source == "volcano_control" else None,
         )
     )
+    test_type = cast(StatsTestType, effective_test_type(test_type, with_controls=source == "volcano_control"))
     lines.append(
         f"volcano_testing|selected_test={test_type}|"
         f"selected_test_description={_stats_test_description(test_type, control=source == 'volcano_control')}|"
@@ -2502,12 +2519,14 @@ def stats_volcano_plot(
     up_count = int((frame["significance"] == "Upregulated").sum())
     down_count = int((frame["significance"] == "Downregulated").sum())
     not_significant_count = int((frame["significance"] == "Not significant").sum())
+    unavailable_count = int((frame["significance"] == "Unavailable").sum())
     denom = float(max(total, 1))
     lines.append(
         f"volcano_tested|total_{entity_plural}_tested={total}|label_column={label_column}|source_used={source_used}"
     )
     lines.append(
         f"volcano_counts|upregulated={up_count}|downregulated={down_count}|not_significant={not_significant_count}"
+        f"|unavailable={unavailable_count}"
     )
     lines.append(
         "volcano_answer_summary|"
@@ -2723,7 +2742,8 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
         )
         lines.append(
             "ora_method|volcano_dependency=upregulated_and_downregulated_gene_clusters_are_derived_from_the_selected_differential_test_and_multiple_testing_settings|"
-            f"selected_test={test_type}|selected_test_description={_stats_test_description(test_type, control=source == 'volcano_control')}"
+            f"selected_test={effective_test_type(test_type, with_controls=source == 'volcano_control')}|"
+            f"selected_test_description={_stats_test_description(test_type, control=source == 'volcano_control')}"
         )
         lines.append(
             "ora_flow|upregulated_cluster=upregulated_genes_to_enriched_pathways"

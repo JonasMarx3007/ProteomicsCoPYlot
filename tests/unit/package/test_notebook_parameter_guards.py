@@ -155,7 +155,6 @@ def test_the_strictest_legitimate_percentage_is_allowed(notebook) -> None:
 
 @pytest.mark.parametrize("mode", ["per group", "per_group", "PER_GROUP"])
 def test_mode_spellings_agree_with_the_backend(notebook, mode: str) -> None:
-    import sys
 
     from app.services.functions import filter_data as backend_filter
 

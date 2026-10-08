@@ -1,9 +1,10 @@
 import { flushSync } from "react-dom";
-import { assistantStep, hasPendingUiRequests, type AssistantView, type AssistantResult } from "./api";
+import { assistantStep, CloudAiConsentRequiredError, getAssistantProgress, hasPendingUiRequests, type AssistantView, type AssistantResult } from "./api";
 import { applyAssistantControls, assistantConfirmation, readAssistantControls, assistantSurfaceReady, searchAssistantOptions, assistantButtonConfirmation, activateAssistantButton, addCanvasTiles, assistantFeatureChoices } from "./assistantControls";
 import { stableSnapshot, unsavedAnalysis } from "./unsavedAnalysis";
 import { AssistantConversation } from "./assistantConversation";
 import { focusCanvas } from "./canvasFocus";
+import { applyStyle, saveStyle } from "./plotStyles";
 
 // Control receipts are written for the planner ("Set <label> to <json>.") so a
 // completed change can be matched exactly. That wording is machine-facing: in
@@ -66,6 +67,18 @@ export function readableReceipt(receipt: string): string {
   return already ? `The ${name} was already ${text}${scope}.` : `Changed the ${name} to ${text}${scope}.`;
 }
 
+export type AssistantRunOptions = {
+  // The rendered plot for Advanced models that read images; captured fresh before every step.
+  plotImage?: () => Promise<string | undefined>;
+  // A model that thinks before answering: tell the user a step may take a while.
+  slow?: boolean;
+};
+
+// An error whose reason is already written into the chat transcript.
+export class ShownAssistantError extends Error {
+  readonly shownInChat = true;
+}
+
 export async function runAssistant(
   payload: Omit<Parameters<typeof assistantStep>[0], "view" | "receipts" | "notes" | "answerOnly">,
   readLocation: () => Omit<AssistantView, "controls">,
@@ -73,12 +86,18 @@ export async function runAssistant(
   progress: (text: string) => void,
   signal: AbortSignal,
   conversation: AssistantConversation = new AssistantConversation(),
+  options: AssistantRunOptions = {},
 ): Promise<AssistantResult> {
   const receipts: string[] = [];
+  // Changes allowed in this request; the backend sets it from the model's
+  // assistant level (8 for Basic and Standard, more for Advanced).
+  let budget = 8;
+  let reviewing = false;
+  let reviewed = false;
   // Requested changes the application left out (wrong scope, unavailable):
   // shown in the final answer and sent back so the planner does not retry them.
   const notes: string[] = [];
-  const note = (text: string) => { if (text && !notes.includes(text) && notes.length < 4) notes.push(text); };
+  const note = (text: string) => { if (text && !notes.includes(text) && notes.length < 8) notes.push(text); };
   const searches: Record<string, string> = {};
   const activatedButtons = new Set<string>();
   const attemptedSteps = new Set<string>();
@@ -148,9 +167,32 @@ export async function runAssistant(
       if (beforeRequest.pending || beforeRequest.revision !== revision.revision) {
         throw new Error("The analysis changed while I was working. Please retry.");
       }
-      progress([...receipts.map(readableReceipt), ...notes, step ? "Checking the updated view…" : "Inspecting the request…"].join("\n"));
-      const result = await assistantStep({ ...payload, messages: previousConversation ? payload.messages : [], view, receipts, notes, answerOnly, conversationState: previousConversation }, signal);
+      progress([...receipts.map(readableReceipt), ...notes, step ? "Checking the updated view…"
+        : options.slow ? "Thinking about your request… a large model can take a minute or two." : "Inspecting the request…"].join("\n"));
+      const plotImage = options.plotImage && !answerOnly ? await options.plotImage().catch(() => undefined) : undefined;
       checkAbort();
+      // A slow model reports how far it is (thinking, tokens, seconds) while the step runs.
+      const progressId = options.slow && typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : undefined;
+      const waiting = [...receipts.map(readableReceipt), ...notes].join("\n");
+      const poll = progressId ? window.setInterval(() => {
+        void getAssistantProgress(progressId).then(state => {
+          if (signal.aborted || state.phase === "unknown") return;
+          const what = reviewing ? "Checking the rendered plot" : state.phase === "answering" ? "Writing the answer"
+            : state.phase === "thinking" ? "Thinking" : "Waiting for the model";
+          const detail = [state.tokens ? `${state.tokens} tokens` : "", `${state.seconds} s`].filter(Boolean).join(", ");
+          progress([waiting, `${what}… (${detail})`].filter(Boolean).join("\n"));
+        }).catch(() => {});
+      }, 1500) : undefined;
+      let result: AssistantResult;
+      try {
+        result = await assistantStep({ ...payload, messages: previousConversation ? payload.messages : [], view, receipts, notes, answerOnly,
+          conversationState: previousConversation, ...(plotImage ? { plotImage } : {}), ...(progressId ? { progressId } : {}),
+          ...(reviewing ? { reviewing } : {}) }, signal);
+      } finally {
+        if (poll !== undefined) window.clearInterval(poll);
+      }
+      checkAbort();
+      if (typeof result.actionBudget === "number" && result.actionBudget > 0) budget = result.actionBudget;
       const now = unsavedAnalysis.capture(null);
       if (now.pending || now.revision !== revision.revision || stableSnapshot(readView()) !== snapshot) {
         if (answerOnly && !result.actions.length && !now.pending && now.revision === revision.revision && settleRetries < 3) {
@@ -190,7 +232,7 @@ export async function runAssistant(
       if (!repeatableButton && attemptedSteps.has(stepKey)) return stopRepeatedStep(result, actions[0]?.type === "search_options");
       attemptedSteps.add(stepKey);
       previousActions = repeatableButton ? [] : actions;
-      if (receipts.length + actions.length > 8) {
+      if (receipts.length + actions.length > budget) {
         throw new Error("The proposed changes exceed the remaining assistant action limit. No changes from this batch were applied.");
       }
       if (actions.every(action => action.type === "set_control")) {
@@ -240,7 +282,7 @@ export async function runAssistant(
         activatedButtons.add(target);
       } else if (actions.length === 1 && actions[0].type === "add_canvas_tiles") {
         if (view.module !== "analysis.canvas") throw new Error("Open the canvas before adding plots.");
-        const answer = addCanvasTiles(actions[0].value, 8 - receipts.length, receipt => receipts.push(receipt));
+        const answer = addCanvasTiles(actions[0].value, budget - receipts.length, receipt => receipts.push(receipt));
         if (explanationPending) {
           answerOnly = true;
           continue;
@@ -272,14 +314,42 @@ export async function runAssistant(
         }
         flushSync(() => navigate(destination));
         receipts.push(`Opened ${view.destinations[destination]}.`);
+      } else if (actions.length === 1 && actions[0].type === "save_style") {
+        receipts.push(saveStyle(String(actions[0].value)));
+      } else if (actions.length === 1 && actions[0].type === "apply_style") {
+        // Only appearance settings move between plots (lib/plotStyles.ts).
+        const request = JSON.parse(String(actions[0].value)) as { name?: string; scope?: "this" | "all" };
+        receipts.push(applyStyle(String(request.name ?? ""), request.scope === "all" ? "all" : "this"));
       } else throw new Error("The assistant requested an unsupported action.");
       progress([...receipts.map(readableReceipt), ...notes].join("\n"));
-      if (receipts.length >= 8) break;
+      if (result.finished && result.reviewAfter && options.plotImage && !reviewed && !explanationPending) {
+        // One look at the rendered result: the model may fix what it sees, nothing else.
+        reviewed = true;
+        reviewing = true;
+        continue;
+      }
+      if (result.finished && !explanationPending) {
+        // The backend marked this batch as the whole request: no further model call.
+        remember("completed");
+        const done = receipts.filter(receipt => !receipt.startsWith("Searched selection options")).map(readableReceipt).join("\n");
+        return { ...result, actions: [], stoppedEarly,
+          evidence: [...result.evidence, { tool: "Assistant steps", status: "available", text: receipts.join("\n") }],
+          answer: [...new Set([done, ...notes, stopReason])].filter(Boolean).join("\n\n") };
+      }
+      if (receipts.length >= budget) break;
     }
     throw new Error("Reached the assistant step limit. Completed changes are listed above; ask again if anything remains.");
   } catch (error) {
     remember("interrupted");
-    progress(receipts.length || notes.length || stopReason ? [...receipts.map(readableReceipt), ...notes, stopReason].filter(Boolean).join("\n") : "No changes applied.");
-    throw error;
+    if ((error instanceof DOMException && error.name === "AbortError") || error instanceof CloudAiConsentRequiredError) {
+      progress(receipts.length || notes.length || stopReason ? [...receipts.map(readableReceipt), ...notes, stopReason].filter(Boolean).join("\n") : "No changes applied.");
+      throw error;
+    }
+    // The reason belongs in the conversation, where the user is reading,
+    // not only in a status line (2026-10-07: "No changes applied." alone).
+    const reason = error instanceof Error && error.message ? error.message : "The assistant request failed.";
+    const done = [...receipts.map(readableReceipt), ...notes, stopReason].filter(Boolean);
+    progress(done.length ? [...done, `I stopped here: ${reason}`].join("\n") : `No changes applied. ${reason}`);
+    throw new ShownAssistantError(reason, { cause: error });
   }
 }

@@ -243,8 +243,9 @@ def test_backend_and_notebook_paired_statistics_match_identity_and_missingness(
     )
     assert notebook_result["n_pairs"].tolist() == [3, 4, 4, 4]
     assert notebook_result["log2FC"].tolist() == [-5.0, 0.0, -2.0, -1.0]
-    assert np.isnan(notebook_result["pval"].iloc[1])
-    assert notebook_result["pval"].iloc[2] == 0.0
+    # Identical differences in every pair: no variation, so no p-value (not p = 0).
+    assert np.isnan(notebook_result["pval"].iloc[1:]).all()
+    assert notebook_result["significance"].iloc[1:].eq("Unavailable").all()
 
     reordered = metadata.sample(frac=1, random_state=7).reset_index(drop=True)
     reordered_result = volcano_data_f(
@@ -704,6 +705,8 @@ def test_paired_phospho_paths_use_the_same_identity(
 
     regulation_frame = phospho_frame.rename(columns={"UPD_seq": "PTM_Collapse_key"}).copy()
     regulation_frame["Protein_group"] = ["P1", "P2", "P3", "P4"]
+    # P3 needs varying pair differences (mean still exactly -2) to get a p-value.
+    regulation_frame.loc[2, ["after_a", "after_b"]] = [3.25, 3.75]
     monkeypatch.setattr(
         phospho_tools,
         "_phospho_regulation_context",

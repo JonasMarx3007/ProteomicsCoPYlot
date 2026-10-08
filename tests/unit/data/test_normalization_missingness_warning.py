@@ -94,3 +94,15 @@ def test_the_report_carries_no_missingness_warning(monkeypatch, normalization):
     html = _report_html(monkeypatch, _annotation(normalization))
     assert "<strong>Normalization:</strong>" in html
     assert "Missing values differ strongly" not in html
+
+
+def test_annotation_warns_for_vsn(monkeypatch):
+    """VSN is fitted on each sample's observed values too, so the same imbalance concerns it."""
+    monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data: np.log2(data))
+    frame, meta = _simulated()
+    linear = frame.copy()
+    linear[meta["sample"]] = np.power(2.0, linear[meta["sample"]])
+    result = compute_annotation_from_metadata(linear, meta, False, 1, "in at least one group",
+                                              normalization="vsn")
+    found = [w for w in result.warnings if w.startswith("Missing values differ strongly")]
+    assert len(found) == 1 and "VSN uses each sample's observed values" in found[0]

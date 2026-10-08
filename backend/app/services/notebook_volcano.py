@@ -8,6 +8,7 @@ from types import ModuleType
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
 from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
+from app.services.functions import effective_test_type
 from app.services.notebook_source import extract_notebook_source
 
 
@@ -41,8 +42,9 @@ def volcano_source(interactive=False):
     styles = extract_notebook_source(styling, ("advanced_label", "advanced_optional_number", "advanced_size",
         "advanced_alpha", "advanced_text", "resolve_marker_shape", "marker_area", "resolve_reference_line",
         "apply_advanced_axes", "advanced_number", "get_plt", "advanced_plotly_layout")).code
-    scientific = extract_notebook_source(_source("functions.py"), ("paired_sample_columns", "resolve_test_type",
-        "paired_t_test", "imputed_value_counts", "constant_within_group", "comparison_contrast")).code
+    scientific = extract_notebook_source(_source("functions.py"), ("paired_sample_columns", "resolve_test_type", "effective_test_type",
+        "paired_t_test", "imputed_value_counts", "constant_within_group", "constant_differences",
+        "without_variation", "comparison_contrast")).code
     core = _source("stats_core.py").replace("bh_adjust", "_bh_adjust").replace("satterthwaite", "_satterthwaite")
     serialization = extract_notebook_source(_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
     code = _merge_source("import numpy as np\nimport pandas as pd\nfrom typing import Any", scientific, core,
@@ -98,6 +100,9 @@ def render_volcano(payload, *, interactive=False, **options):
     for key, attribute in (("condition1_control", "condition1Control"), ("condition2_control", "condition2Control")):
         if hasattr(payload, attribute):
             calculation[key] = getattr(payload, attribute)
+    # With controls "unpaired" runs as a Welch-type test; record the test that ran.
+    calculation["test_type"] = effective_test_type(
+        payload.testType, with_controls=bool(calculation.get("condition1_control")) and bool(calculation.get("condition2_control")))
     module = _volcano_module(interactive)
     untested: list = []
     _, label, table, calculation_warnings = module.calculate_table(

@@ -209,6 +209,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat/assistant-progress/{progress_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Assistant Progress Route
+         * @description Phase and token count of a running assistant step (no content).
+         */
+        get: operations["assistant_progress_route_api_chat_assistant_progress__progress_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat/cloud-consent/{provider}": {
         parameters: {
             query?: never;
@@ -271,6 +291,27 @@ export interface paths {
         get: operations["ollama_gpu_status_route_api_chat_gpu_status_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/local-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Local Server Models Route
+         * @description Models of a local OpenAI-compatible server. A POST, so a typed API key
+         *     never ends up in a URL or an access log.
+         */
+        post: operations["local_server_models_route_api_chat_local_models_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1979,6 +2020,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runtime/plotly-{version}.js": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plotly Asset Route
+         * @description plotly.js for the app's interactive plots; versioned, so cached for good.
+         */
+        get: operations["plotly_asset_route_api_runtime_plotly__version__js_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runtime/r": {
         parameters: {
             query?: never;
@@ -2805,6 +2866,17 @@ export interface components {
              */
             yOffset?: number | null;
         };
+        /** AiOperatorPolicyResponse */
+        AiOperatorPolicyResponse: {
+            /** Modelmanagement */
+            modelManagement: boolean;
+            /** Models */
+            models: {
+                [key: string]: string[];
+            };
+            /** Providers */
+            providers: string[];
+        };
         /** AnalysisVolcanoPoint */
         AnalysisVolcanoPoint: {
             /** Boxplotidentifier */
@@ -2907,6 +2979,11 @@ export interface components {
             source: "volcano" | "volcano_control";
             /** Totalrows */
             totalRows: number;
+            /**
+             * Unavailablecount
+             * @default 0
+             */
+            unavailableCount?: number;
             /** Upregulatedcount */
             upregulatedCount: number;
             /** Warnings */
@@ -3167,6 +3244,30 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /** AssistantProgressResponse */
+        AssistantProgressResponse: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls?: number;
+            /**
+             * Phase
+             * @default unknown
+             * @enum {string}
+             */
+            phase?: "unknown" | "waiting" | "thinking" | "answering";
+            /**
+             * Seconds
+             * @default 0
+             */
+            seconds?: number;
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens?: number;
+        };
         /** AssistantRequest */
         AssistantRequest: {
             /**
@@ -3176,9 +3277,17 @@ export interface components {
             answerOnly?: boolean;
             /** Apikey */
             apiKey?: string | null;
+            /**
+             * Assistantlevel
+             * @default auto
+             * @enum {string}
+             */
+            assistantLevel?: "auto" | "basic" | "standard" | "advanced";
             conversationState?: components["schemas"]["ConversationState"] | null;
             /** Gpuenabled */
             gpuEnabled?: boolean | null;
+            /** Localserverurl */
+            localServerUrl?: string | null;
             /**
              * Message
              * @default
@@ -3192,18 +3301,34 @@ export interface components {
             notes?: string[];
             /** Ollamaurl */
             ollamaUrl?: string | null;
+            /** Plotimage */
+            plotImage?: string | null;
+            /** Progressid */
+            progressId?: string | null;
             /**
              * Provider
              * @default ollama
              * @enum {string}
              */
-            provider?: "ollama" | "openai" | "anthropic" | "gemini";
+            provider?: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             /** Receipts */
             receipts?: string[];
+            /**
+             * Reviewing
+             * @default false
+             */
+            reviewing?: boolean;
+            /** Savedstyles */
+            savedStyles?: string[];
             view: components["schemas"]["AssistantView"];
         };
         /** AssistantResponse */
         AssistantResponse: {
+            /**
+             * Actionbudget
+             * @default 8
+             */
+            actionBudget?: number;
             /** Actions */
             actions?: components["schemas"]["UiAction"][];
             /**
@@ -3218,6 +3343,11 @@ export interface components {
              * @default false
              */
             explainAfterChanges?: boolean;
+            /**
+             * Finished
+             * @default false
+             */
+            finished?: boolean;
             /** Model */
             model: string;
             /**
@@ -3225,6 +3355,11 @@ export interface components {
              * @default false
              */
             needsClarification?: boolean;
+            /**
+             * Reviewafter
+             * @default false
+             */
+            reviewAfter?: boolean;
             /** Revision */
             revision: number;
             /**
@@ -3375,7 +3510,7 @@ export interface components {
              * Provider
              * @enum {string}
              */
-            provider: "ollama" | "openai" | "anthropic" | "gemini";
+            provider: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             /** Providerlabel */
             providerLabel: string;
             /** Required */
@@ -3539,8 +3674,6 @@ export interface components {
             rows: number;
             /** Sourcepath */
             sourcePath?: string | null;
-            /** Suggestedislog2Transformed */
-            suggestedIsLog2Transformed?: boolean | null;
         };
         /** DistributionSummaryResponse */
         DistributionSummaryResponse: {
@@ -4051,6 +4184,13 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /** LocalServerModelsRequest */
+        LocalServerModelsRequest: {
+            /** Apikey */
+            apiKey?: string | null;
+            /** Endpoint */
+            endpoint?: string | null;
+        };
         /** Log2DetectionRequest */
         Log2DetectionRequest: {
             /**
@@ -4125,7 +4265,7 @@ export interface components {
              * @default unknown
              * @enum {string}
              */
-            assessment?: "tested" | "inferred" | "unknown";
+            assessment?: "tested" | "observed" | "configured" | "inferred" | "unknown";
             /**
              * Contexttier
              * @enum {string}
@@ -4143,17 +4283,33 @@ export interface components {
              * @enum {integer}
              */
             level: 1 | 2 | 3;
+            /**
+             * Levelname
+             * @default Basic
+             * @enum {string}
+             */
+            levelName?: "Basic" | "Standard" | "Advanced";
             /** Model */
             model: string;
+            /**
+             * Outputtokens
+             * @default 1024
+             */
+            outputTokens?: number;
             /** Parametercountb */
             parameterCountB?: number | null;
             /**
              * Provider
              * @enum {string}
              */
-            provider: "ollama" | "openai" | "anthropic" | "gemini";
+            provider: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             /** Reason */
             reason: string;
+            /**
+             * Reasoning
+             * @default false
+             */
+            reasoning?: boolean;
             /**
              * Source
              * @default fallback
@@ -4426,6 +4582,19 @@ export interface components {
              */
             source?: "non_imputed" | "imputed";
         };
+        /** ProviderDefaultsResponse */
+        ProviderDefaultsResponse: {
+            /**
+             * Localserverurl
+             * @default
+             */
+            localServerUrl?: string;
+            /** Models */
+            models: {
+                [key: string]: string;
+            };
+            policy: components["schemas"]["AiOperatorPolicyResponse"];
+        };
         /** QQPoint */
         QQPoint: {
             /** Sample */
@@ -4611,6 +4780,11 @@ export interface components {
             testType: "unpaired" | "unpaired_welch";
             /** Totalrows */
             totalRows: number;
+            /**
+             * Unavailablecount
+             * @default 0
+             */
+            unavailableCount?: number;
             /** Upregulatedcount */
             upregulatedCount: number;
             /** Warnings */
@@ -4880,7 +5054,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "navigate" | "set_control" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles";
+            type: "navigate" | "set_control" | "search_options" | "activate_control" | "focus_canvas" | "add_canvas_tiles" | "save_style" | "apply_style";
             /**
              * Value
              * @default
@@ -5124,6 +5298,11 @@ export interface components {
             sourceUsed: "data" | "filtered" | "log2" | "raw" | "imputed";
             /** Totalrows */
             totalRows: number;
+            /**
+             * Unavailablecount
+             * @default 0
+             */
+            unavailableCount?: number;
             /** Untestedrows */
             untestedRows?: {
                 [key: string]: unknown;
@@ -5561,12 +5740,43 @@ export interface operations {
             };
         };
     };
+    assistant_progress_route_api_chat_assistant_progress__progress_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                progress_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     cloud_ai_consent_status_route_api_chat_cloud_consent__provider__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                provider: "ollama" | "openai" | "anthropic" | "gemini";
+                provider: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             };
             cookie?: never;
         };
@@ -5597,7 +5807,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                provider: "ollama" | "openai" | "anthropic" | "gemini";
+                provider: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             };
             cookie?: never;
         };
@@ -5632,7 +5842,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                provider: "ollama" | "openai" | "anthropic" | "gemini";
+                provider: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
             };
             cookie?: never;
         };
@@ -5689,11 +5899,44 @@ export interface operations {
             };
         };
     };
+    local_server_models_route_api_chat_local_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocalServerModelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OllamaModelsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     model_capability_route_api_chat_model_capability_get: {
         parameters: {
             query: {
                 model: string;
-                provider?: "ollama" | "openai" | "anthropic" | "gemini";
+                provider?: "ollama" | "openai_compatible" | "openai" | "anthropic" | "gemini";
                 endpoint?: string | null;
             };
             header?: never;
@@ -5834,11 +6077,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: {
-                            [key: string]: string;
-                        };
-                    };
+                    "application/json": components["schemas"]["ProviderDefaultsResponse"];
                 };
             };
         };
@@ -9409,6 +9648,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NormalizationCapabilityResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plotly_asset_route_api_runtime_plotly__version__js_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

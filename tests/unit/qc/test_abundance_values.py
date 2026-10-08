@@ -16,7 +16,7 @@ typical site instead of 0, every point moves, and the curve's range compresses
 from 0.73 to 0.44 log10 units. The axis named a quantity the figure did not hold.
 
 These tests pin the definition, and pin it in all three pipelines, because the
-backend, the Python package and the R package each drew this plot with its own
+backend, the Python package and the R functions each drew this plot with its own
 copy of the arithmetic.
 """
 
@@ -39,7 +39,6 @@ from app.services.plot_images import (
     _abundance_mean_intensities,
     _get_sample_columns,
 )
-from app.services.viewer_bootstrap import load_viewer_state
 
 KINDS = ["protein", "phospho", "phosprot"]
 

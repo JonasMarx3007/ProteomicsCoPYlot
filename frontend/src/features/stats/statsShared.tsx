@@ -1,13 +1,14 @@
 // Result sections and notices the statistics panels share.
 
-import { PLOT_DOWNLOAD_FORMAT_OPTIONS, withPlotDownloadFilename, withPlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plotDownload";
-import { AssistantSelect } from "../../components/AssistantFields";
+import { withPlotDownloadFilename, withPlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plotDownload";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
 import { useMemo } from "react";
-import { collectColumns, rowsToQuotedCsv } from "../../lib/tableData";
+import { collectColumns, csvDataUrl, rowsToQuotedCsv } from "../../lib/tableData";
 import PaginatedTable from "../../components/PaginatedTable";
 import PlotImage from "../../components/PlotImage";
 import InteractivePlot from "../../components/InteractivePlot";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
+import SelectField from "../../components/SelectField";
 
 export function Notice({ error, warnings }: { error: string | null; warnings?: string[] }) {
   if (!error && (!warnings || warnings.length === 0)) return null;
@@ -86,25 +87,8 @@ export function ImageSection({
         <div className="flex flex-wrap items-center gap-2">
           {download ? (
             <>
-              <AssistantSelect
-                aria-label={`${title} download format`}
-                value={download.format}
-                onChange={(e) => download.onFormatChange(e.target.value as PlotDownloadFormat)}
-                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-              >
-                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </AssistantSelect>
-              <a
-                href={withPlotDownloadFormat(url, download.format)}
-                download={withPlotDownloadFilename(download.filename, download.format)}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <PlotDownloadControls label={title} format={download.format} onFormatChange={download.onFormatChange}
+                href={withPlotDownloadFormat(url, download.format)} filename={withPlotDownloadFilename(download.filename, download.format)} />
             </>
           ) : null}
           <a href={url} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50">
@@ -125,7 +109,7 @@ export function TableSection({ title, rows, filename, notebook, plotUrl }: {
   const csvUrl = useMemo(() => {
     if (!rows.length) return null;
     const csv = rowsToQuotedCsv(rows, collectColumns(rows));
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+    return csvDataUrl(csv);
   }, [rows]);
 
   return (
@@ -151,5 +135,36 @@ export function InfoSection({ message }: { message: string }) {
     <section className="rounded-2xl border border-sky-200 bg-sky-50 p-6 shadow-sm">
       <div className="text-sm text-sky-800">{message}</div>
     </section>
+  );
+}
+
+type ConditionValue = { value: string; onChange: (value: string) => void };
+
+/**
+ * The compared conditions: two selects, or four when each condition is taken
+ * relative to its own control. The volcano, ORA and projection panels share it.
+ */
+export function ConditionPicker({ conditions, condition1, condition2, controls }: {
+  conditions: { value: string; label: string }[];
+  condition1: ConditionValue;
+  condition2: ConditionValue;
+  /** Present for control-normalised comparisons. */
+  controls?: { condition1: ConditionValue; condition2: ConditionValue };
+}) {
+  if (controls) {
+    return (
+      <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+        <SelectField label="Condition 1" value={condition1.value} onChange={condition1.onChange} options={conditions} />
+        <SelectField label="Condition 1 Control" value={controls.condition1.value} onChange={controls.condition1.onChange} options={conditions} />
+        <SelectField label="Condition 2" value={condition2.value} onChange={condition2.onChange} options={conditions} />
+        <SelectField label="Condition 2 Control" value={controls.condition2.value} onChange={controls.condition2.onChange} options={conditions} />
+      </div>
+    );
+  }
+  return (
+    <div className="mt-4 grid gap-4 lg:grid-cols-2">
+      <SelectField label="Condition 1" value={condition1.value} onChange={condition1.onChange} options={conditions} />
+      <SelectField label="Condition 2" value={condition2.value} onChange={condition2.onChange} options={conditions} />
+    </div>
   );
 }

@@ -51,16 +51,21 @@ def _pair_rows(frame: pd.DataFrame, left: str, right: str) -> pd.DataFrame:
     return frame[mask].sort_values("ProteinNames").reset_index(drop=True)
 
 
+@pytest.fixture(scope="module")
+def all_pairs(dataset):
+    frame, metadata = dataset
+    return anova_posthoc_data(frame.copy(), metadata.copy(), label_col="ProteinNames")
+
+
 # --- the claim the saving rests on --------------------------------------------
 
 
 @pytest.mark.parametrize("left,right", [("A", "B"), ("B", "C"), ("A", "D")])
-def test_one_pair_alone_equals_that_pair_among_all_of_them(dataset, left, right) -> None:
+def test_one_pair_alone_equals_that_pair_among_all_of_them(dataset, all_pairs, left, right) -> None:
     frame, metadata = dataset
-    every = anova_posthoc_data(frame, metadata, label_col="ProteinNames")
     alone = anova_posthoc_data(frame, metadata, label_col="ProteinNames", pair=(left, right))
 
-    expected = _pair_rows(every, left, right)
+    expected = _pair_rows(all_pairs, left, right)
     actual = _pair_rows(alone, left, right)
     assert not expected.empty and len(actual) == len(expected)
 
@@ -73,19 +78,17 @@ def test_one_pair_alone_equals_that_pair_among_all_of_them(dataset, left, right)
     assert actual["n_group1"].tolist() == expected["n_group1"].tolist()
 
 
-def test_only_the_asked_for_comparison_comes_back(dataset) -> None:
+def test_only_the_asked_for_comparison_comes_back(dataset, all_pairs) -> None:
     frame, metadata = dataset
     alone = anova_posthoc_data(frame, metadata, label_col="ProteinNames", pair=("A", "C"))
     assert set(alone["comparison"]) == {"A vs C"}
-    every = anova_posthoc_data(frame, metadata, label_col="ProteinNames")
-    assert len(set(every["comparison"])) == 6, "four conditions make six pairs"
-    assert len(alone) * 6 == len(every), "and one pair is a sixth of the work"
+    assert len(set(all_pairs["comparison"])) == 6, "four conditions make six pairs"
+    assert len(alone) * 6 == len(all_pairs), "and one pair is a sixth of the work"
 
 
-def test_asking_for_nothing_still_returns_every_pair(dataset) -> None:
+def test_asking_for_nothing_still_returns_every_pair(all_pairs) -> None:
     """The old behaviour, which the API keeps when no pair is named."""
-    frame, metadata = dataset
-    assert len(set(anova_posthoc_data(frame, metadata, label_col="ProteinNames")["comparison"])) == 6
+    assert len(set(all_pairs["comparison"])) == 6
 
 
 # --- the order is the user's, like every other comparison in the tool ---------
@@ -110,12 +113,10 @@ def test_the_condition_named_first_is_the_minuend(dataset) -> None:
     ), "the Tukey p-value is symmetric: q uses |difference|"
 
 
-def test_a_pair_picked_backwards_still_matches_the_full_run(dataset) -> None:
+def test_a_pair_picked_backwards_still_matches_the_full_run(dataset, all_pairs) -> None:
     """Only the sign and the label differ from the canonical orientation."""
     frame, metadata = dataset
-    every = _pair_rows(
-        anova_posthoc_data(frame, metadata, label_col="ProteinNames"), "A", "D"
-    )
+    every = _pair_rows(all_pairs, "A", "D")
     reverse = (
         anova_posthoc_data(frame, metadata, label_col="ProteinNames", pair=("D", "A"))
         .sort_values("ProteinNames")

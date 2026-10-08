@@ -39,7 +39,8 @@ def test_the_route_serves_the_list_in_ai_mode(monkeypatch):
     with TestClient(app) as client:
         response = client.get("/api/chat/provider-defaults")
     assert response.status_code == 200
-    assert response.json() == {"models": chat_tools.provider_default_models()}
+    assert response.json()["models"] == chat_tools.provider_default_models()
+    assert response.json()["policy"] == chat_tools.ai_operator_policy()
 
 
 def test_the_route_is_absent_without_ai_mode(monkeypatch):

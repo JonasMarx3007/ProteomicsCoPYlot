@@ -6,9 +6,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from app.app_version import APP_VERSION
 from app.services.html_security import GENERATED_HTML_CSP
-from app.services.plot_export import notebook_capture_allowed, notebook_unavailable, plot_output_format
+from app.services.shared_plotly import PLOTLY_ASSET_HEADER, SHARED_PLOTLY_HEADER, plotly_asset_path, share_plotly
+from app.services.plot_export import notebook_capture_allowed, notebook_unavailable, plot_notices, plot_output_format
 
 from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from anyio import to_thread
@@ -32,6 +35,7 @@ from app.api.routes_tool_auth import router as tool_auth_router
 from app.api.routes_viewer_auth import router as viewer_auth_router
 from app.services.session_context import (
     get_browser_session_id,
+    get_session_id,
     new_session_id,
     normalize_session_id,
     reset_session_id,
@@ -149,17 +153,21 @@ _VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/data-tools/id-translation/run"),
     ("POST", "/api/data-tools/id-translation/download"),
     ("POST", "/api/restore/import"),
-    # The whole session in one blob: every package, every source, log2, filtered
-    # and imputed matrix, all metadata. A published project is figures to read,
-    # not a dataset to take away, and the only thing that called this in viewer
-    # mode was the Ctrl+S save state -- which a viewer does not need.
+    # What a viewer may take away is decided (local/DESIGN_DECISIONS.md, D11):
+    # the data tables -- source, filtered and imputed matrices, metadata,
+    # per-sample values -- are downloadable, because a viewer project is shared
+    # with trusted collaborators or holds published data. Two things stay
+    # closed: the whole-session save blob and the notebook ZIPs (below). The
+    # blob is the editing state of the project, not a table, and the only
+    # caller in viewer mode was the Ctrl+S save -- which a viewer does not need.
     ("POST", "/api/restore/export"),
     ("POST", "/api/chat/models/install"),
     ("POST", "/api/chat/models/remove"),
 }
 _VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
-    # Every notebook ZIP carries the exact input matrix. A published project is
-    # figures to read, not a dataset to take away; viewers download plots only.
+    # Notebook exports stay closed to viewers (D11): a ZIP is reproducible
+    # analysis code bound to this project's state, not one of the tables a
+    # viewer may download. The table downloads themselves remain open.
     ("GET", "/api/plots/notebooks/"),
     ("DELETE", "/api/annotations/"),
     ("DELETE", "/api/peptide/metadata/"),
@@ -342,15 +350,6 @@ def cors_origins() -> list[str]:
 
 
 _CORS_ORIGINS = cors_origins()
-if _CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_CORS_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["X-CoPYlot-Notice", "X-CoPYlot-Notebook", "X-CoPYlot-Notebook-Unavailable"],
-    )
 
 
 # Loopback names only. "0.0.0.0" is a bind address, never a Host header a client
@@ -393,7 +392,6 @@ def _host_is_allowed(header: str) -> bool:
     return bare in allowed
 
 
-@app.middleware("http")
 async def host_allowlist_middleware(request: Request, call_next):
     """Refuse requests carrying an unrecognised Host header.
 
@@ -426,7 +424,50 @@ def _sets_session_cookie(response, cookie_name: str) -> bool:
     )
 
 
-@app.middleware("http")
+# Requests that change a session's datasets, annotations or settings. They take
+# the session's gate exclusively, so two of them never interleave and no read
+# sees a half-made change. Every PUT, PATCH and DELETE counts as well.
+_SESSION_WRITE_POSTS = frozenset({
+    "/api/annotations/generate",
+    "/api/annotations/metadata/upload",
+    "/api/annotations/phosprot/aggregate",
+    "/api/data-tools/imputation/run",
+    "/api/data-tools/id-translation/run",
+    "/api/data-tools/phospho-localization-cutoff",
+    "/api/datasets/upload",
+    "/api/datasets/table-path",
+    "/api/datasets/peptide-path",
+    "/api/datasets/peptide-file",
+    "/api/datasets/packages/create",
+    "/api/datasets/packages/rename",
+    "/api/datasets/active",
+    "/api/datasets/metadata/profiles/create",
+    "/api/datasets/metadata/profiles/rename",
+    "/api/datasets/metadata/profiles/active",
+    "/api/peptide/metadata/generate",
+    "/api/restore/import",
+    "/api/restore/browser-session-reset",
+})
+_SESSION_WRITE_PREFIXES = ("/api/data-tools/condition-colors/",)
+
+
+def session_gate_mode(method: str, path: str) -> str | None:
+    """'exclusive' for a change to session data, 'shared' for a read, None for no gate.
+
+    AI-provider calls take no gate: an assistant answer can take minutes, and a
+    reader holding the gate that long would make every change in the session wait.
+    """
+    path = path.rstrip("/") or "/"
+    if path.startswith("/api/chat/"):
+        return None
+    method = method.upper()
+    if method in {"PUT", "PATCH", "DELETE"}:
+        return "exclusive"
+    if method == "POST" and (path in _SESSION_WRITE_POSTS or path.startswith(_SESSION_WRITE_PREFIXES)):
+        return "exclusive"
+    return "shared"
+
+
 async def session_scope_middleware(request: Request, call_next):
     configuration_error = _authentication_configuration_error(validate_credentials=False)
     if configuration_error:
@@ -445,12 +486,12 @@ async def session_scope_middleware(request: Request, call_next):
             if policy_response is not None:
                 response = policy_response
             else:
-                exclusive = request.url.path in {
-                    "/api/restore/import",
-                    "/api/restore/browser-session-reset",
-                }
-                async with session_operation_scope("global", exclusive=exclusive):
+                mode = session_gate_mode(request.method, request.url.path)
+                if mode is None:
                     response = await call_next(request)
+                else:
+                    async with session_operation_scope("global", exclusive=mode == "exclusive"):
+                        response = await call_next(request)
         finally:
             reset_session_id(token)
         if should_set_cookie:
@@ -497,7 +538,8 @@ async def session_scope_middleware(request: Request, call_next):
                         content={"detail": "Viewer password required."},
                     )
                 try:
-                    ensure_viewer_session_bootstrapped(force_reload=False)
+                    # Loading a project reads and processes files: off the event loop.
+                    await to_thread.run_sync(lambda: ensure_viewer_session_bootstrapped(force_reload=False))
                 except FileNotFoundError as exc:
                     LOGGER.exception("Viewer project configuration was not found")
                     return JSONResponse(
@@ -512,7 +554,7 @@ async def session_scope_middleware(request: Request, call_next):
                     )
             elif viewer_mode_enabled():
                 try:
-                    bootstrap_current_viewer_session(force_reload=False)
+                    await to_thread.run_sync(lambda: bootstrap_current_viewer_session(force_reload=False))
                 except FileNotFoundError as exc:
                     LOGGER.exception("Viewer configuration was not found")
                     return JSONResponse(
@@ -528,12 +570,12 @@ async def session_scope_middleware(request: Request, call_next):
             policy_response = _request_policy_response(request)
             if policy_response is not None:
                 return policy_response
-        exclusive = path in {
-            "/api/restore/import",
-            "/api/restore/browser-session-reset",
-        }
-        async with session_operation_scope(resolved, exclusive=exclusive):
+        mode = session_gate_mode(request.method, path)
+        if mode is None:
             response = await call_next(request)
+        else:
+            async with session_operation_scope(resolved, exclusive=mode == "exclusive"):
+                response = await call_next(request)
         effective = get_browser_session_id()
         if (
             tool_access_enabled() and tool_session_authenticated()
@@ -556,7 +598,6 @@ async def session_scope_middleware(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
 async def heavy_workload_middleware(request: Request, call_next):
     try:
         validate_plot_request(request)
@@ -564,22 +605,10 @@ async def heavy_workload_middleware(request: Request, call_next):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     if not is_heavy_request(request.method, request.url.path):
         return await call_next(request)
-    if session_isolation_enabled():
-        raw_session = request.cookies.get(session_cookie_name()) or request.headers.get(
-            session_header_name()
-        )
-        if raw_session:
-            workload_session = normalize_session_id(raw_session)
-        else:
-            # The session middleware is inside this admission middleware, so a
-            # first request has no cookie yet. Group only those bootstrap calls
-            # by client address; subsequent requests use their issued session.
-            client_host = request.client.host if request.client else "unknown"
-            workload_session = f"bootstrap:{client_host}"
-    else:
-        workload_session = "global"
+    # Runs inside the session middleware, so the request's session is known and
+    # an unauthenticated request never reaches the queue.
     try:
-        async with heavy_workload_scope(workload_session):
+        async with heavy_workload_scope(get_session_id()):
             return await call_next(request)
     except HeavyWorkloadBusyError as exc:
         return JSONResponse(
@@ -600,7 +629,6 @@ def _request_is_https(request: Request) -> bool:
     )
 
 
-@app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -618,8 +646,8 @@ async def security_headers_middleware(request: Request, call_next):
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     )
-    if request.url.path.startswith("/api/"):
-        # Nothing this API returns is safely cacheable. Every response is a
+    if request.url.path.startswith("/api/") and "immutable" not in response.headers.get("cache-control", ""):
+        # Nothing this API returns is safely cacheable, except a versioned asset. Every response is a
         # function of the session's current matrices, and those change under the
         # same URL: re-filtering or re-imputing rewrites every number without
         # moving an endpoint. The plot bodies have always said `no-store`; the
@@ -630,7 +658,6 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
 async def plot_download_format_middleware(request: Request, call_next):
     native_format = "png"
     if request.method == "GET" and request.url.path.startswith("/api/plots/"):
@@ -642,15 +669,22 @@ async def plot_download_format_middleware(request: Request, call_next):
         not request.query_params.get("downloadFormat", "").strip())
     unavailable: dict = {}
     unavailable_token = notebook_unavailable.set(unavailable)
+    notices: list = []
+    notices_token = plot_notices.set(notices)
     try:
         response = await call_next(request)
     finally:
+        plot_notices.reset(notices_token)
         notebook_unavailable.reset(unavailable_token)
         notebook_capture_allowed.reset(capture_token)
         plot_output_format.reset(token)
     if unavailable.get("reason") and "x-copylot-notebook" not in response.headers:
         from urllib.parse import quote
         response.headers["X-CoPYlot-Notebook-Unavailable"] = quote(unavailable["reason"])
+    if notices:
+        from urllib.parse import quote, unquote
+        existing = unquote(response.headers.get("X-CoPYlot-Notice", ""))
+        response.headers["X-CoPYlot-Notice"] = quote(" ".join(filter(None, [*notices, existing])))
     if request.method != "GET":
         return response
     if response.status_code < 200 or response.status_code >= 300:
@@ -663,6 +697,18 @@ async def plot_download_format_middleware(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+        if request.headers.get(SHARED_PLOTLY_HEADER) == "1":
+            # The app's own display: plotly.js comes from the cached shared asset.
+            body = bytearray()
+            async for chunk in response.body_iterator:
+                body.extend(chunk)
+            text = bytes(body).decode("utf-8")
+            shared = share_plotly(text)
+            headers = {key: value for key, value in response.headers.items() if key.lower() != "content-length"}
+            if shared is not None:
+                headers[PLOTLY_ASSET_HEADER] = plotly_asset_path()
+            return Response(content=shared if shared is not None else text, status_code=response.status_code,
+                            media_type="text/html", headers=headers)
 
     requested_format = request.query_params.get("downloadFormat", "").strip().lower()
     if not requested_format or requested_format == "png":
@@ -714,8 +760,36 @@ async def plot_download_format_middleware(request: Request, call_next):
         headers=passthrough_headers,
     )
 
+# Middleware order, outermost first (Starlette runs the last one added first):
+#   1. Host allowlist: a rebinding request is refused before anything else runs.
+#   1b. Gzip of the finished response.
+#   2. Tab sessions: rewrites /api/tabs/<id>/api/... before any path is read.
+#   3. Security headers: on every response, including refusals further in.
+#   4. CORS (only when COPYLOT_CORS_ORIGINS is set).
+#   5. Session and authentication; viewer bootstrap; the session's operation gate.
+#   6. Heavy-work admission, then AI-provider admission: both per authenticated
+#      session, so a fair share is counted per session, not per client address.
+#   7. Plot download format and notices, closest to the route.
+app.add_middleware(BaseHTTPMiddleware, dispatch=plot_download_format_middleware)
 app.add_middleware(ProviderWorkloadMiddleware)
+app.add_middleware(BaseHTTPMiddleware, dispatch=heavy_workload_middleware)
+app.add_middleware(BaseHTTPMiddleware, dispatch=session_scope_middleware)
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-CoPYlot-Notice", "X-CoPYlot-Notebook", "X-CoPYlot-Notebook-Unavailable"],
+    )
+app.add_middleware(BaseHTTPMiddleware, dispatch=security_headers_middleware)
 app.add_middleware(TabSessionMiddleware)
+# Compresses JSON tables and HTML for clients that accept gzip; images and ZIP
+# downloads are skipped. Volcano and ANOVA results ship whole matrices, which
+# shrink several-fold.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+app.add_middleware(BaseHTTPMiddleware, dispatch=host_allowlist_middleware)
 
 app.include_router(datasets_router)
 app.include_router(annotations_router)

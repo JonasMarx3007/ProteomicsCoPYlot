@@ -24,10 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from fastapi.testclient import TestClient
 
-from app.main import app
-from app.services.viewer_bootstrap import load_viewer_state
 
 
 # One of each shape: a PNG body, an HTML body, a JSON table, a JSON options

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pandas as pd
 
 from app.schemas.annotation import AnnotationKind
 from app.schemas.summary import SummaryMetadataTable, SummaryTablesResponse
 from app.services.annotation_store import get_annotation
 from app.services.runtime_cache import apply_cached_wrappers
+from app.services.json_records import json_records
 
 
 def _metadata_table(kind: AnnotationKind) -> SummaryMetadataTable:
@@ -13,14 +13,14 @@ def _metadata_table(kind: AnnotationKind) -> SummaryMetadataTable:
     if stored is None or stored.metadata.empty:
         return SummaryMetadataTable(kind=kind, available=False)
 
-    table = stored.metadata.copy().where(pd.notna(stored.metadata), None)
+    table = stored.metadata
     return SummaryMetadataTable(
         kind=kind,
         available=True,
         rows=len(table),
         columns=len(table.columns),
         columnNames=[str(column) for column in table.columns],
-        table=table.to_dict(orient="records"),
+        table=json_records(table),
     )
 
 

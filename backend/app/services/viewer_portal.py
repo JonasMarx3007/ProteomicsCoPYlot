@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -16,11 +15,11 @@ from app.services.condition_palette_store import reset_condition_palettes
 from app.services.phospho_localization import reset_localization_cutoff
 from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
-from app.services.password_hashing import validate_password_hash, verify_password
+from app.services.password_hashing import normalize_sha256, sha256_hex, validate_password_hash, verify_password
 from app.services.peptide_metadata_store import clear_peptide_metadata
 from app.services.session_context import get_session_id, session_isolation_enabled
 from app.services.viewer_bootstrap import (
-    load_viewer_state,
+    load_viewer_state_shared,
     resolve_viewer_project_config,
     viewer_mode_enabled,
 )
@@ -146,21 +145,6 @@ def _refuse_legacy_credential(raw: dict[str, Any], *, index: int, project: str) 
     )
 
 
-def _normalize_sha256(value: str) -> str:
-    """A 64-hex SHA-256 digest as stored for QR tokens (random secrets, so a
-    plain digest is adequate there; passwords are PBKDF2 only)."""
-    digest = str(value or "").strip().lower()
-    if not digest:
-        return ""
-    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        raise ValueError("token_sha256 must be a 64-character lowercase hex digest.")
-    return digest
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
 def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
     project = _normalize_project_name(str(raw.get("project", "")))
     project_label = str(raw.get("label", project)).strip() or project
@@ -181,10 +165,10 @@ def _entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerAccessEntry:
 def _qr_entry_from_object(raw: dict[str, Any], *, index: int) -> ViewerQrAccessEntry:
     project = _normalize_project_name(str(raw.get("project", "")))
     project_label = str(raw.get("label", project)).strip() or project
-    token_sha256 = _normalize_sha256(str(raw.get("token_sha256", "")))
+    token_sha256 = normalize_sha256(str(raw.get("token_sha256", "")), allow_empty=True)
     token = str(raw.get("token", ""))
     if not token_sha256 and token:
-        token_sha256 = _hash_token(token)
+        token_sha256 = sha256_hex(token)
     if not token_sha256:
         raise ValueError(
             f"Viewer QR access token #{index} must define token_sha256."
@@ -292,11 +276,11 @@ def validate_viewer_portal_configuration() -> None:
             raise ValueError(f"Viewer project '{entry.project}' has no viewer_config.json.")
 
     qr_entries = _load_qr_access_entries(root)
-    for entry in qr_entries:
-        if not any(character != "0" for character in entry.token_sha256):
+    for qr_entry in qr_entries:
+        if not any(character != "0" for character in qr_entry.token_sha256):
             raise ValueError("Viewer QR token still contains the example placeholder.")
-        if resolve_viewer_project_config(entry.project) is None:
-            raise ValueError(f"Viewer project '{entry.project}' has no viewer_config.json.")
+        if resolve_viewer_project_config(qr_entry.project) is None:
+            raise ValueError(f"Viewer project '{qr_entry.project}' has no viewer_config.json.")
 
 
 def _reset_current_session_data() -> None:
@@ -326,7 +310,7 @@ def _load_project_into_current_session(project_name: str, *, force_reload: bool)
         )
 
     _reset_current_session_data()
-    result = load_viewer_state(config_path)
+    result = load_viewer_state_shared(config_path, force_reload=force_reload)
     LOGGER.info(
         "Viewer portal loaded project '%s' from %s (datasets=%d, annotations=%d).",
         project,
@@ -356,7 +340,7 @@ def _initialize_authenticated_viewer(project: str, project_label: str) -> Viewer
 
     auth = ViewerSessionAuth(project=project, project_label=project_label)
     with authenticated_session_rotation() as session_id:
-        _load_project_into_current_session(project, force_reload=True)
+        _load_project_into_current_session(project, force_reload=False)
         with _LOCK:
             _SESSION_AUTH[session_id] = auth
     return auth
@@ -405,7 +389,7 @@ def authenticate_viewer_qr_session(token: str, *, project_root: Path | None = No
             "Viewer QR access is not configured. Create local/viewer_qr_access.local.json."
         )
 
-    digest = _hash_token(candidate_token)
+    digest = sha256_hex(candidate_token)
     selected: ViewerQrAccessEntry | None = None
     for entry in entries:
         if secrets.compare_digest(digest, entry.token_sha256):

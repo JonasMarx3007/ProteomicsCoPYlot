@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from fastapi import UploadFile
+from app.services.env_settings import env_int
 
 _DEFAULT_UPLOAD_MAX_BYTES = 64 * 1024**3
 _CHUNK_BYTES = 1024 * 1024
@@ -13,14 +14,7 @@ _DEFAULT_UPLOAD_MAX_COLUMNS = 20_000
 
 
 def upload_max_bytes() -> int:
-    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_BYTES", "")).strip()
-    if not raw:
-        return _DEFAULT_UPLOAD_MAX_BYTES
-    try:
-        parsed = int(raw)
-    except ValueError:
-        return _DEFAULT_UPLOAD_MAX_BYTES
-    return max(1, parsed)
+    return env_int("COPYLOT_UPLOAD_MAX_BYTES", _DEFAULT_UPLOAD_MAX_BYTES, minimum=1)
 
 
 def upload_size_bytes(
@@ -85,14 +79,7 @@ def upload_max_cells() -> int:
     applied to the parsed shape instead, and mirrors the cap the restore path
     already enforces.
     """
-    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_CELLS", "")).strip()
-    if not raw:
-        return _DEFAULT_UPLOAD_MAX_CELLS
-    try:
-        parsed = int(raw)
-    except ValueError:
-        return _DEFAULT_UPLOAD_MAX_CELLS
-    return max(1, parsed)
+    return env_int("COPYLOT_UPLOAD_MAX_CELLS", _DEFAULT_UPLOAD_MAX_CELLS, minimum=1)
 
 
 def ensure_table_within_cell_budget(rows: int, columns: int, *, label: str = "Upload") -> None:
@@ -115,12 +102,9 @@ def upload_max_frame_bytes() -> int:
     generous cell budget and still costs hundreds of megabytes. Counting bytes is
     the one bound that does not depend on which dimension a file chose to grow.
     """
-    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_FRAME_BYTES", "")).strip()
-    try:
-        if raw:
-            return max(1, int(raw))
-    except ValueError:
-        pass
+    configured = env_int("COPYLOT_UPLOAD_MAX_FRAME_BYTES", 0, minimum=1)
+    if configured:
+        return configured
     capacity = _memory_capacity_bytes()
     # Parsing, normalization and annotation retain additional copies of a table.
     return min(128 * 1024**3, max(1, capacity // 4)) if capacity else _FALLBACK_FRAME_BYTES
@@ -139,11 +123,13 @@ def _memory_capacity_bytes() -> int | None:
 
             status = MemoryStatus()
             status.length = ctypes.sizeof(status)
-            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            windll = getattr(ctypes, "windll")  # Windows only; absent from typeshed elsewhere
+            if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
                 return None
             capacity = int(status.total_phys)
         else:
-            capacity = int(os.sysconf('SC_PHYS_PAGES')) * int(os.sysconf('SC_PAGE_SIZE'))
+            sysconf = getattr(os, 'sysconf')
+            capacity = int(sysconf('SC_PHYS_PAGES')) * int(sysconf('SC_PAGE_SIZE'))
     except (AttributeError, OSError, ValueError):
         return None
     for path in ('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
@@ -164,14 +150,7 @@ def upload_max_columns() -> int:
     expensive to hold. No proteomics report has more columns than it has samples
     plus a handful of annotations.
     """
-    raw = str(os.getenv("COPYLOT_UPLOAD_MAX_COLUMNS", "")).strip()
-    if not raw:
-        return _DEFAULT_UPLOAD_MAX_COLUMNS
-    try:
-        parsed = int(raw)
-    except ValueError:
-        return _DEFAULT_UPLOAD_MAX_COLUMNS
-    return max(1, parsed)
+    return env_int("COPYLOT_UPLOAD_MAX_COLUMNS", _DEFAULT_UPLOAD_MAX_COLUMNS, minimum=1)
 
 
 def ensure_frame_bytes_within_budget(nbytes: int, *, label: str = "Upload") -> None:

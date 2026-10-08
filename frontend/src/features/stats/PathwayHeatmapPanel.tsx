@@ -4,15 +4,16 @@ import { SizeRow } from "../../components/PlotFields";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
 import { AssistantSelect } from "../../components/AssistantFields";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildPlotUrl, getPathwayOptions, getStatisticalOptions, isAbortError } from "../../lib/api";
+import { buildPlotUrl, getPathwayOptions, isAbortError } from "../../lib/api";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, PathwayOptionsResponse, StatisticalOptionsResponse, DataSource } from "../../lib/types";
+import type { ContextMode, AnnotationKind, PathwayOptionsResponse, DataSource, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
+import { useStatisticalOptionsLoader } from "./useStatisticalOptions";
 import { ImageSection, InfoSection, Notice } from "./statsShared";
 import { conditionOptions, hasGeneNameSupport } from "./statsHelpers";
 import type { RenderedNotebook } from "../../components/NotebookDownload";
@@ -92,25 +93,20 @@ export function PathwayHeatmapPanel({
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   const pathwayDataSourceOptions = useMemo(() => dataSourceOptions(options), [options]);
 
-  useEffect(() => {
-    if (!kindAvailable) return;
-    const controller = new AbortController();
-    getStatisticalOptions(kind, { signal: controller.signal })
-      .then((data) => {
-        setOptions(data);
-        // Unconditionally: this used to apply the choices only when imputed was
-        // *un*available, which is backwards -- the panel then never left the
-        // placeholder on exactly the projects that have an imputed matrix.
-        applyDataSourceChoices(data);
-        setSelectedConditions((current) => (current.length ? current.filter((item) => data.availableConditions.includes(item)) : data.availableConditions));
-      })
-      .catch((err) => {
-        if (!isAbortError(err)) {
-          setError(err instanceof Error ? err.message : "Failed to load statistical options");
-        }
-      });
-    return () => controller.abort();
-  }, [kind, kindAvailable, applyDataSourceChoices]);
+  useStatisticalOptionsLoader(
+    kind,
+    kindAvailable,
+    (data) => {
+      setOptions(data);
+      // Unconditionally: this used to apply the choices only when imputed was
+      // *un*available, which is backwards -- the panel then never left the
+      // placeholder on exactly the projects that have an imputed matrix.
+      applyDataSourceChoices(data);
+      setSelectedConditions((current) => (current.length ? current.filter((item) => data.availableConditions.includes(item)) : data.availableConditions));
+    },
+    setError,
+  );
+
 
   useEffect(() => {
     const controller = new AbortController();

@@ -942,7 +942,8 @@ def test_generation_schema_obeys_remaining_action_budget(monkeypatch):
         assert schema["properties"]["actions"]["maxItems"] == 1
         return "synthetic", '{"task":"ui","actions":[]}'
     monkeypatch.setattr(assistant, "assistant_completion", complete)
-    assistant.assistant_step(AssistantRequest(message="Open CV", view={"module": "qc.cv"}, receipts=["Done"] * 7))
+    # The Advanced budget is 40 changes per request.
+    assistant.assistant_step(AssistantRequest(message="Open CV", view={"module": "qc.cv"}, receipts=["Done"] * 39))
 
 
 def test_large_selection_is_not_limited_to_the_advertised_option_window(assistant_rig):

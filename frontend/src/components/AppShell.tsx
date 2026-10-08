@@ -17,15 +17,19 @@ import {
 
   getModelCapability,
   getOllamaGpuStatus,
+  getLocalServerModels,
   getOllamaModels,
-  getProviderDefaultModels,
+  getProviderDefaults,
+  type AiOperatorPolicy,
   installOllamaModel,
   removeOllamaModel,
   grantCloudAiConsent,
   revokeCloudAiConsent,
   type AssistantResult,
 } from "../lib/api";
-import { runAssistant } from "../lib/runAssistant";
+import { runAssistant, ShownAssistantError } from "../lib/runAssistant";
+import { capturePlotImage } from "../lib/plotImage";
+import { savedStyleNames } from "../lib/plotStyles";
 import AssistantChangeLog from "./AssistantChangeLog";
 import { AssistantConversation } from "../lib/assistantConversation";
 
@@ -50,6 +54,14 @@ type AppShellProps = {
 };
 
 
+const PROVIDER_LABELS: [ChatProvider, string][] = [
+  ["ollama", "Local (Ollama)"],
+  ["openai_compatible", "Local server (OpenAI-compatible)"],
+  ["openai", "OpenAI (ChatGPT)"],
+  ["anthropic", "Anthropic (Claude)"],
+  ["gemini", "Google (Gemini)"],
+];
+
 const CHAT_READY_MESSAGE = "AI chat is ready. Ask me about your data, plots, or next analysis steps.";
 const MAX_MODEL_HISTORY_MESSAGES = 8;
 const CHAT_INPUT_MAX_CHARS = 32_000;
@@ -57,17 +69,21 @@ const DEFAULT_OLLAMA_ENDPOINT = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_EN
 const DEFAULT_OLLAMA_MODEL = String(import.meta.env.VITE_AI_DEFAULT_OLLAMA_MODEL ?? "").trim();
 
 
-function ModelCapabilityIndicator({ capability }: { capability: ModelCapabilityResponse | null }) {
-  const level = capability?.level ?? 0;
+type AssistantLevel = "auto" | "basic" | "standard" | "advanced";
+const LEVEL_NUMBER: Record<Exclude<AssistantLevel, "auto">, 1 | 2 | 3> = { basic: 1, standard: 2, advanced: 3 };
+
+function ModelCapabilityIndicator({ capability, chosen }: { capability: ModelCapabilityResponse | null; chosen: AssistantLevel }) {
+  const level = chosen !== "auto" ? LEVEL_NUMBER[chosen] : capability?.level ?? 0;
   const color = level === 3 ? "bg-emerald-500" : level === 2 ? "bg-amber-400" : "bg-red-500";
-  const label = capability?.label ?? "Detecting";
+  const label = chosen !== "auto" ? `${chosen[0].toUpperCase()}${chosen.slice(1)} (your choice)`
+    : capability ? `${capability.levelName} (${capability.assessment})` : "Detecting";
   return (
     <div
       className="inline-flex items-end gap-1"
       title={capability ? capability.reason : "Detecting model capabilities"}
-      aria-label={`Model capability: ${label}`}
+      aria-label={`Assistant level: ${label}`}
     >
-      <span className="mr-1 text-[11px] text-slate-500">Capability: {label} ({capability?.assessment ?? "unknown"})</span>
+      <span className="mr-1 text-[11px] text-slate-500">Assistant level: {label}</span>
       {[1, 2, 3].map((bar) => (
         <span
           key={bar}
@@ -112,10 +128,20 @@ export default function AppShell({
   const [chatOllamaEndpoint, setChatOllamaEndpoint] = useState(DEFAULT_OLLAMA_ENDPOINT);
   const [chatOllamaEndpointActive, setChatOllamaEndpointActive] = useState(DEFAULT_OLLAMA_ENDPOINT);
   const [chatRemoteModel, setChatRemoteModel] = useState("");
+  // A local server speaking the OpenAI-compatible API (llama.cpp, vLLM, LM Studio).
+  const [localServerEndpoint, setLocalServerEndpoint] = useState("");
+  const [localServerEndpointActive, setLocalServerEndpointActive] = useState("");
+  const [localServerKeyActive, setLocalServerKeyActive] = useState("");
+  const [localServerPreset, setLocalServerPreset] = useState("");
   // Cloud default models come from the server, which keeps the only list.
   // Empty until loaded; an empty model name is resolved to the default there too.
   const [providerDefaults, setProviderDefaults] = useState<Record<string, string>>({});
+  // What the server operator allows; until the server answers, everything is offered
+  // and the server still refuses what it does not allow.
+  const [aiPolicy, setAiPolicy] = useState<AiOperatorPolicy | null>(null);
   const [chatApiKey, setChatApiKey] = useState("");
+  // The user's assistant level; "auto" follows the model's classification.
+  const [assistantLevel, setAssistantLevel] = useState<AssistantLevel>("auto");
   const [chatModels, setChatModels] = useState<string[]>([]);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
   const [chatModelError, setChatModelError] = useState<string | null>(null);
@@ -145,7 +171,12 @@ export default function AppShell({
   const workflowScope = String(activeWorkflowScope || "").trim().toLowerCase();
   const contextMode = activeContextMode ?? EMPTY_CONTEXT_MODE;
   const usingOllama = chatProvider === "ollama";
-  const selectedChatModel = usingOllama ? chatModel.trim() : chatRemoteModel.trim();
+  const usingLocalServer = chatProvider === "openai_compatible";
+  // Both run on machines the operator chose: no cloud consent, model picked from a list.
+  const usingLocalProvider = usingOllama || usingLocalServer;
+  const effectiveLevel: AssistantLevel = assistantLevel !== "auto" ? assistantLevel
+    : modelCapability?.levelName === "Advanced" ? "advanced" : modelCapability?.levelName === "Standard" ? "standard" : "basic";
+  const selectedChatModel = usingLocalProvider ? chatModel.trim() : chatRemoteModel.trim();
   const viewRef = useRef({ module: moduleKey, workflow: workflowScope, mode: contextMode, destinations: assistantDestinations });
   const conversationRef = useRef(new AssistantConversation());
   const [evidenceByMessage, setEvidenceByMessage] = useState<Record<number, AssistantResult["evidence"]>>({});
@@ -170,7 +201,8 @@ export default function AppShell({
     available: string[],
     selectedModel: string | null,
     warnings: string[],
-    preferredModel = ""
+    preferredModel = "",
+    emptyMessage = "No Ollama models detected. Install/pull a model first."
   ) => {
     const preferred = preferredModel.trim();
     setChatModels(available);
@@ -193,7 +225,7 @@ export default function AppShell({
       return next;
     });
     if (available.length === 0) {
-      const warning = warnings[0] || "No Ollama models detected. Install/pull a model first.";
+      const warning = warnings[0] || emptyMessage;
       setChatModelError(warning);
     } else if (warnings.length > 0) {
       setChatModelError(warnings[0]);
@@ -210,8 +242,13 @@ export default function AppShell({
   useEffect(() => {
     if (!aiEnabled) return;
     let cancelled = false;
-    getProviderDefaultModels()
-      .then((models) => { if (!cancelled) setProviderDefaults(models); })
+    getProviderDefaults()
+      .then(({ models, policy, localServerUrl }) => {
+        if (cancelled) return;
+        setProviderDefaults(models);
+        setAiPolicy(policy);
+        setLocalServerPreset(localServerUrl);
+      })
       .catch(() => { /* the server applies its default to an empty model name */ });
     return () => { cancelled = true; };
   }, [aiEnabled]);
@@ -225,6 +262,9 @@ export default function AppShell({
       setChatOllamaEndpointActive(DEFAULT_OLLAMA_ENDPOINT);
       chatOllamaEndpointAppliedRef.current = DEFAULT_OLLAMA_ENDPOINT;
       setChatApiKey("");
+      setLocalServerEndpoint("");
+      setLocalServerEndpointActive("");
+      setLocalServerKeyActive("");
       setChatModels([]);
       setChatModelsLoading(false);
       setChatModelError(null);
@@ -240,6 +280,39 @@ export default function AppShell({
       setCloudConsentBusy(false);
       setCloudConsentError(null);
       return;
+    }
+    if (chatProvider === "openai_compatible") {
+      const endpoint = localServerEndpointActive.trim();
+      setChatModelActionInput("");
+      setChatModelActionError(null);
+      setChatModelActionSuccess(null);
+      if (!endpoint) {
+        setChatModel("");
+        setChatModels([]);
+        setChatModelsLoading(false);
+        setChatModelError("Enter the server's address to list its models.");
+        return;
+      }
+      let cancelled = false;
+      setChatModelsLoading(true);
+      setChatModelError(null);
+      void getLocalServerModels(endpoint, localServerKeyActive)
+        .then((result) => {
+          if (cancelled) return;
+          applyChatModelList(result.models, result.selectedModel, result.warnings, "", "The server reported no models.");
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setChatModels([]);
+          setChatModel("");
+          setChatModelError(err instanceof Error ? err.message : "Failed to load the local AI server's models.");
+        })
+        .finally(() => {
+          if (!cancelled) setChatModelsLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
     if (chatProvider !== "ollama") {
       setChatModel("");
@@ -275,10 +348,10 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, chatProvider, chatOllamaEndpointActive, applyChatModelList]);
+  }, [aiEnabled, chatProvider, chatOllamaEndpointActive, localServerEndpointActive, localServerKeyActive, applyChatModelList]);
 
   useEffect(() => {
-    if (!aiEnabled || usingOllama) {
+    if (!aiEnabled || usingLocalProvider) {
       setCloudConsentStatus(null);
       setCloudConsentDialogOpen(false);
       setCloudConsentError(null);
@@ -299,7 +372,7 @@ export default function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [aiEnabled, chatProvider, usingOllama]);
+  }, [aiEnabled, chatProvider, usingLocalProvider]);
 
   useEffect(() => {
     if (!aiEnabled || !selectedChatModel) {
@@ -312,7 +385,8 @@ export default function AppShell({
       void getModelCapability(
         chatProvider,
         selectedChatModel,
-        usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined
+        usingOllama ? chatOllamaEndpointActive.trim() || undefined
+          : usingLocalServer ? localServerEndpointActive.trim() || undefined : undefined
       )
         .then((capability) => {
           if (cancelled) return;
@@ -328,12 +402,13 @@ export default function AppShell({
             err instanceof Error ? err.message : "Model capability detection failed."
           );
         });
-    }, usingOllama ? 0 : 350);
+    }, usingLocalProvider ? 0 : 350);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [aiEnabled, chatProvider, selectedChatModel, usingOllama, chatOllamaEndpointActive]);
+  }, [aiEnabled, chatProvider, selectedChatModel, usingOllama, usingLocalServer, usingLocalProvider,
+    chatOllamaEndpointActive, localServerEndpointActive]);
 
   async function runChatModelAction(action: "install" | "remove") {
     const targetModel = (chatModelActionInput.trim() || chatModel.trim()).trim();
@@ -410,13 +485,13 @@ export default function AppShell({
     const selectedModel = selectedChatModel;
     if (!selectedModel) {
       setChatError(
-        usingOllama
+        usingLocalProvider
           ? "No chatbot model selected. Choose one from the model list first."
           : "No API model selected. Set a model name in AI settings first."
       );
       return;
     }
-    if (!usingOllama) {
+    if (!usingLocalProvider) {
       setCloudConsentBusy(true);
       try {
         const status = await getCloudAiConsentStatus(chatProvider);
@@ -460,10 +535,16 @@ export default function AppShell({
         gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
         apiKey: usingOllama ? undefined : chatApiKey.trim() || undefined,
         ollamaUrl: usingOllama ? chatOllamaEndpointActive.trim() || undefined : undefined,
+        localServerUrl: usingLocalServer ? localServerEndpointActive.trim() || undefined : undefined,
+        assistantLevel,
+        savedStyles: savedStyleNames(),
       }, () => viewRef.current, destination => {
         if (!onAssistantNavigate) throw new Error("Navigation is unavailable here.");
         onAssistantNavigate(destination);
-      }, updateAnswer, controller.signal, conversationRef.current);
+      }, updateAnswer, controller.signal, conversationRef.current, {
+        slow: Boolean(modelCapability?.reasoning) || (usingLocalProvider && effectiveLevel === "advanced"),
+        plotImage: effectiveLevel === "advanced" && modelCapability?.supportsVision ? () => capturePlotImage() : undefined,
+      });
       if (controller.signal.aborted) return;
       setEvidenceByMessage(current => ({ ...current, [history.length]: response.evidence }));
       updateAnswer(response.answer);
@@ -488,7 +569,8 @@ export default function AppShell({
         }
         return next;
       });
-      if (!consentRequired && !controller.signal.aborted) {
+      // A reason already written into the conversation is not repeated below it.
+      if (!consentRequired && !controller.signal.aborted && !(err instanceof ShownAssistantError)) {
         setChatError(err instanceof Error ? err.message : "Failed to load chatbot response");
       }
     } finally {
@@ -499,7 +581,7 @@ export default function AppShell({
 
   async function confirmCloudConsent() {
     const status = cloudConsentStatus;
-    if (!status || status.provider !== chatProvider || usingOllama) return;
+    if (!status || status.provider !== chatProvider || usingLocalProvider) return;
     setCloudConsentBusy(true);
     setCloudConsentError(null);
     try {
@@ -515,7 +597,7 @@ export default function AppShell({
   }
 
   async function revokeCurrentCloudConsent() {
-    if (usingOllama) return;
+    if (usingLocalProvider) return;
     setCloudConsentBusy(true);
     setCloudConsentError(null);
     try {
@@ -576,7 +658,7 @@ export default function AppShell({
                 </div>
                 {selectedChatModel ? (
                   <div className="mt-1">
-                    <ModelCapabilityIndicator capability={modelCapability} />
+                    <ModelCapabilityIndicator capability={modelCapability} chosen={assistantLevel} />
                     {modelCapabilityError ? (
                       <div className="mt-0.5 text-[10px] text-amber-700">
                         Capability unavailable; compact evidence is used.
@@ -604,7 +686,12 @@ export default function AppShell({
                             const nextProvider = event.target.value as ChatProvider;
                             if (!nextProvider || nextProvider === chatProvider) return;
                             setChatProvider(nextProvider);
-                            if (nextProvider !== "ollama") {
+                            if (nextProvider === "openai_compatible") {
+                              if (!localServerEndpoint.trim() && localServerPreset) {
+                                setLocalServerEndpoint(localServerPreset);
+                                setLocalServerEndpointActive(localServerPreset);
+                              }
+                            } else if (nextProvider !== "ollama") {
                               setChatRemoteModel(providerDefaults[nextProvider] ?? "");
                             }
                             resetChatForModelChange();
@@ -613,10 +700,23 @@ export default function AppShell({
                           className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
                           aria-label="Select chatbot provider"
                         >
-                          <option value="ollama">Local (Ollama)</option>
-                          <option value="openai">OpenAI (ChatGPT)</option>
-                          <option value="anthropic">Anthropic (Claude)</option>
-                          <option value="gemini">Google (Gemini)</option>
+                          {PROVIDER_LABELS.filter(([value]) => !aiPolicy || aiPolicy.providers.includes(value) || value === chatProvider)
+                            .map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <select
+                          value={assistantLevel}
+                          onChange={(event) => setAssistantLevel(event.target.value as AssistantLevel)}
+                          disabled={chatLoading}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          aria-label="Assistant level"
+                          title="Basic: one small step at a time. Standard: more context. Advanced: large batches of visual changes, journal styles, its own checked answers and, for models that read images, the rendered plot. The rules are the same at every level."
+                        >
+                          <option value="auto">Assistant level: Auto{modelCapability ? ` (${modelCapability.levelName})` : ""}</option>
+                          <option value="basic">Assistant level: Basic</option>
+                          <option value="standard">Assistant level: Standard</option>
+                          <option value="advanced">Assistant level: Advanced</option>
                         </select>
                       </div>
                       {usingOllama ? (
@@ -683,7 +783,7 @@ export default function AppShell({
                               <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
                             ) : null}
                           </div>
-                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                          {aiPolicy?.modelManagement === false ? null : <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                               Model Management
                             </div>
@@ -719,7 +819,7 @@ export default function AppShell({
                             {chatModelActionSuccess ? (
                               <div className="mt-1 text-[11px] text-emerald-700">{chatModelActionSuccess}</div>
                             ) : null}
-                          </div>
+                          </div>}
                           <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
                             <div className="text-xs text-slate-600">GPU Acceleration</div>
                             {(() => {
@@ -759,6 +859,69 @@ export default function AppShell({
                               : gpuEligible
                                 ? `CUDA GPU detected${gpuDeviceName ? `: ${gpuDeviceName}` : "."}`
                                 : gpuStatusMessage || "No eligible CUDA GPU detected."}
+                          </div>
+                        </>
+                      ) : usingLocalServer ? (
+                        <>
+                          <div>
+                            <input
+                              type="text"
+                              value={localServerEndpoint}
+                              onChange={(event) => setLocalServerEndpoint(event.target.value)}
+                              onBlur={() => {
+                                const nextValue = localServerEndpoint.trim();
+                                if (nextValue !== localServerEndpointActive) {
+                                  setLocalServerEndpointActive(nextValue);
+                                  resetChatForModelChange();
+                                }
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  (event.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              placeholder="Server address, e.g. http://192.168.1.20:8080/v1"
+                              aria-label="Local AI server address"
+                              disabled={chatLoading}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            />
+                          </div>
+                          <input
+                            type="password"
+                            value={chatApiKey}
+                            onChange={(event) => setChatApiKey(event.target.value)}
+                            onBlur={() => {
+                              if (chatApiKey.trim() !== localServerKeyActive) setLocalServerKeyActive(chatApiKey.trim());
+                            }}
+                            placeholder="API key (only if the server needs one)"
+                            aria-label="Local AI server API key"
+                            disabled={chatLoading}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                          />
+                          <div>
+                            <select
+                              value={chatModel}
+                              onChange={(event) => {
+                                const nextModel = event.target.value;
+                                if (!nextModel || nextModel === chatModel) return;
+                                setChatModel(nextModel);
+                                resetChatForModelChange();
+                              }}
+                              disabled={chatModelsLoading || chatModels.length === 0 || chatLoading}
+                              className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                              aria-label="Select chatbot model"
+                            >
+                              {chatModels.length === 0 ? (
+                                <option value="">{chatModelsLoading ? "Loading models..." : "No models detected"}</option>
+                              ) : null}
+                              {chatModels.map((modelName) => (
+                                <option key={modelName} value={modelName}>{modelName}</option>
+                              ))}
+                            </select>
+                            {chatModelError ? (
+                              <div className="mt-1 text-[11px] text-amber-700">{chatModelError}</div>
+                            ) : null}
                           </div>
                         </>
                       ) : (

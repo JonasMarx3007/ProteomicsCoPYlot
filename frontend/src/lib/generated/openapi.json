@@ -1289,6 +1289,38 @@
         "title": "AdvancedTextElementSettings",
         "type": "object"
       },
+      "AiOperatorPolicyResponse": {
+        "properties": {
+          "modelManagement": {
+            "title": "Modelmanagement",
+            "type": "boolean"
+          },
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Models",
+            "type": "object"
+          },
+          "providers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers",
+          "models",
+          "modelManagement"
+        ],
+        "title": "AiOperatorPolicyResponse",
+        "type": "object"
+      },
       "AnalysisVolcanoPoint": {
         "properties": {
           "boxplotIdentifier": {
@@ -1538,6 +1570,11 @@
           },
           "totalRows": {
             "title": "Totalrows",
+            "type": "integer"
+          },
+          "unavailableCount": {
+            "default": 0,
+            "title": "Unavailablecount",
             "type": "integer"
           },
           "upregulatedCount": {
@@ -2191,6 +2228,38 @@
         "title": "AnovaResultResponse",
         "type": "object"
       },
+      "AssistantProgressResponse": {
+        "properties": {
+          "calls": {
+            "default": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "phase": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "waiting",
+              "thinking",
+              "answering"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "seconds": {
+            "default": 0,
+            "title": "Seconds",
+            "type": "integer"
+          },
+          "tokens": {
+            "default": 0,
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "AssistantProgressResponse",
+        "type": "object"
+      },
       "AssistantRequest": {
         "properties": {
           "answerOnly": {
@@ -2210,6 +2279,17 @@
               }
             ],
             "title": "Apikey"
+          },
+          "assistantLevel": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "basic",
+              "standard",
+              "advanced"
+            ],
+            "title": "Assistantlevel",
+            "type": "string"
           },
           "conversationState": {
             "anyOf": [
@@ -2231,6 +2311,19 @@
               }
             ],
             "title": "Gpuenabled"
+          },
+          "localServerUrl": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Localserverurl"
           },
           "message": {
             "default": "",
@@ -2264,7 +2357,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 4,
+            "maxItems": 8,
             "title": "Notes",
             "type": "array"
           },
@@ -2281,10 +2374,35 @@
             ],
             "title": "Ollamaurl"
           },
+          "plotImage": {
+            "anyOf": [
+              {
+                "maxLength": 3000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plotimage"
+          },
+          "progressId": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9-]{8,64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progressid"
+          },
           "provider": {
             "default": "ollama",
             "enum": [
               "ollama",
+              "openai_compatible",
               "openai",
               "anthropic",
               "gemini"
@@ -2296,8 +2414,21 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 8,
+            "maxItems": 40,
             "title": "Receipts",
+            "type": "array"
+          },
+          "reviewing": {
+            "default": false,
+            "title": "Reviewing",
+            "type": "boolean"
+          },
+          "savedStyles": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Savedstyles",
             "type": "array"
           },
           "view": {
@@ -2313,6 +2444,11 @@
       "AssistantResponse": {
         "additionalProperties": false,
         "properties": {
+          "actionBudget": {
+            "default": 8,
+            "title": "Actionbudget",
+            "type": "integer"
+          },
           "actions": {
             "items": {
               "$ref": "#/components/schemas/UiAction"
@@ -2337,6 +2473,11 @@
             "title": "Explainafterchanges",
             "type": "boolean"
           },
+          "finished": {
+            "default": false,
+            "title": "Finished",
+            "type": "boolean"
+          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -2344,6 +2485,11 @@
           "needsClarification": {
             "default": false,
             "title": "Needsclarification",
+            "type": "boolean"
+          },
+          "reviewAfter": {
+            "default": false,
+            "title": "Reviewafter",
             "type": "boolean"
           },
           "revision": {
@@ -2649,6 +2795,7 @@
           "provider": {
             "enum": [
               "ollama",
+              "openai_compatible",
               "openai",
               "anthropic",
               "gemini"
@@ -3119,17 +3266,6 @@
               }
             ],
             "title": "Sourcepath"
-          },
-          "suggestedIsLog2Transformed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Suggestedislog2Transformed"
           }
         },
         "required": [
@@ -4238,6 +4374,38 @@
         "title": "ListEnrichmentResultResponse",
         "type": "object"
       },
+      "LocalServerModelsRequest": {
+        "properties": {
+          "apiKey": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apikey"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          }
+        },
+        "title": "LocalServerModelsRequest",
+        "type": "object"
+      },
       "Log2DetectionRequest": {
         "properties": {
           "kind": {
@@ -4417,6 +4585,8 @@
             "default": "unknown",
             "enum": [
               "tested",
+              "observed",
+              "configured",
               "inferred",
               "unknown"
             ],
@@ -4461,9 +4631,24 @@
             "title": "Level",
             "type": "integer"
           },
+          "levelName": {
+            "default": "Basic",
+            "enum": [
+              "Basic",
+              "Standard",
+              "Advanced"
+            ],
+            "title": "Levelname",
+            "type": "string"
+          },
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "outputTokens": {
+            "default": 1024,
+            "title": "Outputtokens",
+            "type": "integer"
           },
           "parameterCountB": {
             "anyOf": [
@@ -4479,6 +4664,7 @@
           "provider": {
             "enum": [
               "ollama",
+              "openai_compatible",
               "openai",
               "anthropic",
               "gemini"
@@ -4489,6 +4675,11 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "reasoning": {
+            "default": false,
+            "title": "Reasoning",
+            "type": "boolean"
           },
           "source": {
             "default": "fallback",
@@ -5200,6 +5391,31 @@
         "title": "PhosprotAggregateRequest",
         "type": "object"
       },
+      "ProviderDefaultsResponse": {
+        "properties": {
+          "localServerUrl": {
+            "default": "",
+            "title": "Localserverurl",
+            "type": "string"
+          },
+          "models": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "object"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/AiOperatorPolicyResponse"
+          }
+        },
+        "required": [
+          "models",
+          "policy"
+        ],
+        "title": "ProviderDefaultsResponse",
+        "type": "object"
+      },
       "QQPoint": {
         "properties": {
           "sample": {
@@ -5630,6 +5846,11 @@
           },
           "totalRows": {
             "title": "Totalrows",
+            "type": "integer"
+          },
+          "unavailableCount": {
+            "default": 0,
+            "title": "Unavailablecount",
             "type": "integer"
           },
           "upregulatedCount": {
@@ -6222,7 +6443,9 @@
               "search_options",
               "activate_control",
               "focus_canvas",
-              "add_canvas_tiles"
+              "add_canvas_tiles",
+              "save_style",
+              "apply_style"
             ],
             "title": "Type",
             "type": "string"
@@ -6818,6 +7041,11 @@
           },
           "totalRows": {
             "title": "Totalrows",
+            "type": "integer"
+          },
+          "unavailableCount": {
+            "default": 0,
+            "title": "Unavailablecount",
             "type": "integer"
           },
           "untestedRows": {
@@ -7422,6 +7650,49 @@
         ]
       }
     },
+    "/api/chat/assistant-progress/{progress_id}": {
+      "get": {
+        "description": "Phase and token count of a running assistant step (no content).",
+        "operationId": "assistant_progress_route_api_chat_assistant_progress__progress_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "progress_id",
+            "required": true,
+            "schema": {
+              "title": "Progress Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assistant Progress Route",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/cloud-consent/{provider}": {
       "get": {
         "operationId": "cloud_ai_consent_status_route_api_chat_cloud_consent__provider__get",
@@ -7433,6 +7704,7 @@
             "schema": {
               "enum": [
                 "ollama",
+                "openai_compatible",
                 "openai",
                 "anthropic",
                 "gemini"
@@ -7481,6 +7753,7 @@
             "schema": {
               "enum": [
                 "ollama",
+                "openai_compatible",
                 "openai",
                 "anthropic",
                 "gemini"
@@ -7539,6 +7812,7 @@
             "schema": {
               "enum": [
                 "ollama",
+                "openai_compatible",
                 "openai",
                 "anthropic",
                 "gemini"
@@ -7625,6 +7899,48 @@
         ]
       }
     },
+    "/api/chat/local-models": {
+      "post": {
+        "description": "Models of a local OpenAI-compatible server. A POST, so a typed API key\nnever ends up in a URL or an access log.",
+        "operationId": "local_server_models_route_api_chat_local_models_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocalServerModelsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaModelsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Local Server Models Route",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/model-capability": {
       "get": {
         "operationId": "model_capability_route_api_chat_model_capability_get",
@@ -7647,6 +7963,7 @@
               "default": "ollama",
               "enum": [
                 "ollama",
+                "openai_compatible",
                 "openai",
                 "anthropic",
                 "gemini"
@@ -7840,14 +8157,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "type": "object"
-                  },
-                  "title": "Response Provider Defaults Route Api Chat Provider Defaults Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ProviderDefaultsResponse"
                 }
               }
             },
@@ -17432,6 +17742,47 @@
           }
         },
         "summary": "Normalization Capability Route",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime/plotly-{version}.js": {
+      "get": {
+        "description": "plotly.js for the app's interactive plots; versioned, so cached for good.",
+        "operationId": "plotly_asset_route_api_runtime_plotly__version__js_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plotly Asset Route",
         "tags": [
           "runtime"
         ]

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { plotErrorMessage, PLOT_ERROR_FALLBACK } from "../lib/plotError";
 import { fetchPlot } from "../lib/fetchPlot";
-import { notebookUnavailableNotice, readNotice } from "../lib/plotNotice";
+import { plotNotices } from "../lib/plotNotice";
 
 type Props = { url: string; alt: string; className?: string;
   onRendered?: (url: string, notebookToken: string | null) => void };
@@ -26,8 +26,7 @@ function LoadedPlotImage({ url, alt, onRendered, className = "w-full rounded-xl 
         }
         const blob = await response.blob();
         if (controller.signal.aborted) return;
-        const notice = [readNotice(response, "X-CoPYlot-Notice"), notebookUnavailableNotice(response)]
-          .filter(Boolean).join(" ");
+        const notice = plotNotices(response);
         image = URL.createObjectURL(blob);
         const candidate = response.headers.get("X-CoPYlot-Notebook") ?? "";
         const notebookToken = /^[A-Za-z0-9_-]{32}$/.test(candidate) ? candidate : null;

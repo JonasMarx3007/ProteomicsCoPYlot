@@ -11,6 +11,7 @@ from app.schemas.viewer_auth import (
     ViewerAuthQrLoginRequest,
     ViewerAuthStatusResponse,
 )
+from app.api.login_attempt import login_attempt
 from app.services.request_security import LoginRateLimit
 from app.services.session_context import get_session_id, set_session_cookie
 from app.services.viewer_portal import (
@@ -67,23 +68,14 @@ def viewer_auth_login_route(
 ) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
-    LOGIN_RATE_LIMIT.enforce(request, bucket="password")
-
-    try:
-        auth = authenticate_viewer_session(payload.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        LOGGER.exception("Viewer access configuration is unavailable")
-        raise HTTPException(
-            status_code=500,
-            detail="Viewer access configuration is unavailable. Contact the administrator.",
-        ) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to authenticate viewer session")
-        raise HTTPException(status_code=500, detail="Failed to authenticate viewer session.") from exc
-
-    LOGIN_RATE_LIMIT.clear(request, bucket="password")
+    auth = login_attempt(
+        request,
+        LOGIN_RATE_LIMIT,
+        bucket="password",
+        access="Viewer",
+        failure="Failed to authenticate viewer session",
+        authenticate=lambda: authenticate_viewer_session(payload.password),
+    )
     set_session_cookie(response, get_session_id())
     return ViewerAuthLoginResponse(
         ok=True,
@@ -98,23 +90,14 @@ def viewer_auth_qr_login_route(
 ) -> ViewerAuthLoginResponse:
     if not viewer_portal_enabled():
         raise HTTPException(status_code=404, detail="Viewer portal auth is not enabled.")
-    LOGIN_RATE_LIMIT.enforce(request, bucket="qr")
-
-    try:
-        auth = authenticate_viewer_qr_session(payload.token)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        LOGGER.exception("Viewer access configuration is unavailable")
-        raise HTTPException(
-            status_code=500,
-            detail="Viewer access configuration is unavailable. Contact the administrator.",
-        ) from exc
-    except Exception as exc:
-        LOGGER.exception("Failed to authenticate viewer QR session")
-        raise HTTPException(status_code=500, detail="Failed to authenticate viewer QR session.") from exc
-
-    LOGIN_RATE_LIMIT.clear(request, bucket="qr")
+    auth = login_attempt(
+        request,
+        LOGIN_RATE_LIMIT,
+        bucket="qr",
+        access="Viewer",
+        failure="Failed to authenticate viewer QR session",
+        authenticate=lambda: authenticate_viewer_qr_session(payload.token),
+    )
     set_session_cookie(response, get_session_id())
     return ViewerAuthLoginResponse(
         ok=True,

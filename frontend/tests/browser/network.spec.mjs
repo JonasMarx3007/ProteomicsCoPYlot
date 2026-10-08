@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { tabRequest } from './authStartup.mjs';
 
-test('cloud chat submits without a browser key and displays missing-key errors', async ({ page }) => {
+test('cloud chat submits without a browser key and displays missing-key errors', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.VITE_AI_ENABLED !== '1', 'Run with VITE_AI_ENABLED=1 and COPYLOT_AI_MODE=1');
   let sent = 0;
   await page.route('**/api/chat/assistant', async route => {

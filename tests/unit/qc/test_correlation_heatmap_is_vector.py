@@ -3,7 +3,7 @@
 `matshow` drew the matrix as one embedded image, so the SVG and PDF downloads
 held a bitmap: blurred when scaled, and nothing per cell to recolour or edit in
 a vector editor. Each cell is now a rectangle, in the app and the pip package.
-The R package's `image()` already drew rectangles in vector devices.
+The R functions' `image()` already drew rectangles in vector devices.
 """
 from __future__ import annotations
 

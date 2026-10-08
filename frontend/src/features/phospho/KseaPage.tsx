@@ -1,5 +1,6 @@
+import NumberField from "../../components/NumberField";
 import { AssistantInput, AssistantSelect } from "../../components/AssistantFields";
-import { Checkbox } from "../../components/PlotFields";
+import CheckboxField from "../../components/CheckboxField";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
@@ -423,12 +424,12 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
               </div>
             )}
             <div className="grid gap-4 lg:grid-cols-2">
-              <NumericField
+              <NumberField
                 label="P-value Threshold"
                 value={pValueThreshold}
                 onChange={(value) => setPValueThreshold(Math.max(1e-12, Math.min(1, value)))}
               />
-              <NumericField
+              <NumberField
                 label="log2 FC Threshold"
                 value={log2fcThreshold}
                 onChange={(value) => setLog2fcThreshold(Math.max(0, value))}
@@ -459,7 +460,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
               />
             ) : null}
             <div className="flex flex-wrap gap-3">
-              <Checkbox
+              <CheckboxField
                 label="Use Uncorrected P-values"
                 checked={useUncorrected}
                 onChange={setUseUncorrected}
@@ -541,14 +542,14 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
             onFile={(file) => setFileTnc(file)}
             helpText={fileTnc ? fileTnc.name : "Upload .csv, .tsv, or .txt"}
           />
-          <NumericField
+          <NumberField
             label="Kinase Library Volcano P-value Threshold"
             value={volcanoPValueThreshold}
             onChange={(value) => setVolcanoPValueThreshold(Math.max(1e-12, Math.min(1, value)))}
           />
         </div>
         <div className="mt-4 flex flex-wrap gap-3">
-          <Checkbox label="Annotate Hits" checked={annotateHits} onChange={setAnnotateHits} />
+          <CheckboxField label="Annotate Hits" checked={annotateHits} onChange={setAnnotateHits} />
         </div>
         {!validSelection ? (
           <div className="mt-4">
@@ -597,60 +598,6 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   );
 }
 
-
-function NumericField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const displayedValue = draft ?? (Number.isFinite(value) ? String(value) : "");
-
-  const commit = () => {
-    const normalized = displayedValue.trim().replace(",", ".");
-    if (!normalized) {
-      setDraft(null);
-      return;
-    }
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed)) {
-      setDraft(null);
-      return;
-    }
-    onChange(parsed);
-    setDraft(null);
-  };
-
-  return (
-    <label className="block text-sm">
-      <span className="mb-2 block font-medium text-slate-700">{label}</span>
-      <AssistantInput
-        type="text"
-        lang="en-US"
-        inputMode="decimal"
-        value={displayedValue}
-        onChange={(event) => {
-          const normalized = event.target.value.replace(",", ".");
-          setDraft(normalized);
-          const parsed = Number(normalized);
-          if (Number.isFinite(parsed)) onChange(parsed);
-        }}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commit();
-          }
-        }}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-slate-900"
-      />
-    </label>
-  );
-}
 
 function FileField({
   label,

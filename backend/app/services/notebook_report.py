@@ -64,6 +64,7 @@ def _volcano_counts(table):
     counts = {'upregulated': int((table['significance'] == 'Upregulated').sum()),
               'downregulated': int((table['significance'] == 'Downregulated').sum()),
               'notSignificant': int((table['significance'] == 'Not significant').sum()),
+              'unavailable': int((table['significance'] == 'Unavailable').sum()),
               'tested': int(len(table))}
     significant = table[table['significance'].isin(['Upregulated', 'Downregulated'])]
     if len(significant) and 'imputed_values' in table:
@@ -76,7 +77,8 @@ _VOLCANO_COUNTS_CODE = (
     "assert counts == json.loads((RESOURCES / 'counts.json').read_text(encoding='utf-8'))\n"
     "Path('reproduced_counts.json').write_text(json.dumps(counts, indent=2), encoding='utf-8', newline='')\n"
     "print(f\"{counts['upregulated']} upregulated, {counts['downregulated']} downregulated, \"\n"
-    "      f\"{counts['notSignificant']} not significant, out of {counts['tested']} tested.\")\n")
+    "      f\"{counts['notSignificant']} not significant, {counts['unavailable']} without a p-value, \"\n"
+    "      f\"out of {counts['tested']} tested.\")\n")
 
 
 def _render(name, *args, **options):

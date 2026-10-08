@@ -55,6 +55,8 @@ from app.services.clustering_tools import (
 from app.services.functions import (
     _significance_pval_column,
     constant_within_group,
+    constant_differences,
+    without_variation,
     imputed_value_counts,
     _phosprot_values_are_centred,
     intensity_unit_label,
@@ -65,6 +67,7 @@ from app.services.functions import (
     imputed_data_available,
     paired_sample_columns,
     paired_t_test,
+    effective_test_type,
     resolve_test_type,
 )
 from app.services.plot_styling import (
@@ -144,7 +147,7 @@ def _imputation_mask(
 
     Protein and phosphosite data: the imputed matrix against the matrix it was
     imputed from (filtered, else log2 -- the same choice `run_imputation`
-    makes). Phosphoproteins: from their `site_observed__` columns, which also
+    makes). Phosphoproteins: from their per-sample site-contribution counts, which also
     covers a phosphoprotein table aggregated from imputed sites. None when the
     matrix carries no imputed values or they cannot be located.
     """
@@ -227,7 +230,11 @@ def _resolve_label_column(kind: AnnotationKind, identifier: StatsIdentifier, fra
     resolved = _first_available_column(frame, candidates)
     if resolved:
         return resolved
-    raise ValueError("The selected identifier is not available for the current dataset.")
+    raise ValueError(
+        "The selected identifier is not available for the current dataset: none of the columns "
+        f"{', '.join(candidates)} is present. Name the identifier column accordingly in the file "
+        "(for example rename a 'Protein' column to 'ProteinNames')."
+    )
 
 
 def statistical_options(kind: AnnotationKind) -> StatisticalOptionsResponse:
@@ -368,6 +375,9 @@ def _volcano_dataframe(
     cols2 = metadata.loc[metadata["condition"] == condition2, "sample"].astype(str).tolist()
     if not cols1 or not cols2:
         raise ValueError("Selected conditions do not have any annotated samples.")
+    test_type = effective_test_type(
+        test_type, with_controls=bool(condition1_control) and bool(condition2_control)
+    )
     paired, variance = resolve_test_type(test_type)
     if paired:
         cols1, cols2 = paired_sample_columns(metadata, condition1, condition2)
@@ -495,17 +505,23 @@ def _volcano_dataframe(
             components = [(var1, n1), (var2, n2)]
             components.extend(_variance_and_count(control) for control in control_arrays)
             se, dof = _satterthwaite(components)
-        elif control_arrays:
-            # Same reasoning as the paired branch: the control-adjusted values
-            # keep their original within-group variance, so a two-group standard
-            # error omits the control means' contribution and understates the
-            # true uncertainty by sqrt(2) at equal group sizes.
-            components = [(var1, n1), (var2, n2)]
-            components.extend(_variance_and_count(control) for control in control_arrays)
-            se, dof = _satterthwaite(components)
         else:
+            # Controls always take the Welch branch above: effective_test_type
+            # turned "unpaired" into "unpaired_welch", because a pooled two-group
+            # standard error would omit the control means' uncertainty.
             se, dof = pooled_se_df(var1, n1, var2, n2)
         pvals = two_sided_t_pvalues(log2fc, se, dof)
+
+    no_variation = without_variation(
+        [np.round(diffs, 9), *control_arrays] if paired else [arr_x, arr_y, *control_arrays]
+    )
+    if no_variation.any():
+        pvals = np.where(no_variation, np.nan, pvals)
+        warnings.append(
+            f"{int(no_variation.sum()):,} rows have no variation in any compared group"
+            + (" (identical paired differences)" if paired else "")
+            + ", so no p-value can be computed; they are shown as Unavailable."
+        )
 
     adj_pvals = _bh_adjust(pvals)
     selected_pvals = pvals if use_uncorrected else adj_pvals
@@ -524,7 +540,9 @@ def _volcano_dataframe(
     result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
     result["significance"] = significance
     # A variance warning is independent of whether the test has a finite p-value.
-    result["zero_variance"] = constant_within_group(arr_x) | constant_within_group(arr_y)
+    # For a paired test the variation that matters is that of the differences.
+    result["zero_variance"] = (constant_differences(diffs) if paired
+                               else constant_within_group(arr_x) | constant_within_group(arr_y))
     if paired:
         result["n_pairs"] = n_diff.astype(int)
     # Imputation counts go last, after the statistics they qualify.
@@ -548,6 +566,7 @@ def _volcano_response(
         upregulatedCount=int((df["significance"] == "Upregulated").sum()),
         downregulatedCount=int((df["significance"] == "Downregulated").sum()),
         notSignificantCount=int((df["significance"] == "Not significant").sum()),
+        unavailableCount=int((df["significance"] == "Unavailable").sum()),
         rows=df.astype(object).where(pd.notna(df), None).to_dict(orient="records"),
         warnings=warnings,
         untestedRows=([] if untested is None else
@@ -1240,6 +1259,12 @@ def _anova_dataframe(
         groups.append(group)
     if not np.any(valid):
         raise ValueError("No rows have enough replicate values for ANOVA.")
+    untested = int((~valid).sum())
+    if untested:
+        warnings = [*warnings, (
+            f"{untested:,} of {len(valid):,} rows were not tested: fewer than 2 values in at least "
+            "one condition."
+        )]
 
     df = df.loc[valid].reset_index(drop=True)
     groups = [group[valid] for group in groups]
@@ -1261,9 +1286,15 @@ def _anova_dataframe(
     # constant, and coercing first would make the isfinite filter below a no-op,
     # keeping untestable rows in the BH pool. A row that is constant within every
     # condition but differs between them is different: F is infinite (or, with
-    # floating-point noise, enormous) and p is 0, so it stays and is flagged as
-    # zero_variance below.
+    # floating-point noise, enormous). It stays in the table, flagged as
+    # zero_variance below, but gets no p-value -- the same rule the volcano
+    # applies to rows without variation.
     finite = np.isfinite(pvals)
+    if not finite.all():
+        warnings = [*warnings, (
+            f"{int((~finite).sum()):,} rows were not tested: their values are identical in every "
+            "condition, so no F statistic exists."
+        )]
     df = df.loc[finite].reset_index(drop=True)
     groups = [group[finite] for group in groups]
     f_stat = np.asarray(f_stat, dtype=float)[finite]
@@ -1277,6 +1308,19 @@ def _anova_dataframe(
         index=df.index,
     )
 
+    # No variation within any condition: an infinite (or, with floating-point
+    # noise, enormous) F says nothing about the size of the difference, only that
+    # the variance is absent. As in the volcano, such rows get no p-value, stay
+    # out of the BH family and are shown as Unavailable; the flag names them.
+    zero_variance = np.logical_and.reduce([constant_within_group(group) for group in groups])
+    if zero_variance.any():
+        pvals = np.where(zero_variance, np.nan, pvals)
+        warnings = [*warnings, (
+            f"{int(zero_variance.sum()):,} rows have no variation within any condition, so no "
+            "p-value can be computed; they are shown as Unavailable and marked in the "
+            "zero_variance column."
+        )]
+
     adj_pvals = _bh_adjust(pvals)
     selected_pvals = pvals if payload.useUncorrected else adj_pvals
     result = df.copy()
@@ -1285,25 +1329,18 @@ def _anova_dataframe(
     result["adj_pval"] = adj_pvals
     result["selected_pval"] = selected_pvals
     result["correction"] = _correction_label(payload.useUncorrected)
-    result["significance"] = np.where(
+    significance = np.where(
         selected_pvals < payload.pValueThreshold,
         "Significant",
         "Not significant",
-    )
+    ).astype(object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
+    result["significance"] = significance
     result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
-    # No variation within any condition: the significance comes from absent
-    # variance, not from the size of the difference. Same idea as the volcano's flag.
-    result["zero_variance"] = np.logical_and.reduce([constant_within_group(group) for group in groups])
+    result["zero_variance"] = zero_variance
     for condition in means.columns:
         result[f"mean_{condition}"] = means[condition].to_numpy()
     result = result[[c for c in result.columns if c not in imputed_columns] + imputed_columns]
-    flagged = int(result["zero_variance"].sum())
-    if flagged:
-        warnings = [*warnings, (
-            f"{flagged:,} rows have no variation within any condition, so their F is infinite "
-            "(or extremely large) and p is 0: they rank first because the variance is absent, "
-            "not because the difference is large. They are marked in the zero_variance column."
-        )]
 
     # Benjamini-Hochberg ties many features to the same adjusted p; raw p then
     # the label keeps the order identical to both shipped packages.
@@ -1443,19 +1480,6 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
                 warnings = [*warnings, "Rows passed the ANOVA threshold, but no usable Tukey HSD comparisons could be calculated."]
             else:
                 warnings = [*warnings, "No rows passed the ANOVA threshold, so Tukey HSD was not run."]
-        if len(condition_cols) >= 3 and "zero_variance" in anova_df.columns:
-            flagged_significant = anova_df.loc[
-                anova_df["zero_variance"]
-                & (anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold),
-                label_column,
-            ].astype(str)
-            compared = set(post_hoc_df[label_column].astype(str)) if not post_hoc_df.empty else set()
-            left_out = int((~flagged_significant.isin(compared)).sum())
-            if left_out:
-                warnings = [*warnings, (
-                    f"Tukey HSD left out {left_out:,} significant rows with no variation within any "
-                    "condition: with a pooled variance of 0 the comparison is undefined."
-                )]
 
     return AnovaResultResponse(
         kind=payload.kind,
@@ -1466,10 +1490,10 @@ def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
         significantCount=int((anova_df[_significance_pval_column(anova_df)] < payload.pValueThreshold).sum()),
         clusterCount=cluster_count,
         completenessNotice=completeness_notice,
-        rows=anova_df.where(pd.notna(anova_df), None).to_dict(orient="records"),
-        clusterRows=cluster_df.where(pd.notna(cluster_df), None).to_dict(orient="records") if not cluster_df.empty else [],
+        rows=anova_df.astype(object).where(pd.notna(anova_df), None).to_dict(orient="records"),
+        clusterRows=cluster_df.astype(object).where(pd.notna(cluster_df), None).to_dict(orient="records") if not cluster_df.empty else [],
         postHocMethod="Tukey HSD" if payload.postHoc == "tukey" else None,
-        postHocRows=post_hoc_df.where(pd.notna(post_hoc_df), None).to_dict(orient="records")
+        postHocRows=post_hoc_df.astype(object).where(pd.notna(post_hoc_df), None).to_dict(orient="records")
         if not post_hoc_df.empty
         else [],
         postHocComparison=post_hoc_comparison,
@@ -2906,6 +2930,17 @@ def _simulation_dataframe(
         se, degrees_freedom = pooled_se_df(var1, simulated_n1, var2, simulated_n2)
 
     pvals = two_sided_t_pvalues(log2fc, se, degrees_freedom)
+    # Rows without variation in either group have a standard error of zero at
+    # every projected n: the projection keeps the plain t-test arithmetic, but
+    # follows the volcano's rule for these rows -- no p-value, out of the BH
+    # family -- so that at the observed n it reproduces the volcano table.
+    no_variation = without_variation([arr_x, arr_y])
+    if no_variation.any():
+        pvals = np.where(no_variation, np.nan, pvals)
+        warnings = [*warnings, (
+            f"{int(no_variation.sum()):,} rows have no variation in either compared group, so no "
+            "p-value can be projected; they are shown as Unavailable, as in the volcano plot."
+        )]
     selected_pvals = pvals if payload.useUncorrected else _bh_adjust(pvals)
 
     significance = np.full(len(log2fc), "Not significant", dtype=object)
@@ -2956,6 +2991,7 @@ def run_simulation(payload: SimulationRequest) -> SimulationResultResponse:
         upregulatedCount=int((frame["significance"] == "Upregulated").sum()),
         downregulatedCount=int((frame["significance"] == "Downregulated").sum()),
         notSignificantCount=int((frame["significance"] == "Not significant").sum()),
+        unavailableCount=int((frame["significance"] == "Unavailable").sum()),
         rows=frame.astype(object).where(pd.notna(frame), None).to_dict(orient="records"),
         warnings=warnings,
     )

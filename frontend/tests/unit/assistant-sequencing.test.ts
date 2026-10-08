@@ -16,8 +16,9 @@ import * as api from "../../src/lib/api";
 import type { AssistantResult } from "../../src/lib/api";
 import * as controls from "../../src/lib/assistantControls";
 import type { AssistantAction, AssistantControl } from "../../src/lib/assistantControls";
-import { readableReceipt, runAssistant } from "../../src/lib/runAssistant";
+import { readableReceipt, runAssistant, ShownAssistantError, type AssistantRunOptions } from "../../src/lib/runAssistant";
 import { unsavedAnalysis } from "../../src/lib/unsavedAnalysis";
+import { registerStyleStore } from "../../src/lib/plotStyles";
 
 vi.mock("../../src/lib/api", async (original) => (await import("../component/apiMock")).mockApiModule(original));
 vi.mock("../../src/lib/assistantControls", () => ({
@@ -36,7 +37,7 @@ type Control = Partial<AssistantControl> & Record<string, unknown>;
 type Options = {
   decline?: boolean; changeBeforeRequest?: boolean; applied?: AssistantAction[]; buttonApproval?: string;
   activated?: string[]; controls?: Control[]; choices?: string; progress?: (text: string) => void;
-  initialModule?: string; previousState?: unknown;
+  initialModule?: string; previousState?: unknown; runOptions?: AssistantRunOptions;
 };
 type Payload = Parameters<typeof api.assistantStep>[0];
 // What was sent, loosely typed so a scenario can read any field of it.
@@ -47,6 +48,7 @@ type Sent = Record<string, any>;
 async function scenario(replies: Reply[], {
   decline = false, changeBeforeRequest = false, applied = [], buttonApproval = "Remove this canvas tile?", activated = [],
   controls: onScreen = [], choices = "", progress = () => {}, initialModule = "qc.coverage", previousState = null,
+  runOptions = {},
 }: Options = {}) {
   const calls: Payload[] = [];
   const remembered: string[] = [];
@@ -93,7 +95,8 @@ async function scenario(replies: Reply[], {
   const result = await runAssistant({ message: "Open CV and explain it" },
     () => ({ module, workflow: "protein", mode: { view: module }, destinations: { "qc.cv": "CV", "analysis.canvas": "Analysis" } }),
     (target) => { module = target; }, progress, controller.signal,
-    { read: () => previousState, record: (...args: unknown[]) => remembered.push(args[4] as string), clear: () => {} } as never);
+    { read: () => previousState, record: (...args: unknown[]) => remembered.push(args[4] as string), clear: () => {} } as never,
+    runOptions);
   return { result, calls: calls as Sent[], remembered };
 }
 
@@ -458,5 +461,67 @@ describe("runAssistant", () => {
     expect(calls[2].answerOnly).toBe(true);
     expect(result.answer).toMatch(/I made the changes above and stopped there/);
     expect(result.answer).toMatch(/Explanation of the rotated plot/);
+  });
+});
+
+
+describe("assistant levels in the request loop", () => {
+  it("writes the reason into the conversation when nothing could be changed", async () => {
+    const shown: string[] = [];
+    const run = scenario([{ error: "The model used its whole reply budget (1024 tokens) before it finished." }],
+      { progress: (text) => shown.push(text) });
+    await expect(run).rejects.toBeInstanceOf(ShownAssistantError);
+    expect(shown.at(-1)).toBe("No changes applied. The model used its whole reply budget (1024 tokens) before it finished.");
+  });
+
+  it("uses the budget the backend grants an Advanced model", async () => {
+    const actions = Array.from({ length: 12 }, (_, index) => ({ type: "set_control" as const, target: `c${index}`, value: "1" }));
+    const applied: AssistantAction[] = [];
+    const { result } = await scenario([{ actions, actionBudget: 40 }, { actions: [] }],
+      { applied, controls: actions.map(({ target }) => ({ id: target, label: target, type: "number", value: "0" })) });
+    expect(applied).toHaveLength(12);
+    expect(result.answer).not.toContain("action limit");
+  });
+
+  it("stops after a batch the backend marks as finished, without another model call", async () => {
+    const applied: AssistantAction[] = [];
+    const { result, calls } = await scenario([{ actions: [{ type: "set_control", target: "c1", value: "1" }], finished: true,
+      answer: "Applied Nature's figure specifications." }],
+      { applied, controls: [{ id: "c1", label: "Title / Size", type: "number", value: "0" }] });
+    expect(calls).toHaveLength(1);
+    expect(applied).toHaveLength(1);
+    expect(result.answer).toContain("Applied Nature's figure specifications.");
+  });
+
+  it("lets a model that reads images review its batch once, then stops", async () => {
+    const applied: AssistantAction[] = [];
+    const plotImage = vi.fn(async () => "data:image/png;base64,AAAA");
+    const { calls } = await scenario([
+      { actions: [{ type: "set_control", target: "c1", value: "14" }], finished: true, reviewAfter: true },
+      { actions: [{ type: "set_control", target: "c2", value: "8" }], finished: true },
+    ], { applied, runOptions: { plotImage }, controls: [
+      { id: "c1", label: "Title / Size", type: "number", value: "10" },
+      { id: "c2", label: "X axis / X tick label size", type: "number", value: "10" }] });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].reviewing).toBeUndefined();
+    expect(calls[1].reviewing).toBe(true);
+    expect(applied.map(action => action.target)).toEqual(["c1", "c2"]);
+  });
+
+  it("saves a style without a model plan step", async () => {
+    window.sessionStorage.clear();
+    const unregister = registerStyleStore("app", { active: () => ({ fontFamily: "helvetica" }), setActive: () => {}, setAll: () => 0 });
+    const { result, calls } = await scenario([{ actions: [{ type: "save_style", target: "", value: "lab" }], finished: true }]);
+    unregister();
+    expect(calls).toHaveLength(1);
+    expect(result.answer).toContain('Saved this plot\'s look as the style "lab".');
+  });
+
+  it("sends a fresh plot image with each step when the model reads images", async () => {
+    const plotImage = vi.fn(async () => "data:image/png;base64,AAAA");
+    const { calls } = await scenario([{ actions: [{ type: "navigate", target: "qc.cv" }] }, { actions: [] }],
+      { runOptions: { plotImage, slow: true } });
+    expect(plotImage).toHaveBeenCalledTimes(2);
+    expect(calls.every((call) => call.plotImage === "data:image/png;base64,AAAA")).toBe(true);
   });
 });

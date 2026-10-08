@@ -1,4 +1,4 @@
-# Runs the R package's unit tests (tests/r/testthat/) with testthat, so every
+# Runs the R functions' unit tests (tests/r/testthat/) with testthat, so every
 # test reports instead of the first failure stopping the rest.
 #
 #   Rscript tests/r/test_notebook_functions.R

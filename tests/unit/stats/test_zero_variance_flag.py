@@ -104,37 +104,54 @@ def test_genuine_effects_are_not_flagged() -> None:
     assert int(genuine["zero_variance"].sum()) == 0
 
 
-def test_the_flagged_rows_really_do_dominate_the_ranking() -> None:
+def test_rows_without_any_variation_get_no_p_value() -> None:
+    """Both groups constant: the standard error is zero, so the test is undefined.
+
+    These rows used to get p ~ 0 and rank first on a fold change of 0.05.
+    """
     result = _volcano(_frame())
+    floor = result["ProteinNames"].isin([f"P{i}" for i in FLOOR_ROWS])
+    assert result.loc[floor, "pval"].isna().all()
+    assert result.loc[floor, "adj_pval"].isna().all()
+    assert (result.loc[floor, "significance"] == "Unavailable").all()
+    assert result.loc[~floor, "pval"].notna().all()
     top = result.nsmallest(12, "adj_pval")
-    assert top["zero_variance"].all(), "the top of the volcano should be the floor rows"
-    assert abs(top["log2FC"]).max() < 0.1, "and their fold changes should be negligible"
+    assert not top["zero_variance"].any()
 
 
-def test_the_flag_does_not_change_any_p_value() -> None:
-    result = _volcano(_frame())
-    flagged = result[result["zero_variance"]]
-    from scipy.stats import ttest_ind
-
-    expected = ttest_ind(
-        np.full(REPLICATES, 14.00), np.full(REPLICATES, 14.05), equal_var=True
-    ).pvalue
-    assert np.allclose(flagged["pval"].to_numpy(), expected, rtol=1e-6) or (
-        flagged["pval"].max() < 1e-40
-    ), "the p-value should be whatever the plain t-test gives, unchanged"
+def test_rows_without_variation_are_reported_in_the_gui_warnings() -> None:
+    with patch.object(st, "_stats_source", return_value=("filtered", _frame(), METADATA, [])):
+        warnings = st._volcano_dataframe(
+            kind="protein", condition1="A", condition2="B", identifier="workflow",
+            p_value_threshold=0.05, log2fc_threshold=1.0, test_type="unpaired",
+            use_uncorrected=False, data_source="data",
+        )[3]
+    assert any(w.startswith(f"{len(FLOOR_ROWS)} rows have no variation") for w in warnings)
 
 
-def test_flagged_rows_can_still_fail_the_fold_change_threshold() -> None:
-    result = _volcano(_frame())
-    flagged = result[result["zero_variance"]]
-    assert (flagged["significance"] == "Not significant").all()
-
-
-@pytest.mark.parametrize("column", ["pval", "adj_pval", "log2FC", "significance"])
+@pytest.mark.parametrize("column", ["log2FC", "significance"])
 def test_existing_columns_are_untouched(column: str) -> None:
     result = _volcano(_frame())
     assert column in result.columns
     assert result[column].notna().all()
+
+
+def test_paired_flag_looks_at_the_differences() -> None:
+    """Differences of (-2, -2, -2) have no variation even though both groups vary."""
+    frame = pd.DataFrame({"ProteinNames": ["shifted"], "A_0": [10.0], "A_1": [11.0], "A_2": [12.3],
+                          "B_0": [12.0], "B_1": [13.0], "B_2": [14.3]})
+    meta = METADATA.assign(pair_id=[1, 2, 3, 1, 2, 3])
+    with patch.object(st, "_stats_source", return_value=("filtered", frame, meta, [])):
+        result = st._volcano_dataframe(
+            kind="protein", condition1="A", condition2="B", identifier="workflow",
+            p_value_threshold=.05, log2fc_threshold=1, test_type="paired",
+            use_uncorrected=False, data_source="data",
+        )[2]
+    assert bool(result.loc[0, "zero_variance"]) is True
+    assert np.isnan(result.loc[0, "pval"]) and result.loc[0, "significance"] == "Unavailable"
+    from proteomicscopylot.notebook_functions import volcano_data_f
+    notebook = volcano_data_f(frame, meta, "A", "B", test_type="paired")
+    assert bool(notebook.loc[0, "zero_variance"]) is True and np.isnan(notebook.loc[0, "pval"])
 
 
 @pytest.mark.parametrize("test_type", ["unpaired", "unpaired_welch", "paired"])
@@ -161,8 +178,12 @@ def test_degenerate_tests_match_scipy_and_preserve_missing_results(test_type, wi
             p_value_threshold=.05, log2fc_threshold=1, test_type=test_type,
             use_uncorrected=False, data_source="data", **controls,
         )[2]
-    expected = (stats.ttest_rel(b, a, axis=1) if test_type == "paired" else
-                stats.ttest_ind(b, a, axis=1, equal_var=test_type == "unpaired" and not with_controls)).pvalue
+    scipy_expected = (stats.ttest_rel(b, a, axis=1) if test_type == "paired" else
+                      stats.ttest_ind(b, a, axis=1, equal_var=test_type == "unpaired" and not with_controls)).pvalue
+    # Rows 0 and 1 have no variation in any group (paired: constant differences):
+    # no p-value, where scipy reports 0 and NaN.
+    expected = scipy_expected.copy()
+    expected[:2] = np.nan
     np.testing.assert_allclose(result.pval, expected, equal_nan=True)
     notebook_function = volcano_data_f_control if with_controls else volcano_data_f
     notebook = notebook_function(frame, meta, "A", "B", test_type=test_type, **controls)
@@ -171,7 +192,8 @@ def test_degenerate_tests_match_scipy_and_preserve_missing_results(test_type, wi
     adjusted = stats.false_discovery_control(expected[finite])
     np.testing.assert_allclose(result.adj_pval[finite], adjusted)
     np.testing.assert_allclose(notebook.adj_pval[finite], adjusted)
-    assert result.significance.iloc[1] == "Unavailable"
+    assert (result.significance.iloc[:2] == "Unavailable").all()
+    assert (notebook.significance.iloc[:2] == "Unavailable").all()
     assert np.isnan(result.adj_pval.iloc[1])
     response = st._volcano_response("protein", "filtered", "ProteinNames", result, [])
     assert response.rows[1]["pval"] is None
@@ -182,8 +204,7 @@ def test_degenerate_tests_match_scipy_and_preserve_missing_results(test_type, wi
         p_value_threshold=.05, log2fc_threshold=1, use_uncorrected=False, highlight_terms=[],
     )
     plotted_y = [value for trace in figure.data for value in trace.y]
-    assert len(plotted_y) == 3
-    assert max(plotted_y) == 300
+    assert len(plotted_y) == 2
     assert np.isfinite(plotted_y).all()
     if not with_controls and test_type != "paired":
         from app.schemas.stats import SimulationRequest
@@ -191,16 +212,26 @@ def test_degenerate_tests_match_scipy_and_preserve_missing_results(test_type, wi
                                     testType=test_type, useUncorrected=False)
         with patch.object(st, "_stats_source", return_value=("filtered", frame, meta, [])):
             simulated = st.run_simulation(payload)
+        # The projection keeps the plain t-test arithmetic, but at the observed
+        # n it reproduces the volcano: rows without variation get no p-value
+        # there either, so the BH family (and every other row's adjusted p) agree.
         np.testing.assert_allclose(
             [row["pval"] if row["pval"] is not None else np.nan for row in simulated.rows],
             expected, equal_nan=True,
         )
-        assert simulated.rows[1]["significance"] == "Unavailable"
-        assert simulated.rows[1]["adj_pval"] is None
+        np.testing.assert_allclose(
+            [row["adj_pval"] if row["adj_pval"] is not None else np.nan for row in simulated.rows],
+            result.adj_pval.to_numpy(), equal_nan=True,
+        )
+        for index in (0, 1):
+            assert simulated.rows[index]["significance"] == "Unavailable"
+            assert simulated.rows[index]["adj_pval"] is None
+        assert any("no variation in either compared group" in w for w in simulated.warnings)
 
 
 @pytest.mark.requires_r()
 def test_r_notebook_zero_standard_error_convention():
+    """R gives rows without variation no p-value, like the app and pip."""
     import subprocess
     from app.services.r_runtime import detect_r_runtime
 
@@ -219,10 +250,9 @@ def test_r_notebook_zero_standard_error_convention():
       for (design in c("unpaired","unpaired_welch","paired")) for (controls in c(FALSE,TRUE)) {
         out <- if (controls) volcano_data_f_control(d,m,"A","B","CA","CB",test_type=design) else
           volcano_data_f(d,m,"A","B",test_type=design)
-        stopifnot(out$pval[1] == 0, is.na(out$pval[2]), is.na(out$adj_pval[2]),
-          all(is.finite(out$pval[c(3,4)])), out$significance[2] == "Unavailable",
-          out$neg_log10_selected_pval[1] == 300,
-          isTRUE(all.equal(out$adj_pval[c(1,3,4)],p.adjust(out$pval[c(1,3,4)],"BH"))))
+        stopifnot(is.na(out$pval[1]), is.na(out$pval[2]), is.na(out$adj_pval[2]),
+          all(is.finite(out$pval[c(3,4)])), all(out$significance[1:2] == "Unavailable"),
+          isTRUE(all.equal(out$adj_pval[c(3,4)],p.adjust(out$pval[c(3,4)],"BH"))))
       }
     '''
     result = subprocess.run([runtime["executable"], "-e", script], cwd=ROOT,

@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[2]
 from app.services.annotation_store import get_annotation
 from app.schemas.stats import AnovaRequest
 from app.services.stats_tools import _anova_dataframe, _volcano_dataframe
-from app.services.viewer_bootstrap import load_viewer_state
 
 KIND = "protein"
 C1, C2 = "WT", "GRK"

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 
-import pandas as pd
 
 from app.schemas.external import PeptideCollapseRequest, PeptideCollapseResponse
 from app.services.external_functions import process_and_export
+from app.services.json_records import json_records
 
 
 def _normalize_path(path: str) -> str:
@@ -37,7 +37,6 @@ def run_peptide_collapse(payload: PeptideCollapseRequest) -> PeptideCollapseResp
         cutoff=payload.cutoff,
         progress=messages.append,
     )
-    preview_frame = frame.head(30).astype(object).where(pd.notna(frame.head(30)), None)
 
     return PeptideCollapseResponse(
         success=True,
@@ -47,7 +46,7 @@ def run_peptide_collapse(payload: PeptideCollapseRequest) -> PeptideCollapseResp
         rows=len(frame),
         columns=len(frame.columns),
         columnNames=[str(column) for column in frame.columns],
-        preview=preview_frame.to_dict(orient="records"),
+        preview=json_records(frame, 30),
         logs="\n".join(messages),
         error=None,
     )

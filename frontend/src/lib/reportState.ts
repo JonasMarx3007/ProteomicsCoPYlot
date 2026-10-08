@@ -79,7 +79,7 @@ function datasetScopeToken(
   return [pkg, metadataProfile, protein, phospho, phosprot, peptide].join("|");
 }
 
-export function clearSummaryReportState() {
+function clearSummaryReportState() {
   removeKey(VOLCANO_LOG_KEY);
   removeKey(QC_SETTINGS_KEY);
 }

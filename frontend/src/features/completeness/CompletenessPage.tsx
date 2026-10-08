@@ -1,18 +1,22 @@
+import { registerStyleStore, styleTemplate, withStyle } from "../../lib/plotStyles";
 import { AssistantAppearanceMount, AssistantSelect } from "../../components/AssistantFields";
+import PlotDownloadControls from "../../components/PlotDownloadControls";
+import OptionsLayout from "../../components/OptionsLayout";
 import PlotImage from "../../components/PlotImage";
 import NotebookDownload, { type RenderedNotebook } from "../../components/NotebookDownload";
 import { MATPLOTLIB_CONTROLS, MATPLOTLIB_NO_FRAME_CONTROLS, MATPLOTLIB_Y_DASHED_GRID_CONTROLS } from "../../lib/plotControlDefaults";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../lib/plotLimits";
-import { SizeRow, Checkbox, NumericField } from "../../components/QcFields";
+import { SizeRow } from "../../components/PlotFields";
+import CheckboxField from "../../components/CheckboxField";
+import NumberField from "../../components/NumberField";
 import { compactAdvancedPlotSettings as compactAdvancedSettings, migrateAdvancedSettingsMap } from "../../lib/plotSerialization";
 import SummaryCard from "../../components/SummaryCard";
-import { collectColumns, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { collectColumns, csvDataUrl, rowsToQuotedCsv as rowsToCsv } from "../../lib/tableData";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { fetchPlot } from "../../lib/fetchPlot";
 import { buildPlotUrl, getCompletenessTables, getPeptideQuantityOptions, getQcPlotOptions, isAbortError } from "../../lib/api";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
 import {
-  PLOT_DOWNLOAD_FORMAT_OPTIONS,
   coercePlotDownloadFormat,
   type PlotDownloadFormat,
   withPlotDownloadFilename,
@@ -131,7 +135,7 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
     `/api/plots/completeness/${kind}/${replayTab === "heatmap" ? "missing-heatmap" : "missing-value"}.png`,
     withAdvancedParams({ ...(replayTab === "heatmap" ? heatmap : missingPlot),
       tableIncludeId: tables.includeId, outlierThreshold: tables.outlierThreshold },
-    advancedParam(advancedRenderByTab[replayTab] ?? {}))
+    advancedParam(advancedRenderByTab[replayTab] ?? styleTemplate() ?? {}))
   );
   const tableData = tableResultUrl === replayUrl ? tableResult : null;
 
@@ -318,7 +322,18 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
     return () => controller.abort();
   }, [activeTab, kind, availableKinds, loadTables]);
 
-  const activeAdvancedSettings = advancedByTab[activeTab] ?? {};
+  const activeAdvancedSettings = advancedByTab[activeTab] ?? styleTemplate() ?? {};
+  // Named styles and "this style on every plot" (lib/plotStyles.ts) reach these settings here.
+  const styleStoreState = useRef({ tab: activeTab, byTab: advancedByTab });
+  useEffect(() => { styleStoreState.current = { tab: activeTab, byTab: advancedByTab }; }, [activeTab, advancedByTab]);
+  useEffect(() => registerStyleStore("completeness", {
+    active: () => styleStoreState.current.byTab[styleStoreState.current.tab] ?? styleTemplate() ?? {},
+    setActive: (settings) => setAdvancedByTab((prev) => ({ ...prev, [styleStoreState.current.tab]: settings })),
+    setAll: (style) => {
+      setAdvancedByTab((prev) => Object.fromEntries(Object.entries(prev).map(([tab, value]) => [tab, withStyle(value, style)])));
+      return Object.keys(styleStoreState.current.byTab).length;
+    },
+  }), []);
   const activeSampleDisplayLabels = useMemo(() => {
     const rawLabels = Object.fromEntries(sampleOptions.map((sample) => [sample, sample]));
     if (activeTab === "heatmap") {
@@ -390,19 +405,19 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
   const sampleCsvUrl = useMemo(() => {
     if (!tableData || tableData.sampleSummary.length === 0) return null;
     const columns = collectColumns(tableData.sampleSummary);
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableData.sampleSummary, columns))}`;
+    return csvDataUrl(rowsToCsv(tableData.sampleSummary, columns));
   }, [tableData]);
 
   const featureCsvUrl = useMemo(() => {
     if (!tableData || tableData.featureSummary.length === 0) return null;
     const columns = collectColumns(tableData.featureSummary);
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(tableData.featureSummary, columns))}`;
+    return csvDataUrl(rowsToCsv(tableData.featureSummary, columns));
   }, [tableData]);
 
   const outlierCsvUrl = useMemo(() => {
     if (!tableData || tableData.outliers.length === 0) return null;
     const rows = tableData.outliers.map((sample) => ({ Sample: sample }));
-    return `data:text/csv;charset=utf-8,${encodeURIComponent(rowsToCsv(rows, ["Sample"]))}`;
+    return csvDataUrl(rowsToCsv(rows, ["Sample"]));
   }, [tableData]);
 
   return (
@@ -476,24 +491,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-slate-900">{plotView.title}</h3>
             <div className="flex flex-wrap items-center gap-2">
-              <AssistantSelect
-                value={downloadFormat}
-                onChange={(e) => setDownloadFormat(e.target.value as PlotDownloadFormat)}
-                className="rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm text-slate-700 outline-none focus:border-slate-900"
-              >
-                {PLOT_DOWNLOAD_FORMAT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </AssistantSelect>
-              <a
-                href={plotDownloadUrl}
-                download={plotDownloadFilename}
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                Download Plot
-              </a>
+              <PlotDownloadControls label="Plot" format={downloadFormat} onFormatChange={setDownloadFormat}
+                href={plotDownloadUrl} filename={plotDownloadFilename} />
               <NotebookDownload plotUrl={plotView.url} rendered={renderedNotebook} />
             </div>
           </div>
@@ -604,7 +603,8 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
                   <NotebookDownload plotUrl={replayUrl} rendered={tableNotebook} />
                   </div>
                 </div>
-                <PreviewTable rows={tableData.featureSummary} emptyText="No feature summary rows available." />
+                <PreviewTable rows={tableData.featureSummary} emptyText="No feature summary rows available."
+                  labels={{ Counts: "Features (n)", "%_missing_values": "Features (%)" }} />
               </section>
             </div>
           ) : (
@@ -620,11 +620,11 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
   function renderOptions() {
     if (activeTab === "missingPlot") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
-            <Checkbox key="text" label="Toggle Text" checked={missingPlot.text} onChange={(v) => setMissingPlot({ ...missingPlot, text: v })} />,
+            <CheckboxField assistant={false} key="text" label="Toggle Text" checked={missingPlot.text} onChange={(v) => setMissingPlot({ ...missingPlot, text: v })} />,
           ]}
-          inputs={[
+          fields={[
             ...((kind === "peptide" || kind === "precursor")
               ? [
                   <SelectField
@@ -637,9 +637,9 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
                   />,
                 ]
               : []),
-            <NumericField key="bin" label="Bin missing values" value={missingPlot.binCount} onChange={(v) => setMissingPlot({ ...missingPlot, binCount: Math.max(0, Math.round(v)) })} />,
+            <NumberField assistant={false} key="bin" label="Bin missing values" value={missingPlot.binCount} onChange={(v) => setMissingPlot({ ...missingPlot, binCount: Math.max(0, Math.round(v)) })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={missingPlot.dpi}
               heightCm={missingPlot.heightCm}
@@ -655,11 +655,11 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
 
     if (activeTab === "heatmap") {
       return (
-        <OptionsLayout
+        <OptionsLayout order="toggles-fields-size"
           toggles={[
-            <Checkbox key="id" label="Toggle IDs" checked={heatmap.includeId} onChange={(v) => setHeatmap({ ...heatmap, includeId: v })} />,
+            <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={heatmap.includeId} onChange={(v) => setHeatmap({ ...heatmap, includeId: v })} />,
           ]}
-          sizeRow={
+          size={
             <SizeRow
               dpi={heatmap.dpi}
               heightCm={heatmap.heightCm}
@@ -674,38 +674,20 @@ export default function CompletenessPage({ activeTab, onContextModeChange, noteb
     }
 
     return (
-      <OptionsLayout
+      <OptionsLayout order="toggles-fields-size"
         toggles={[
-          <Checkbox key="id" label="Toggle IDs" checked={tables.includeId} onChange={(v) => setTables({ ...tables, includeId: v })} />,
+          <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={tables.includeId} onChange={(v) => setTables({ ...tables, includeId: v })} />,
         ]}
-        inputs={[
-          <NumericField
+        fields={[
+          <NumberField assistant={false}
             key="threshold"
             label="Outlier Threshold (%)"
             value={tables.outlierThreshold}
             onChange={(v) => setTables({ ...tables, outlierThreshold: Math.max(0, Math.min(100, v)) })}
           />,
         ]}
-        sizeRow={<div />}
+        size={<div />}
       />
     );
   }
-}
-
-function OptionsLayout({
-  toggles,
-  inputs,
-  sizeRow,
-}: {
-  toggles: ReactNode[];
-  inputs?: ReactNode[];
-  sizeRow: ReactNode;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-3">{toggles}</div>
-      {inputs && inputs.length > 0 ? <div className="grid gap-4 lg:grid-cols-3">{inputs}</div> : null}
-      <div>{sizeRow}</div>
-    </div>
-  );
 }

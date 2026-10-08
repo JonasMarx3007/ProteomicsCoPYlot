@@ -40,7 +40,7 @@ export default function NotebookDownload({ plotUrl, rendered, outputLabel = 'plo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [renewed, setRenewed] = useState<RenderedNotebook | null>(null);
-  // Viewers download plots only: every notebook carries the exact input matrix.
+  // Viewers may download plots and tables, not notebook exports (D11).
   if (IS_VIEWER_MODE) return null;
   const token = renewed?.url === plotUrl && renewed.token ? renewed.token
     : rendered?.url === plotUrl ? rendered.token : null;

@@ -21,6 +21,25 @@ from app.services import stats_tools
 # whose message describes the server's configuration. The route module's own
 # references are replaced, so the request goes through the real handler.
 SECRET = "/srv/copylot/secret/access_config.json"
+
+
+@pytest.mark.parametrize('expected', [True, False])
+def test_save_export_errors_do_not_expose_exception_text(monkeypatch, caplog, expected):
+    from app.api import routes_restore
+    from app.services.restore_state import RestoreStateError
+
+    def fail(**kwargs):
+        raise (RestoreStateError if expected else RuntimeError)(f"Cannot export {SECRET}")
+
+    monkeypatch.setattr(routes_restore, 'export_state_blob', fail)
+    with caplog.at_level(logging.ERROR), TestClient(app) as client:
+        response = client.post('/api/restore/export', json={})
+    assert response.status_code == (400 if expected else 500)
+    assert SECRET not in response.text
+    assert 'Cannot export' not in response.text
+    assert SECRET in caplog.text
+
+
 AUTH_FAILURES = [
     ("routes_tool_auth", "tool_access_enabled", "authenticate_tool_password",
      "post", "/api/tool/auth/login", {"password": "x"}),

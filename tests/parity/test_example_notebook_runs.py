@@ -58,16 +58,7 @@ def test_every_cell_of_the_example_notebook_executes() -> None:
 EXAMPLE_R = ROOT / "examples" / "example.R"
 
 
-def _rscript() -> str | None:
-    try:
-        from app.services.r_runtime import detect_r_runtime
-    except Exception:
-        return None
-    runtime = detect_r_runtime()
-    return str(runtime["executable"]) if runtime.get("available") else None
-
-
-RSCRIPT = _rscript()
+from _r_runtime import RSCRIPT
 
 
 def test_the_r_example_exists() -> None:

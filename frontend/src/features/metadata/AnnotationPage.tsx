@@ -62,9 +62,9 @@ const PHOSPROT_MODE_DESCRIPTIONS: Record<PhosprotAggregationMode, string> = {
   sum_propagate_na:
     "Sum the fixed eligible site set on linear scale; any missing eligible site makes that sample value missing.",
   sum_ignore_na:
-    "Sum supplied site values on linear scale, including imputed values, while ignoring missing sites; inspect the exported observed-coverage diagnostics.",
+    "Sum the linear-scale values of the sites quantified in every sample (imputed values included), so all samples sum the same sites; proteins without such a site are missing.",
   mean:
-    "Take the linear-scale mean of supplied site values, including imputed values; changing site coverage can change the result.",
+    "Take the linear-scale mean over the sites quantified in every sample (imputed values included), so all samples use the same sites; proteins without such a site are missing.",
 };
 
 const ANNOTATION_MANAGER_VISIBILITY_KEY = "data.annotationManager.visible.v1";
@@ -1194,10 +1194,10 @@ export default function AnnotationPage() {
                           }
                           className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
                         >
-                          <option value="robust_site_median">robust_site_median</option>
-                          <option value="sum_propagate_na">sum_propagate_na</option>
-                          <option value="sum_ignore_na">sum_ignore_na</option>
-                          <option value="mean">mean</option>
+                          <option value="robust_site_median">Robust site median (default)</option>
+                          <option value="sum_propagate_na">Sum, missing site propagates</option>
+                          <option value="sum_ignore_na">Sum over sites quantified in every sample</option>
+                          <option value="mean">Mean over sites quantified in every sample</option>
                         </select>
                         <p className="mt-2 text-xs leading-5 text-slate-500">
                           {PHOSPROT_MODE_DESCRIPTIONS[phosprotMode]}

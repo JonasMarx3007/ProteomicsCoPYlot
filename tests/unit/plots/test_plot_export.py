@@ -6,6 +6,21 @@ import pytest
 from app.services.plot_export import cm_to_inch, cm_to_px, to_png_bytes
 
 
+@pytest.mark.parametrize('renderer', ['app', 'notebook'])
+def test_auto_fit_limits_match_the_app_request_limits(renderer):
+    import inspect
+    from app.services import notebook_qc, plot_export, plot_limits
+
+    module = plot_export if renderer == 'app' else notebook_qc._qc_module('coverage')
+    assert module.MAX_AUTO_FIT_CM == plot_limits.MAX_PLOT_WIDTH_CM
+    assert module.MAX_AUTO_FIT_CM == plot_limits.MAX_PLOT_HEIGHT_CM
+    assert module.MAX_AUTO_FIT_PIXELS == plot_limits.MAX_PLOT_PIXELS
+    parameters = inspect.signature(module.fit_figure_to_labels).parameters
+    assert parameters['max_width_cm'].default == plot_limits.MAX_PLOT_WIDTH_CM
+    assert parameters['max_height_cm'].default == plot_limits.MAX_PLOT_HEIGHT_CM
+    assert parameters['max_pixels'].default == plot_limits.MAX_PLOT_PIXELS
+
+
 @pytest.mark.parametrize('tight,transparent', [(False, False), (True, False), (False, True), (True, True)])
 def test_png_export_preserves_options_bytes_and_closes_figure(tight, transparent):
     calls = []

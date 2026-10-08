@@ -1,8 +1,8 @@
-"""The web app, the pip package and the R package offer the same functions.
+"""The web app, the pip package and the R functions offer the same functions.
 
 ProteomicsCoPYlot ships its analysis three times on purpose: the web app
 (`backend/app/services`), the pip package (`proteomicscopylot/notebook_functions.py`)
-and the R package (`proteomicscopylot/notebook_functions.R`). A function added
+and the R functions (`proteomicscopylot/notebook_functions.R`). A function added
 to one of them and forgotten in the others is how the pipelines drift apart, so
 these tests compare what each implementation actually defines.
 
@@ -34,6 +34,9 @@ R_SOURCE = ROOT / "proteomicscopylot" / "notebook_functions.R"
 BACKEND_MODULE = "app.services.functions"
 STATS_TOOLS_MODULE = "app.services.stats_tools"
 PIP_MODULE = "proteomicscopylot.notebook_functions"
+# How the app (app.services.copylot_core), the package and a file-loaded
+# notebook_functions.py name the shared core module.
+SHARED_CORE_MODULES = ("copylot_shared_core", "proteomicscopylot._core", "_copylot_core")
 
 
 def _normalise(name: str) -> str:
@@ -57,13 +60,14 @@ def _python_signatures(module_name: str) -> dict[str, list[str]]:
     """Every function the module itself defines, with its named parameters.
 
     Functions imported from elsewhere are left out, because they belong to the
-    module that defines them. `*args` and `**kwargs` carry no name a caller
+    module that defines them; the shared core (`proteomicscopylot/_core.py`) is
+    the exception, since its functions are part of both Python pipelines. `*args` and `**kwargs` carry no name a caller
     could pass positionally, so they are left out of the parameter list.
     """
     module = importlib.import_module(module_name)
     signatures: dict[str, list[str]] = {}
     for name, value in vars(module).items():
-        if inspect.isfunction(value) and value.__module__ == module.__name__:
+        if inspect.isfunction(value) and value.__module__ in (module.__name__, *SHARED_CORE_MODULES):
             signatures[name] = [
                 parameter.name
                 for parameter in inspect.signature(value).parameters.values()
@@ -72,7 +76,7 @@ def _python_signatures(module_name: str) -> dict[str, list[str]]:
     return _by_normalised_name(signatures)
 
 
-# Sources the R package into an empty environment and prints, as JSON, every
+# Sources the R functions into an empty environment and prints, as JSON, every
 # function it defined and the names of that function's formal arguments.
 R_FORMALS_SCRIPT = """
 env <- new.env()
@@ -103,6 +107,10 @@ def _is_web_app_rendering(name: str) -> bool:
 # detected; the sets the tests use are built from them.
 BACKEND_ONLY_ANALYSIS_NAMES = (
     "comparison_contrast",  # UI contrast label, not a separate statistical method.
+    # Names the test a control-corrected volcano ran ("unpaired" -> Welch with
+    # propagated control variance) for the notebook settings and the assistant
+    # evidence; both packages take the same branch and return no test name.
+    "effective_test_type",
     "sample_label_frame",  # Plot/report display labels, not a statistical method.
     "condition_sample_labels",  # The "condition_N" axis label rule behind sample_label_frame.
     "entity_labels_for_kind",  # Entity nouns for report/UI prose, not a method.
@@ -112,6 +120,7 @@ BACKEND_ONLY_ANALYSIS_NAMES = (
     "select_matrix_all_rows",  # select_matrix before the session's localization cutoff; store plumbing.
     "qc_matrix",
     "build_metadata_from_conditions",
+    "auto_sample_columns",  # build_metadata_from_conditions' upload fallback; the packages take explicit samples.
     "choose_best_source",
     "imputed_data_available",
     "use_existing_log2_data",
@@ -126,6 +135,7 @@ BACKEND_ONLY_ANALYSIS_NAMES = (
     "histogram",
     "normal_fit_curve",
     "qqnorm_plot_data",
+    "condition_cvs",  # the CV plot and table share it; the packages compute CVs inside cov_plot.
 )
 
 PIP_ONLY_NAMES = (
@@ -135,6 +145,8 @@ PIP_ONLY_NAMES = (
     "guarded_t_statistic",
     "negative_log10",
     "paired_t_test",
+    "bh_adjust",  # the shared core's Benjamini-Hochberg; R calls p.adjust(method = "BH").
+    "multipletests",  # statsmodels-shaped Benjamini-Hochberg wrapper; R calls p.adjust(method = "BH").
 )
 
 R_ONLY_NAMES = (
@@ -285,9 +297,7 @@ def test_the_inventories_find_a_plausible_number_of_functions(functions) -> None
         assert len(names) > 40, f"the {key} inventory found only {len(names)} functions"
 
 
-KNOWN_PARAMETER_RENAMES = {
-    ("count_missed_cleavages", 0): ("sequence", "sequences"),
-}
+KNOWN_PARAMETER_RENAMES: dict[tuple[str, int], tuple[str, str]] = {}
 
 
 @pytest.mark.requires_r("jsonlite")

@@ -13,7 +13,6 @@ from app.services.notebook_ksea import capture_table
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_qc import snapshots
 from app.services.session_context import get_session_id
-from test_notebook_phosprot import phosphosites
 
 
 @pytest.mark.parametrize('source', ['data', 'filtered', 'imputed'])

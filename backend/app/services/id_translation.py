@@ -17,6 +17,7 @@ from app.schemas.data_tools import IdTranslationRequest, IdTranslationResponse
 from app.services.dataset_store import get_current_dataset
 from app.services.reference_db import resolve_reference_db
 from app.services.dataset_store import save_table_dataset
+from app.services.json_records import json_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,8 +75,7 @@ def available_database_labels() -> list[str]:
 
 
 def _preview(df: pd.DataFrame, rows: int = 50) -> list[dict[str, object]]:
-    head = df.head(rows)
-    return head.where(pd.notna(head), None).to_dict(orient="records")
+    return json_records(df, rows)
 
 
 def _get_current_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, str]:

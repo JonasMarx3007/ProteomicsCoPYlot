@@ -170,6 +170,11 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
     #################
     cols = [('EG.TotalQuantity (Settings)', run) for run in fine_names]
 
+    # One row per site: a site's value in a run is the median of the log2
+    # intensities of the precursors carrying it in that run -- a Perseus-style
+    # choice that depends on which precursors each run measured. Its
+    # localization is the maximum over runs and precursors, and the cutoff
+    # below is applied to that maximum. Both are stated on the page.
     df1 = data.set_index('PTM_Collapse_key')
     df2 = df1[df1.columns[df1.columns.isin(cols)]]
     df2 = df2.reset_index()
@@ -210,6 +215,8 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
         emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
+        emit('Site values are the median of the log2 precursor intensities per run; '
+             'localization is the maximum over runs and precursors, cutoff ' + str(cutoff))
         et = time.time()
         emit('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
         return (data)
@@ -229,6 +236,8 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
         emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
+        emit('Site values are the median of the log2 precursor intensities per run; '
+             'localization is the maximum over runs and precursors, cutoff ' + str(cutoff))
         et = time.time()
         emit('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
         return (data)

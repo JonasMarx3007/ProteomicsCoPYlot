@@ -1,24 +1,17 @@
 /**
- * Builds ship the manuals the app opens, and nothing else from public/manuals.
+ * public/manuals holds exactly the manual the app opens: one chapter PDF per
+ * page with a tab bar, and the complete book every chapter dialog links to.
  *
- * public/manuals also keeps the editable .docx sources and PDFs no page opens
- * (about 6.5 MB). vite.config.ts drops everything App does not link after the
- * build, by reading App's `manualPath(...)` calls. This walks every section
- * and tab of the mounted app, opens each manual it offers, and checks both
- * sides: every manual the app opens exists, and the build keeps exactly those.
- *
- * It replaced Python regular expressions over App.tsx and vite.config.ts
- * (tests/repo/test_shipped_manuals.py, which was deleted with them).
+ * This walks every section and tab of the mounted app, opens each manual it
+ * offers, and checks both sides: every manual the app opens exists, and
+ * nothing else ships (no editable sources, no stale PDFs).
  */
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Plugin } from "vite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import App from "../../src/App";
 import * as api from "../../src/lib/api";
-import viteConfig from "../../vite.config";
 import { serveDatasets, silenceNetwork } from "../component/apiMock";
 
 vi.mock("../../src/lib/api", async (original) => (await import("../component/apiMock")).mockApiModule(original));
@@ -46,8 +39,10 @@ beforeAll(() => {
       const manual = screen.queryByRole("button", { name: "Manual" });
       if (!manual) continue;
       fireEvent.click(manual);
-      const href = screen.getByRole("link", { name: "Open" }).getAttribute("href")!;
-      opened.add(decodeURIComponent(href.split("/").at(-1)!));
+      for (const name of ["Open", "Complete manual"]) {
+        const href = screen.getByRole("link", { name }).getAttribute("href")!;
+        opened.add(decodeURIComponent(href.split("/").at(-1)!));
+      }
       fireEvent.click(screen.getByRole("button", { name: "Close" }));
     }
   }
@@ -55,31 +50,15 @@ beforeAll(() => {
 
 describe("the manuals", () => {
   it("are offered by the app's views", () => {
-    // One per plot view that has one; a regression to none would pass the rest.
-    expect(opened.size).toBeGreaterThan(15);
+    // One per view with a tab bar, plus the complete manual.
+    expect(opened.size).toBeGreaterThan(40);
   });
 
   it("the app opens all exist in public/manuals", () => {
     expect([...opened].filter((name) => !existsSync(join(MANUALS, name)))).toEqual([]);
   });
 
-  describe("in a build", () => {
-    let outDir = "";
-    beforeAll(() => {
-      outDir = mkdtempSync(join(tmpdir(), "copylot-manuals-"));
-      cpSync(MANUALS, join(outDir, "manuals"), { recursive: true });
-    });
-    afterAll(() => rmSync(outDir, { recursive: true, force: true }));
-
-    it("are exactly the ones the app opens", () => {
-      const plugin = (viteConfig.plugins ?? []).flat().find(
-        (candidate): candidate is Plugin => Boolean(candidate) && (candidate as Plugin).name === "copylot-linked-manuals-only"
-      );
-      expect(plugin, "the build no longer filters the manuals").toBeDefined();
-      const call = (hook: unknown, ...args: unknown[]) => (hook as (...a: unknown[]) => void).apply({}, args);
-      call(plugin!.configResolved, { root: FRONTEND, build: { outDir } });
-      call(plugin!.closeBundle);
-      expect(readdirSync(join(outDir, "manuals")).sort()).toEqual([...opened].sort());
-    });
+  it("are all that public/manuals holds", () => {
+    expect(readdirSync(MANUALS).sort()).toEqual([...opened].sort());
   });
 });

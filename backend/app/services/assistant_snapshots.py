@@ -8,7 +8,7 @@ from time import monotonic
 from app.services.runtime_cache import runtime_cache_version
 from app.services.session_context import get_session_id
 
-_snapshots = OrderedDict()
+_snapshots: OrderedDict = OrderedDict()
 _lock = RLock()
 
 

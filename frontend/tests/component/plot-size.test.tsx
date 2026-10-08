@@ -14,7 +14,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SizeRow } from "../../src/components/PlotFields";
-import { SizeRow as QcSizeRow } from "../../src/components/QcFields";
 import limits from "../../src/lib/generated/plotLimits.json";
 import { restorePlotDimensionCm, restorePlotDpi } from "../../src/lib/plotLimits";
 
@@ -34,13 +33,9 @@ function enter(label: string, value: string) {
 }
 
 describe("the size row", () => {
-  it("is one component, whichever module a page imports it from", () => {
-    expect(QcSizeRow).toBe(SizeRow);
-  });
-
   it("asks for width, then height, then DPI", () => {
     row();
-    const labels = Array.from(document.querySelectorAll("label span")).map((span) => span.textContent);
+    const labels = Array.from(document.querySelectorAll("label")).map((label) => label.textContent);
     expect(labels).toEqual(["Width (cm)", "Height (cm)", "DPI"]);
   });
 

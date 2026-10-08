@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.schemas.tool_auth import (
@@ -11,6 +9,7 @@ from app.schemas.tool_auth import (
     ToolAuthLogoutResponse,
     ToolAuthStatusResponse,
 )
+from app.api.login_attempt import login_attempt
 from app.services.request_security import LoginRateLimit
 from app.services.session_context import set_session_cookie
 from app.services.tool_access import (
@@ -20,9 +19,6 @@ from app.services.tool_access import (
     tool_access_enabled,
     tool_session_authenticated,
 )
-
-LOGGER = logging.getLogger(__name__)
-
 
 router = APIRouter(prefix="/api/tool/auth", tags=["tool-auth"])
 LOGIN_RATE_LIMIT = LoginRateLimit("TOOL")
@@ -40,23 +36,14 @@ def tool_auth_login_route(
 ) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
-    LOGIN_RATE_LIMIT.enforce(request, bucket="password")
-    try:
-        rotated = authenticate_tool_password(payload.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        LOGGER.exception("Tool access configuration is unavailable")
-        raise HTTPException(
-            status_code=500,
-            detail="Tool access configuration is unavailable. Contact the administrator.",
-        ) from exc
-    except Exception as exc:
-        # Anything else is ours to fix: logged with its traceback, answered with
-        # one fixed sentence, as the viewer login does.
-        LOGGER.exception("Failed to authenticate tool session")
-        raise HTTPException(status_code=500, detail="Failed to authenticate tool session.") from exc
-    LOGIN_RATE_LIMIT.clear(request, bucket="password")
+    rotated = login_attempt(
+        request,
+        LOGIN_RATE_LIMIT,
+        bucket="password",
+        access="Tool",
+        failure="Failed to authenticate tool session",
+        authenticate=lambda: authenticate_tool_password(payload.password),
+    )
     set_session_cookie(response, rotated)
     return ToolAuthLoginResponse(ok=True)
 
@@ -67,23 +54,14 @@ def tool_auth_link_login_route(
 ) -> ToolAuthLoginResponse:
     if not tool_access_enabled():
         raise HTTPException(status_code=404, detail="Tool access auth is not enabled.")
-    LOGIN_RATE_LIMIT.enforce(request, bucket="link")
-    try:
-        rotated = authenticate_tool_token(payload.token)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        LOGGER.exception("Tool access configuration is unavailable")
-        raise HTTPException(
-            status_code=500,
-            detail="Tool access configuration is unavailable. Contact the administrator.",
-        ) from exc
-    except Exception as exc:
-        # Anything else is ours to fix: logged with its traceback, answered with
-        # one fixed sentence, as the viewer login does.
-        LOGGER.exception("Failed to authenticate tool session")
-        raise HTTPException(status_code=500, detail="Failed to authenticate tool session.") from exc
-    LOGIN_RATE_LIMIT.clear(request, bucket="link")
+    rotated = login_attempt(
+        request,
+        LOGIN_RATE_LIMIT,
+        bucket="link",
+        access="Tool",
+        failure="Failed to authenticate tool session",
+        authenticate=lambda: authenticate_tool_token(payload.token),
+    )
     set_session_cookie(response, rotated)
     return ToolAuthLoginResponse(ok=True)
 

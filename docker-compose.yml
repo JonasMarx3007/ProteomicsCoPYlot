@@ -6,7 +6,6 @@ services:
       args:
         FRONTEND_BASE_PATH: "/"
         FRONTEND_API_BASE: ""
-        FRONTEND_TOOL_ACCESS_AUTH: "1"
         FRONTEND_RESET_ON_BROWSER_LOAD: "1"
     container_name: proteomics-copylot
     restart: unless-stopped

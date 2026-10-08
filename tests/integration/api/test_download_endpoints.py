@@ -5,12 +5,9 @@ import io
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.main import app
-from app.services.viewer_bootstrap import load_viewer_state
 
 DOWNLOADS = [
     "/api/annotations/current/protein/source/download",

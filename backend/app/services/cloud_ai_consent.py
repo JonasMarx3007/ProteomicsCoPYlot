@@ -10,6 +10,7 @@ CLOUD_PROVIDERS: tuple[ChatProvider, ...] = ("openai", "anthropic", "gemini")
 
 _PROVIDER_LABELS: dict[ChatProvider, str] = {
     "ollama": "Ollama",
+    "openai_compatible": "Local server (OpenAI-compatible)",
     "openai": "OpenAI",
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",

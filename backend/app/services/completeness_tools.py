@@ -16,9 +16,9 @@ from app.services.data_tools import _get_sample_columns
 from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import raw_zero_to_nan
+from app.services.peptide_quantity import resolve_peptide_quantity_column
 from app.services.plot_images import (
     _peptide_file_column,
-    _peptide_quantity_column,
     _peptide_sequence_column,
 )
 from app.services.plot_styling import (
@@ -29,6 +29,7 @@ from app.services.plot_styling import (
 )
 from app.services.runtime_cache import apply_cached_wrappers
 from app.services.plotting_common import get_plt as _get_plt, get_sns as _get_sns
+from app.services.json_records import json_records
 
 
 def _feature_label(frame: pd.DataFrame) -> str:
@@ -271,7 +272,7 @@ def completeness_peptide_matrix(level: str, quantity_column: str | None = None) 
     frame = get_peptide_frame()
     file_col = _peptide_file_column(frame)
     feature_col = _peptide_sequence_column(frame) if level == "peptide" else _peptide_precursor_column(frame)
-    quantity_col = _peptide_quantity_column(frame, requested=quantity_column)
+    quantity_col = resolve_peptide_quantity_column(frame, requested=quantity_column)
     pivot = frame.pivot_table(index=feature_col, columns=file_col, values=quantity_col, aggfunc="max")
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]
     if not sample_cols:
@@ -442,8 +443,8 @@ def completeness_tables(
         outlierThreshold=float(outlier_threshold),
         outliers=outliers,
         excludedAllMissingCount=excluded,
-        sampleSummary=sample_summary.where(pd.notna(sample_summary), None).to_dict(orient="records"),
-        featureSummary=feature_summary.where(pd.notna(feature_summary), None).to_dict(orient="records"),
+        sampleSummary=json_records(sample_summary),
+        featureSummary=json_records(feature_summary),
     )
 
 # Each module caches its own renderers, the way table_functions and

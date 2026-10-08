@@ -1,5 +1,7 @@
 import SummaryCard from "../../components/SummaryCard";
-import { useId, useEffect, useMemo, useState } from "react";
+import PreviewTable from "../../components/PreviewTable";
+import SelectField from "../../components/SelectField";
+import { useEffect, useMemo, useState } from "react";
 import { downloadIdTranslation, getCurrentDatasets, runIdTranslation } from "../../lib/api";
 import type {
   AnnotationKind,
@@ -145,7 +147,7 @@ export default function IdTranslatorPage() {
         </p>
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          <SelectField
+          <SelectField assistant={false} emptyLabel="No options available"
             label="Dataset level"
             value={kind}
             onChange={(value) => setKind(value as AnnotationKind)}
@@ -170,25 +172,26 @@ export default function IdTranslatorPage() {
         </div>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <SelectField
+          <SelectField assistant={false} emptyLabel="No options available"
             label="Column to translate"
             value={column}
             onChange={setColumn}
             options={columns.map((value) => ({ value, label: value }))}
             disabled={!columns.length}
           />
-          <SelectField
+          <SelectField assistant={false} emptyLabel="No options available"
             label="Translate to"
             value={outputDb}
             onChange={setOutputDb}
             options={databaseOptions.map((value) => ({ value, label: value }))}
+            disabled={databaseOptions.length === 0}
           />
-          <SelectField
+          <SelectField assistant={false} emptyLabel="No options available"
             label="Translate from"
             value={inputDb}
             onChange={setInputDb}
             options={databaseOptions.map((value) => ({ value, label: value }))}
-            disabled={autoDetectInput}
+            disabled={autoDetectInput || databaseOptions.length === 0}
           />
         </div>
 
@@ -263,97 +266,6 @@ export default function IdTranslatorPage() {
           </section>
         </>
       ) : null}
-    </div>
-  );
-}
-
-// Local on purpose: this page's dropdowns are plain `<select>` elements.
-// The shared `components/SelectField` renders an `AssistantSelect`, which
-// registers the control for the assistant -- a behaviour change, not a
-// refactor, so it is a decision rather than a cleanup.
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-}) {
-  const fieldId = useId();
-  return (
-    <div>
-      <label htmlFor={fieldId} className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
-      <select id={fieldId}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled || options.length === 0}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
-      >
-        {options.length === 0 ? <option value="">No options available</option> : null}
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-
-function PreviewTable({
-  rows,
-  emptyText,
-}: {
-  rows: Record<string, unknown>[];
-  emptyText: string;
-}) {
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-        {emptyText}
-      </div>
-    );
-  }
-
-  const columns = Array.from(
-    rows.reduce((set, row) => {
-      Object.keys(row).forEach((key) => set.add(key));
-      return set;
-    }, new Set<string>())
-  );
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-200">
-      <div className="max-h-[34rem] overflow-auto">
-        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-          <thead className="sticky top-0 bg-slate-50">
-            <tr>
-              {columns.map((columnName) => (
-                <th key={columnName} className="px-4 py-3 font-medium text-slate-700">
-                  {columnName}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 bg-white">
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {columns.map((columnName) => (
-                  <td key={columnName} className="max-w-xs px-4 py-3 align-top text-slate-600">
-                    {String(row[columnName] ?? "")}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
