@@ -1932,7 +1932,8 @@ def pca_plot_interactive(data, meta, plot_colors=None, header=True, legend=True,
             scene=dict(
                 xaxis=dict(title=f"PC1 - {explained_variance[0]:.2f}%"),
                 yaxis=dict(title=f"PC2 - {explained_variance[1]:.2f}%"),
-                zaxis=dict(title=f"PC3 - {explained_variance[2]:.2f}%")
+                zaxis=dict(title=f"PC3 - {explained_variance[2]:.2f}%"),
+                aspectmode="cube",  # the same fixed box as the application (2026-10-09)
             ),
             showlegend=legend
         )

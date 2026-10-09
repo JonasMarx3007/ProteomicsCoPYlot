@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]  # >=77: PEP 639 license / license-files fields below
 build-backend = "setuptools.build_meta"
 
 [project]

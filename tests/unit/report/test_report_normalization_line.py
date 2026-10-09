@@ -46,7 +46,7 @@ def _annotation(normalization: str):
 def test_unfiltered_plots_state_normalization_as_applied(monkeypatch, normalization, phrase) -> None:
     monkeypatch.setattr(report, "get_annotation", lambda kind: _annotation(normalization))
     lines = _lines(report._data_provenance_html(kind="protein", data_source="data", subject="this plot"))
-    assert lines[0] == "Data source: Data"
+    assert lines[0] == "Data source: Unfiltered Data"
     assert lines[1].startswith("Normalization: ") and phrase in lines[1]
     assert "Not applied" not in lines[1]
     assert lines[2].startswith("Filtering: Not applied to this plot; it uses all 7490 rows.")

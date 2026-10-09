@@ -113,3 +113,34 @@ def test_cluster_heatmap_keeps_upstream_exclusion_counts(monkeypatch, data, sele
             assert "Before cluster selection, 2 of 4" in fig._copylot_notice
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize("custom", [None, "My custom pathway title"])
+def test_pathway_title_is_wrapped_to_the_heatmap_not_the_figure(monkeypatch, data, custom):
+    # 2026-10-09: the title is re-wrapped to the axes width after layout, so it
+    # no longer overhangs the gene labels to the figure's left edge.
+    frame, meta = data
+    monkeypatch.setattr(stats, "_stats_source", lambda *a, **k: ("data", frame, meta, []))
+    long_name = "positive regulation of transcription by RNA polymerase II in response to a very long stimulus"
+    monkeypatch.setattr(stats, "load_go_db", lambda: pd.DataFrame({"description": [long_name], "genes": ["G1;G2;G3;G4"]}))
+    captured = {}
+
+    def capture(fig, plt, **kwargs):
+        ax = fig.axes[0]
+        captured["lines"] = ax.get_title().count("\n") + 1
+        captured["title"] = ax.get_title()
+        captured["axes_cm"] = ax.get_position().width * fig.get_figwidth() * 2.54
+        plt.close(fig)
+        return PlotBytes(b"png", fig._copylot_notice)
+    monkeypatch.setattr(stats, "_fit_figure_to_labels", lambda *a, **k: None)
+    monkeypatch.setattr(stats, "_to_png_bytes", capture)
+    stats.pathway_heatmap_png(kind="protein", pathway=long_name, conditions=["A"], value_type="log2",
+                              remove_empty=True, cluster_rows=False, cluster_cols=False, include_id=False,
+                              header=True, width_cm=20, height_cm=12, dpi=72,
+                              advanced={"titleElement": {"text": custom}} if custom else None)
+    figure_wrap = stats._wrapped_title(f"{long_name} (log2 Intensity; median across mapped features)", width_cm=20)
+    assert captured["axes_cm"] < 20
+    if custom:
+        assert " ".join(captured["title"].split()) == custom
+    else:
+        assert captured["lines"] > figure_wrap.count("\n") + 1

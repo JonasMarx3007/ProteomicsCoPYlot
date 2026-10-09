@@ -328,6 +328,10 @@ export function assistantConfirmation(actions: AssistantAction[]): string[] {
   });
 }
 
+// The name a select shows for the value a receipt records ("unpaired_welch" is shown as the
+// option the user sees); receipts stay exact for the planner, the chat shows the name.
+export const receiptDisplayValues = new Map<string, string>();
+
 export function applyAssistantControls(actions: AssistantAction[], onApplied: (receipt: string) => void = () => {}, approvedChanges: string[] = []): string[] {
   if (new Set(actions.map(action => action.target)).size !== actions.length) {
     throw new Error("A control may be set only once per batch. No changes from this batch were applied.");
@@ -358,6 +362,8 @@ export function applyAssistantControls(actions: AssistantAction[], onApplied: (r
     if (actual && JSON.stringify(actual.value) !== JSON.stringify(control.value)) {
       recordAssistantChange({ target: action.target, label: control.label, before: control.value, after: actual.value });
       const receipt = `Set ${control.label} to ${JSON.stringify(actual.value)}.`;
+      const shown = typeof actual.value === "string" ? actual.optionLabels?.[actual.value] : undefined;
+      if (shown && shown !== actual.value) receiptDisplayValues.set(receipt, shown);
       receipts.push(receipt);
       onApplied(receipt);
     }

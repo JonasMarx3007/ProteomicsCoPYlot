@@ -39,7 +39,7 @@ def _matrix(kind: str) -> pd.DataFrame:
 
 
 @pytest.mark.parametrize("kind,expected", [
-    ("log10", "The values have a median of 6.6; log2 intensities are usually around 15-30."),
+    ("log10", "The values have a median of 6.6 and an interquartile range of 0.8"),
     ("counts", "100% of the values are whole numbers, which looks like count data"),
 ])
 def test_values_that_look_like_another_scale_get_a_hint(kind, expected):
@@ -62,6 +62,16 @@ def test_ordinary_log2_intensities_and_centred_log2_ratios_get_none(kind):
     assert log2_scale_hint(_matrix(kind), SAMPLES) is None
 
 
+def test_low_log2_values_with_a_log2_spread_are_left_alone():
+    # Broad low-valued distributions do not trigger this advisory heuristic.
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame(rng.normal(4, 2.2, (500, len(SAMPLES))), columns=SAMPLES)
+    frame[frame < 0] = 0.1
+    assert log2_scale_hint(frame, SAMPLES) is None
+    narrow = pd.DataFrame(rng.normal(4, 0.6, (500, len(SAMPLES))), columns=SAMPLES)
+    assert log2_scale_hint(narrow, SAMPLES).startswith("The values have a median of 4.0 and an interquartile range")
+
+
 def test_columns_named_log2_are_trusted_for_the_median_but_not_for_counts():
     frame = _matrix("log10").rename(columns={s: f"{s}.Log2Quantity" for s in SAMPLES})
     assert log2_scale_hint(frame, [f"{s}.Log2Quantity" for s in SAMPLES]) is None
@@ -76,8 +86,9 @@ def test_the_detection_itself_is_unchanged():
 
 @pytest.mark.parametrize("data_file,meta_file,expected", [
     ("20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv", "protein_metadata_full.csv", None),
-    ("20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv", "phospho_metadata_full.csv",
-     "The values have a median of 3.9"),
+    # The collapsed phospho report sits at a median of 3.9 on the log2 scale and
+    # spreads over ~3 units: typical, and no longer flagged (2026-10-09).
+    ("20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv", "phospho_metadata_full.csv", None),
 ])
 def test_the_bundled_examples(data_file, meta_file, expected):
     frame = pd.read_csv(EXAMPLE / data_file, sep="\t")
@@ -94,4 +105,4 @@ def test_the_detect_route_returns_the_hint():
     assert response.status_code == 200, response.text[:300]
     body = response.json()
     assert body["isLog2Transformed"] is True
-    assert body["scaleHint"].startswith("The values have a median of 6.6")
+    assert body["scaleHint"].startswith("The values have a median of 6.6 and an interquartile range")

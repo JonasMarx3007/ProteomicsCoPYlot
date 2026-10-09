@@ -86,9 +86,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   // the top of the Phospho-specific module), not a setting of this plot.
   const [phosphositePlot, setPhosphositePlot] = useState({
     color: String(persistedPhosphositePlot.color ?? "#87CEEB"),
-    widthCm: restorePlotDimensionCm(persistedPhosphositePlot.widthCm, 15),
+    widthCm: restorePlotDimensionCm(persistedPhosphositePlot.widthCm, 20),
     heightCm: restorePlotDimensionCm(persistedPhosphositePlot.heightCm, 10),
-    dpi: restorePlotDpi(persistedPhosphositePlot.dpi, 100),
+    dpi: restorePlotDpi(persistedPhosphositePlot.dpi, 300),
   });
 
   const [coverage, setCoverage] = useState({
@@ -108,7 +108,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   });
 
   const [distribution, setDistribution] = useState({
-    cutoff: Number(persistedDistribution.cutoff ?? 0),
+    // Default: hide the top 1 % most heavily modified proteins, which would
+    // otherwise stretch the axis to a single 200-site protein; 0 shows all.
+    cutoff: Number(persistedDistribution.cutoff ?? 0.01),
     header: true,
     color: String(persistedDistribution.color ?? "#87CEEB"),
     widthCm: restorePlotDimensionCm(persistedDistribution.widthCm, 20),
@@ -118,9 +120,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
   const [sty, setSty] = useState({
     header: true,
-    widthCm: restorePlotDimensionCm(persistedSty.widthCm, 17.78),
-    heightCm: restorePlotDimensionCm(persistedSty.heightCm, 11.43),
-    dpi: restorePlotDpi(persistedSty.dpi, 140),
+    widthCm: restorePlotDimensionCm(persistedSty.widthCm, 20),
+    heightCm: restorePlotDimensionCm(persistedSty.heightCm, 10),
+    dpi: restorePlotDpi(persistedSty.dpi, 300),
   });
 
 
@@ -136,7 +138,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     header: true,
     widthCm: restorePlotDimensionCm(persistedPhosprotRegulation.widthCm, 20),
     heightCm: restorePlotDimensionCm(persistedPhosprotRegulation.heightCm, 12),
-    dpi: restorePlotDpi(persistedPhosprotRegulation.dpi, 220),
+    dpi: restorePlotDpi(persistedPhosprotRegulation.dpi, 300),
   });
   const debouncedPhosphositePlot = useDebouncedValue(phosphositePlot, 650);
   const debouncedCoverage = useDebouncedValue(coverage, 650);
@@ -728,7 +730,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           fields={[
             <NumberField
               key="cutoff"
-              label="Upper-tail trim (fraction of proteins)"
+              label="Upper-tail trim (fraction of proteins; 0 shows all)"
               value={distribution.cutoff}
               onChange={(value) => setDistribution({ ...distribution, cutoff: Math.max(0, Math.min(1, value)) })}
             />,

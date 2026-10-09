@@ -279,14 +279,14 @@ export default function ColorsPage() {
                   <div className="text-sm font-medium text-slate-800">{row.condition}</div>
                   <input
                     type="color"
-                    aria-label={`${row.condition} colour`}
+                    aria-label={`${row.condition} color`}
                     value={row.color}
                     onChange={(event) => handleColorChange(row.condition, event.target.value)}
                     className="h-9 w-14 rounded-lg border border-slate-300 bg-white px-1 py-1"
                   />
                   <input
                     type="text"
-                    aria-label={`${row.condition} colour as hex`}
+                    aria-label={`${row.condition} color as hex`}
                     value={hexDrafts[row.condition] ?? row.color}
                     onChange={(event) => handleHexChange(row.condition, event.target.value)}
                     onBlur={() => commitHex(row.condition)}

@@ -56,3 +56,38 @@ def test_the_figures_draw_them_in_that_order_too(client, monkeypatch, path: str,
     labels = [re.match(r"(WT|GRK)\b", text).group(1)
               for text in re.findall(r">([^<>]*)</text>", response.text) if re.match(r"(WT|GRK)\b", text)]
     assert labels[:2] == METADATA_ORDER, labels
+
+
+def test_the_comparison_options_carry_the_plot_label_of_every_sample(client) -> None:
+    """Single-sample Venn and Pearson plots used to be titled with the full run
+    name unless an alias was typed; the page now prefills the alias with the
+    `WT_1`-style label every QC plot draws, which the options hand over here."""
+    body = client.get("/api/plots/comparison/protein/options").json()
+    labels = body["sampleLabels"]
+    assert set(labels) == set(body["samples"])
+    for sample, label in labels.items():
+        condition, number = label.rsplit("_", 1)
+        assert condition in body["conditions"] and number.isdigit()
+        assert label != sample
+
+
+def test_venn_set_names_are_a_key_under_the_circles(monkeypatch):
+    # 2026-10-09: long condition names collided at the circle edges; the names
+    # are a legend under the diagram now, one swatch per set.
+    from app.services import comparison_tools
+
+    monkeypatch.setattr(comparison_tools, "_venn_sets",
+                        lambda **k: ({"a", "b"}, {"b", "c"}, {"c", "d"} if k.get("third") else None))
+    captured = {}
+
+    def capture(fig, plt, **kwargs):
+        captured["fig"] = fig
+        return b"png"
+    monkeypatch.setattr(comparison_tools, "_to_png_bytes", capture)
+    render = getattr(comparison_tools.venn_png, "__wrapped__", comparison_tools.venn_png)
+    render(kind="protein", mode="Condition", first="WT", second="GRK knockout", third="Third",
+           alias1="", alias2="", alias3="", color1="#1f77b4", color2="#ff7f0e", color3="#2ca02c",
+           header=True, width_cm=12, height_cm=10, dpi=72)
+    ax = captured["fig"].axes[0]
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["WT", "GRK knockout", "Third"]
+    assert not [t for t in ax.texts if t.get_visible() and t.get_text() in {"WT", "GRK knockout", "Third"}]

@@ -109,6 +109,15 @@ opened. Ordinary local desktop restoration keeps its existing path-based behavio
 When a reverse proxy is used, configure `COPYLOT_TRUSTED_PROXY_IPS` so the backend can enforce
 this policy against the forwarded client address.
 
+## API documentation
+
+When neither `COPYLOT_TOOL_ACCESS_ENABLED` nor `COPYLOT_VIEWER_PORTAL_ENABLED` is set
+(the local desktop run), the backend serves its OpenAPI description at `/openapi.json`
+and the interactive pages at `/docs` (Swagger UI) and `/redoc`. Behind either access
+gate these three routes are disabled, so a deployed server does not publish its route
+list; the same description is committed as `frontend/src/lib/generated/openapi.json`
+and regenerated with `npm run generate:api`.
+
 ## Request and upload limits
 
 **Session isolation is on by default and required by the browser UI.** Each tab

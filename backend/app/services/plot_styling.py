@@ -715,6 +715,9 @@ class ReferenceLine:
     color: str
     style: str
     width: float
+    # Whether a plot that names its line in the legend does so; the line itself
+    # is unaffected (coverage total, 2026-10-09).
+    legend_entry: bool = True
 
     def matplotlib(self) -> dict[str, Any]:
         return {
@@ -744,6 +747,7 @@ def resolve_reference_line(
         color=advanced_color_text(settings, "referenceLineColor") or color,
         style=_advanced_choice(settings, "referenceLineStyle", _LINE_STYLE_NAMES, style),
         width=max(0.0, advanced_number(settings, "referenceLineWidth", width)),
+        legend_entry=_advanced_bool(settings, "referenceLineLegend", True),
     )
 
 

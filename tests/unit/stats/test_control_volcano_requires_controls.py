@@ -110,3 +110,32 @@ def test_an_unknown_control_still_reports_the_real_problem(client) -> None:
     )
     assert response.status_code == 400
     assert "annotated samples" in response.text
+
+
+@pytest.mark.parametrize("suffix", ["volcano-control.png", "volcano-control.html"])
+def test_the_image_routes_answer_with_the_models_sentence_not_a_pydantic_dump(client, suffix) -> None:
+    """The plot routes build the request model themselves, so its ValidationError
+    reached `plot_errors` as a ValueError and went out verbatim: "1 validation
+    error for VolcanoControlRequest … input_value={…} … errors.pydantic.dev".
+    """
+    response = client.get(
+        f"/api/plots/stats/protein/{suffix}",
+        params={"condition1": "WT", "condition2": "GRK", "condition1Control": "WT", "condition2Control": "Control 2"},
+    )
+    assert response.status_code == 400, response.text[:200]
+    detail = response.json()["detail"]
+    assert detail.startswith("Control-corrected volcano analysis requires four distinct conditions")
+    assert "validation error" not in detail and "input_value" not in detail and "pydantic" not in detail
+
+
+def test_validation_messages_strip_the_framing() -> None:
+    from pydantic import ValidationError
+
+    from app.api.routes_plots import validation_messages
+    from app.schemas.stats import VolcanoControlRequest
+
+    with pytest.raises(ValidationError) as caught:
+        VolcanoControlRequest(**BASE, condition1Control="WT", condition2Control="X")
+    message = validation_messages(caught.value)
+    assert message.startswith("Control-corrected volcano analysis requires four distinct conditions")
+    assert "Value error" not in message

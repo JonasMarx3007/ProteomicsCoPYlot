@@ -51,6 +51,7 @@ def test_untested_rows_are_listed_with_counts_means_and_reason():
     rows = untested[0].set_index("ProteinNames")
     assert rows.index.tolist() == ["P0", "P1", "P2"]
     assert len(warnings) == 1 and warnings[0].startswith("3 of 8 rows were not tested")
+    assert "paired" not in warnings[0] and "complete pairs" not in warnings[0]
     assert rows.loc["P0", ["n_A", "n_B"]].tolist() == [1, 3]
     assert rows.loc["P0", "mean_A"] == pytest.approx(frame.loc[0, "A1"])
     assert rows.loc["P0", "mean_B"] == pytest.approx(frame.loc[0, ["B1", "B2", "B3"]].mean())

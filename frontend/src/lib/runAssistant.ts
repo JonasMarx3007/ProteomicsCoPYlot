@@ -1,6 +1,6 @@
 import { flushSync } from "react-dom";
 import { assistantStep, CloudAiConsentRequiredError, getAssistantProgress, hasPendingUiRequests, type AssistantView, type AssistantResult } from "./api";
-import { applyAssistantControls, assistantConfirmation, readAssistantControls, assistantSurfaceReady, searchAssistantOptions, assistantButtonConfirmation, activateAssistantButton, addCanvasTiles, assistantFeatureChoices } from "./assistantControls";
+import { applyAssistantControls, receiptDisplayValues, assistantConfirmation, readAssistantControls, assistantSurfaceReady, searchAssistantOptions, assistantButtonConfirmation, activateAssistantButton, addCanvasTiles, assistantFeatureChoices } from "./assistantControls";
 import { stableSnapshot, unsavedAnalysis } from "./unsavedAnalysis";
 import { AssistantConversation } from "./assistantConversation";
 import { focusCanvas } from "./canvasFocus";
@@ -11,7 +11,7 @@ import { applyStyle, saveStyle } from "./plotStyles";
 // round 35 the chat showed 'Set X axis / X tick label size to "8.0".', a
 // control path and a value the user never used. Every receipt is rewritten here
 // as the sentence a person would say, with the exact value kept.
-const CONTAINERS = ["Names and colours", "Frame and grid", "Boxes and their points"];
+const CONTAINERS = ["Names and colors", "Frame and grid", "Boxes and their points"];
 
 function settingName(label: string): string {
   if (label === "Title / Text") return "plot title";
@@ -42,25 +42,44 @@ export function readableReceipt(receipt: string): string {
   }
   const border = /^(?:Frame and grid \/ )?Axis frame \/ (Top|Bottom|Left|Right)$/.exec(label);
   if (border && typeof value === "boolean") {
-    return `${value ? "Showing" : "Hidden"} the ${border[1].toLowerCase()} border${scope}.`;
+    return `${value ? "Showed" : "Hid"} the ${border[1].toLowerCase()} border${scope}.`;
   }
   const rotation = /^([XY]) axis \/ [XY] tick label rotation$/.exec(label);
   if (rotation && !already) return `Rotated the ${rotation[1].toLowerCase()}-axis labels to ${String(value)} degrees${scope}.`;
-  const item = /^(?:Names and colours \/ )?(Condition|Sample) (colors|names) \/ (.+)$/.exec(label);
+  const item = /^(?:Names and colors \/ )?(Condition|Sample) (colors|names) \/ (.+)$/.exec(label);
   if (item) {
     const kind = `${item[1].toLowerCase()} ${JSON.stringify(item[3])}`;
     return item[2] === "colors"
-      ? `Changed the colour of ${kind} to ${String(value)}${scope}.`
+      ? `Changed the color of ${kind} to ${String(value)}${scope}.`
       : `Renamed ${kind} to ${JSON.stringify(value)} for display${scope}.`;
   }
   const name = settingName(label);
   if (!name) return receipt;
-  const unit = /\(([^)]+)\)\s*$/.exec(label)?.[1] ?? "";
+  // "(cm)" is a unit; "(static plot)" says where the setting applies and is not one.
+  const unit = /\((cm|mm|px|pt|%|°|degrees?)\)\s*$/i.exec(label)?.[1] ?? "";
+  // "Reference line / Show", "Title / Bold": the last part is the switch, the rest is the thing
+  // (2026-10-08: "Hidden the reference line show.", "Showing the title bold.").
+  const parts = label.split(" / ");
+  const last = parts.length > 1 ? parts[parts.length - 1] : "";
+  if (typeof value === "boolean" && last) {
+    const thing = settingName(parts.slice(0, -1).join(" / "));
+    if (thing && /^(?:show|visible|shown|display)$/i.test(last)) {
+      return already ? `The ${thing} was already ${value ? "shown" : "hidden"}${scope}.`
+        : `${value ? "Showed" : "Hid"} the ${thing}${scope}.`;
+    }
+    if (thing && /^(?:bold|italic)$/i.test(last)) {
+      const style = last.toLowerCase();
+      return already ? `The ${thing} was already ${value ? "" : "not "}${style}${scope}.`
+        : value ? `Made the ${thing} ${style}${scope}.` : `The ${thing} is no longer ${style}${scope}.`;
+    }
+  }
   if (typeof value === "boolean") {
     return already ? `The ${name} was already ${value ? "shown" : "hidden"}${scope}.`
-      : `${value ? "Showing" : "Hidden"} the ${name}${scope}.`;
+      : `${value ? "Showed" : "Hid"} the ${name}${scope}.`;
   }
   if (Array.isArray(value)) return already ? receipt : `Changed the ${name} to ${value.join(", ")}${scope}.`;
+  const shown = receiptDisplayValues.get(receipt);
+  if (shown && !already) return `Changed the ${name} to ${shown}${scope}.`;
   const text = /^-?\d+(?:\.\d+)?$/.test(String(value))
     ? String(Number(value)) + (/rotation/.test(name) ? " degrees" : unit ? ` ${unit}` : "")
     : /^#[0-9a-f]{6}$/i.test(String(value)) ? String(value) : JSON.stringify(value);

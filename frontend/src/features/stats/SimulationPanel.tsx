@@ -285,13 +285,6 @@ export function SimulationPanel({
 
         <div className="mt-6 border-t border-slate-200 pt-6">
           <h4 className="text-sm font-semibold text-slate-900">Projection settings</h4>
-          <p className="mt-2 text-sm text-slate-600">
-            A what-if projection, not a power calculation: the observed mean fold changes are held
-            fixed and the t-test is recomputed for the variance factor and replicates per group set
-            here. Nothing is drawn at random, so the same settings always give the same plot. The
-            observed fold changes include noise, so the projection is optimistic for effects that
-            look large, and it does not estimate the probability of detecting a true effect.
-          </p>
           <div className="mt-3 grid gap-4 lg:grid-cols-2">
             <NumberField label="Variance × factor" value={varianceMultiplier} onChange={(value) => setVarianceMultiplier(Math.max(0.01, value))} step={0.05} />
             <NumberField
@@ -324,8 +317,9 @@ export function SimulationPanel({
             { label: "Downregulated", value: String(result.downregulatedCount) },
             { label: "Not Significant", value: String(result.notSignificantCount) },
             { label: "No p-value", value: String(result.unavailableCount ?? 0) },
-          ]} warnings={removeSourceUsageWarnings(result.warnings)} />
+          ]} />
           <PlotFrame title="Projected volcano plot" url={plotUrl} height={760} />
+          <Notice error={null} warnings={removeSourceUsageWarnings(result.warnings)} />
         </>
       ) : null}
     </div>

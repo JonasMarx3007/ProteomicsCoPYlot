@@ -467,6 +467,10 @@ def peptide_rt_plot(
         raise ValueError("No numeric Predicted.RT / RT values are available for the retention-time plot.")
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)), dpi=max(72, int(dpi)))
+    # `bins` is a ceiling, not the grid: 1 000 cells across 500 points left a
+    # figure that was all white, so the grid is also held to about two cells
+    # per root-n point (632 for 100 000 rows, 14 for 50).
+    grid = max(10, min(2000, int(bins), int(round(2 * len(data) ** 0.5))))
     if method == "Scatter Plot":
         if len(data) > 100000:
             data = data.sample(n=100000, random_state=int(sampling_seed))
@@ -477,18 +481,18 @@ def peptide_rt_plot(
         hist = ax.hist2d(
             data["Predicted.RT"],
             data["RT"],
-            bins=max(10, min(2000, int(bins))),
+            bins=grid,
             norm=LogNorm(),
         )
-        fig.colorbar(hist[3], ax=ax)
+        fig.colorbar(hist[3], ax=ax, label="Observations per bin")
     else:
         hb = ax.hexbin(
             data["Predicted.RT"],
             data["RT"],
-            gridsize=max(10, min(2000, int(bins))),
+            gridsize=grid,
             cmap="Blues",
         )
-        fig.colorbar(hb, ax=ax)
+        fig.colorbar(hb, ax=ax, label="Observations per bin")
 
     # The plot's own switch still decides whether there is a line at all; the
     # reference-line settings decide what it looks like. Its interactive twin

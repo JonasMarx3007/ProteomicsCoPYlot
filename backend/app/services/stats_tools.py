@@ -460,10 +460,10 @@ def _volcano_dataframe(
     if untested:
         # These rows leave the test silently otherwise, and they are often the
         # on/off cases a user is looking for, so they are counted and kept.
-        warnings.append(
-            f"{untested:,} of {len(valid_mask):,} rows were not tested: fewer than 2 values in a compared "
-            "condition or, for paired tests, fewer than 2 complete pairs."
-        )
+        reason = "fewer than 2 complete pairs" if paired else "fewer than 2 values in a compared condition"
+        if control_arrays:
+            reason += " or fewer than 2 values in a control condition"
+        warnings.append(f"{untested:,} of {len(valid_mask):,} rows were not tested: {reason}.")
     if untested_out is not None:
         untested_out.append(_volcano_untested_rows(df, count_groups, valid_mask, pair_counts))
     if not np.any(valid_mask):
@@ -2846,16 +2846,20 @@ def pathway_heatmap_png(
     # than any canvas this page will ever be given. Growing the figure cannot
     # fix a title that is one unbreakable line, so it is wrapped to the width
     # the figure actually has before anything is measured.
-    ax.set_title(
-        _wrapped_title(
-            f"{pathway} ({'Z-transformed' if value_type == 'z' else color_label}; "
-            "median across mapped features)",
-            width_cm=width_cm,
-        )
+    title_text = (
+        f"{pathway} ({'Z-transformed' if value_type == 'z' else color_label}; "
+        "median across mapped features)"
     )
+    ax.set_title(_wrapped_title(title_text, width_cm=width_cm))
     cbar = fig.colorbar(image, ax=ax)
     cbar.set_label(color_label)
     apply_advanced_axes(ax, advanced)
+    fig.tight_layout()
+    # Re-wrap to the axes the title sits over: the gene labels take the left
+    # strip and the colour bar the right one, so a title as wide as the whole
+    # figure overhung the labels to the left edge.
+    axes_width_cm = float(ax.get_position().width) * float(fig.get_figwidth()) * 2.54
+    ax.title.set_text(_wrapped_title(ax.get_title(), width_cm=axes_width_cm))
     fig.tight_layout()
     # The requested width/height is a floor, not a ceiling: a normal GO term has
     # more gene labels than the default 20 x 12 cm canvas can hold, and the page

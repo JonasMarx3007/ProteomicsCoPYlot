@@ -668,7 +668,7 @@ export function VolcanoPanel({
       ) : null}
       {canRun && result && displayedResult ? (
         <>
-          <SummarySection items={[{ label: "Rows", value: String(displayedResult.totalRows) }, { label: "Upregulated", value: String(displayedResult.upregulatedCount) }, { label: "Downregulated", value: String(displayedResult.downregulatedCount) }, { label: "Not Significant", value: String(displayedResult.notSignificantCount) }, { label: "No p-value", value: String(displayedResult.unavailableCount ?? 0) }]} warnings={removeSourceUsageWarnings(Array.from(new Set([...(displayedResult.warnings ?? []), ...(result.warnings ?? [])])))} />
+          <SummarySection items={[{ label: "Rows", value: String(displayedResult.totalRows) }, { label: "Upregulated", value: String(displayedResult.upregulatedCount) }, { label: "Downregulated", value: String(displayedResult.downregulatedCount) }, { label: "Not Significant", value: String(displayedResult.notSignificantCount) }, { label: "No p-value", value: String(displayedResult.unavailableCount ?? 0) }]} />
           {renderType === "Normal" ? (
             <ImageSection
               title="Volcano Plot"
@@ -685,6 +685,7 @@ export function VolcanoPanel({
             <PlotFrame title="Volcano Plot" url={plotUrl} height={760} notebook={renderedNotebook}
               onRendered={(url, token) => setRenderedNotebook({ url, token })} />
           )}
+          <Notice error={null} warnings={removeSourceUsageWarnings(Array.from(new Set([...(displayedResult.warnings ?? []), ...(result.warnings ?? [])])))} />
           <TableSection
             title="Result Table"
             rows={displayedResult.rows}

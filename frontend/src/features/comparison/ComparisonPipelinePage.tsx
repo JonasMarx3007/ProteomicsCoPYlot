@@ -112,6 +112,13 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
     dpi: restorePlotDpi(persistedVenn.dpi, 300),
   });
   const [pearsonInteractiveSessionNonce] = useState(() => Date.now());
+  // The alias fields start out as the `WT_1`-style label of the selected
+  // sample (the name every QC plot uses), and are overwritten whenever the
+  // selection changes; the user can still type any alias afterwards.
+  const sampleAlias = (sample: string) => options?.sampleLabels?.[sample] ?? "";
+  // An alias that is still the automatic sample label is dropped when the
+  // mode changes, so condition sets are not labelled "A_1"; a typed alias stays.
+  const keepTypedAlias = (alias: string, sample: string) => (alias && alias === sampleAlias(sample) ? "" : alias);
 
   useEffect(() => {
     writePersistedUiState("comparison.pipeline.v1", {
@@ -181,9 +188,14 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         conditions.includes(prev.condition2) && prev.condition2 !== condition1
           ? prev.condition2
           : conditions.find((value) => value !== condition1) ?? "";
-      return { ...prev, sample1, sample2, condition1, condition2 };
+      const labels = options.sampleLabels ?? {};
+      const alias1 = (prev.mode === "Single" && sample1 !== prev.sample1 ? "" : prev.alias1)
+        || (prev.mode === "Single" ? labels[sample1] ?? "" : "");
+      const alias2 = (prev.mode === "Single" && sample2 !== prev.sample2 ? "" : prev.alias2)
+        || (prev.mode === "Single" ? labels[sample2] ?? "" : "");
+      return { ...prev, sample1, sample2, condition1, condition2, alias1, alias2 };
     });
-  }, [options]);
+  }, [options, pearson.mode]);
 
   useEffect(() => {
     if (!options) return;
@@ -199,7 +211,14 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
         prev.third && pool.includes(prev.third) && prev.third !== first && prev.third !== second
           ? prev.third
           : "";
-      return { ...prev, first, second, third };
+      const labels = venn.mode === "Single" ? options.sampleLabels ?? {} : {};
+      const knownSelections = new Set([...options.samples, ...options.conditions]);
+      return {
+        ...prev, first, second, third,
+        alias1: (knownSelections.has(prev.first) ? prev.alias1 : "") || (labels[first] ?? ""),
+        alias2: (knownSelections.has(prev.second) ? prev.alias2 : "") || (labels[second] ?? ""),
+        alias3: (third && knownSelections.has(prev.third) ? prev.alias3 : "") || (third ? labels[third] ?? "" : ""),
+      };
     });
   }, [options, venn.mode]);
 
@@ -606,7 +625,11 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               label="Mode"
               value={pearson.mode}
               options={["Single", "Condition"]}
-              onChange={(value) => setPearson({ ...pearson, mode: value })}
+              onChange={(value) => setPearson({
+                ...pearson, mode: value,
+                alias1: keepTypedAlias(pearson.alias1, pearson.sample1),
+                alias2: keepTypedAlias(pearson.alias2, pearson.sample2),
+              })}
             />
             <SelectField
               labels={{ "": "None" }}
@@ -624,7 +647,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               options={pool}
               onChange={(value) =>
                 pearson.mode === "Single"
-                  ? setPearson({ ...pearson, sample1: value })
+                  ? setPearson({ ...pearson, sample1: value, alias1: sampleAlias(value) })
                   : setPearson({ ...pearson, condition1: value })
               }
             />
@@ -635,7 +658,7 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
               options={pool}
               onChange={(value) =>
                 pearson.mode === "Single"
-                  ? setPearson({ ...pearson, sample2: value })
+                  ? setPearson({ ...pearson, sample2: value, alias2: sampleAlias(value) })
                   : setPearson({ ...pearson, condition2: value })
               }
             />
@@ -677,7 +700,12 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             label="Mode"
             value={venn.mode}
             options={["Single", "Condition"]}
-            onChange={(value) => setVenn({ ...venn, mode: value })}
+            onChange={(value) => setVenn({
+              ...venn, mode: value,
+              alias1: keepTypedAlias(venn.alias1, venn.first),
+              alias2: keepTypedAlias(venn.alias2, venn.second),
+              alias3: keepTypedAlias(venn.alias3, venn.third),
+            })}
           />
         </div>
         {venn.mode === "Condition" ? (
@@ -697,21 +725,21 @@ export default function ComparisonPipelinePage({ activeTab, onContextModeChange,
             label={venn.mode === "Single" ? "Sample 1" : "Condition 1"}
             value={venn.first}
             options={vennPool}
-            onChange={(value) => setVenn({ ...venn, first: value })}
+            onChange={(value) => setVenn({ ...venn, first: value, ...(venn.mode === "Single" ? { alias1: sampleAlias(value) } : {}) })}
           />
           <SelectField
             labels={{ "": "None" }}
             label={venn.mode === "Single" ? "Sample 2" : "Condition 2"}
             value={venn.second}
             options={vennPool}
-            onChange={(value) => setVenn({ ...venn, second: value })}
+            onChange={(value) => setVenn({ ...venn, second: value, ...(venn.mode === "Single" ? { alias2: sampleAlias(value) } : {}) })}
           />
           <SelectField
             labels={{ "": "None" }}
             label={venn.mode === "Single" ? "Sample 3 (optional)" : "Condition 3 (optional)"}
             value={venn.third}
             options={["", ...vennPool]}
-            onChange={(value) => setVenn({ ...venn, third: value })}
+            onChange={(value) => setVenn({ ...venn, third: value, ...(venn.mode === "Single" ? { alias3: sampleAlias(value) } : {}) })}
           />
         </div>
         <div className="grid gap-4 lg:grid-cols-3">

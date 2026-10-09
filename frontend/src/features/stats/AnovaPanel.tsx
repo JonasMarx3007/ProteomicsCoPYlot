@@ -411,7 +411,6 @@ export function AnovaPanel({
                   : "-",
               },
             ]}
-            warnings={removeSourceUsageWarnings(result.warnings)}
           />
           <AnovaOutput key={plotUrl} result={result} plotUrl={plotUrl} />
           {selectedClusterPlotUrl ? (

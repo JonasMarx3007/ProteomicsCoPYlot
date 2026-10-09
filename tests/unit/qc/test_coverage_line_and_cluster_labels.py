@@ -70,8 +70,10 @@ def test_coverage_without_the_line_fits_the_bars(coverage_figures):
 
 
 def test_count_labels_keep_their_headroom_without_the_line(coverage_figures):
+    # Count labels stand on top of the bars since 2026-10-09, so the axis
+    # leaves 25 % instead of 10 % above the tallest bar.
     plot_images.qc_coverage_plot(kind="protein", reference_line=False, text=True)
-    assert coverage_figures[-1].axes[0].get_ylim()[1] == pytest.approx(8 * 1.1)
+    assert coverage_figures[-1].axes[0].get_ylim()[1] == pytest.approx(8 * 1.25)
 
 
 def _cluster_frame(rows: int = 12):

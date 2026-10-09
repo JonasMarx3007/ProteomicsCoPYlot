@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
+from pydantic import ValidationError
 
 from app.services.plot_export import note_notebook_unavailable, RENDER_LOCK
 from app.schemas.annotation import AnnotationKind, DataSource
@@ -121,6 +122,19 @@ from app.services.json_records import json_records
 LOGGER = logging.getLogger(__name__)
 
 
+def validation_messages(error: ValidationError) -> str:
+    """The sentences a request model raised, without pydantic's framing."""
+    messages = []
+    for item in error.errors():
+        message = str(item.get("msg", "")).strip()
+        for prefix in ("Value error, ", "Assertion failed, "):
+            if message.startswith(prefix):
+                message = message[len(prefix):]
+        if message and message not in messages:
+            messages.append(message)
+    return " ".join(messages) or "The request is not valid."
+
+
 @contextmanager
 def plot_errors(what: str, *, optional_dependency: bool = False):
     """Turn a renderer's failure into the answer the page expects.
@@ -142,6 +156,11 @@ def plot_errors(what: str, *, optional_dependency: bool = False):
         # Plots are drawn one at a time (see RENDER_LOCK).
         with RENDER_LOCK:
             yield
+    except ValidationError as e:
+        # A pydantic ValidationError is a ValueError whose str() is a dump of
+        # the model, the input values and a docs URL. The model's own messages
+        # are the answer; the rest is not for the page.
+        raise HTTPException(status_code=400, detail=validation_messages(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ModuleNotFoundError as e:
@@ -1759,9 +1778,9 @@ def phospho_options_route() -> dict[str, object]:
 @router.get("/phospho/phosphosite-plot.png")
 def phosphosite_plot_route(
     color: str = "#87CEEB",
-    widthCm: float = 15,
+    widthCm: float = 20,
     heightCm: float = 10,
-    dpi: int = 100,
+    dpi: int = 300,
     advanced: str = "",
 ) -> Response:
     with plot_errors("Failed to render phosphosite plot", optional_dependency=True):
@@ -2031,9 +2050,9 @@ def phospho_phosprot_regulation_table_route(
 @router.get("/phospho/sty.png")
 def phospho_sty_route(
     header: bool = True,
-    widthCm: float = 17.78,
-    heightCm: float = 11.43,
-    dpi: int = 140,
+    widthCm: float = 20,
+    heightCm: float = 10,
+    dpi: int = 300,
     advanced: str = "",
 ) -> Response:
     with plot_errors("Failed to render STY plot", optional_dependency=True):
@@ -2057,7 +2076,7 @@ def phospho_sty_table_route(snapshot: str = '') -> dict[str, list[dict[str, obje
 @router.get("/comparison/{kind}/options")
 def comparison_options_route(
     kind: AnnotationKind,
-) -> dict[str, list[str] | int | bool | str]:
+) -> dict[str, list[str] | dict[str, str] | int | bool | str]:
     with plot_errors("Failed to load comparison options"):
         return comparison_options(kind=kind)
 

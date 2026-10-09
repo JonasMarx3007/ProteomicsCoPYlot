@@ -26,16 +26,16 @@ import { serveDatasets, silenceNetwork } from "../component/apiMock";
 vi.mock("../../src/lib/api", async (original) => (await import("../component/apiMock")).mockApiModule(original));
 
 describe("the shared panel", () => {
-  it("keeps the dot colour behind its own flag inside the Points card", () => {
+  it("keeps the dot color behind its own flag inside the Points card", () => {
     const { rerender } = render(<AdvancedPlotOptions value={{}} onChange={() => {}} visibleControls={{ markerStyle: true }} />);
     expect(screen.getAllByText("Dot size (pt)").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Dot colour").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Dot color").length).toBeGreaterThan(0);
     rerender(<AdvancedPlotOptions value={{}} onChange={() => {}} visibleControls={{ markerStyle: true, markerColor: false }} />);
     expect(screen.getAllByText("Dot size (pt)").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Dot colour")).toBeNull();
+    expect(screen.queryByText("Dot color")).toBeNull();
     // Without the Points card there is no dot colour to offer.
     rerender(<AdvancedPlotOptions value={{}} onChange={() => {}} visibleControls={{}} />);
-    expect(screen.queryByText("Dot colour")).toBeNull();
+    expect(screen.queryByText("Dot color")).toBeNull();
   });
 });
 
@@ -53,14 +53,14 @@ describe("App", () => {
     expect(at("peptide:missedCleavage").valueLabels).toBe(true);
   });
 
-  it("offers a bar colour only to the bar plots that read it", () => {
+  it("offers a bar color only to the bar plots that read it", () => {
     // phospho_sty_png gives S, T and Y a fixed colour each.
     expect(at("phospho:sty").barColor).not.toBe(true);
     expect(at("phospho:phosphositePlot").barColor).toBe(true);
     expect(at("phospho:distribution").barColor).toBe(true);
   });
 
-  it("offers threshold lines and dot colours where the renderer draws them", () => {
+  it("offers threshold lines and dot colors where the renderer draws them", () => {
     // Neither phosphoprotein regulation renderer draws a threshold line, and
     // both colour their points through a colour scale.
     expect(at("phospho:phosprotRegulation").referenceLineColor).not.toBe(true);
@@ -112,7 +112,7 @@ beforeEach(() => {
 async function offered() {
   await screen.findByText("Advanced Plot Options", {}, { timeout: 5000 });
   const has = (label: string) => screen.queryAllByText(label).length > 0;
-  return { points: has("Dot size (pt)"), dotColour: has("Dot colour"), barColour: has("Bar colour"), valueLabels: has("Value labels") };
+  return { points: has("Dot size (pt)"), dotColor: has("Dot color"), barColor: has("Bar color"), valueLabels: has("Value labels") };
 }
 
 describe("the QC page", () => {
@@ -121,36 +121,36 @@ describe("the QC page", () => {
     render(<QCPipelinePage activeTab={activeTab} />);
   }
 
-  it("hides the dot colour on the PCA, where the condition palette decides it", async () => {
+  it("hides the dot color on the PCA, where the condition palette decides it", async () => {
     mount("pca");
-    expect(await offered()).toMatchObject({ points: true, dotColour: false });
+    expect(await offered()).toMatchObject({ points: true, dotColor: false });
   });
 
   it("hides it on a clustered PCA too", async () => {
     mount("pca", { pca: { colorBy: "Cluster", clusterMethod: "KMeans" } });
-    expect(await offered()).toMatchObject({ points: true, dotColour: false });
+    expect(await offered()).toMatchObject({ points: true, dotColor: false });
   });
 
   it("hides the dot colour on the abundance plot, whose curves take their condition's colour", async () => {
     mount("abundance");
-    expect(await offered()).toMatchObject({ points: true, dotColour: false });
+    expect(await offered()).toMatchObject({ points: true, dotColor: false });
   });
 
-  it("keeps the dot colour for the jittered dots over the coverage summary bars", async () => {
+  it("keeps the dot color for the jittered dots over the coverage summary bars", async () => {
     mount("coverage", { coverage: { summary: true } });
-    expect(await offered()).toMatchObject({ points: true, dotColour: true });
+    expect(await offered()).toMatchObject({ points: true, dotColor: true });
   });
 });
 
 describe("the Completeness page", () => {
-  it("offers the missing-value plot the bar colour and label size it reads", async () => {
+  it("offers the missing-value plot the bar color and label size it reads", async () => {
     render(<CompletenessPage activeTab="missingPlot" />);
-    expect(await offered()).toMatchObject({ barColour: true, valueLabels: true });
+    expect(await offered()).toMatchObject({ barColor: true, valueLabels: true });
   });
 
   it("offers neither on the heatmap beside it", async () => {
     render(<CompletenessPage activeTab="heatmap" />);
-    expect(await offered()).toMatchObject({ barColour: false, valueLabels: false });
+    expect(await offered()).toMatchObject({ barColor: false, valueLabels: false });
   });
 });
 

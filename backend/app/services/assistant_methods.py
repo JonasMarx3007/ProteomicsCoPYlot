@@ -1,6 +1,10 @@
 """Read-only method descriptions; never inspect or mutate an uploaded dataset."""
 from app.schemas.assistant import Evidence
 
+# "What is the best order to go through the analysis?" (2026-10-09) had only page-level
+# method texts to draw on and was answered with volcano settings alone.
+WORKFLOW_GUIDE = "A typical path through Proteomics CoPYlot, as a suggestion; every setting stays the user's choice. 1. Data / Upload and Data / Annotation: load the matrix, assign samples to conditions, declare whether values are log2, and choose the valid-value filter and normalization yourself (none are imposed). 2. QC Pipeline: Coverage Plot (identifications per sample), Histogram Intensity and Boxplot Intensity (are samples comparable in level and spread), CV Plot (replicate precision), Principal Component Analysis and Correlation Plot (do replicates group by condition; does a sample stand apart). 3. Completeness: Missing Value Plot and Heatmap, to see whether missingness differs between conditions before deciding whether to impute (Data / Imputation is optional). 4. Statistical Analysis: Volcano Plot for two conditions (choose the contrast, test and thresholds), ANOVA for more than two conditions, GO Enrichment (ORA) and Pathway Heatmap to interpret hit lists, Replicate & Variance Projection for planning replicates. 5. Single Protein for individual proteins or sites; Phospho-specific pages for phosphosite data (localization, STY, Kinase Library inputs); Comparison for two datasets; Summary for tables, text and the report. Downloads are the user's own (the assistant never presses them): every plot has a format choice and Download Plot; result tables (Volcano, ANOVA, GO Enrichment and others) have Download CSV above the table, which Excel opens; Export notebook gives a reproducible notebook of a plot; Summary / Report builds the report."
+
 METHODS = {
     "data.distribution": "Pools sample values from the distribution service's selected source and reports descriptive statistics, with population standard deviation. A QQ plot compares a distribution with a normal reference; numerical summaries alone do not establish normality, batch effects or an imputation mechanism.",
     "stats.simulation": "A what-if projection, not a power calculation: the observed mean fold changes are held fixed and the independent-sample t-test is recomputed for an assumed variance factor and number of replicates per group. Nothing is drawn at random. The observed fold changes include noise, so the projection is optimistic for effects that look large, and it does not estimate the probability of detecting a true effect. Interpret the selected pooled-variance/Welch test and raw/BH-adjusted p-values explicitly.",
@@ -62,6 +66,8 @@ def cv_method_text(normalization: str | None) -> str:
 
 
 def method_evidence(module: str) -> Evidence:
+    if module == "workflow.overview":
+        return Evidence(tool="method:workflow.overview", status="available", text=WORKFLOW_GUIDE)
     text = METHODS.get(module)
     return Evidence(tool=f"method:{module}", status="available" if text else "unavailable",
                     text=text or "No reviewed standalone method description exists for this module.")

@@ -121,7 +121,7 @@ def test_the_preamble_is_where_the_filtering_already_is() -> None:
 
 @pytest.mark.parametrize(
     "data_source,label",
-    [("data", "Data"), ("filtered", "Filtered Data"), ("imputed", "Imputed Data")],
+    [("data", "Unfiltered Data"), ("filtered", "Filtered Data"), ("imputed", "Imputed Data")],
 )
 def test_the_provenance_block_names_source_filtering_and_imputation(
     data_source: str, label: str
@@ -149,7 +149,7 @@ def test_an_unknown_source_falls_back_to_data_rather_than_inventing_a_label() ->
     said = _text(
         _data_provenance_html(kind="protein", data_source="log2", subject="this plot")
     )
-    assert "Data source: Data" in said
+    assert "Data source: Unfiltered Data" in said
 
 
 @pytest.mark.parametrize("data_source", ["data", "filtered"])
@@ -273,7 +273,7 @@ def _pca_block(report_html: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "source,expected", [("data", "Data"), ("imputed", "Imputed Data")]
+    "source,expected", [("data", "Unfiltered Data"), ("imputed", "Imputed Data")]
 )
 def test_the_pca_block_states_its_own_source_and_filtering(
     source: str, expected: str

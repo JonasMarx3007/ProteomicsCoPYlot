@@ -49,6 +49,7 @@ export type AdvancedPlotSettings = {
   yTickLabelColor?: string;
   referenceLineColor?: string;
   referenceLineVisible?: boolean;
+  referenceLineLegend?: boolean;
   referenceLineStyle?: string;
   referenceLineWidth?: number;
   rowLabelSize?: number;
@@ -264,8 +265,10 @@ export function normalizationOptions(vsnAvailable: boolean): NormalizationMethod
   return vsnAvailable ? ["none", "median", "quantile", "vsn"] : ["none", "median", "quantile"];
 }
 
+// "Unfiltered Data" rather than "Data": the bare word said nothing next to
+// "Filtered Data" (2026-10-09; the key stays `data`).
 export const DATA_SOURCE_LABELS: Record<DataSource, string> = {
-  data: "Data",
+  data: "Unfiltered Data",
   filtered: "Filtered Data",
   imputed: "Imputed Data",
 };
@@ -614,6 +617,8 @@ export type ComparisonTab = "pearson" | "venn";
 export type ComparisonOptionsResponse = {
   samples: string[];
   conditions: string[];
+  /** Original sample name -> the `WT_1`-style label the plots use; prefills the alias fields. */
+  sampleLabels?: Record<string, string>;
   sampleCount: number;
   conditionCount: number;
   dataSource: DataSource;

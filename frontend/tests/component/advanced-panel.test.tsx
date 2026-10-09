@@ -58,9 +58,9 @@ describe("a general point setting", () => {
     expect(next[map]).toEqual({});
   });
 
-  it("dot colour is set without disturbing the overrides", () => {
+  it("dot color is set without disturbing the overrides", () => {
     const onChange = panel({});
-    setValue(field("Dot colour"), "#123456");
+    setValue(field("Dot color"), "#123456");
     expect(onChange.mock.calls.at(-1)![0]).toMatchObject({ markerColor: "#123456", conditionMarkerSizes: { A: 9 } });
   });
 

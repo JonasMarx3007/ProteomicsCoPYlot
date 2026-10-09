@@ -15,6 +15,7 @@ from textwrap import fill
 
 from app.schemas.annotation import AnnotationKind
 from app.services.functions import (
+    sample_label_frame,
     condition_mean,
     qc_matrix,
 )
@@ -105,7 +106,7 @@ def _id_column(kind: AnnotationKind, frame: pd.DataFrame) -> str:
 
 def comparison_options(
     kind: AnnotationKind,
-) -> dict[str, list[str] | int | bool | str]:
+) -> dict[str, list[str] | dict[str, str] | int | bool | str]:
     source_used = "data"
     frame, meta = qc_matrix(kind)
     sample_columns = [
@@ -131,9 +132,19 @@ def comparison_options(
         .drop_duplicates()
         .tolist()
     )
+    # The `WT_1`-style label every QC plot draws for a sample; the page prefills
+    # the alias fields with it, so single-sample Venn and Pearson plots are not
+    # titled with full run names unless the user wants that.
+    labels = sample_label_frame(meta)
+    sample_labels = {
+        str(sample): str(label)
+        for sample, label in zip(labels["sample"].astype(str), labels["label"].astype(str))
+        if str(sample) in samples
+    }
     return {
         "samples": samples,
         "conditions": conditions,
+        "sampleLabels": sample_labels,
         "sampleCount": len(samples),
         "conditionCount": len(conditions),
         "dataSource": source_used,
@@ -604,29 +615,28 @@ def venn_png(
     label3 = alias3.strip() or _rename_if_condition(third, mode, advanced)
 
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
+    labels = [label1, label2] + ([label3] if set3 is not None else [])
+    set_colors = [
+        advanced_color(advanced, "vennColor1", color1),
+        advanced_color(advanced, "vennColor2", color2),
+    ] + ([advanced_color(advanced, "vennColor3", color3)] if set3 is not None else [])
     if set3 is None:
-        venn2(
-            [set1, set2],
-            set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2)),
-            set_colors=(
-                advanced_color(advanced, "vennColor1", color1),
-                advanced_color(advanced, "vennColor2", color2),
-            ),
-            alpha=0.5,
-            ax=ax,
-        )
+        diagram = venn2([set1, set2], set_labels=tuple(labels), set_colors=tuple(set_colors), alpha=0.5, ax=ax)
     else:
-        venn3(
-            [set1, set2, set3],
-            set_labels=tuple(_wrap_label(label, width_cm / 2) for label in (label1, label2, label3)),
-            set_colors=(
-                advanced_color(advanced, "vennColor1", color1),
-                advanced_color(advanced, "vennColor2", color2),
-                advanced_color(advanced, "vennColor3", color3),
-            ),
-            alpha=0.5,
-            ax=ax,
-        )
+        diagram = venn3([set1, set2, set3], set_labels=tuple(labels), set_colors=tuple(set_colors), alpha=0.5, ax=ax)
+    # The set names used to sit at the circle edges, where two long condition
+    # names ran into each other; they are a key under the circles now, one
+    # swatch per set in the set's colour.
+    from matplotlib.patches import Patch
+
+    for text in diagram.set_labels or ():
+        if text is not None:
+            text.set_visible(False)
+    ax.legend(
+        [Patch(facecolor=color, alpha=0.5, edgecolor="none") for color in set_colors],
+        ["\n".join(line.strip() for line in _wrap_label(label, width_cm / len(labels)).splitlines()) for label in labels],
+        loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=len(labels), frameon=False,
+    )
     if header:
         mode_label = "samples" if str(mode).strip().lower() in {"single", "sample"} else "conditions"
         ax.set_title(f"Venn Diagram ({mode_label})")

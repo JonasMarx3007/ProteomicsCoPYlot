@@ -2084,7 +2084,8 @@ pca_plot_interactive <- function(data, meta, plot_colors=NULL, header=TRUE, lege
       scene = list(
         xaxis = list(title = sprintf("PC1 - %.2f%%", explained_variance[1])),
         yaxis = list(title = sprintf("PC2 - %.2f%%", explained_variance[2])),
-        zaxis = list(title = sprintf("PC3 - %.2f%%", explained_variance[3]))
+        zaxis = list(title = sprintf("PC3 - %.2f%%", explained_variance[3])),
+        aspectmode = "cube"  # the same fixed box as the application (2026-10-09)
       )
     )
     return(fig)

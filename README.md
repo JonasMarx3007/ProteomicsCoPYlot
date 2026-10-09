@@ -19,15 +19,6 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 
 ## Quick start
 
-Refreshing the analysis app starts a new analysis. After interaction, the browser
-warns before refresh/close/navigation if analysis data or saved UI settings have
-changed since the last successful save; cancelling leaves the current page intact.
-The browser controls the wording and may suppress the dialog, especially on mobile,
-so save important work explicitly. Native file writes establish the saved baseline
-only after completion. For ordinary downloads, confirm that the file was downloaded;
-otherwise the warning remains active. Failed or uncertain backend writes conservatively
-remain unsaved until saving again. Viewer mode does not reset or show this analysis warning.
-
 Install backend and frontend dependencies on Windows:
 
 ```powershell
@@ -98,6 +89,19 @@ handles reliably: small models take one small step at a time and answer with sen
 application writes; large models may restyle a whole figure, apply Nature or Cell Press figure
 specifications and write their own answers, whose numbers the application checks. The rules
 are the same at every level; see [Installation](docs/INSTALLATION.md#assistant-levels).
+
+
+### Saving work
+
+Refreshing the analysis app starts a new analysis. After interaction, the browser
+warns before refresh/close/navigation if analysis data or saved UI settings have
+changed since the last successful save; cancelling leaves the current page intact.
+The browser controls the wording and may suppress the dialog, especially on mobile,
+so save important work explicitly (Ctrl+S exports the session state). Native file
+writes establish the saved baseline only after completion. For ordinary downloads,
+confirm that the file was downloaded; otherwise the warning remains active. Failed or
+uncertain backend writes conservatively remain unsaved until saving again. Viewer mode
+does not reset or show this analysis warning.
 
 ## Notebook package
 

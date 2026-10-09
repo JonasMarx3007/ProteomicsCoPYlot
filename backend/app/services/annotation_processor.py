@@ -102,10 +102,14 @@ def log2_scale_hint(data: pd.DataFrame, sample_columns: list[str]) -> str | None
     if all(_LOG2_NAME.search(column) for column in columns):
         return None
     median = float(np.median(finite))
-    if float(np.mean(finite < 0)) < 0.001 and 0 < median < 12:
+    # A heuristic only: location and spread cannot identify a logarithm's base.
+    quartile_1, quartile_3 = np.percentile(finite, [25, 75])
+    spread = float(quartile_3 - quartile_1)
+    if float(np.mean(finite < 0)) < 0.001 and 0 < median < 12 and spread < 1.8:
         return (
-            f"The values have a median of {median:.1f}; log2 intensities are usually around 15-30. "
-            "If these are log10 or natural-log values, convert them to log2 before uploading "
+            f"The values have a median of {median:.1f} and an interquartile range of {spread:.2f}; "
+            "These summaries cannot determine the data scale. If these are log10 or natural-log "
+            "values, convert them to log2 before uploading "
             "(log2 = log10 x 3.32, or ln x 1.44)."
         )
     return None

@@ -133,10 +133,6 @@ export default function SettingsPage() {
         <h1 className="mt-3 text-3xl font-black tracking-tight text-slate-950 dark:text-white">
           Settings
         </h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-          Control the application appearance and check which local runtimes are ready for the
-          notebook-compatible plotting layer.
-        </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -171,7 +167,7 @@ export default function SettingsPage() {
             checked={advancedPlots}
             onChange={updateAdvancedPlots}
             label="Advanced plot option mode"
-            description="Show the full styling panel under every plot: title, axes, legend, points, colours. Toggle it from anywhere with Ctrl/Cmd + Shift + E."
+            description="Show the full styling panel under every plot: title, axes, legend, points, colors. Toggle it from anywhere with Ctrl/Cmd + Shift + E."
           />
         </SettingsCard>
 

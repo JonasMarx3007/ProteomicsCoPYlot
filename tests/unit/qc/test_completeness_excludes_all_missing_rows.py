@@ -104,3 +104,16 @@ def test_report_is_silent_when_no_annotation(monkeypatch):
 
     monkeypatch.setattr(completeness_tools, "_frame_and_meta", boom)
     assert report_function._completeness_exclusion_html("protein") == ""
+
+
+def test_heatmap_names_its_colours_and_level(loaded, monkeypatch):
+    # 2026-10-09: the two viridis colours carry a key and the title says the level.
+    captured = {}
+    monkeypatch.setattr(completeness_tools, "_to_png_bytes", lambda fig, plt, **kw: captured.setdefault("fig", fig) and b"png")
+    render = completeness_tools.completeness_missing_value_heatmap
+    getattr(render, "__wrapped__", render)("protein")  # past the runtime cache
+    ax = captured["fig"].axes[0]
+    assert ax.get_title() == "Missing Values Heatmap - Protein Level"
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["Measured", "Missing"]
+    assert ax.collections[0].norm.vmin == 0
+    assert ax.collections[0].norm.vmax == 1

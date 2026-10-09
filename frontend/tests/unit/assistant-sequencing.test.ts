@@ -24,7 +24,7 @@ vi.mock("../../src/lib/api", async (original) => (await import("../component/api
 vi.mock("../../src/lib/assistantControls", () => ({
   applyAssistantControls: vi.fn(), assistantConfirmation: vi.fn(), readAssistantControls: vi.fn(),
   assistantSurfaceReady: vi.fn(), searchAssistantOptions: vi.fn(), assistantButtonConfirmation: vi.fn(),
-  activateAssistantButton: vi.fn(), addCanvasTiles: vi.fn(), assistantFeatureChoices: vi.fn(),
+  activateAssistantButton: vi.fn(), addCanvasTiles: vi.fn(), assistantFeatureChoices: vi.fn(), receiptDisplayValues: new Map<string, string>(),
 }));
 vi.mock("../../src/lib/canvasFocus", () => ({ focusCanvas: () => "Focused the canvas." }));
 vi.mock("../../src/lib/unsavedAnalysis", async (original) => ({
@@ -106,18 +106,24 @@ describe("readable action confirmations", () => {
   it("keep exact values without exposing control paths", () => {
 
     expect(readableReceipt('Set Title / Size to "3".')).toBe('Changed the title size to 3.');
-    expect(readableReceipt('Set Frame and grid / Axis frame / Top to false.')).toBe('Hidden the top border.');
+    expect(readableReceipt('Set Frame and grid / Axis frame / Top to false.')).toBe('Hid the top border.');
     expect(readableReceipt('Set Protein / Site to "AKT1".')).toBe('Showing AKT1.');
     expect(readableReceipt('Set Title / Text to "MAPK1 comparison".')).toBe('Changed the plot title to "MAPK1 comparison".');
     expect(readableReceipt('Set X axis / X tick label rotation to "30".')).toBe('Rotated the x-axis labels to 30 degrees.');
-    expect(readableReceipt('Set Names and colours / Condition colors / Treated to "#cc3300".')).toBe('Changed the colour of condition "Treated" to #cc3300.');
-    expect(readableReceipt('Set Names and colours / Sample names / A to "First sample".')).toBe('Renamed sample "A" to "First sample" for display.');
+    expect(readableReceipt('Set Names and colors / Condition colors / Treated to "#cc3300".')).toBe('Changed the color of condition "Treated" to #cc3300.');
+    expect(readableReceipt('Set Names and colors / Sample names / A to "First sample".')).toBe('Renamed sample "A" to "First sample" for display.');
     // Round 35: every other appearance setting reached the chat as its control path.
     expect(readableReceipt('Set X axis / X tick label size to "8.0".')).toBe('Changed the x-axis tick label size to 8.');
     expect(readableReceipt('Set DPI to "150".')).toBe('Changed the DPI to 150.');
     expect(readableReceipt('Set Width (cm) to "20".')).toBe('Changed the width to 20 cm.');
-    expect(readableReceipt('Set Legend / Show legend to false.')).toBe('Hidden the legend.');
-    expect(readableReceipt('Set Legend / Legend frame to true.')).toBe('Showing the legend frame.');
+    expect(readableReceipt('Set Legend / Show legend to false.')).toBe('Hid the legend.');
+    expect(readableReceipt('Set Legend / Legend frame to true.')).toBe('Showed the legend frame.');
+    expect(readableReceipt('Set Reference line / Show to false.')).toBe('Hid the reference line.');
+    expect(readableReceipt('Set Frame and grid / Grid lines / Show to true.')).toBe('Showed the grid lines.');
+    expect(readableReceipt('Set Title / Bold to true.')).toBe('Made the title bold.');
+    expect(readableReceipt('Set Volcano points / Hit label size (static plot) to "12".')).toBe('Changed the volcano points hit label size to 12.');
+    controls.receiptDisplayValues.set('Set Test type to "unpaired_welch".', "Welch's t-test");
+    expect(readableReceipt('Set Test type to "unpaired_welch".')).toBe("Changed the test type to Welch's t-test.");
     expect(readableReceipt('Set Font / All text to "Times New Roman".')).toBe('Changed the font for all text to "Times New Roman".');
     expect(readableReceipt('Set Tile 2: proteinBoxplot / Title / Size to "14".')).toBe('Changed the title size to 14 on tile 2.');
     expect(readableReceipt('Legend / Text size was already "9".')).toBe('The legend text size was already 9.');

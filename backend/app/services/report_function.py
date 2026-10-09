@@ -803,7 +803,7 @@ def _imputation_html(
 # The same words the selector offers, so a report and the panel that produced
 # it name the matrix identically. Keep in step with DATA_SOURCE_LABELS in
 # frontend/src/lib/types.ts.
-_DATA_SOURCE_LABELS = {"data": "Data", "filtered": "Filtered Data", "imputed": "Imputed Data"}
+_DATA_SOURCE_LABELS = {"data": "Unfiltered Data", "filtered": "Filtered Data", "imputed": "Imputed Data"}
 
 
 def _report_data_source(value: Any) -> str:

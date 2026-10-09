@@ -38,6 +38,7 @@ def captured(monkeypatch):
     frame = pd.DataFrame({"ProteinNames": [f"P{i}" for i in range(6)], **{s: np.random.default_rng(i).normal(20, 1, 6) for i, s in enumerate(SAMPLES)}})
     meta = pd.DataFrame({"sample": SAMPLES, "condition": ["A", "A", "B", "B"]})
     monkeypatch.setattr(plot_images, "log2_qc_frame", lambda kind: frame)
+    monkeypatch.setattr(plot_images, "linear_qc_frame", lambda kind: frame.assign(**{s: 2 ** frame[s] for s in SAMPLES}))
     monkeypatch.setattr(plot_images, "_get_sample_columns", lambda kind, df: SAMPLES)
     monkeypatch.setattr(plot_images, "_metadata_for_kind", lambda kind, df, cols: meta.copy())
     figures = []
@@ -57,11 +58,27 @@ def test_boxplot_mean_mode_is_titled_as_condition_means(captured):
 def test_boxplot_single_mode_keeps_measured_values(captured):
     plot_images.qc_boxplot_plot(kind="protein", mode="Single")
     assert _title(captured) == "Measured intensity values (log2)"
+    assert captured[-1].axes[0].get_xlabel() == "Sample"  # 2026-10-09: was blank
 
 
 def test_histogram_is_titled_as_condition_means(captured):
     plot_images.qc_intensity_histogram_plot(kind="protein")
     assert _title(captured) == "Distribution of mean intensity per condition (log2)"
+
+
+def test_centred_phosprot_titles_follow_the_axis(captured, monkeypatch):
+    # 2026-10-09: a robust_site_median matrix is titled by what its axis measures.
+    monkeypatch.setattr(plot_images, "_phosprot_values_are_centred", lambda kind: True)
+    plot_images.qc_boxplot_plot(kind="phosprot", mode="Mean")
+    assert _title(captured) == "Mean ratio to site median per condition (log2)"
+    assert captured[-1].axes[0].get_ylabel() == "log2 Ratio to Site Median"
+    plot_images.qc_boxplot_plot(kind="phosprot", mode="Single")
+    assert _title(captured) == "Measured ratio-to-site-median values (log2)"
+    plot_images.qc_intensity_histogram_plot(kind="phosprot")
+    assert _title(captured) == "Distribution of mean ratio to site median per condition (log2)"
+    # The CV figure itself stays clean; the page's info box carries the warning.
+    plot_images.qc_cv_plot(kind="phosprot")
+    assert captured[-1].texts == []
 
 
 # --- the same words in the two shipped packages ------------------------------------

@@ -335,15 +335,6 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold text-slate-900">Kinase Library Motif Enrichment</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          Exports phosphosite fold changes for the Kinase Library Fisher/motif enrichment
-          (Johnson et al., Nature 2023) and plots its results. This is motif enrichment among
-          regulated sites -- not KSEA (Casado et al., 2013) and not a direct measure of kinase activity.
-        </p>
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Kinase Library Input Table</h3>
         {!hasPhosphoDataset ? (
           <InfoNotice message="No phospho dataset loaded. Upload data in the Data tab first." />

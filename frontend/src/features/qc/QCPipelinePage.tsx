@@ -614,11 +614,14 @@ export default function QCPipelinePage({
     if (activeTab === "coverage") {
       return {
         ...base,
-        legendControls: Boolean(coverage.legend && !coverage.summary),
-        // The line is switched in the coverage options; its look is here, and
-        // only while there is a line to style.
-        referenceLineColor: coverage.referenceLine,
-        referenceLineToggle: false,
+        // Summary mode's legend holds only the total line's entry.
+        legendControls: Boolean(coverage.legend),
+        // The total line is switched here as well as in the coverage options
+        // ("Total Line"); both show the same setting, so the assistant can hide
+        // or show it like any other plot's reference line.
+        referenceLineColor: true,
+        referenceLineToggle: true,
+        referenceLineLegend: Boolean(coverage.referenceLine && coverage.legend),
         conditionLabels: true,
         sampleLabels: !coverage.summary,
         conditionColors: true,
@@ -922,8 +925,19 @@ export default function QCPipelinePage({
         <AssistantAppearanceMount visible={advancedModeEnabled}>
         <AdvancedPlotOptions
           key={activeTab}
-          value={activeAdvancedSettings}
-          onChange={(next) => setAdvancedByTab((prev) => ({ ...prev, [activeTab]: next }))}
+          value={activeTab === "coverage" ? { ...activeAdvancedSettings, referenceLineVisible: coverage.referenceLine } : activeAdvancedSettings}
+          onChange={(next) => {
+            if (activeTab === "coverage") {
+              // The coverage options own the total line; the card's Show box is the same switch.
+              const { referenceLineVisible, ...rest } = next;
+              if ((referenceLineVisible !== false) !== coverage.referenceLine) {
+                setCoverage((current) => ({ ...current, referenceLine: referenceLineVisible !== false }));
+              }
+              setAdvancedByTab((prev) => ({ ...prev, [activeTab]: rest }));
+              return;
+            }
+            setAdvancedByTab((prev) => ({ ...prev, [activeTab]: next }));
+          }}
           conditionOptions={conditionOptions}
           conditionDisplayLabels={activeConditionDisplayLabels}
           sampleOptions={sampleOptions}
@@ -982,6 +996,7 @@ export default function QCPipelinePage({
             </div>
           )}
         </div>
+        {activeTab === "pca" ? <div className="mt-4"><PcaFeatureNotice summary={pcaFeatures} dataSource={pca.dataSource} /></div> : null}
         {activeTab === "cv" && kind === "phosprot" && centredPhosprotValues ? (
           <CentredCvNotice />
         ) : null}
@@ -1163,7 +1178,6 @@ export default function QCPipelinePage({
 
       return (
         <div className="space-y-4">
-          <PcaFeatureNotice summary={pcaFeatures} dataSource={pca.dataSource} />
         <OptionsLayout order="toggles-fields-size"
           toggles={[
             ...(showEllipsesToggle
@@ -1395,11 +1409,6 @@ export default function QCPipelinePage({
 
     return (
       <div className="space-y-4">
-        {/* Pairwise-complete Pearson: each cell can rest on a different feature set. */}
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600" role="note">
-          Each correlation uses only the features measured in both samples, so with missing values
-          the cells can rest on different sets of features.
-        </div>
       <OptionsLayout order="toggles-fields-size"
         toggles={[
           <CheckboxField assistant={false} key="id" label="Toggle IDs" checked={correlation.includeId} onChange={(v) => setCorrelation({ ...correlation, includeId: v })} />,
@@ -1476,7 +1485,7 @@ function PcaFeatureNotice({
       <div className={`rounded-xl border px-3 py-2 text-sm ${tone}`}>
         <span className="font-medium">
           PCA-usable features: {featuresUsed.toLocaleString()} of {featuresTotal.toLocaleString()}
-          ({(fraction * 100).toFixed(1)}%)
+          {" "}({(fraction * 100).toFixed(1)}%)
         </span>
         {missingnessBlocksPca ? (
           <span>

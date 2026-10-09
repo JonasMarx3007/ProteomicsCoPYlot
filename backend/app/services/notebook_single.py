@@ -70,7 +70,8 @@ def line_source():
         '_line_box_key_column_for_identifier', '_build_sample_labels', '_feature_label',
         '_feature_match_mask', '_gene_tokens', '_select_conditions', 'intensity_unit_label',
         'apply_advanced_axes', 'get_plt', 'cm_to_inch', 'to_png_bytes'))
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', helpers.code, code),
+    anchor = extract_notebook_source(_source('plot_styling.py'), ('advanced_anchor',))
+    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', helpers.code, anchor.code, code),
                                    ('prepare_table', 'render_plot'))
 
 

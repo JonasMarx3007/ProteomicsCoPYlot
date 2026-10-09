@@ -84,6 +84,7 @@ class AdvancedPlotSettings(BaseModel):
     yTickLabelColor: str | None = None
     referenceLineColor: str | None = None
     referenceLineVisible: bool | None = None
+    referenceLineLegend: bool | None = None
     referenceLineStyle: LineStyle | None = None
     referenceLineWidth: float | None = None
     rowLabelSize: float | None = None

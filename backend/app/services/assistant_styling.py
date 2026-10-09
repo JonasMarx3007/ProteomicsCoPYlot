@@ -54,11 +54,13 @@ def identity(control: UiControl) -> tuple[str, str]:
     tick = re.fullmatch(r"([XY]) tick label (.+)", label, re.I)
     if tick: return prefix + tick[1].lower() + " ticks", tick[2].lower().replace("colour", "color")
     if label.lower() == "title": return prefix + "title", "size" if control.type == "number" else "text"
-    item = re.search(r"(?:Condition|Sample) (?:colors?|colours?|names?|labels?) / (.+)$", label, re.I)
+    item = re.search(r"(Condition|Sample) (colors?|colours?|names?|labels?) / (.+)$", label, re.I)
     if item:
-        kind = "condition" if re.search(r"\bcondition\b", label, re.I) else "sample"
-        prop = "color" if re.search(r"\bcolou?rs?\b", label, re.I) else "label"
-        return prefix + kind + ":" + item[1], prop
+        # Judge by the group's own word: "Names and colours / Condition names / GRK" is a
+        # name, although its card title says colours (2026-10-09: a colour went to the name).
+        kind = item[1].lower()
+        prop = "color" if re.match(r"colou?rs?", item[2], re.I) else "label"
+        return prefix + kind + ":" + item[3], prop
     if parts[0].lower() == "font":
         return prefix + parts[-1].lower(), "font family"
     if "Axis frame" in parts:

@@ -2652,6 +2652,11 @@ export interface components {
              */
             referenceLineColor?: string | null;
             /**
+             * Referencelinelegend
+             * @default null
+             */
+            referenceLineLegend?: boolean | null;
+            /**
              * Referencelinestyle
              * @default null
              */
@@ -7001,7 +7006,9 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: string[] | number | boolean | string;
+                        [key: string]: string[] | {
+                            [key: string]: string;
+                        } | number | boolean | string;
                     };
                 };
             };

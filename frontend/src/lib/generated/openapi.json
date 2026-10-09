@@ -734,6 +734,18 @@
             "default": null,
             "title": "Referencelinecolor"
           },
+          "referenceLineLegend": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Referencelinelegend"
+          },
           "referenceLineStyle": {
             "anyOf": [
               {
@@ -9366,6 +9378,12 @@
                         "type": "array"
                       },
                       {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
+                      {
                         "type": "integer"
                       },
                       {
@@ -12170,7 +12188,7 @@
             "name": "widthCm",
             "required": false,
             "schema": {
-              "default": 15,
+              "default": 20,
               "title": "Widthcm",
               "type": "number"
             }
@@ -12190,7 +12208,7 @@
             "name": "dpi",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 300,
               "title": "Dpi",
               "type": "integer"
             }
@@ -12592,7 +12610,7 @@
             "name": "widthCm",
             "required": false,
             "schema": {
-              "default": 17.78,
+              "default": 20,
               "title": "Widthcm",
               "type": "number"
             }
@@ -12602,7 +12620,7 @@
             "name": "heightCm",
             "required": false,
             "schema": {
-              "default": 11.43,
+              "default": 10,
               "title": "Heightcm",
               "type": "number"
             }
@@ -12612,7 +12630,7 @@
             "name": "dpi",
             "required": false,
             "schema": {
-              "default": 140,
+              "default": 300,
               "title": "Dpi",
               "type": "integer"
             }

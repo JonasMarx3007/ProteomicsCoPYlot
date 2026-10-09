@@ -204,6 +204,7 @@ export function compactAdvancedPlotSettings(
   // Only `false` is worth sending: the line is drawn unless it is switched off,
   // so `true` is the backend's own default and costs a key for nothing.
   if (settings.referenceLineVisible === false) next.referenceLineVisible = false;
+  if (settings.referenceLineLegend === false) next.referenceLineLegend = false;
   const referenceLineStyle = trimmed(settings.referenceLineStyle);
   if (referenceLineStyle) next.referenceLineStyle = referenceLineStyle;
   if (positive(settings.referenceLineWidth)) {

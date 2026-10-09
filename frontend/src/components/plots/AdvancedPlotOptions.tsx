@@ -15,6 +15,9 @@ export type AdvancedPlotVisibleControls = {
   // its line in its own options (the coverage plot): the card then only styles
   // a line that is there.
   referenceLineToggle?: boolean;
+  // The "Legend entry" box: only for a plot that names its line in the legend
+  // (the coverage total) and only while that legend is drawn.
+  referenceLineLegend?: boolean;
   fontControls?: boolean;
   conditionLabels?: boolean;
   sampleLabels?: boolean;
@@ -187,6 +190,7 @@ export default function AdvancedPlotOptions({
   const showLegendControls = visibleControls.legendControls !== false;
   const showReferenceLineColor = visibleControls.referenceLineColor === true;
   const showReferenceLineToggle = visibleControls.referenceLineToggle !== false;
+  const showReferenceLineLegend = visibleControls.referenceLineLegend === true;
   // Colour, style and width only while the line is drawn.
   const showReferenceLineLook = !showReferenceLineToggle || value.referenceLineVisible !== false;
   // Every plot has text in it, so this one is on unless a caller says otherwise.
@@ -497,7 +501,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showTextElements ? (
-          <Section title="Title" summary="Show, text, size, weight, colour, position">
+          <Section title="Title" summary="Show, text, size, weight, color, position">
             <label className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
               <AssistantInput data-assistant-permission="view"
                 type="checkbox"
@@ -574,7 +578,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showLegendControls ? (
-          <Section title="Legend" summary="Show, title, size, colour, frame, position">
+          <Section title="Legend" summary="Show, title, size, color, frame, position">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                 <AssistantInput data-assistant-permission="view"
@@ -604,7 +608,7 @@ export default function AdvancedPlotOptions({
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Text colour</span>
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Text color</span>
                 <AssistantInput data-assistant-permission="view"
                   type="color"
                   value={value.legendTextColor || "#111827"}
@@ -794,7 +798,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showBackgroundControls ? (
-          <Section title="Background" summary="Theme, colour, transparency">
+          <Section title="Background" summary="Theme, color, transparency">
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <label className="block">
                 <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Theme</span>
@@ -849,10 +853,21 @@ export default function AdvancedPlotOptions({
                 Show
               </label>
               ) : null}
+              {showReferenceLineLegend ? (
+              <label className="mt-6 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+                <AssistantInput data-assistant-permission="view"
+                  type="checkbox"
+                  checked={value.referenceLineLegend !== false}
+                  onChange={(event) => patch({ referenceLineLegend: event.target.checked })}
+                  className="h-4 w-4 accent-sky-600"
+                />
+                Legend entry
+              </label>
+              ) : null}
               {showReferenceLineLook ? (
               <>
               <label className="block">
-                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Colour</span>
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
                 <AssistantInput data-assistant-permission="view"
                   type="color"
                   value={value.referenceLineColor || "#ff0000"}
@@ -895,7 +910,7 @@ export default function AdvancedPlotOptions({
             title="Points"
             summary={
               [
-                showMarkerColor ? "Colour, shape, size and outline" : "Shape, size and outline",
+                showMarkerColor ? "Color, shape, size and outline" : "Shape, size and outline",
                 showConditionMarkers ? ", for all dots or one condition" : "",
               ].join("")
             }
@@ -903,7 +918,7 @@ export default function AdvancedPlotOptions({
         <div className="mt-4 grid gap-4 lg:grid-cols-4">
           {showMarkerColor ? (
             <label className="block">
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Dot colour</span>
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Dot color</span>
               <AssistantInput data-assistant-permission="view"
                 type="color"
                 value={value.markerColor || "#1f77b4"}
@@ -1196,9 +1211,9 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showBarColor ? (
-          <Section title="Bars" summary="Bar colour">
+          <Section title="Bars" summary="Bar color">
             <label className="block max-w-xs">
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Bar colour</span>
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Bar color</span>
               <AssistantInput data-assistant-permission="view"
                 type="color"
                 value={value.barColor || "#2563eb"}
@@ -1210,7 +1225,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showPhosphoClassColors ? (
-          <Section title="Site classes" summary="Colour of each localisation class">
+          <Section title="Site classes" summary="Color of each localization class">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="block">
                 <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Class I</span>
@@ -1235,7 +1250,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showVennColors ? (
-          <Section title="Venn sets" summary="One colour per set">
+          <Section title="Venn sets" summary="One color per set">
             <div className="grid gap-3 sm:grid-cols-3">
               {([
                 ["Set 1", "vennColor1", "#2563eb"],
@@ -1272,7 +1287,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showRowLabels ? (
-          <Section title="Row labels" summary="Size and colour of the feature names beside the rows">
+          <Section title="Row labels" summary="Size and color of the feature names beside the rows">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <label className="block">
                 <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Size (empty = fit to rows)</span>
@@ -1286,7 +1301,7 @@ export default function AdvancedPlotOptions({
                 />
               </label>
               <label className="block">
-                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Colour</span>
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
                 <AssistantInput data-assistant-permission="view"
                   type="color"
                   value={value.rowLabelColor || "#000000"}
@@ -1299,7 +1314,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showCorrelationGradient ? (
-          <Section title="Colour scale" summary="The gradient the matrix is painted with">
+          <Section title="Color scale" summary="The gradient the matrix is painted with">
         <div className="mt-4 grid gap-4 lg:grid-cols-4">
           <label className="block">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Correlation gradient</span>
@@ -1323,7 +1338,7 @@ export default function AdvancedPlotOptions({
         ) : null}
 
         {showConditionLabels || showSampleLabels || showConditionColors ? (
-          <Section title="Names and colours" summary="Rename conditions or samples, recolour groups">
+          <Section title="Names and colors" summary="Rename conditions or samples, recolor groups">
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           {showConditionLabels && conditionOptions.length ? (
             <KnownOverrideRows
@@ -1450,11 +1465,11 @@ function TickRow({
           />
         </label>
         <label className="block">
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Colour</span>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
           <AssistantInput data-assistant-permission="view"
             type="color"
             value={color || "#111827"}
-            aria-label={`${axis} tick label colour`}
+            aria-label={`${axis} tick label color`}
             onChange={(event) => onColor(event.target.value)}
             className="mt-1 h-10 w-full rounded-xl border border-slate-300 bg-white px-2 py-1 dark:border-slate-600 dark:bg-slate-900"
           />
@@ -1548,7 +1563,7 @@ function TextElementCard({
       </label>
       <div className="mt-3 grid gap-3 sm:grid-cols-4">
         <label className="block">
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Colour</span>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Color</span>
           <AssistantInput data-assistant-permission="view"
             type="color"
             value={value.color || "#111827"}

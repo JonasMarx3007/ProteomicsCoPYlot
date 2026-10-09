@@ -192,9 +192,9 @@ def phosphosite_plot_table() -> pd.DataFrame:
 
 def phosphosite_plot_png(
     color: str = "#87CEEB",
-    width_cm: float = 15,
+    width_cm: float = 20,
     height_cm: float = 10,
-    dpi: int = 100,
+    dpi: int = 300,
     advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()
@@ -398,10 +398,19 @@ def phospho_distribution_table(cutoff: float = 0.0) -> pd.DataFrame:
 
     if cutoff > 0:
         threshold = float(site_counts.quantile(1 - float(cutoff)))
-        site_counts = site_counts[site_counts <= threshold]
+        kept = site_counts[site_counts <= threshold]
+        trimmed = int(len(site_counts) - len(kept))
+        site_counts = kept
+    else:
+        threshold, trimmed = float("nan"), 0
 
     freq = site_counts.value_counts().sort_index()
-    return pd.DataFrame({"SiteCount": freq.index.astype(int), "Frequency": freq.values.astype(int)})
+    table = pd.DataFrame({"SiteCount": freq.index.astype(int), "Frequency": freq.values.astype(int)})
+    # What the trim removed, for the plot's note; not a column, so the table
+    # the page and the notebook show is unchanged.
+    table.attrs["trimmed_proteins"] = trimmed
+    table.attrs["trim_threshold"] = threshold
+    return table
 
 
 def phospho_distribution_png(
@@ -434,6 +443,16 @@ def phospho_distribution_png(
     ax.set_ylabel("Frequency")
     if header:
         ax.set_title("Distribution of phosphosite counts per protein")
+    trimmed = int(table.attrs.get("trimmed_proteins", 0) or 0)
+    if trimmed:
+        # The default trim hides the long tail (one protein with 200 sites
+        # would stretch the axis past everything else); say what is missing.
+        ax.text(
+            0.98, 0.97,
+            f"{trimmed:,} protein{'s' if trimmed != 1 else ''} with more than "
+            f"{int(table.attrs['trim_threshold'])} sites not shown (upper-tail trim)",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#555555",
+        )
     apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi, tight=False)
@@ -464,9 +483,9 @@ def phospho_sty_table() -> pd.DataFrame:
 
 def phospho_sty_png(
     header: bool = True,
-    width_cm: float = 17.78,
-    height_cm: float = 11.43,
-    dpi: int = 140,
+    width_cm: float = 20,
+    height_cm: float = 10,
+    dpi: int = 300,
     advanced: dict | None = None,
 ) -> bytes:
     plt, mtick = _get_plt()
@@ -479,7 +498,7 @@ def phospho_sty_png(
     if header:
         # One bar counts rows of the phosphosite matrix -- site identifiers, not
         # peptides. A peptide carrying two sites is two rows here.
-        ax.set_title("Modified S/T/Y site counts", pad=10, fontweight="bold")
+        ax.set_title("Modified S/T/Y site counts", pad=10)
     ax.set_xlabel("Residue")
     ax.set_ylabel("Count")
     ax.spines["top"].set_visible(False)
@@ -1137,6 +1156,12 @@ def _phosprot_regulation_figure(
         labels={
             "x": "Cumulative Significant Up-Site log2FC",
             "y": "Cumulative Significant Down-Site |log2FC|",
+            "color_val": "Up minus down",
+            "Protein_group": "Protein",
+            "Upregulated_count": "Up-regulated sites",
+            "Downregulated_count": "Down-regulated sites",
+            "Upregulated_site_effects": "Up-regulated site effects",
+            "Downregulated_site_effects": "Down-regulated site effects",
         },
         opacity=0.7,
     )
@@ -1175,7 +1200,7 @@ def phosprot_regulation_png(
     header: bool = True,
     width_cm: float = 20,
     height_cm: float = 12,
-    dpi: int = 220,
+    dpi: int = 300,
     advanced: dict | None = None,
 ) -> bytes:
     plt, _ = _get_plt()

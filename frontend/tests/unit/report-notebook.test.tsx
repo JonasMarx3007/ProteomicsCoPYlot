@@ -67,3 +67,18 @@ describe("the Summary report", () => {
     expect(screen.getByRole("alert").textContent).toBe("The notebook could not be built for this report.");
   });
 });
+
+describe("the report text box", () => {
+  beforeEach(() => {
+    silenceNetwork();
+    serveDatasets(api);
+  });
+
+  it("asks the browser for en-US spell checking", async () => {
+    // 2026-10-09: the browser's own dictionary underlines typos in the prose.
+    render(<SummaryPage activeTab="text" />);
+    const box = (await screen.findByLabelText("Introduction Text")) as HTMLTextAreaElement;
+    expect(box.getAttribute("spellcheck")).toBe("true");
+    expect(box.getAttribute("lang")).toBe("en-US");
+  });
+});

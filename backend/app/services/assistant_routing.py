@@ -341,7 +341,11 @@ def explanation_requested(question: str) -> bool:
         r"|\b(?:tell|give)\s+me\s+(?:(?:the|a|an|some)\s+)?(?:difference|summary|interpretation|takeaway|overview|meaning)\b"
         r"|\bwhat\s+(?:it|this|that|the\s+(?:plot|result|change))\s+(?:shows|means)\b"
         r"|\b(?:what|which|why)\b"
-        r"|\bhow\s+(?:many|much|does|do|is|are|should)\b", text))
+        r"|\bhow\s+(?:many|much|does|do|is|are|should)\b"
+        # A yes/no question about the result next to the request: "show me the PCA? do my
+        # groups separate?" (2026-10-09; "can you ..." is the request itself, not a question).
+        r"|(?:^|[.?!,;]\s*|\band\s+)(?:do|does|did|is|are|was|were|can|could|should|has|have|will)\s+(?!you\b|u\b)[^?.!]*\?",
+        text))
 
 
 _SELECT_CLAUSE = re.compile(

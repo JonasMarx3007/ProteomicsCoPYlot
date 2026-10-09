@@ -93,7 +93,13 @@ _OTHER_JOURNALS = re.compile(r"\b(science(?:\s+magazine)?|pnas|plos(?:\s+one)?|e
 _PUBLICATION = re.compile(r"\b(?:publication|publish\w*|journal|paper|manuscript|submission)\b", re.I)
 _STYLE = re.compile(r"\b(?:style|styled|format\w*|look|guidelines?|ready|standards?|figure|fit|match|like)\b", re.I)
 _IMPROVE = re.compile(r"\b(?:look\s+(?:better|nicer|best|good|great|professional)|nicer|prettier|more\s+professional|"
-                      r"upgrade|improve|polish|beautif\w*|what\s+you\s+think\s+is\s+best|best\s+(?:style|look))\b", re.I)
+                      r"upgrade|improve|polish|beautif\w*|what\s+you\s+think\s+is\s+best|best\s+(?:style|look)|"
+                      # "make it look cleaner for my lab meeting" (2026-10-08): the whole look is handed over
+                      r"clean(?:er)?\s*(?:up|look\w*)?|tid(?:y|ier)(?:\s+up)?|declutter\w*|less\s+cluttered|sleek\w*|"
+                      r"(?:presentation|publication|slide|poster|talk)[- ]ready|"
+                      r"for\s+(?:my|a|the|our)\s+(?:(?:lab|group|team)\s+meeting|talk|presentation|slides?|poster|seminar|"
+                      r"defen[cs]e|lecture|report|thesis)|"
+                      r"sch(?:ö|oe)ner|h(?:ü|ue)bscher|aufr(?:ä|ae)umen|aufger(?:ä|ae)umt\w*|professioneller)\b", re.I)
 
 
 def requested(message: str) -> tuple[str | None, str | None]:

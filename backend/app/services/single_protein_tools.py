@@ -21,6 +21,7 @@ from app.services.functions import (
     intensity_unit_label,
 )
 from app.services.plot_styling import (
+    advanced_anchor,
     advanced_condition_colors,
     advanced_label,
     advanced_number,
@@ -836,9 +837,28 @@ def single_protein_lineplot_plot(
         ax.set_title(f"{workflow} expression across samples")
     ax.grid(True, alpha=0.2)
     if legend:
-        ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left")
+        # Below the axes rather than beside them: a legend to the right took
+        # a fixed sixth of the width whatever its content, and long names
+        # (full phosphosite keys, several genes) pushed the plot itself to
+        # half its width. Names are shortened in the legend only; the table
+        # and the hover text keep the full name.
+        handles, labels = ax.get_legend_handles_labels()
+        # Up to 40 characters per entry; kept inline so the notebook export
+        # (which lifts this function) needs no extra helper.
+        labels = [label if len(label) <= 40 else label[:37].rstrip() + "..." for label in labels]
+        columns = max(1, min(3, len(labels)))
+        rows = -(-len(labels) // columns)
+        ax.legend(
+            handles, labels,
+            title="Feature", loc="lower center", ncol=columns, fontsize=8, title_fontsize=8, frameon=False,
+            bbox_to_anchor=advanced_anchor(ax, advanced, 0.5, 0.0), bbox_transform=fig.transFigure,
+        )
         apply_advanced_axes(ax, advanced)
-        fig.tight_layout(rect=[0, 0, 0.84, 1])
+        # Reserve the legend's height (one line per row plus the title) so
+        # tight_layout keeps the sample labels above it.
+        font_scale = advanced_number(advanced, "legendFontSize", 8) / 8
+        reserved = min(0.5, (0.16 * rows + 0.3) * font_scale / _cm_to_inch(height_cm)) if ax.get_legend() else 0
+        fig.tight_layout(rect=[0, reserved, 1, 1])
     else:
         apply_advanced_axes(ax, advanced)
         fig.tight_layout()

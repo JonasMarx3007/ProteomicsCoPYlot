@@ -240,7 +240,7 @@ def imputation_before_plot(
         width=width,
     )
 
-    fig, ax = plt.subplots()
+    fig, ax = _make_fig(plt, 20, 10)  # the common 20 x 10 cm canvas (2026-10-09)
     ax.hist(
         [diagnostics.before_without_missing, diagnostics.before_with_missing],
         bins=50,
@@ -254,7 +254,7 @@ def imputation_before_plot(
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
-    return _to_png_bytes(fig, plt)
+    return _to_png_bytes(fig, plt, dpi=300)
 
 
 def _imputation_histogram_bin_edges(
@@ -313,7 +313,7 @@ def imputation_overall_fit_plot(
         x_min -= 1
         x_max += 1
 
-    fig, ax = plt.subplots()
+    fig, ax = _make_fig(plt, 20, 10)  # the common 20 x 10 cm canvas (2026-10-09)
     ax.hist(
         values[~np.isnan(values)],
         bins=histogram_bin_edges,
@@ -354,7 +354,7 @@ def imputation_overall_fit_plot(
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
-    return _to_png_bytes(fig, plt)
+    return _to_png_bytes(fig, plt, dpi=300)
 
 
 def imputation_after_plot(
@@ -392,7 +392,7 @@ def imputation_after_plot(
         normalization,
     )
 
-    fig, ax = plt.subplots()
+    fig, ax = _make_fig(plt, 20, 10)  # the common 20 x 10 cm canvas (2026-10-09)
     ax.hist(
         [non_imputed, imputed],
         bins=bin_edges,
@@ -407,7 +407,7 @@ def imputation_after_plot(
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
-    return _to_png_bytes(fig, plt)
+    return _to_png_bytes(fig, plt, dpi=300)
 
 
 def _imputation_density_histogram_spec(
@@ -478,7 +478,7 @@ def distribution_qqnorm_plot(
     x = [pt[0] for pt in points]
     y = [pt[1] for pt in points]
 
-    fig, ax = plt.subplots()
+    fig, ax = _make_fig(plt, 20, 10)  # the common 20 x 10 cm canvas (2026-10-09)
     ax.scatter(x, y, **marker_style(advanced, size=2.5, alpha=0.5, color_default="black"))
     line = resolve_reference_line(advanced, color="red", style="solid", width=2.0)
     if len(fit_line) >= 2 and line.visible:
@@ -489,7 +489,7 @@ def distribution_qqnorm_plot(
     ax.set_xlabel("Theoretical Quantiles")
     ax.set_ylabel("Sample Quantiles")
     apply_advanced_axes(ax, advanced)
-    return _to_png_bytes(fig, plt)
+    return _to_png_bytes(fig, plt, dpi=300)
 
 
 def qc_coverage_plot(
@@ -530,6 +530,12 @@ def qc_coverage_plot(
     meta["count"] = [int(numeric[col].notna().sum()) for col in meta["sample"].tolist()]
 
     title, y_label, red_line_value, _ = _feature_context(frame, sample_columns)
+
+    if summary:
+
+        # The bars are condition means, not samples.
+
+        title = title.replace("per sample", "per condition")
     conditions = meta["condition"].astype(str).dropna().unique().tolist()
     color_map = advanced_condition_colors(kind, plt, conditions, advanced)
 
@@ -564,13 +570,15 @@ def qc_coverage_plot(
             )
 
         if text:
-            for bar in bars:
+            # Above the error bar rather than inside the bar, where the label
+            # sat on the coloured face and the jittered dots.
+            for bar, sd in zip(bars, condition_summary["sd_value"].values):
                 height = float(bar.get_height())
-                x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height * 0.02
+                x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height + float(sd)
                 ax.text(
                     x_pos,
                     y_pos,
-                    f"{int(np.ceil(height))}",
+                    f" {int(np.ceil(height))}",
                     ha="center",
                     va="bottom",
                     fontsize=advanced_label_size(advanced, text_size),
@@ -602,11 +610,12 @@ def qc_coverage_plot(
                     height = float(bar.get_height())
                     if height <= 0:
                         continue
-                    x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height * 0.02
+                    # Above the bar, not on its face.
+                    x_pos, y_pos = bar.get_x() + bar.get_width() / 2, height
                     ax.text(
                         x_pos,
                         y_pos,
-                        f"{int(np.ceil(height))}",
+                        f" {int(np.ceil(height))}",
                         ha="center",
                         va="bottom",
                         fontsize=advanced_label_size(advanced, text_size),
@@ -633,7 +642,10 @@ def qc_coverage_plot(
     if red_line_value is not None and reference_line:
         line = resolve_reference_line(advanced, color="red")
         if line.visible:
-            ax.axhline(y=red_line_value, **line.matplotlib())
+            # The line says what it is in the legend (the panel can drop the
+            # entry and keep the line); the bars below it add up to this total.
+            label = "Total (quantified in \u22651 sample)" if line.legend_entry else None
+            ax.axhline(y=red_line_value, label=label, **line.matplotlib())
             ymax = max(ymax, float(red_line_value))
 
     ax.set_ylabel(y_label)
@@ -642,8 +654,15 @@ def qc_coverage_plot(
     else:
         ax.set_title("")
 
-    if legend and not summary:
-        ax.legend(title="Condition", bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
+    # Summary mode has no condition entries (the x axis names them), so its
+    # legend holds only the total line -- when there is one to name.
+    handles, labels = ax.get_legend_handles_labels()
+    # Conditions first, the total line last (matplotlib lists lines before bars).
+    order = sorted(range(len(labels)), key=lambda i: labels[i].startswith("Total ("))
+    if legend and handles and (not summary or any(labels)):
+        ax.legend([handles[i] for i in order], [labels[i] for i in order],
+                  title="Condition" if not summary else None,
+                  bbox_to_anchor=advanced_anchor(ax, advanced, 1.05, 1), loc="upper left")
         apply_advanced_axes(ax, advanced)
         plt.tight_layout(rect=[0, 0, 0.85, 1])
     else:
@@ -655,8 +674,9 @@ def qc_coverage_plot(
 
     # 10 % headroom above whatever is tallest: the total line when it is drawn,
     # otherwise the tallest bar. With the line off the axis is measured from
-    # the bars, not from a line that is not there.
-    headroom = 1.1
+    # the bars, not from a line that is not there. Count labels now stand on
+    # top of the bars, so they need room of their own.
+    headroom = 1.1 if not text else 1.25
     if ymax > 0:
         ax.set_ylim(0, ymax * headroom)
 
@@ -714,7 +734,10 @@ def qc_intensity_histogram_plot(
     ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     if header:
-        ax.set_title("Distribution of mean intensity per condition (log2)")
+        # "ratio to site median" on a centred phosprot matrix: the title names
+        # what the axis measures.
+        quantity = "ratio to site median" if _phosprot_values_are_centred(kind) else "intensity"
+        ax.set_title(f"Distribution of mean {quantity} per condition (log2)")
     else:
         ax.set_title("")
 
@@ -974,9 +997,11 @@ def qc_boxplot_plot(
             rotation=90,
             ha="center",
         )
+        ax.set_xlabel("Sample")  # Mean mode says "Condition"; this axis said nothing.
         ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
         if header:
-            ax.set_title("Measured intensity values (log2)")
+            quantity = "ratio-to-site-median" if _phosprot_values_are_centred(kind) else "intensity"
+            ax.set_title(f"Measured {quantity} values (log2)")
         else:
             ax.set_title("")
 
@@ -1041,7 +1066,8 @@ def qc_boxplot_plot(
         ax.set_xlabel("Condition")
         ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
         if header:
-            ax.set_title("Mean intensity per condition (log2)")
+            quantity = "ratio to site median" if _phosprot_values_are_centred(kind) else "intensity"
+            ax.set_title(f"Mean {quantity} per condition (log2)")
         else:
             ax.set_title("")
 
@@ -1814,9 +1840,17 @@ def qc_pca_interactive_html(
     }
     method_name = "t-SNE" if str(method).strip().lower() in {"t-sne", "tsne", "t_sne"} else str(method).strip().upper()
 
-    hover_data = {"sample": True, "condition": True}
+    # Hover text reads "Sample", "Condition", "Cluster": the data columns keep
+    # their names, the labels map them for the reader. The coloured column is
+    # the (possibly renamed) condition or cluster, so the raw one is not
+    # repeated beneath it.
+    hover_data = {"sample": True, "condition": color_col != "condition"}
     if cluster_labels is not None:
-        hover_data["cluster"] = True
+        hover_data["cluster"] = color_col != "cluster"
+    hover_labels = {
+        "sample": "Sample", "condition": "Condition", "cluster": "Cluster",
+        display_col: "Cluster" if color_col == "cluster" else "Condition",
+    }
 
     if plot_3d:
         fig = px.scatter_3d(
@@ -1827,6 +1861,7 @@ def qc_pca_interactive_html(
             color=display_col,
             color_discrete_map=display_color_map,
             hover_data=hover_data,
+            labels=hover_labels,
             opacity=0.85,
         )
         apply_plotly_group_markers(
@@ -1857,6 +1892,10 @@ def qc_pca_interactive_html(
                 xaxis=dict(title=x_title),
                 yaxis=dict(title=y_title),
                 zaxis=dict(title=z_title),
+                # A cube whatever the score ranges: with the default "auto"
+                # the box stretched along the widest component and the figure
+                # changed its height from dataset to dataset.
+                aspectmode="cube",
             ),
             legend_title_text="Cluster" if color_col == "cluster" else "Condition",
         )
@@ -1879,6 +1918,7 @@ def qc_pca_interactive_html(
         color=display_col,
         color_discrete_map=display_color_map,
         hover_data=hover_data,
+        labels=hover_labels,
         opacity=0.85,
     )
     apply_plotly_group_markers(
@@ -2136,7 +2176,8 @@ def qc_abundance_interactive_html(
         y="log10Intensity",
         color="ConditionDisplay",
         color_discrete_map=display_color_map,
-        hover_data={"Feature": True, "Condition": True, "Rank": True, "log10Intensity": ":.4f"},
+        hover_data={"Feature": True, "Condition": False, "Rank": True, "log10Intensity": ":.4f"},
+        labels={"ConditionDisplay": "Condition", "log10Intensity": "log10 intensity", "Rank": "Rank", "Feature": "Feature"},
         opacity=0.85,
     )
     apply_plotly_group_markers(

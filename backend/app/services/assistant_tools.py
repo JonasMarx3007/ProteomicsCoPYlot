@@ -23,8 +23,27 @@ import json
 TOOL_NOTE = """You are called with tools. Read-only tools (read_results, preview_styles, preset_details,
 find_settings) change nothing; use them when they help, then finish with exactly ONE finishing tool:
 apply_styles (visual changes), change_view (navigate or change a listed view control), answer (explain
-or look something up; the application computes the evidence) or ask_user (clarify). Do not write prose
-outside tool calls. The JSON-schema wording above describes the same fields the finishing tools take."""
+or look something up) or ask_user (clarify). Do not write prose outside tool calls. The JSON-schema
+wording above describes the same fields the finishing tools take.
+Answering: read_results gives the application's calculated results (kind=results) or its method
+description (kind=method) for the open plot or another module; module workflow.overview describes the
+order of the whole analysis across pages and where downloads are (you never press them; say where
+they are). After reading, finish with answer and
+write the reply yourself in text: plain, friendly language matched to how the user asks (a beginner gets
+what the plot is and how to read it; an expert gets the number or the formula first). Use only what you
+read: every number, name and colour you write is checked against it and a sentence that does not match is
+removed. Round sensibly; do not invent values, units, tests, significance or causes; tentative
+interpretation says may/might/could; no headings, at most a short list. Name pages as the user sees
+them (the destination labels), never by module keys such as qc.cv. Describe the processing as the
+results state it (normalization, imputation, filters): never assume a step happened. Without text the
+application writes the answer.
+When the user wants to see a plot that is not open, or to understand one with their data ("show me",
+"how does X look", "I don't understand the PCA"), open its page with change_view and
+explainAfterChanges=true; the explanation then uses that page's actual results. Questions about a
+method in general need no navigation.
+If another module's results say incomplete_parameters or need selections the user named (a contrast,
+test, threshold or entity), its page has to be opened: finish with change_view navigating there and
+explainAfterChanges=true; the user's selections are set on that page in the next step."""
 
 READ_ONLY = {"read_results", "preview_styles", "preset_details", "find_settings"}
 
@@ -47,12 +66,15 @@ def _function(name: str, description: str, properties: dict, required: list[str]
         "type": "object", "properties": properties, "required": required, "additionalProperties": False}}}
 
 
-def definitions(schema: dict, tasks: list[str], presets: list[str]) -> list[dict]:
+def definitions(schema: dict, tasks: list[str], presets: list[str], modules: list[str] | None = None) -> list[dict]:
     """The tools for one planner turn, derived from that turn's plan schema."""
     defs = schema.get("$defs", {})
     props = schema["properties"]
     tools = [
-        _function("read_results", "The current plot's calculated numerical results (read-only).", {}, []),
+        _function("read_results", "Calculated results (kind=results) or the method description (kind=method) of the "
+                  "open plot (module empty) or of another module (read-only).",
+                  {"module": {"type": "string", "enum": ["", *(modules or [])]},
+                   "kind": {"type": "string", "enum": ["results", "method"]}}, []),
         _function("preview_styles", "Check style edits without applying them: what each would change and any problem.",
                   {"styles": _inline(props["styles"], defs)}, ["styles"]),
         _function("find_settings", "Visual settings whose names contain a word, with current values (read-only).",
@@ -83,7 +105,10 @@ def definitions(schema: dict, tasks: list[str], presets: list[str]) -> list[dict
              "module": _inline(props.get("module", {"type": "string"}), defs),
              "modules": _inline(props.get("modules", {"type": "array", "maxItems": 0}), defs),
              "query": {"type": "string", "maxLength": 200},
-             "responseStyle": {"type": "string", "enum": ["concise", "explanation", "review"]}}, ["task"]))
+             "responseStyle": {"type": "string", "enum": ["concise", "explanation", "review"]},
+             "text": {"type": "string", "maxLength": 3000,
+                      "description": "Your reply, written only from what read_results returned; empty lets the "
+                                     "application write it."}}, ["task"]))
     tools.append(_function(
         "ask_user", "Finish: ask one precise question instead of guessing.",
         {"clarification": _inline(props["clarification"], defs),

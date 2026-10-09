@@ -63,6 +63,9 @@ report = importlib.import_module('app.services.report_function')
 # tests/repo/test_column_labels_in_sync.py; the empty-kinds cases are unchanged.
 # Same day: the phosphosite coverage sections are titled "(per sample)" and
 # "(per condition)" instead of "(Number)" and "(Quality)" (TOC and headings).
+# 2026-10-09: the data-source line reads "Unfiltered Data" instead of "Data"
+# (the bare word said nothing beside "Filtered Data"); every case with a
+# provenance block moved.
 SNAPSHOTS = {
     'qc_custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
     'qc_custom:protein': '70950de97e7dc1123c4c2e870217647365df969a4cb2e77d1d891454d35c5e95',
@@ -77,9 +80,9 @@ SNAPSHOTS = {
     # gating the appearance settings: the case's custom PCA title now reaches
     # the PCA renderer with the panel closed, as it reaches the plot on screen.
     # That forwarded title is the whole difference.
-    'default:protein': 'b26db4017064c44af2642b76c1f0361a8ed874242cc3a5b5d5393a002b7e8fd8',
-    'default:phospho': 'f5cbc6146d851e322e0d48296a2f0766f0b77681d13e7abfaed3fdba75e58e7c',
-    'default:peptide,protein,phospho': '755e4f145e9f3c33319d2fe65d0d239656e6c6442b656cffb42c58d073cdb2d3',
+    'default:protein': 'e7cb7ce2f9fed5682c149ad39241ee922991c22616cc887cd499300e7e14ef28',
+    'default:phospho': 'eaddda7f95acfc5f9f6833ac82227279ecf982d72d139b971c60cb734c7c3e04',
+    'default:peptide,protein,phospho': '2029ed822c150afeb5a43e70e61eac36661b62cc9c532c14474d1ada0cbda7d2',
     'custom:': '31e9b3e4680befa02db2ec0566567663337d540546ff762cdaa8127b85e1d920',
     'custom:protein': 'e4c6b8161f4518c813ffb55932480d70256b4b304677f42b97af301786fcd78e',
     'custom:phospho': 'df11c61b28c42fc4b956206e297133b8c79214e518d91f3e10c70b5a05e4f43b',

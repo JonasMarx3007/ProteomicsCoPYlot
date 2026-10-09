@@ -346,6 +346,11 @@ export default function SummaryPage({ activeTab }: Props) {
                 value={editorValue}
                 onChange={(event) => setEditorValue(event.target.value)}
                 rows={8}
+                // The browser's own en-US spell checker underlines typos in the
+                // report prose; it is the browser's dictionary, so names such as
+                // phosphosite or a gene symbol may be marked too (2026-10-09).
+                spellCheck
+                lang="en-US"
                 className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
               />
             </div>

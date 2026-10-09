@@ -4,7 +4,7 @@ import { getAnovaNotebookTables, isAbortError } from "../../lib/api";
 import { fetchPlot } from "../../lib/fetchPlot";
 import type { AnovaResultResponse } from "../../lib/types";
 import { ImageSection, InfoSection, Notice, TableSection } from "./statsShared";
-import { sanitizeFilenamePart } from "./statsHelpers";
+import { removeSourceUsageWarnings, sanitizeFilenamePart } from "./statsHelpers";
 
 export default function AnovaOutput({ result, plotUrl, selectedCluster }: {
   result: AnovaResultResponse; plotUrl: string; selectedCluster?: string;
@@ -55,6 +55,7 @@ export default function AnovaOutput({ result, plotUrl, selectedCluster }: {
     {noHeatmap ? <InfoSection message="No rows passed the selected ANOVA threshold, so no significant-row heatmap or clusters were generated." />
       : <ImageSection title={`${title} Heatmap`} url={plotUrl} notebook={rendered}
           onRendered={(url, token) => setRendered({ url, token })} />}
+    {selectedCluster === undefined ? <Notice error={null} warnings={removeSourceUsageWarnings(data.warnings)} /> : null}
     <TableSection title={selectedCluster === undefined ? "Result Table" : `${title} Result Table`}
       rows={rows} filename={`${prefix}${selectedCluster === undefined ? "" : `_cluster_${selectedCluster}`}.csv`}
       plotUrl={plotUrl} notebook={notebook} />

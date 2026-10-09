@@ -1002,6 +1002,34 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
             f"data_are_log2={str(bool(annotation.is_log2_transformed)).lower()}|imputation={imputation_text}|"
             f"normalization={annotation.filter_config.normalization}|normalization_scope=within_this_application_only"
         )
+        # What the user chose for filtering, readable (never settable) by the assistant
+        # (2026-10-09: "is my phospho data filtered by localization probability?" had no answer).
+        config = annotation.filter_config
+        rule = (f"at_least_{config.minPresent}_valid_values" if config.method == "at_least_n"
+                else f"at_least_{_fmt_value(config.minPercentage)}_percent_valid_values")
+        lines.append(
+            f"project_filter|kind={kind}|valid_value_filter={'none' if config.method == 'at_least_n' and config.minPresent == 0 else rule}"
+            f"|filter_scope={config.mode}|rows_before={int(frame.shape[0]) if isinstance(frame, pd.DataFrame) else 'unknown'}"
+            f"|rows_after={int(annotation.filtered_data.shape[0])}|chosen_by_the_user_on=Data_Annotation"
+        )
+        if kind == "phospho":
+            from app.services.phospho_localization import get_localization_cutoff
+
+            lines.append(
+                f"project_localization|kind=phospho|ptm_localization_probability_min={_fmt_value(get_localization_cutoff())}"
+                "|rule=sites_below_cutoff_are_left_out_of_every_phosphosite_module|zero_keeps_every_site"
+                "|default=0|changed_by_the_user_on=QC_Pipeline_Localization_probability_cutoff"
+            )
+            # How many sites common cutoffs would keep, counted read-only so "what if I set
+            # 0.75?" has an answer without changing anything (2026-10-09).
+            probabilities = (pd.to_numeric(annotation.filtered_data["PTM_localization"], errors="coerce")
+                             if "PTM_localization" in annotation.filtered_data.columns else None)
+            if probabilities is not None:
+                kept = "|".join(f"sites_at_or_above_{_fmt_value(level)}={int((probabilities >= level).sum())}"
+                                for level in (0.5, 0.75, 0.9, 0.99))
+                lines.append(f"project_localization_counts|kind=phospho|sites_total={int(probabilities.shape[0])}|{kept}"
+                             f"|sites_without_probability={int(probabilities.isna().sum())}"
+                             "|scope=rows_after_the_valid_value_filter|read_only_estimate_nothing_changed")
     return _text_payload("general_proteomics_context", "\n".join(lines))
 
 

@@ -94,7 +94,7 @@ Sizes in `..._MB` are MiB; `..._BYTES` are bytes.
 | `COPYLOT_LOCAL_AI_MODEL` | the server's first model | Preselected model of that server. |
 | `COPYLOT_LOCAL_AI_CONTEXT_TOKENS` | read from llama.cpp's `/props`, else 8192 | Context window of that server; set it for servers that do not report it. |
 | `COPYLOT_LOCAL_AI_TIMEOUT` | `300` | Seconds one reply from that server may take (at least 30). Large models that think first need over a minute. |
-| `COPYLOT_LOCAL_AI_REASONING_EFFORT` | `high` for styling requests of Advanced models, otherwise the server's own | `low`, `medium` or `high` for every request, or `server` to leave the server default. Sent only to servers whose chat template supports `reasoning_effort`. |
+| `COPYLOT_LOCAL_AI_REASONING_EFFORT` | the server's own | `low`, `medium` or `high` for every request, or `server` to leave the server default. Sent only to servers whose chat template supports `reasoning_effort`. |
 | `COPYLOT_OLLAMA_MODEL_MANAGEMENT` | on for a local run; off with tool access, viewer or portal | Whether users may install or remove Ollama models (a server-wide change). |
 | `COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT` | `1800` | Seconds for a model installation or removal (at least 30). |
 | `COPYLOT_OLLAMA_GPU_DEFAULT` | on | Whether the GPU switch starts on. |

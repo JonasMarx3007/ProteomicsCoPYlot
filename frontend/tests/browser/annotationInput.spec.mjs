@@ -30,9 +30,12 @@ test('manual scale survives mapping edits and an in-flight detection', async ({ 
   await completed;
   await page.getByLabel('Sample columns', { exact: true }).selectOption(['A1', 'A2']);
   await expect(scale).not.toBeChecked();
-  const generated = page.waitForRequest(r => r.url().endsWith('/api/annotations/generate'));
+  // Wait for the response, not just the request: the backend stores are
+  // process-global, and a generation still running when the next test
+  // uploads its dataset races with that upload.
+  const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
   await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
-  expect((await generated).postDataJSON().isLog2Transformed).toBe(false);
+  expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
 });
 
 test('a superseded automatic detection cannot overwrite the latest selection', async ({ page }) => {
@@ -50,9 +53,12 @@ test('a superseded automatic detection cannot overwrite the latest selection', a
   const completed = page.waitForResponse(r => r.url().endsWith('/api/annotations/log2-detect'));
   await pending[0].fulfill({ json: { isLog2Transformed: true } });
   await completed;
-  const generated = page.waitForRequest(r => r.url().endsWith('/api/annotations/generate'));
+  // Wait for the response, not just the request: the backend stores are
+  // process-global, and a generation still running when the next test
+  // uploads its dataset races with that upload.
+  const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
   await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
-  expect((await generated).postDataJSON().isLog2Transformed).toBe(false);
+  expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
 });
 
 test('conflicting manual conditions show an error and preserve the previous annotation', async ({ page }) => {

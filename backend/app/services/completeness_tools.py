@@ -142,7 +142,8 @@ def _missing_value_plot_from_matrix(
         ax.set_title(f"Missing Value Plot - {title_label} Level")
 
     ax.tick_params(axis="x", rotation=0)
-    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    # The light y grid the other bar plots draw, not a heavy dashed one of its own.
+    ax.grid(axis="y", alpha=0.25, linewidth=0.8)
     apply_advanced_axes(ax, advanced)
     plt.tight_layout()
     return _to_png_bytes(fig, plt, dpi=dpi)
@@ -364,12 +365,23 @@ def completeness_missing_value_heatmap(
     )
 
     # Keep seaborn heatmap rendering aligned with the legacy CoPYlot look.
-    sns.heatmap(data_filtered.isna(), cbar=False, cmap="viridis", ax=ax)
+    sns.heatmap(data_filtered.isna(), cbar=False, cmap="viridis", vmin=0, vmax=1, ax=ax)
 
+    feature_label = _feature_label(frame)
     if header:
-        ax.set_title("Missing Values Heatmap")
+        ax.set_title(f"Missing Values Heatmap - {feature_label} Level")
     ax.set_xlabel("Sample")
-    ax.set_ylabel(f"{_feature_label(frame)}s")
+    ax.set_ylabel(f"{feature_label}s")
+    # The two colours say what they are: viridis runs from measured (0) to
+    # missing (1), and nothing on the figure used to tell the reader which.
+    from matplotlib.patches import Patch
+
+    viridis = plt.get_cmap("viridis")
+    ax.legend(
+        [Patch(facecolor=viridis(0.0)), Patch(facecolor=viridis(1.0))],
+        ["Measured", "Missing"],
+        loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False, fontsize=8,
+    )
     ax.tick_params(axis="x", rotation=90, labelsize=7)
     ax.set_xticklabels(
         [
