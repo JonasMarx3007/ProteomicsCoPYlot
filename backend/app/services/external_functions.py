@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Original R implementation: Alexander Hogrebe, Perseus Plugin Peptide Collapse.
 # Python translation/rewrite: Denys Oliinyk and Yue Yang.
-# Modified Python version; see Git history for dates and NOTICE for attribution.
+# See NOTICE for attribution.
 import time
 import warnings
 import numpy as np
@@ -120,6 +120,12 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
     df2 = df2.apply(pd.to_numeric, errors='coerce')
     df2 = df2.replace(0, np.nan)
     df2 = np.log2(df2)
+    # A run without a single phosphorylated precursor keeps its (empty) column,
+    # so it stays visible beside its metadata; upstream (v20260728) drops it.
+    empty_runs = [run for run in fine_names if df2[('EG.TotalQuantity (Settings)', run)].isna().all()]
+    if empty_runs:
+        emit('Notice: ' + str(len(empty_runs)) + ' run(s) have no measured phosphorylated precursor and stay empty: '
+             + ', '.join(empty_runs))
     df3 = pd.pivot_table(data, index=['PTM_group', 'PTM_0_pos_val'],
                          columns=['R.FileName'],
                          values=['PTM_localization'],
@@ -214,6 +220,9 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
         data = data.drop(['Site', 'Mult'], axis=1)
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
+        data, dropped = _finish_collapsed(data, fine_names)
+        if dropped:
+            emit(str(dropped) + ' site(s) without a value in any run were removed')
         emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
         emit('Site values are the median of the log2 precursor intensities per run; '
              'localization is the maximum over runs and precursors, cutoff ' + str(cutoff))
@@ -235,12 +244,30 @@ def peptideCollapse(data, cutoff=0.0, collapse_level='PG', *, progress=None):
         data = data.drop(['Site', 'Mult'], axis=1)
         data['PTM_Collapse_key'] = data['PTM_Collapse_key'].str.replace('#', '_', regex=False) # Update @Yue Yang
         data['Gene_group'] = data['Gene_group'].str.replace('#', '_', regex=False) # Update @Yue Yang
+        data, dropped = _finish_collapsed(data, fine_names)
+        if dropped:
+            emit(str(dropped) + ' site(s) without a value in any run were removed')
         emit('Collapse done succesfully;' + ' ' + str(data.shape[0]) + ' ' + 'unique phosphosite profiles')
         emit('Site values are the median of the log2 precursor intensities per run; '
              'localization is the maximum over runs and precursors, cutoff ' + str(cutoff))
         et = time.time()
         emit('Function executed in' + ' ' + str(round((et - st), 2)) + ' ' + 'seconds')
         return (data)
+
+
+def _finish_collapsed(data, fine_names):
+    """Upstream v20260824's tidy-up: 'None' labels become missing, and a site
+    without a value in any run is dropped (it carries no measurement)."""
+    for column in ('Gene_group', 'Protein_group'):
+        data[column] = data[column].replace('None', pd.NA)
+    for column in ('PTM_Collapse_key', 'Protein_Collapse_key'):
+        if column in data.columns:
+            data[column] = data[column].str.replace(
+                r'(^|~)None(?=~|_[^_]+_M\d+$)', r'\1 ', regex=True)
+    runs = [run for run in fine_names if run in data.columns]
+    before = data.shape[0]
+    data = data.dropna(subset=runs, how='all')
+    return data, before - data.shape[0]
 
 
 def process_and_export(file_path, output_path=None, cutoff=0, *, progress=None):

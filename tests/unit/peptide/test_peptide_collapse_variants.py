@@ -91,6 +91,57 @@ def test_entirely_missing_run_is_retained(sentinel):
     np.testing.assert_allclose(sorted(result["run1"]), np.log2([1000., 2000., 4000.]))
 
 
+@pytest.mark.parametrize("collapse_level", ["PG", "P"])
+def test_a_site_without_a_value_in_any_run_is_removed(collapse_level):
+    """Upstream v20260824 drops such rows; a site nobody measured carries nothing."""
+    table = _table(1000.)
+    table["EG.TotalQuantity (Settings)"] = table["EG.TotalQuantity (Settings)"].astype(object)
+    first = table["EG.PrecursorId"] == f"_{PEPTIDES[0][0]}_.2"
+    table.loc[first, "EG.TotalQuantity (Settings)"] = "Filtered"
+    messages = []
+    result = peptideCollapse(table.copy(), cutoff=0.0, collapse_level=collapse_level, progress=messages.append)
+    assert len(result) == len(PEPTIDES) - 1
+    assert not result[["run1", "run2"]].isna().all(axis=1).any()
+    assert any(m.startswith("1 site(s) without a value in any run") for m in messages)
+
+
+def test_an_empty_run_is_named_in_the_notice():
+    table = _table(1000.)
+    table["EG.TotalQuantity (Settings)"] = table["EG.TotalQuantity (Settings)"].astype(object)
+    table.loc[table["R.FileName"] == "run2", "EG.TotalQuantity (Settings)"] = 0
+    messages = []
+    result = peptideCollapse(table.copy(), cutoff=0.0, progress=messages.append)
+    assert "run2" in result.columns and result["run2"].isna().all()
+    assert any("no measured phosphorylated precursor" in m and "run2" in m for m in messages)
+
+
+@pytest.mark.parametrize("collapse_level", ["PG", "P"])
+def test_all_unmeasured_sites_leave_an_empty_table_with_sample_columns(collapse_level):
+    table = _table(1000.)
+    table["EG.TotalQuantity (Settings)"] = 0.
+    result = peptideCollapse(table, collapse_level=collapse_level, progress=lambda _: None)
+    assert result.empty
+    assert set(RUNS).issubset(result.columns)
+
+
+@pytest.mark.parametrize("collapse_level", ["PG", "P"])
+@pytest.mark.parametrize("label", ["None", "NoneLike"])
+def test_missing_label_cleanup_preserves_identifiers(collapse_level, label):
+    table = _table(1000.)
+    table["PG.Genes"] = label
+    table["PG.ProteinGroups"] = label
+    result = peptideCollapse(table, collapse_level=collapse_level, progress=lambda _: None)
+    for column in ("Gene_group", "Protein_group"):
+        if label == "None":
+            assert result[column].isna().all()
+        else:
+            assert result[column].eq(label).all()
+    for column in ("PTM_Collapse_key", "Protein_Collapse_key"):
+        if column in result:
+            expected = " ~ _" if label == "None" else "NoneLike~NoneLike_"
+            assert result[column].str.startswith(expected).all()
+
+
 def test_gene_underscore_survives_collapse():
     table = _table(1000.)
     table["PG.Genes"] = "GENE_A"
