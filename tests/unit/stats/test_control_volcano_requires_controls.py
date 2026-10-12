@@ -131,7 +131,7 @@ def test_the_image_routes_answer_with_the_models_sentence_not_a_pydantic_dump(cl
 def test_validation_messages_strip_the_framing() -> None:
     from pydantic import ValidationError
 
-    from app.api.routes_plots import validation_messages
+    from app.api.plot_responses import validation_messages
     from app.schemas.stats import VolcanoControlRequest
 
     with pytest.raises(ValidationError) as caught:

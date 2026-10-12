@@ -383,6 +383,24 @@ storage.
 6. Add that exact origin to `COPYLOT_OLLAMA_ALLOWED_ENDPOINTS`, then enter it in the
    application's AI settings.
 
+## Distributing executable releases
+
+CoPYlot is distributed under GPL-3.0-only. Build from a clean, reviewed Git
+checkout. The Windows and macOS builders collect the actual dependency licences,
+the CPython licence, native-library notices and the frontend licence file. They
+stop if required notices are missing, and produce a `*-release.zip` alongside
+the executable. Distribute that ZIP, not just the executable: it also contains
+the matching application source, build scripts, dependency versions and licence
+texts. Source and executable checksums are recorded in `release-manifest.json`.
+The source archive contains only committed files, never ignored `local/` content.
+
+For reproduction, extract `CoPYlot-source.zip`, follow these installation
+instructions and use the release's `build-requirements.txt` for the Python
+environment. Preserve the dependency notices when repackaging. Review the native
+libraries in each newly built platform artifact; automatic collection cannot
+establish rights to privately supplied code or data. Existing executables must
+be rebuilt before distribution under this release process.
+
 ## Local servers with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio)
 
 Many local model servers speak only the OpenAI-compatible API (`/v1/models`,

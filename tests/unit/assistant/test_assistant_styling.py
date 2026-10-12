@@ -1,7 +1,7 @@
 import pytest
 
 from app.schemas.assistant import AssistantRequest, StyleEdit
-from app.services import assistant_styling as styling
+from app.services import assistant_plot_parts as plot_parts, assistant_styling as styling
 from assistant_support import _control
 
 
@@ -25,7 +25,7 @@ def edit(element="legend", property="size", **fields):
     ("Tile 2: Boxplot / Title / Size", "number", ("tile 2 / title", "size")),
 ])
 def test_live_control_semantics(label, type_, expected):
-    assert styling.identity(request(_control("id", label, type_)).view.controls[0]) == expected
+    assert plot_parts.identity(request(_control("id", label, type_)).view.controls[0]) == expected
 
 
 def test_relative_change_uses_current_value_bounds_and_receipts():
@@ -61,7 +61,7 @@ def test_ambiguous_pairs_are_unavailable_but_duplicate_colour_inputs_are_one_set
     req = request(_control("one", "Title", "text"), _control("two", "Title", "text"),
                   _control("picker", "Condition colors / A", "color"),
                   _control("hex", "Condition colors / A", "text"))
-    assert list(styling.style_controls(req)) == [("condition:A", "color")]
+    assert list(plot_parts.style_controls(req)) == [("condition:A", "color")]
     assert styling.resolve(req, [edit("condition:A", "color", value="red")])[0].target == "picker"
     with pytest.raises(ValueError, match="ambiguous"):
         styling.resolve(req, [edit("title", "text", value="Changed")])

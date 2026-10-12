@@ -14,7 +14,7 @@ from app.services.dataset_store import save_peptide_path
 from app.services.peptide_metadata_store import save_peptide_metadata
 from app.services.notebook_peptide import render_coverage
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.plot_images import qc_peptide_coverage_plot, _peptide_coverage_summary
 from app.services.session_context import get_session_id
 

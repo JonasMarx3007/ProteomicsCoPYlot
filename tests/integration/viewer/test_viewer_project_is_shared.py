@@ -164,7 +164,6 @@ def test_failed_rebuild_keeps_cached_template_and_cleans_temporary_session(count
 
 
 def test_new_authenticated_visitors_reuse_shared_project(counted, monkeypatch):
-    from app.services import session_cleanup
 
     sessions = ("cached_login_one", "cached_login_two")
     pending = iter(sessions)
@@ -178,7 +177,7 @@ def test_new_authenticated_visitors_reuse_shared_project(counted, monkeypatch):
         finally:
             reset_session_id(token)
 
-    monkeypatch.setattr(session_cleanup, "authenticated_session_rotation", rotation)
+    monkeypatch.setattr(viewer_portal, "authenticated_session_rotation", rotation)  # bound at import
     monkeypatch.setattr(viewer_portal, "resolve_viewer_project_config", lambda project: CONFIG)
     monkeypatch.setattr(viewer_portal, "_BOOTSTRAPPED_SESSION_PROJECT", {})
     monkeypatch.setattr(viewer_portal, "_SESSION_AUTH", {})

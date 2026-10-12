@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import RLock
 
 from app.services.password_hashing import normalize_sha256, sha256_hex, validate_password_hash, verify_password
+from app.services.session_cleanup import authenticated_session_rotation, register_session_auth_reset
 from app.services.session_context import get_session_id
 from app.services.env_settings import env_flag
 
@@ -120,8 +121,6 @@ def _grant_authenticated_session() -> str:
     Rotating here is what stops session fixation: the pre-login id never becomes
     an authenticated one, so planting it achieves nothing.
     """
-    from app.services.session_cleanup import authenticated_session_rotation
-
     with authenticated_session_rotation() as replacement:
         with _SESSION_LOCK:
             _SESSION_AUTH.add(replacement)
@@ -144,6 +143,7 @@ def authenticate_tool_token(token: str, *, project_root: Path | None = None) -> 
     return _grant_authenticated_session()
 
 
+@register_session_auth_reset
 def clear_tool_session_auth() -> None:
     from app.services.notebook_snapshots import forget_session
     with _SESSION_LOCK:

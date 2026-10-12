@@ -43,6 +43,8 @@ On macOS and Linux, the same launchers are in `packaging/unix/` (for example `ba
 
 See [Installation, Running, and Packaging](docs/INSTALLATION.md) (and [Environment variables](docs/ENVIRONMENT.md)) for every supported platform, AI variants, production launch, Docker, viewer portals, and executable/package builds.
 
+For code navigation, see the [interactive architecture map and regeneration instructions](docs/ARCHITECTURE.md).
+
 ## Application modes
 
 - **Analysis:** full upload, annotation, analysis, external-tool, and report workflow.
@@ -249,7 +251,10 @@ phosphosite input and visualizes the returned results.
 
 ## License
 
-Proteomics CoPYlot code is distributed under the [GNU GPL version 3](LICENSE). Bundled biological
+Proteomics CoPYlot code is distributed under [GNU GPL version 3](LICENSE).
+See [NOTICE](NOTICE) for authorship and peptide-collapse credits.
+Executable releases include corresponding source and third-party notices; distribute
+the complete release ZIP rather than the executable alone. Bundled biological
 reference data retain their upstream terms and attribution; see
 [Biological reference data](data/db/README.md).
 

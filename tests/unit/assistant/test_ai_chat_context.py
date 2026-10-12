@@ -659,7 +659,9 @@ def test_plot_catalogue_has_explicit_evidence_coverage_gaps():
     assert set(_MODULE_SPECIFIC_AI_FUNCTIONS) <= modules
     assert set(METHODS) == set(_MODULE_SPECIFIC_AI_FUNCTIONS)
     for functions in _MODULE_SPECIFIC_AI_FUNCTIONS.values():
-        assert functions and all(callable(getattr(ai_functions, name, None)) for name in functions)
+        # A tool is named after its renderer; its context function is `*_context` (CONTEXT_TOOL_FUNCTIONS).
+        assert functions and all(
+            callable(getattr(ai_functions, ai_functions.CONTEXT_TOOL_FUNCTIONS.get(name, name), None)) for name in functions)
 
 
 @pytest.mark.parametrize("source", ["anova", "anova_cluster"])

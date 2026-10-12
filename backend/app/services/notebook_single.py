@@ -6,25 +6,25 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _replace_once, _merge_source, qc_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_qc import qc_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 
 
 @lru_cache(maxsize=1)
 def box_source():
-    original = _source('single_protein_tools.py')
-    prepare = _definition(original, '_boxplot_data')
-    prepare = _replace_once(prepare, 'def _boxplot_data(', 'def prepare_table(data, metadata, ')
-    prepare = _replace_once(prepare, '    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)',
+    original = module_source('single_protein_tools.py')
+    prepare = function_definition(original, '_boxplot_data')
+    prepare = replace_once(prepare, 'def _boxplot_data(', 'def prepare_table(data, metadata, ')
+    prepare = replace_once(prepare, '    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)',
         '    frame, meta = data, metadata\n    sample_columns = [s for s in meta["sample"].astype(str) if s in frame.columns]')
-    figure = _definition(original, 'single_protein_boxplot_plot')
-    figure = _replace_once(figure, 'def single_protein_boxplot_plot(',
+    figure = function_definition(original, 'single_protein_boxplot_plot')
+    figure = replace_once(figure, 'def single_protein_boxplot_plot(',
         'def render_plot(data, metadata, condition_colors, centered, ')
-    figure = _replace_once(figure, '_boxplot_data(\n        kind,', 'prepare_table(data, metadata,\n        kind,')
-    figure = _replace_once(figure, 'advanced_condition_colors(kind, plt, list(labels), advanced)', 'condition_colors')
-    figure = figure.replace('_phosprot_values_are_centred(kind)', 'centered')
-    code = original.replace(_definition(original, '_boxplot_data'), prepare)
-    code = code.replace(_definition(original, 'single_protein_boxplot_plot'), figure)
+    figure = replace_once(figure, '_boxplot_data(\n        kind,', 'prepare_table(data, metadata,\n        kind,')
+    figure = replace_once(figure, 'advanced_condition_colors(kind, plt, list(labels), advanced)', 'condition_colors')
+    figure = figure.replace('phosprot_values_are_centred(kind)', 'centered')
+    code = original.replace(function_definition(original, '_boxplot_data'), prepare)
+    code = code.replace(function_definition(original, 'single_protein_boxplot_plot'), figure)
     code = code.replace('AnnotationKind', 'str').replace('_extract_id_or_number(', 'extract_sample_id(')
     code = code.replace('_get_plt()', 'get_plt()').replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
     # Keep only the local definitions first; imported stateful application helpers
@@ -32,12 +32,12 @@ def box_source():
     names = ('_normalize_identifier', '_line_box_key_column_for_identifier', '_build_sample_labels',
              '_feature_label', '_feature_match_mask', '_select_conditions', 'prepare_table', 'render_plot')
     # One `_gene_tokens` for the app, kept in stats_tools.py (2026-10-02).
-    local = '\n\n'.join([_definition(_source('stats_tools.py'), '_gene_tokens'),
-                         *(_definition(code, name) for name in names)])
+    local = '\n\n'.join([function_definition(module_source('stats_tools.py'), '_gene_tokens'),
+                         *(function_definition(code, name) for name in names)])
     local = local.replace('SingleProteinIdentifier', 'str')
-    styling = '\n'.join(line for line in _source('plot_styling.py').splitlines() if not line.startswith('from app.'))
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', local,
-        extract_notebook_source(_source('functions.py'), ('condition_sample_labels', 'extract_sample_id', 'intensity_unit_label')).code,
+    styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines() if not line.startswith('from app.'))
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', local,
+        extract_notebook_source(module_source('functions.py'), ('condition_sample_labels', 'extract_sample_id', 'intensity_unit_label')).code,
         extract_notebook_source(styling, ('resolve_marker', 'advanced_number', 'advanced_text', 'advanced_label', 'apply_advanced_axes')).code,
         extract_notebook_source(qc_source('boxplot').code, ('get_plt', 'cm_to_inch', 'to_png_bytes')).code),
         ('prepare_table', 'render_plot'))
@@ -53,25 +53,25 @@ def box_module():
 
 @lru_cache(maxsize=1)
 def line_source():
-    original = _source('single_protein_tools.py')
-    long_table = _definition(original, '_lineplot_long_table')
-    long_table = _replace_once(long_table, 'def _lineplot_long_table(', 'def _lineplot_long_table(data, metadata, ')
-    long_table = _replace_once(long_table, '    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)',
+    original = module_source('single_protein_tools.py')
+    long_table = function_definition(original, '_lineplot_long_table')
+    long_table = replace_once(long_table, 'def _lineplot_long_table(', 'def _lineplot_long_table(data, metadata, ')
+    long_table = replace_once(long_table, '    frame, sample_columns, meta = _analysis_frame(kind, data_source=data_source)',
         '    frame, meta = data, metadata\n    sample_columns = [s for s in meta["sample"].astype(str) if s in frame.columns]')
-    table = _definition(original, 'single_protein_lineplot_table')
-    table = _replace_once(table, 'def single_protein_lineplot_table(', 'def prepare_table(data, metadata, ')
-    figure = _definition(original, 'single_protein_lineplot_plot')
-    figure = _replace_once(figure, 'def single_protein_lineplot_plot(', 'def render_plot(data, metadata, centered, ')
+    table = function_definition(original, 'single_protein_lineplot_table')
+    table = replace_once(table, 'def single_protein_lineplot_table(', 'def prepare_table(data, metadata, ')
+    figure = function_definition(original, 'single_protein_lineplot_plot')
+    figure = replace_once(figure, 'def single_protein_lineplot_plot(', 'def render_plot(data, metadata, centered, ')
     code = '\n\n'.join((long_table, table, figure))
     code = code.replace('_lineplot_long_table(\n        kind,', '_lineplot_long_table(data, metadata,\n        kind,')
-    code = code.replace('AnnotationKind', 'str').replace('_phosprot_values_are_centred(kind)', 'centered')
+    code = code.replace('AnnotationKind', 'str').replace('phosprot_values_are_centred(kind)', 'centered')
     code = code.replace('_get_plt()', 'get_plt()').replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
     helpers = extract_notebook_source(box_source().code, ('_normalize_identifier',
         '_line_box_key_column_for_identifier', '_build_sample_labels', '_feature_label',
         '_feature_match_mask', '_gene_tokens', '_select_conditions', 'intensity_unit_label',
         'apply_advanced_axes', 'get_plt', 'cm_to_inch', 'to_png_bytes'))
-    anchor = extract_notebook_source(_source('plot_styling.py'), ('advanced_anchor',))
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', helpers.code, anchor.code, code),
+    anchor = extract_notebook_source(module_source('plot_styling.py'), ('advanced_anchor',))
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', helpers.code, anchor.code, code),
                                    ('prepare_table', 'render_plot'))
 
 
@@ -85,30 +85,30 @@ def line_module():
 
 @lru_cache(maxsize=1)
 def heatmap_source():
-    original = _source('single_protein_tools.py')
-    matrix = _definition(original, '_heatmap_matrix')
-    matrix = _replace_once(matrix, 'def _heatmap_matrix(', 'def _heatmap_matrix(data, metadata, ')
-    matrix = _replace_once(matrix, '    frame, _, meta = _analysis_frame(kind, data_source=data_source)',
+    original = module_source('single_protein_tools.py')
+    matrix = function_definition(original, '_heatmap_matrix')
+    matrix = replace_once(matrix, 'def _heatmap_matrix(', 'def _heatmap_matrix(data, metadata, ')
+    matrix = replace_once(matrix, '    frame, _, meta = _analysis_frame(kind, data_source=data_source)',
                            '    frame, meta = data, metadata')
-    table = _definition(original, 'single_protein_heatmap_table').replace(
+    table = function_definition(original, 'single_protein_heatmap_table').replace(
         'def single_protein_heatmap_table(', 'def prepare_table(data, metadata, ')
-    figure = _definition(original, 'single_protein_heatmap_plot').replace(
+    figure = function_definition(original, 'single_protein_heatmap_plot').replace(
         'def single_protein_heatmap_plot(', 'def render_plot(data, metadata, ')
-    local = '\n\n'.join(_definition(original, name) for name in (
+    local = '\n\n'.join(function_definition(original, name) for name in (
         '_site_label', '_heatmap_protein_group_column', '_heatmap_key_column_for_identifier'))
     code = '\n\n'.join((local, matrix, table, figure))
     code = code.replace('_heatmap_matrix(\n        kind=', '_heatmap_matrix(data, metadata,\n        kind=')
-    code = code.replace('_phosprot_values_are_centred(kind)', 'False')  # Phosphosite-only renderer.
+    code = code.replace('phosprot_values_are_centred(kind)', 'False')  # Phosphosite-only renderer.
     code = code.replace('AnnotationKind', 'str').replace('SingleProteinIdentifier', 'str')
     code = code.replace('_get_plt()', 'get_plt()').replace('_get_seaborn()', 'get_sns()')
     code = code.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
     helpers = extract_notebook_source(box_source().code, ('_normalize_identifier', '_build_sample_labels',
         '_feature_match_mask', '_select_conditions', 'intensity_unit_label', 'apply_advanced_axes',
         'get_plt', 'cm_to_inch', 'to_png_bytes'))
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', helpers.code, code,
-        extract_notebook_source(_source('plotting_common.py'), ('get_sns',)).code,
-        extract_notebook_source(_source('plot_styling.py'), ('advanced_color_map',)).code,
-        extract_notebook_source(_source('clustering_tools.py'), ('row_zscore', 'drop_incomplete_features', 'heatmap_notice')).code),
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', helpers.code, code,
+        extract_notebook_source(module_source('plotting_common.py'), ('get_sns',)).code,
+        extract_notebook_source(module_source('plot_styling.py'), ('advanced_color_map',)).code,
+        extract_notebook_source(module_source('clustering_tools.py'), ('row_zscore', 'drop_incomplete_features', 'heatmap_notice')).code),
         ('prepare_table', 'render_plot'))
 
 
@@ -136,7 +136,7 @@ def _render(plot, **options):
     from app.services import single_protein_tools as single
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
-    from app.services.functions import _phosprot_values_are_centred
+    from app.services.analysis_matrix import phosprot_values_are_centred
     from app.services.notebook_provenance import input_history
     from app.services.plot_styling import advanced_condition_colors
     from app.services.plot_export import plot_output_format
@@ -175,7 +175,7 @@ def _render(plot, **options):
     else:
         table = module.prepare_table(data, metadata, **preparation)
     if plot != 'heatmap':
-        settings['centered'] = _phosprot_values_are_centred(kind)
+        settings['centered'] = phosprot_values_are_centred(kind)
     fmt = plot_output_format.get()
     format_token = module.plot_output_format.set(fmt)
     try:

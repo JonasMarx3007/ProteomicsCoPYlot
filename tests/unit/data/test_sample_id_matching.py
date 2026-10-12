@@ -189,7 +189,7 @@ def test_completeness_still_matches_unambiguous_shortened_names() -> None:
         assert sorted(ct._peptide_sample_columns(frame)) == sorted(DISTINCT_RUNS)
 
 
-@pytest.mark.parametrize('builder_name', ['peptide_modification_plot', 'peptide_missed_cleavage_plot'])
+@pytest.mark.parametrize('builder_name', ['peptide_modification_plot_context', 'peptide_missed_cleavage_plot_context'])
 def test_ai_uses_exact_sample_mapping_and_rejects_ambiguous_fallback(monkeypatch, builder_name):
     from app.services import ai_functions
     builder = getattr(ai_functions, builder_name)

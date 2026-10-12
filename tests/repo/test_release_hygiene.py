@@ -46,7 +46,7 @@ def test_the_package_the_citation_and_the_license_name_the_same_author():
         for family, given in re.findall(r'family-names: "([^"]+)"\s+given-names: "([^"]+)"', block)
     ]
     assert package_authors == cited, (package_authors, cited)
-    # The license's copyright holder is the same person, by the same name.
+    # The GPL text credits the FSF; project copyright belongs in NOTICE.
     holder = re.search(r"^Copyright \(c\) \d{4}(?:-\d{4})? (.+)$", (ROOT / "NOTICE").read_text(encoding="utf-8"), re.M)
     assert holder and [holder.group(1).strip()] == cited, (holder and holder.group(1), cited)
 

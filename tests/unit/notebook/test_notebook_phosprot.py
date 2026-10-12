@@ -15,7 +15,7 @@ from app.services.dataset_store import get_current_dataset
 from app.services.phosprot_tools import aggregate_from_phospho
 from app.services.notebook_pca import render_pca
 from app.services.notebook_provenance import NotebookProvenanceError
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.notebook_archive import build_notebook_archive
 from app.services.session_context import get_session_id
 

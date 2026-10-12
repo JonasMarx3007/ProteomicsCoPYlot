@@ -38,7 +38,7 @@ requires_r = pytest.mark.requires_r()
 
 def _projection_input(kind):
     from app.services.data_tools import _get_sample_columns, metadata_for_kind
-    from app.services.functions import select_matrix
+    from app.services.analysis_matrix import select_matrix
 
     _, frame, _ = select_matrix(kind, "data")
     return frame, metadata_for_kind(kind, frame, _get_sample_columns(kind, frame)).copy()
@@ -58,7 +58,7 @@ def _completeness_input(kind):
 
 
 def _single_input(kind):
-    from app.services.functions import select_matrix
+    from app.services.analysis_matrix import select_matrix
 
     _, frame, metadata = select_matrix(kind, "data")
     label = "ProteinNames" if kind == "protein" else "PTM_Collapse_key"

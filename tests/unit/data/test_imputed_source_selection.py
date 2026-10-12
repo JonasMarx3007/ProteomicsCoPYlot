@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 def test_configured_but_unmaterialized_imputation_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import functions
+    from app.services import analysis_matrix
 
     class _Imputation:
         mode = "quantile"
@@ -44,13 +44,13 @@ def test_configured_but_unmaterialized_imputation_is_rejected(
     )
 
     with pytest.raises(ValueError, match="Run imputation successfully first"):
-        functions.select_matrix("protein", data_source="imputed")
+        analysis_matrix.select_matrix("protein", data_source="imputed")
 
 
 def test_imputed_request_uses_exact_stored_matrix_without_recomputing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import functions
+    from app.services import analysis_matrix, functions
 
     stored_imputed = pd.DataFrame({"a": [-10.0, 2.0], "b": [3.0, -11.0]})
 
@@ -77,6 +77,6 @@ def test_imputed_request_uses_exact_stored_matrix_without_recomputing(
         lambda **kwargs: pytest.fail("stored imputation must not be recomputed"),
     )
 
-    source, frame, _ = functions.select_matrix("protein", "imputed")
+    source, frame, _ = analysis_matrix.select_matrix("protein", "imputed")
     assert source == "imputed"
     pd.testing.assert_frame_equal(frame, stored_imputed)

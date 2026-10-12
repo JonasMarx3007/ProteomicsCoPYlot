@@ -13,7 +13,7 @@ from app.schemas.stats import AnovaRequest
 from app.services import stats_tools
 from app.services.notebook_anova import anova_module, render_anova
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 

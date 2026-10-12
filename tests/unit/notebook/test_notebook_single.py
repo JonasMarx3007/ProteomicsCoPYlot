@@ -12,7 +12,7 @@ import pytest
 from app.services import single_protein_tools as single
 from app.services.notebook_single import render_box, render_line, render_heatmap
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 
@@ -275,7 +275,7 @@ def test_missing_history_keeps_plot_available(phosphosites, plot):
     key = single._line_box_key_column_for_identifier('phosprot', annotation.log2_data, 'workflow')
     protein = str(annotation.log2_data[key].iloc[0])
     annotation.phosprot_lineage = None
-    route = getattr(routes_plots, f'single_protein_{plot}_route')
+    route = routes_plots.ROUTE_FUNCTIONS[f'single_protein_{plot}_route']
     renderer = getattr(single, f'single_protein_{plot}_plot')
     response = route(kind='phosprot', dpi=80, **({'protein': protein} if plot == 'boxplot' else {'proteins': protein}))
     options = {'protein': protein} if plot == 'boxplot' else {'proteins': [protein]}

@@ -16,7 +16,7 @@ from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import save_table_dataset
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_comparison import render_comparison
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 
@@ -108,7 +108,7 @@ def test_vsn_runtime_failure_is_a_recoverable_export_error(monkeypatch):
 @pytest.mark.parametrize('method,mode', [('at_least_n', 'in_at_least_one_group'), ('percentage', 'overall')])
 def test_normalization_filter_and_localization_replay_in_app_order(method, mode):
     from app.services.annotation_store import get_annotation
-    from app.services.functions import select_matrix
+    from app.services.analysis_matrix import select_matrix
     from app.services.phospho_localization import set_localization_cutoff
     from app.services.notebook_preprocessing import preprocessing_source
     samples = ['A1', 'A2', 'A3', 'B1', 'B2', 'B3']

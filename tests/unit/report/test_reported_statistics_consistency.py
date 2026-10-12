@@ -36,7 +36,7 @@ def test_abundance_ranks_each_condition_independently(monkeypatch,kind,workflow,
     monkeypatch.setattr(plots,"linear_qc_frame",lambda kind: frame.copy())
     monkeypatch.setattr(plots,"_get_sample_columns",lambda kind,data:samples)
     monkeypatch.setattr(plots,"_metadata_for_kind",lambda *args:meta.copy())
-    monkeypatch.setattr(plots,"_phosprot_values_are_centred",lambda kind:False)
+    monkeypatch.setattr(plots,"phosprot_values_are_centred",lambda kind:False)
     monkeypatch.setattr(plots,"_plotly_html",lambda fig:fig)
     # log10 of the mean, with no pseudocount. The third A value is the reason:
     # a feature whose mean is exactly 1.0 belongs at 0.0 on a log10 axis, and
@@ -88,7 +88,7 @@ def test_abundance_ranks_each_condition_independently(monkeypatch,kind,workflow,
         assert fig.layout.yaxis.title.text == nb.abundance_axis_label(workflow,centered)
         values = [y for trace in fig.data for y in trace.y]
         np.testing.assert_allclose(sorted(values,reverse=True),expected[condition])
-    monkeypatch.setattr(ai_functions,"_phosprot_values_are_centred",lambda kind:centered)
+    monkeypatch.setattr(ai_functions,"phosprot_values_are_centred",lambda kind:centered)
     lines = ai_functions._abundance_data_lines(workflow,limit=10)
     assert any("condition=A|rank=1|identifier=A_only|" in line for line in lines)
     # The assistant names the measure it reports as the plot draws it: log10 of

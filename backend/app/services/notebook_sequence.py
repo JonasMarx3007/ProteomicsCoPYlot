@@ -6,19 +6,18 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _replace_once
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, module_source, replace_once
 
 
 @lru_cache(maxsize=1)
 def sequence_source():
-    original = _source('peptide_tools.py')
-    function = _definition(original, 'peptide_sequence_coverage')
-    function = _replace_once(function, 'def peptide_sequence_coverage(\n    *,', 'def calculate(data, database, *,')
-    function = _replace_once(function, '    frame = get_peptide_frame()', '    frame = data')
-    function = _replace_once(function, '    db = _load_fasta_dataframe(species)', '    db = database')
+    original = module_source('peptide_tools.py')
+    function = function_definition(original, 'peptide_sequence_coverage')
+    function = replace_once(function, 'def peptide_sequence_coverage(\n    *,', 'def calculate(data, database, *,')
+    function = replace_once(function, '    frame = get_peptide_frame()', '    frame = data')
+    function = replace_once(function, '    db = _load_fasta_dataframe(species)', '    db = database')
     function = function.replace('species: PeptideSpecies', 'species: str')
-    original = original.replace(_definition(original, 'peptide_sequence_coverage'), function)
+    original = original.replace(function_definition(original, 'peptide_sequence_coverage'), function)
     return extract_notebook_source(original, ('calculate',))
 
 

@@ -5,7 +5,6 @@ from app.services.plot_export import (
     cm_to_inch as _cm_to_inch,
 )
 
-import re
 
 import pandas as pd
 
@@ -17,10 +16,7 @@ from app.services.dataset_store import get_current_dataset
 from app.services.functions import extract_sample_id as _extract_id_or_number
 from app.services.functions import raw_zero_to_nan
 from app.services.peptide_quantity import resolve_peptide_quantity_column
-from app.services.plot_images import (
-    _peptide_file_column,
-    _peptide_sequence_column,
-)
+from app.services.plot_images import peptide_file_column, peptide_precursor_column, peptide_sequence_column
 from app.services.plot_styling import (
     advanced_label,
     apply_advanced_axes,
@@ -42,20 +38,10 @@ def _feature_label(frame: pd.DataFrame) -> str:
     return "Feature"
 
 
-def _peptide_precursor_column(frame: pd.DataFrame) -> str:
-    if "Precursor.Id" in frame.columns:
-        return "Precursor.Id"
-    for column in frame.columns:
-        normalized = re.sub(r"[^a-z0-9]+", "", str(column).strip().lower())
-        if "precursor" in normalized and "id" in normalized:
-            return str(column)
-    raise ValueError("Peptide dataset is missing a precursor-id column.")
-
-
 def _peptide_sample_columns(frame: pd.DataFrame) -> list[str]:
     from app.services.peptide_tools import _prepare_metadata, _sample_rename_map
 
-    file_col = _peptide_file_column(frame)
+    file_col = peptide_file_column(frame)
     file_names = [
         str(value)
         for value in frame[file_col].dropna().astype(str).tolist()
@@ -271,8 +257,8 @@ def completeness_peptide_matrix(level: str, quantity_column: str | None = None) 
     if level not in {"peptide", "precursor"}:
         raise ValueError("Choose peptide or precursor completeness.")
     frame = get_peptide_frame()
-    file_col = _peptide_file_column(frame)
-    feature_col = _peptide_sequence_column(frame) if level == "peptide" else _peptide_precursor_column(frame)
+    file_col = peptide_file_column(frame)
+    feature_col = peptide_sequence_column(frame) if level == "peptide" else peptide_precursor_column(frame)
     quantity_col = resolve_peptide_quantity_column(frame, requested=quantity_column)
     pivot = frame.pivot_table(index=feature_col, columns=file_col, values=quantity_col, aggfunc="max")
     sample_cols = [value for value in _peptide_sample_columns(frame) if value in pivot.columns]

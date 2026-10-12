@@ -12,7 +12,9 @@ from __future__ import annotations
 import threading
 import time
 
-from app.api import routes_plots, routes_summary
+from fastapi.responses import Response
+
+from app.api import plot_responses, plots_qc, routes_summary
 
 
 class Overlap:
@@ -45,7 +47,7 @@ def test_plot_routes_never_render_at_the_same_time() -> None:
     overlap = Overlap()
 
     def route():
-        with routes_plots.plot_errors("Failed to render QC plot"):
+        with plot_responses.plot_errors("Failed to render QC plot"):
             overlap.render()
 
     _together([route] * 6)
@@ -55,7 +57,7 @@ def test_plot_routes_never_render_at_the_same_time() -> None:
 def test_concurrent_requests_are_drawn_one_after_another(client, monkeypatch) -> None:
     """Through the real route and the server's own threads."""
     overlap = Overlap()
-    monkeypatch.setattr(routes_plots, "_qc_paired_plot", lambda *a, **k: routes_plots.Response(overlap.render()))
+    monkeypatch.setattr(plots_qc, "_qc_paired_plot", lambda *a, **k: Response(overlap.render()))
     responses = []
     _together([lambda: responses.append(client.get("/api/plots/qc/protein/cv.png"))] * 5)
     assert [response.status_code for response in responses] == [200] * 5
@@ -67,7 +69,7 @@ def test_a_report_waits_for_the_plot_being_drawn(monkeypatch) -> None:
     monkeypatch.setattr(routes_summary, "report_with_notebook", lambda *a, **k: overlap.render())
 
     def plot():
-        with routes_plots.plot_errors("Failed to render QC plot"):
+        with plot_responses.plot_errors("Failed to render QC plot"):
             overlap.render()
 
     _together([plot, lambda: routes_summary.summary_report_route(None), plot])

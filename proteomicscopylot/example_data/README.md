@@ -16,7 +16,7 @@ credit. Cite them as:
 
 The CC BY 4.0 grant covers these data files only. The software is under the
 [GNU GPL version 3](../../LICENSE), and third-party biological reference data under
-`data/db/` retain their own upstream terms — see
+`data/db/` retain their own upstream terms; see
 [Biological reference data](../../data/db/README.md).
 
 ## Contents
@@ -66,5 +66,5 @@ The following still needs to be recorded before publication:
 
 These files exist to make the examples runnable and to exercise the protein,
 phosphosite and phosphoprotein workflows end to end. They are a real experiment, not
-a simulation, so the numbers are representative — but they are a single dataset from
+a simulation, so the numbers are representative, but they are a single dataset from
 a single instrument and should not be treated as a benchmark.

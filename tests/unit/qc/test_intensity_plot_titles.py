@@ -68,7 +68,7 @@ def test_histogram_is_titled_as_condition_means(captured):
 
 def test_centred_phosprot_titles_follow_the_axis(captured, monkeypatch):
     # 2026-10-09: a robust_site_median matrix is titled by what its axis measures.
-    monkeypatch.setattr(plot_images, "_phosprot_values_are_centred", lambda kind: True)
+    monkeypatch.setattr(plot_images, "phosprot_values_are_centred", lambda kind: True)
     plot_images.qc_boxplot_plot(kind="phosprot", mode="Mean")
     assert _title(captured) == "Mean ratio to site median per condition (log2)"
     assert captured[-1].axes[0].get_ylabel() == "log2 Ratio to Site Median"

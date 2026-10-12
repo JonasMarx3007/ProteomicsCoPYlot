@@ -13,7 +13,7 @@ def data(monkeypatch):
         'A3': [4., np.nan, np.inf], 'B1': [np.nan, np.nan, -2.]})
     metadata = pd.DataFrame({'sample': samples, 'condition': ['A', 'A', 'A', 'B']})
     monkeypatch.setattr(single, '_analysis_frame', lambda *a, **k: (frame.copy(), samples, metadata.copy()))
-    monkeypatch.setattr(single, '_phosprot_values_are_centred', lambda _: False)
+    monkeypatch.setattr(single, 'phosprot_values_are_centred', lambda _: False)
     return frame
 
 

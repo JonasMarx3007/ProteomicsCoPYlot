@@ -34,7 +34,7 @@ notes unless you ask otherwise.
 
 In scope: the FastAPI backend, the React frontend, the `proteomicscopylot`
 package, the Docker images, and the read-only viewer and password-gated
-viewer-portal modes — in particular anything that lets a viewer reach data,
+viewer-portal modes, in particular anything that lets a viewer reach data,
 files or endpoints outside the project they were given.
 
 Out of scope:

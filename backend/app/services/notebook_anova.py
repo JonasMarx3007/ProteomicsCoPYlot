@@ -6,56 +6,55 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_volcano import volcano_source
 
 
 @lru_cache(maxsize=1)
 def anova_source():
-    original = _source("stats_tools.py")
-    calculation = _definition(original, "_anova_dataframe")
-    calculation = _replace_once(calculation, "    payload: AnovaRequest,",
+    original = module_source("stats_tools.py")
+    calculation = function_definition(original, "_anova_dataframe")
+    calculation = replace_once(calculation, "    payload: AnovaRequest,",
                                 "    payload: SimpleNamespace, data, metadata, imputation_mask=None,")
-    calculation = _replace_once(calculation,
+    calculation = replace_once(calculation,
         "    source_used, frame, metadata, warnings = _stats_source(payload.kind, data_source=payload.dataSource)",
         "    source_used, frame, warnings = payload.dataSource, data.copy(), []")
-    calculation = _replace_once(calculation,
+    calculation = replace_once(calculation,
         "mask = _imputation_mask(payload.kind, source_used, frame.loc[df.index], sample_cols)",
         "mask = imputation_mask")
-    tables = _definition(original, "run_anova")
-    tables = _replace_once(tables, "def run_anova(payload: AnovaRequest) -> AnovaResultResponse:",
+    tables = function_definition(original, "run_anova")
+    tables = replace_once(tables, "def run_anova(payload: AnovaRequest) -> AnovaResultResponse:",
         "def calculate_tables(data, metadata, request, imputation_mask=None):\n    payload = SimpleNamespace(**request)")
-    tables = _replace_once(tables, "_anova_dataframe(payload)",
+    tables = replace_once(tables, "_anova_dataframe(payload)",
                            "_anova_dataframe(payload, data, metadata, imputation_mask)")
     start = tables.index("    metadata: pd.DataFrame | None = None")
     end = tables.index("    completeness_notice:", start)
     tables = tables[:start] + tables[end:]
-    tables = _replace_once(tables, "return AnovaResultResponse(", "return dict(")
-    prepare = _definition(original, "_prepare_anova_plot_frame")
-    prepare = _replace_once(prepare, "    payload: AnovaRequest,",
+    tables = replace_once(tables, "return AnovaResultResponse(", "return dict(")
+    prepare = function_definition(original, "_prepare_anova_plot_frame")
+    prepare = replace_once(prepare, "    payload: AnovaRequest,",
                             "    data, metadata, request, imputation_mask=None,")
-    prepare = _replace_once(prepare,
+    prepare = replace_once(prepare,
         "    _, label_column, anova_df, _ = _anova_dataframe(payload)\n    _, _, metadata, _ = _stats_source(payload.kind, data_source=payload.dataSource)",
         "    payload = SimpleNamespace(**request)\n    _, label_column, anova_df, _ = _anova_dataframe(payload, data, metadata, imputation_mask)")
-    figure = _definition(original, "_anova_heatmap_figure")
-    figure = _replace_once(figure, "    kind: AnnotationKind,", "    condition_palette: dict,")
-    figure = _replace_once(figure,
+    figure = function_definition(original, "_anova_heatmap_figure")
+    figure = replace_once(figure, "    kind: AnnotationKind,", "    condition_palette: dict,")
+    figure = replace_once(figure,
         "condition_hex = advanced_condition_colors(kind, plt, unique_conditions, advanced)",
         "condition_hex = condition_palette")
-    rendering = _definition(original, "anova_png")
-    rendering = _replace_once(rendering,
+    rendering = function_definition(original, "anova_png")
+    rendering = replace_once(rendering,
         "def anova_png(payload: AnovaRequest, selected_cluster: int | None = None, advanced: dict | None = None) -> bytes:",
         "def render_plot(data, metadata, request, condition_palette, imputation_mask=None, selected_cluster=None, advanced=None):\n    payload = SimpleNamespace(**request)")
-    rendering = _replace_once(rendering,
+    rendering = replace_once(rendering,
         "_prepare_anova_plot_frame(payload, selected_cluster=selected_cluster)",
         "_prepare_anova_plot_frame(data, metadata, request, imputation_mask, selected_cluster=selected_cluster)")
-    rendering = _replace_once(rendering, "kind=payload.kind,", "condition_palette=condition_palette,")
-    helpers = "\n\n".join(_definition(original, name) for name in (
+    rendering = replace_once(rendering, "kind=payload.kind,", "condition_palette=condition_palette,")
+    helpers = "\n\n".join(function_definition(original, name) for name in (
         "_anova_cluster_dataframe", "_condition_columns"))
-    styles = "\n".join(line for line in _source("plot_styling.py").splitlines()
+    styles = "\n".join(line for line in module_source("plot_styling.py").splitlines()
                        if not line.startswith("from app."))
-    code = _merge_source(
+    code = merge_source(
         "import numpy as np\nimport pandas as pd\nfrom types import SimpleNamespace\n"
         "from scipy.cluster.hierarchy import linkage, leaves_list, fcluster",
         extract_notebook_source(volcano_source().code, (
@@ -63,9 +62,9 @@ def anova_source():
             "imputed_value_counts", "constant_within_group", "get_plt", "to_png_bytes",
             "apply_advanced_axes")).code,
         extract_notebook_source(styles, ("advanced_element_number", "advanced_color_text", "advanced_label")).code,
-        extract_notebook_source(_source("clustering_tools.py"), (
+        extract_notebook_source(module_source("clustering_tools.py"), (
             "CompletenessReport", "drop_incomplete_features", "row_zscore", "heatmap_notice", "completeness_message")).code,
-        extract_notebook_source(_source("functions.py"), ("anova_posthoc_data", "entity_labels_for_kind")).code,
+        extract_notebook_source(module_source("functions.py"), ("anova_posthoc_data", "entity_labels_for_kind")).code,
         calculation, tables, prepare, helpers, figure, rendering)
     for before, after in (("AnovaRequest", "SimpleNamespace"), ("ResolvedSource", "str"),
                           ("_get_plt()", "get_plt()"), ("_to_png_bytes(", "to_png_bytes(")):

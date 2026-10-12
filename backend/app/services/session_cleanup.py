@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+from typing import Callable, TypeVar
 from threading import RLock
 
 from app.services.annotation_store import reset_all_annotations
@@ -12,12 +13,15 @@ from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.peptide_metadata_store import clear_peptide_metadata
 from app.services.session_context import get_session_id, reset_session_id, rotate_session_id, set_session_id
-from app.services.tool_access import clear_tool_session_auth
-from app.services.viewer_portal import clear_viewer_session_auth
 from app.services.env_settings import env_int
 
 _LOCK = RLock()
 _LAST_SEEN: dict[str, float] = {}
+# What the authentication stores run when a session is discarded. They register
+# here (see `register_session_auth_reset`) rather than being imported, because
+# they need `authenticated_session_rotation` from this module.
+_SESSION_AUTH_RESETS: list[Callable[[], None]] = []
+_Reset = TypeVar("_Reset", bound=Callable[..., None])
 _DEFAULT_IDLE_SECONDS = 24 * 60 * 60
 _DEFAULT_MAX_SESSIONS = 128
 # A session that held data and was used this recently is never evicted to make
@@ -74,12 +78,19 @@ def server_memory_budget_bytes() -> int:
     return int(capacity * 0.6) if capacity else 8 * 1024**3
 
 
+def register_session_auth_reset(reset: _Reset) -> _Reset:
+    """Run `reset` (in the discarded session's context) whenever a session is discarded."""
+    if reset not in _SESSION_AUTH_RESETS:
+        _SESSION_AUTH_RESETS.append(reset)
+    return reset
+
+
 def _discard_session(session_id: str) -> None:
     token = set_session_id(session_id)
     try:
-        clear_tool_session_auth()
+        for reset in list(_SESSION_AUTH_RESETS):
+            reset()
         clear_cloud_ai_consent()
-        clear_viewer_session_auth(reset_data=False)
         reset_all_annotations()
         reset_all_uploaded_metadata()
         reset_all_datasets()

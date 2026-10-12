@@ -13,7 +13,7 @@ from app.schemas.stats import VolcanoRequest, VolcanoControlRequest
 from app.services import stats_tools
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_volcano import render_volcano
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 
@@ -96,7 +96,7 @@ def test_phosphoprotein_counts_and_imputation_history(phosphosites, source):
 def test_unknown_collapse_history_does_not_break_the_plot(phosphosites):
     from app.services.phosprot_tools import aggregate_from_phospho
     from app.services.annotation_store import get_annotation
-    from app.api.routes_plots import _volcano_notebook_png
+    from app.api.plots_stats import _volcano_notebook_png
     aggregate_from_phospho('mean', 'non_imputed')
     get_annotation('phosprot').phosprot_lineage = None
     payload = VolcanoRequest(kind='phosprot', condition1='A', condition2='B')

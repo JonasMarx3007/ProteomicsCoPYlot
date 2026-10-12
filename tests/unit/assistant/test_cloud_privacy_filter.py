@@ -83,6 +83,6 @@ def test_local_ollama_is_not_filtered(monkeypatch):
         pass
 
     monkeypatch.setattr(chat_tools, "_open_ollama_request", lambda *args, **kwargs: ("llama", _Response()))
-    monkeypatch.setattr(chat_tools, "_read_json_response", lambda response, message: {"message": {"content": "ok"}})
+    monkeypatch.setattr(chat_tools, "read_json_response", lambda response, message: {"message": {"content": "ok"}})
     chat_tools.assistant_completion(ChatRequest(message="x", provider="ollama"), "Instruction.", "/home/jonas/x")
     assert called == []

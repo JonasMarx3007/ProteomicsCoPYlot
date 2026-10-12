@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 
-from app.api.routes_plots import _png_response
+from app.api.plot_responses import png_response
 from app.schemas.stats import AnovaRequest
 from app.services.clustering_tools import CompletenessReport
 from app.services import single_protein_tools as single, stats_tools as stats
@@ -59,7 +59,7 @@ def test_anova_notice_counts_significant_input_and_actual_image(data):
     ax.plot([1, 2])
     fig._copylot_notice = notice
     payload = to_png_bytes(fig, plt, dpi=72)
-    assert unquote(_png_response(payload).headers["X-CoPYlot-Notice"]) == payload.notice
+    assert unquote(png_response(payload).headers["X-CoPYlot-Notice"]) == payload.notice
     assert payload.notice in _png_to_html(payload)
     assert copy.deepcopy(payload).notice == payload.notice
 
@@ -88,7 +88,7 @@ def test_pathway_notice_counts_genes_not_source_rows(monkeypatch, data, cluster,
 def test_notice_is_escaped_in_report_and_absent_from_plain_images():
     payload = PlotBytes(b"png", "<unsafe> & text")
     assert "&lt;unsafe&gt; &amp; text" in _png_to_html(payload)
-    assert "X-CoPYlot-Notice" not in _png_response(b"png").headers
+    assert "X-CoPYlot-Notice" not in png_response(b"png").headers
 
 
 @pytest.mark.parametrize("selected", [None, 1])

@@ -6,24 +6,24 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _replace_once, _merge_source, qc_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_qc import qc_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 
 
 @lru_cache(maxsize=1)
 def count_source():
-    original = _source('phospho_tools.py')
-    table = _definition(original, 'phosphosite_plot_table')
-    table = _replace_once(table, 'def phosphosite_plot_table()', 'def prepare_table(data)')
-    table = _replace_once(table, '    filtered, _, _ = _phospho_context()', '    filtered = data')
-    figure = _definition(original, 'phosphosite_plot_png')
-    figure = _replace_once(figure, 'def phosphosite_plot_png(', 'def render_plot(data, ')
-    figure = _replace_once(figure, '    summary = phosphosite_plot_table()', '    summary = prepare_table(data)')
+    original = module_source('phospho_tools.py')
+    table = function_definition(original, 'phosphosite_plot_table')
+    table = replace_once(table, 'def phosphosite_plot_table()', 'def prepare_table(data)')
+    table = replace_once(table, '    filtered, _, _ = _phospho_context()', '    filtered = data')
+    figure = function_definition(original, 'phosphosite_plot_png')
+    figure = replace_once(figure, 'def phosphosite_plot_png(', 'def render_plot(data, ')
+    figure = replace_once(figure, '    summary = phosphosite_plot_table()', '    summary = prepare_table(data)')
     figure = figure.replace('plt, _ = _get_plt()', 'plt = get_plt()')
     figure = figure.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', table, figure,
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', table, figure,
         extract_notebook_source(qc_source('boxplot').code, ('get_plt', 'cm_to_inch', 'to_png_bytes', 'apply_advanced_axes')).code,
-        extract_notebook_source(_source('plot_styling.py'), ('advanced_color',)).code), ('prepare_table', 'render_plot'))
+        extract_notebook_source(module_source('plot_styling.py'), ('advanced_color',)).code), ('prepare_table', 'render_plot'))
 
 
 @lru_cache(maxsize=1)
@@ -40,24 +40,24 @@ def render_counts(**options):
 
 @lru_cache(maxsize=1)
 def coverage_source():
-    original = _source('phospho_tools.py')
-    counts = _definition(original, '_coverage_counts')
-    counts = _replace_once(counts, 'def _coverage_counts(', 'def _coverage_counts(data, metadata, is_log2, ')
-    counts = _replace_once(counts, '    frame, meta, _ = _phospho_context()', '    frame, meta = data, metadata')
-    counts = _replace_once(counts, '    annotation = get_annotation("phospho")\n    if not bool(getattr(annotation, "is_log2_transformed", False)):',
+    original = module_source('phospho_tools.py')
+    counts = function_definition(original, '_coverage_counts')
+    counts = replace_once(counts, 'def _coverage_counts(', 'def _coverage_counts(data, metadata, is_log2, ')
+    counts = replace_once(counts, '    frame, meta, _ = _phospho_context()', '    frame, meta = data, metadata')
+    counts = replace_once(counts, '    annotation = get_annotation("phospho")\n    if not bool(getattr(annotation, "is_log2_transformed", False)):',
                            '    if not is_log2:')
-    table = _definition(original, 'phospho_coverage_table').replace(
+    table = function_definition(original, 'phospho_coverage_table').replace(
         'def phospho_coverage_table(', 'def prepare_table(data, metadata, is_log2, ')
-    figure = _definition(original, 'phospho_coverage_png').replace(
+    figure = function_definition(original, 'phospho_coverage_png').replace(
         'def phospho_coverage_png(', 'def render_plot(data, metadata, is_log2, ')
-    code = '\n\n'.join((counts, table, figure, _definition(original, '_filter_meta_conditions')))
+    code = '\n\n'.join((counts, table, figure, function_definition(original, '_filter_meta_conditions')))
     code = code.replace('_coverage_counts(include_id=', '_coverage_counts(data, metadata, is_log2, include_id=')
     code = code.replace('plt, _ = _get_plt()', 'plt = get_plt()').replace('_extract_id_or_number(', 'extract_sample_id(')
     code = code.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', code,
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', code,
         extract_notebook_source(count_source().code, ('get_plt', 'cm_to_inch', 'to_png_bytes', 'apply_advanced_axes', 'advanced_color')).code,
-        extract_notebook_source(_source('functions.py'), ('extract_sample_id',)).code,
-        extract_notebook_source(_source('plot_styling.py'), ('advanced_label',)).code), ('prepare_table', 'render_plot'))
+        extract_notebook_source(module_source('functions.py'), ('extract_sample_id',)).code,
+        extract_notebook_source(module_source('plot_styling.py'), ('advanced_label',)).code), ('prepare_table', 'render_plot'))
 
 
 @lru_cache(maxsize=1)
@@ -76,17 +76,17 @@ def render_coverage(**options):
 def category_source(plot):
     if plot not in {'distribution', 'sty'}:
         raise ValueError('Unsupported phospho notebook.')
-    original = _source('phospho_tools.py')
-    table = _definition(original, f'phospho_{plot}_table')
+    original = module_source('phospho_tools.py')
+    table = function_definition(original, f'phospho_{plot}_table')
     table = table.replace(f'def phospho_{plot}_table(', 'def prepare_table(data, ')
-    table = _replace_once(table, '    frame, _, _ = _phospho_context()', '    frame = data')
-    figure = _definition(original, f'phospho_{plot}_png')
+    table = replace_once(table, '    frame, _, _ = _phospho_context()', '    frame = data')
+    figure = function_definition(original, f'phospho_{plot}_png')
     figure = figure.replace(f'def phospho_{plot}_png(', 'def render_plot(data, ')
     figure = figure.replace(f'phospho_{plot}_table(', 'prepare_table(data, ')
     figure = figure.replace('plt, _ = _get_plt()', 'plt = get_plt()')
     figure = figure.replace('plt, mtick = _get_plt()', 'plt = get_plt()\n    import matplotlib.ticker as mtick')
     figure = figure.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
-    return extract_notebook_source(_merge_source('import numpy as np\nimport pandas as pd', table, figure,
+    return extract_notebook_source(merge_source('import numpy as np\nimport pandas as pd', table, figure,
         extract_notebook_source(count_source().code, ('get_plt', 'cm_to_inch', 'to_png_bytes',
             'apply_advanced_axes', 'advanced_color')).code), ('prepare_table', 'render_plot'))
 

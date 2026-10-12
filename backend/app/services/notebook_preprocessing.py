@@ -11,8 +11,10 @@ import pandas as pd
 
 from app.services.notebook_archive import dataframe_bytes
 from app.services.notebook_provenance import NotebookProvenanceError
-from app.services.notebook_snapshots import RetainedReplay
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_snapshots import PendingRecipe, RetainedReplay, snapshots
+from app.services.notebook_source import (
+    extract_notebook_source, function_definition, merge_source, module_source, replace_once,
+)
 from app.services.dataset_reader import rename_cols, sanitize_dataframe
 from app.services.annotation_processor import prepare_normalized_log2_data
 from app.services.id_translation import replay_id_translations
@@ -31,8 +33,6 @@ def capture_notebook(session, recipe):
     section at once, because the report is one deliberate export.
     """
     from copy import deepcopy
-    from app.services.notebook_qc import snapshots
-    from app.services.notebook_snapshots import PendingRecipe
     from app.services.plot_export import notebook_capture_allowed
     from app.services.runtime_cache import runtime_cache_version
     from app.services.viewer_bootstrap import viewer_mode_enabled
@@ -127,41 +127,40 @@ def vsn_runtime_version():
 
 @lru_cache(maxsize=4)
 def preprocessing_source(collapse=False, vsn=False):
-    from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
-    functions = _source('functions.py')
-    functions = _replace_once(functions, '        from app.services.r_vsn import vsn_normalize_linear', '')
-    replay = _definition(_source('notebook_preprocessing.py'), 'replay_preprocessing')
+    functions = module_source('functions.py')
+    functions = replace_once(functions, '        from app.services.r_vsn import vsn_normalize_linear', '')
+    replay = function_definition(module_source('notebook_preprocessing.py'), 'replay_preprocessing')
     if not vsn:
         start = functions.index('    elif resolved == "vsn":', functions.index('def normalize_data('))
         end = functions.index('\n    else:\n        raise ValueError("Normalization must', start)
         functions = functions[:start] + functions[end:]
-        replay = _replace_once(replay,
+        replay = replace_once(replay,
             "    if config.get('vsn_runtime') and vsn_runtime_version() != config['vsn_runtime']:\n"
             "        raise ValueError('Use the recorded R and Bioconductor vsn versions for this notebook.')\n", '')
-    code = _merge_source(
+    code = merge_source(
         functions,
-        extract_notebook_source(_source('dataset_reader.py'), ('rename_cols', 'sanitize_dataframe')).code,
-        _definition(_source('annotation_processor.py'), 'prepare_normalized_log2_data'),
-        _definition(_source('notebook_preprocessing.py'), 'read_original_table'),
-        extract_notebook_source(_source('id_translation.py'), ('replay_id_translations',)).code,
+        extract_notebook_source(module_source('dataset_reader.py'), ('rename_cols', 'sanitize_dataframe')).code,
+        function_definition(module_source('annotation_processor.py'), 'prepare_normalized_log2_data'),
+        function_definition(module_source('notebook_preprocessing.py'), 'read_original_table'),
+        extract_notebook_source(module_source('id_translation.py'), ('replay_id_translations',)).code,
         replay)
     if vsn:
         portable_runtime = ('import shutil\n\ndef detect_r_runtime():\n'
             '    executable = shutil.which("Rscript")\n'
             '    return {"available": bool(executable), "executable": executable}\n')
-        vsn_code = _source('r_vsn.py').replace('from app.services.r_runtime import detect_r_runtime', '')
-        version_code = _definition(_source('notebook_preprocessing.py'), 'vsn_runtime_version').replace(
+        vsn_code = module_source('r_vsn.py').replace('from app.services.r_runtime import detect_r_runtime', '')
+        version_code = function_definition(module_source('notebook_preprocessing.py'), 'vsn_runtime_version').replace(
             '    from app.services.r_runtime import detect_r_runtime\n', '')
-        code = _merge_source(code, vsn_code, portable_runtime, version_code)
+        code = merge_source(code, vsn_code, portable_runtime, version_code)
     root = 'replay_preprocessing'
     if collapse:
-        collapse_code = _source('phosprot_tools.py').replace('PhosprotAggregationMode', 'str')
+        collapse_code = module_source('phosprot_tools.py').replace('PhosprotAggregationMode', 'str')
         # Resolve the original collapse's numeric helpers from the same scientific source.
         nodes = [node for node in ast.parse(collapse_code).body if not isinstance(node, ast.ImportFrom)
                  or not (node.module or '').startswith('app.')]
         collapse_code = '\n\n'.join(ast.get_source_segment(collapse_code, node) for node in nodes)
-        code = _merge_source(code, collapse_code,
-            _definition(_source('notebook_preprocessing.py'), 'replay_collapsed_input'))
+        code = merge_source(code, collapse_code,
+            function_definition(module_source('notebook_preprocessing.py'), 'replay_collapsed_input'))
         root = 'replay_collapsed_input'
     return extract_notebook_source(code, ('read_original_table', root))
 
@@ -179,12 +178,14 @@ def bind_original_preprocessing(recipe):
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
     from app.services.phospho_localization import get_localization_cutoff
-    from app.services.notebook_qc import _merge_source
 
     if recipe.uses_imputed_input or recipe.provenance.get('inputReplay') == 'original-file':
         return lambda: recipe
     kind = recipe.provenance.get('kind')
     if kind in {'peptide', 'precursor'}:
+        # Deferred on purpose: the peptide binder needs the peptide recipes'
+        # sources, which live beside their renderers, and those renderers
+        # capture through this module. The edge is real, not a convenience.
         from app.services.notebook_peptide_preprocessing import bind_peptide_preprocessing
         return bind_peptide_preprocessing(recipe)
     if kind not in {'protein', 'phospho', 'phosprot'}:
@@ -249,7 +250,7 @@ def bind_original_preprocessing(recipe):
             pd.testing.assert_frame_equal(projected, expected, check_exact=True)
         except (AssertionError, KeyError) as exc:
             raise NotebookProvenanceError('Recorded preprocessing does not reproduce this plot input; regenerate annotations.') from exc
-        merged = extract_notebook_source(_merge_source(recipe.source.code, preprocessing.code),
+        merged = extract_notebook_source(merge_source(recipe.source.code, preprocessing.code),
             tuple(dict.fromkeys((*recipe.source.functions, 'read_original_table', replay_function))))
         resources = {**recipe.resources,
             'processing_metadata.parquet': dataframe_bytes(processing_metadata),

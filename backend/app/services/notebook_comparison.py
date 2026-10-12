@@ -7,8 +7,7 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _replace_once, _merge_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_volcano import volcano_source
 
 
@@ -16,7 +15,7 @@ from app.services.notebook_volcano import volcano_source
 def comparison_source(plot, interactive=False):
     if plot not in {'pearson', 'venn'} or (plot == 'venn' and interactive):
         raise ValueError('Unsupported comparison notebook.')
-    original = _source('comparison_tools.py')
+    original = module_source('comparison_tools.py')
     prefix = 'pearson_correlation' if plot == 'pearson' else 'venn'
     renderer = prefix + ('_html' if interactive else '_png')
     names = [prefix + '_table', renderer, '_rename_if_condition', '_wrap_label', '_id_column']
@@ -24,9 +23,9 @@ def comparison_source(plot, interactive=False):
               if plot == 'pearson' else ['_venn_sets', '_feature_set_from_sample', '_feature_set_from_condition', '_get_venn'])
     definitions = []
     for name in names:
-        code = _definition(original, name)
+        code = function_definition(original, name)
         if name in {prefix + '_table', renderer, '_pearson_vectors', '_pearson_vectors_with_features', '_venn_sets'}:
-            code = _replace_once(code, f'def {name}(\n', f'def {name}(data, metadata,\n')
+            code = replace_once(code, f'def {name}(\n', f'def {name}(data, metadata,\n')
         code = code.replace('    frame, meta, _ = _analysis_context(kind)', '    frame, meta = data, metadata')
         for helper in ('_pearson_vectors', '_pearson_vectors_with_features', '_venn_sets'):
             code = code.replace(f'{helper}(\n        kind=kind,', f'{helper}(\n        data, metadata, kind=kind,')
@@ -37,17 +36,17 @@ def comparison_source(plot, interactive=False):
             ('_cm_to_inch(', 'cm_to_inch('), ('_cm_to_px(', 'cm_to_px('), ('_to_png_bytes(', 'to_png_bytes(')):
         code = code.replace(before, after)
     code = code.replace(prefix + '_table(', 'prepare_table(').replace(renderer + '(', 'render_plot(')
-    common = _source('plotting_common.py')
-    styling = '\n'.join(line for line in _source('plot_styling.py').splitlines() if not line.startswith('from app.'))
-    styling += '\n\n' + _definition(common, 'get_plt') + '\n\ndef _get_plt():\n    return get_plt()\n'
-    return extract_notebook_source(_merge_source(
+    common = module_source('plotting_common.py')
+    styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines() if not line.startswith('from app.'))
+    styling += '\n\n' + function_definition(common, 'get_plt') + '\n\ndef _get_plt():\n    return get_plt()\n'
+    return extract_notebook_source(merge_source(
         'import numpy as np\nimport pandas as pd\nfrom textwrap import fill', code,
         extract_notebook_source(styling, ('get_plt', 'apply_advanced_axes', 'advanced_plotly_layout',
             'advanced_color', 'advanced_label', 'marker_style', 'plotly_marker', 'resolve_reference_line')).code,
-        extract_notebook_source(_source('functions.py'), ('condition_mean',)).code,
-        extract_notebook_source(_source('plot_export.py'), ('to_png_bytes', 'cm_to_inch', 'cm_to_px')).code,
+        extract_notebook_source(module_source('functions.py'), ('condition_mean',)).code,
+        extract_notebook_source(module_source('plot_export.py'), ('to_png_bytes', 'cm_to_inch', 'cm_to_px')).code,
         extract_notebook_source(volcano_source(True).code, ('plotly_html', 'get_plotly_go')).code,
-        _definition(common, 'truncate_hover_text')),
+        function_definition(common, 'truncate_hover_text')),
         ('prepare_table', 'render_plot'))
 
 

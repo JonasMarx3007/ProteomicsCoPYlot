@@ -58,18 +58,15 @@ from app.services.functions import (
     constant_differences,
     without_variation,
     imputed_value_counts,
-    _phosprot_values_are_centred,
     intensity_unit_label,
     anova_posthoc_data,
-    data_source_options,
-    select_matrix,
     extract_sample_id as _extract_id_or_number,
-    imputed_data_available,
     paired_sample_columns,
     paired_t_test,
     effective_test_type,
     resolve_test_type,
 )
+from app.services.analysis_matrix import phosprot_values_are_centred, data_source_options, select_matrix, imputed_data_available
 from app.services.plot_styling import (
     advanced_alpha,
     advanced_color_text,
@@ -2772,7 +2769,7 @@ def pathway_heatmap_png(
         )
         color_label = "Z-score"
     else:
-        color_label = intensity_unit_label(_phosprot_values_are_centred(kind))
+        color_label = intensity_unit_label(phosprot_values_are_centred(kind))
 
     heatmap_data = heatmap_data.replace([np.inf, -np.inf], np.nan)
     if value_type == "z":

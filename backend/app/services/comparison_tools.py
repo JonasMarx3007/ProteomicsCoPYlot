@@ -17,8 +17,8 @@ from app.schemas.annotation import AnnotationKind
 from app.services.functions import (
     sample_label_frame,
     condition_mean,
-    qc_matrix,
 )
+from app.services.analysis_matrix import qc_matrix
 from app.services.plot_styling import (
     advanced_label,
     advanced_plotly_layout,

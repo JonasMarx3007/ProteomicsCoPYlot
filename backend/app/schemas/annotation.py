@@ -9,7 +9,7 @@ MetadataAnnotationKind = Literal["protein", "phospho"]
 FilterMethod = Literal["at_least_n", "percentage"]
 # The matrix an analysis runs on, in ladder order: least processed first.
 # One name, one meaning, everywhere -- the UI options, the request schemas and
-# `functions.select_matrix` all read from this.
+# `analysis_matrix.select_matrix` all read from this.
 DataSource = Literal["data", "filtered", "imputed"]
 # What an analysis actually ran on, as reported back. Wider than `DataSource`:
 # it can name a matrix nobody can request -- "raw" and "log2" are reached only by

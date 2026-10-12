@@ -73,10 +73,12 @@ second checks a built Docker image.
   skipping numerical-reference checks.
 - Fixed scientific fixtures must fail if they stop exercising the intended
   result; empty output is not a reason to silently skip a reference comparison.
-- Fixed scientific fixtures must fail if they stop exercising the intended
-  result; empty output is not a reason to silently skip a reference comparison.
 
-Measure Python runtime with `pytest --durations=40`. Keep the full CI matrix,
+The suite uses two workers (`-n 2`, pytest-xdist, set in pyproject.toml) to
+bound memory use. Larger machines can explicitly request `-n auto`;
+each worker is a separate process with its own stores, so tests must not rely
+on another test's state or on a fixed path outside `tmp_path`. `pytest -n 0`
+runs serially. Measure Python runtime with `pytest --durations=40`. Keep the full CI matrix,
 parameter cases, numerical tolerances and coverage floor intact when improving
 setup costs; a shorter run achieved by silently selecting fewer checks is not
 an equivalent optimization.

@@ -1,5 +1,49 @@
 # Architecture and Repository Map
 
+## Interactive map
+
+The [interactive map](architecture/index.html) connects frontend features, API
+routes and Python services. Download the HTML and open it in a browser, or view
+it on GitHub Pages after enabling publication. Search for a feature or endpoint,
+then select a node to inspect its connections.
+
+The map uses static source analysis, not runtime traces. Python links come from
+imports and calls; frontend links are inferred from API paths and named imports.
+Dynamic dispatch, indirect frontend wrappers and runtime-generated paths may be
+missing. A link does not establish scientific correctness or test coverage.
+
+### Regenerate
+
+From the repository root, run:
+
+```sh
+python tools/build_architecture_map.py
+```
+
+Only versioned application source and the published API schema are read. Add new
+source files to Git before regenerating. No application is started, no model is
+called and no data is sent over the network. Python's standard library is enough;
+the private Graphify installation and graph are not required or published.
+
+The output contains repository-relative filenames, symbol names, API paths and
+inferred connections. It excludes source bodies, docstrings, datasets, local
+configuration and internal reports. A source fingerprint identifies the input
+snapshot. Commit the regenerated HTML alongside relevant code changes.
+
+### GitHub Pages
+
+1. In repository **Settings > Pages**, select **GitHub Actions** as the source.
+2. In **Settings > Secrets and variables > Actions > Variables**, add
+   `PUBLISH_ARCHITECTURE_MAP` with the value `true`.
+3. Run **Architecture map** from the Actions tab, or push to `main`.
+
+The workflow rebuilds the map from that commit and publishes only the generated
+HTML, never the repository or `local/`. Its deployment summary provides the live
+URL. Without the variable, the workflow validates the map but does not deploy.
+GitHub Pages availability depends on repository visibility and the account plan.
+
+See [GitHub's Pages workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+
 ## Runtime flow
 
 The React/TypeScript frontend calls FastAPI endpoints through `frontend/src/lib/api.ts`. Routes under `backend/app/api/` validate models from `backend/app/schemas/` and delegate analysis to `backend/app/services/`.
@@ -34,7 +78,8 @@ lists it where the middleware is registered, and
 `tests/unit/security/test_middleware_order_and_session_gate.py` checks it):
 
 1. **Host allowlist.** A request for an unknown `Host` is refused first.
-2. **Gzip** of the finished response (JSON tables and HTML; images and ZIP files are skipped).
+2. **Gzip** of the finished response (JSON tables and HTML; PNG and ZIP responses declare
+   `Content-Encoding: identity`, so the middleware leaves them alone).
 3. **Tab sessions.** `/api/tabs/<id>/api/...` is rewritten before any path is read.
 4. **Security headers**, on every response including refusals.
 5. **CORS**, only when `COPYLOT_CORS_ORIGINS` is set.
@@ -99,7 +144,7 @@ embed it, so a downloaded file works offline.
   pip package, which may be a different release); `notebook_functions.py`
   imports it as `._core`. Notebook exports stay self-contained: when their
   source is assembled, the definitions they use replace the `# <shared-core>`
-  import block (`notebook_qc._source`). The R functions keep their own copy,
+  import block (`notebook_source.module_source`). The R functions keep their own copy,
   compared by the parity tests.
 - **Method references** cited by the report, the README table and the manual
   come from `backend/app/services/method_references.py`.

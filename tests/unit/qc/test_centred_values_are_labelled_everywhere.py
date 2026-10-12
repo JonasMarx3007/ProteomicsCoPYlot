@@ -135,7 +135,7 @@ def everything_centred(monkeypatch):
 
     for name in CENTRING_MODULES:
         module = importlib.import_module(f"app.services.{name}")
-        monkeypatch.setattr(module, "_phosprot_values_are_centred", lambda kind: True, raising=False)
+        monkeypatch.setattr(module, "phosprot_values_are_centred", lambda kind: True, raising=False)
 
 
 @pytest.fixture

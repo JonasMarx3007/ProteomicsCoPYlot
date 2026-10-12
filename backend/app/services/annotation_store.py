@@ -14,6 +14,7 @@ from app.schemas.annotation import (
     PhosprotLineage,
 )
 from app.services.dataset_store import get_active_package
+from app.services.functions import paired_sample_columns
 from app.services.metadata_upload_store import (
     get_active_profile,
     update_uploaded_metadata_pair_ids,
@@ -296,8 +297,6 @@ def update_annotation_pairing(
         metadata.loc[metadata["sample"].astype(str) == pair[0], "pair_id"] = pair_id
         metadata.loc[metadata["sample"].astype(str) == pair[1], "pair_id"] = pair_id
 
-    from app.services.functions import paired_sample_columns
-
     paired_sample_columns(metadata, left_condition, right_condition)
     metadata_kind = "protein" if kind == "protein" else "phospho"
     update_uploaded_metadata_pair_ids(
@@ -372,6 +371,10 @@ def clear_annotation(
 
 
 def rename_package(old_name: str, new_name: str) -> None:
+    """Follow a dataset package rename (`dataset_store.rename_package` decides it).
+
+    Nothing to do when this session has no annotation under the old name.
+    """
     old_key = str(old_name or "").strip()
     new_key = str(new_name or "").strip()
     if not old_key or not new_key or old_key == new_key:

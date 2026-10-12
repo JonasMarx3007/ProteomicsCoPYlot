@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[3]
 from app.schemas.stats import AnovaRequest, SimulationRequest
 from app.services import stats_tools as st
 from app.services.functions import (
-    select_matrix,
     impute_values_with_diagnostics,
     log2_transform_data,
     raw_zero_to_nan,
     use_existing_log2_data,
 )
+from app.services.analysis_matrix import select_matrix
 
 SAMPLES = [f"{group}_{i}" for group in ("A", "B") for i in range(3)]
 META = pd.DataFrame(

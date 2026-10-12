@@ -10,7 +10,10 @@ import pandas as pd
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes, portable_filename
 from app.services.notebook_preprocessing import report_recipe_sink
-from app.services.notebook_source import NotebookSource, extract_notebook_source
+from app.services.notebook_snapshots import snapshots
+from app.services.notebook_source import (
+    NotebookSource, extract_notebook_source, function_definition, merge_source, module_source,
+)
 
 LOGGER = logging.getLogger(__name__)
 _active = ContextVar('report_notebook', default=None)
@@ -139,14 +142,12 @@ def report_plot(renderer, *args, **options):
 
 
 def _merge_counts(code):
-    from app.services.notebook_qc import _source, _merge_source
-    counts = _definition_renamed(_source('notebook_report.py'), '_volcano_counts', 'functions_report_counts')
-    return _merge_source(code, counts)
+    counts = _definition_renamed(module_source('notebook_report.py'), '_volcano_counts', 'functions_report_counts')
+    return merge_source(code, counts)
 
 
 def _definition_renamed(source, name, new_name):
-    from app.services.notebook_qc import _definition
-    return _definition(source, name).replace(f'def {name}(', f'def {new_name}(', 1)
+    return function_definition(source, name).replace(f'def {name}(', f'def {new_name}(', 1)
 
 
 def report_table(renderer, *args, **options):
@@ -189,9 +190,8 @@ def record_sample_mapping(title, mapping):
     if collector is None:
         return
     try:
-        from app.services.notebook_qc import _source
         metadata = mapping.drop(columns=['label'])
-        source = extract_notebook_source(_source('functions.py'), ('sample_label_frame',))
+        source = extract_notebook_source(module_source('functions.py'), ('sample_label_frame',))
         collector.append(NotebookRecipe(plot_name=f'Sample mapping — {title}', source=source,
             settings={}, provenance={'inputReplay': 'captured-metadata', 'outputs': ['table']},
             original_filename='', resources={'input.parquet': dataframe_bytes(metadata),
@@ -218,8 +218,7 @@ def load_functions(path, name):
 
 
 def combine_report(title, recipes, omitted=()):
-    from app.services.notebook_qc import _source
-    loader = extract_notebook_source(_source('notebook_report.py'), ('load_functions',))
+    loader = extract_notebook_source(module_source('notebook_report.py'), ('load_functions',))
     imports = tuple(sorted(set(loader.imports).union(*(recipe.source.imports for recipe in recipes))))
     resources = {'input.parquet': dataframe_bytes(pd.DataFrame()),
                  'metadata.parquet': dataframe_bytes(pd.DataFrame())}
@@ -283,7 +282,6 @@ def combine_report(title, recipes, omitted=()):
 
 
 def report_with_notebook(builder, payload):
-    from app.services.notebook_qc import snapshots
     from app.services.runtime_cache import runtime_cache_version
     from app.services.session_context import get_session_id
     revision = runtime_cache_version()

@@ -35,6 +35,7 @@ request.
 ```bash
 # All Python tests (CI: every Python 3.10-3.13, plus Windows; the package
 # and parity tests also on macOS). See tests/README.md for the layout.
+# Runs in two workers (pytest-xdist); `pytest -q -n 0` for a serial run.
 pytest -q
 
 # Lint (Python) -- CI pins ruff 0.15.11, the version the pre-commit hook uses
@@ -91,7 +92,7 @@ and they do not reformat your code. Run them over everything once with
 ## Tests
 
 A bug fix comes with a test that fails before it and passes after. Please check
-that yourself by reverting the fix and watching the test fail — a test that
+that yourself by reverting the fix and watching the test fail; a test that
 passes against the broken code is worse than no test, because it is a claim that
 the bug is gone.
 

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.schemas.stats import VolcanoRequest
 from app.services import completeness_tools, functions, phospho_tools, stats_tools
+from app.services import analysis_matrix
 from app.services.annotation_store import get_annotation
 from app.services.phospho_localization import (
     get_localization_cutoff,
@@ -90,7 +91,7 @@ def test_every_phosphosite_entry_point_uses_the_session_cutoff(example):
     overview_before = dict(phospho_tools.phosphosite_plot_table()[["Term", "Count"]].values)
 
     set_localization_cutoff(0.75)
-    _, frame, _ = functions.select_matrix("phospho", "filtered")
+    _, frame, _ = analysis_matrix.select_matrix("phospho", "filtered")
     assert len(frame) == passing
     assert (pd.to_numeric(frame["PTM_localization"]) >= 0.75).all()
     assert _volcano_rows() < before_volcano, "the cached volcano must be recomputed"
@@ -100,21 +101,21 @@ def test_every_phosphosite_entry_point_uses_the_session_cutoff(example):
     site_frame, _ = completeness_tools._frame_and_meta("phospho")
     assert (pd.to_numeric(site_frame["PTM_localization"]) >= 0.75).all()
     table = phospho_tools.ksea_table(condition1="GRK", condition2="WT", organism="none", data_source="data")
-    _, all_data, _ = functions.select_matrix("phospho", "data")
+    _, all_data, _ = analysis_matrix.select_matrix("phospho", "data")
     assert set(table["PTM_Collapse_key"]) <= set(all_data["PTM_Collapse_key"])
     assert (pd.to_numeric(all_data["PTM_localization"]) >= 0.75).all()
 
 
 def test_a_cutoff_nothing_passes_is_an_explained_error(example, monkeypatch):
     low = _sites().iloc[[2]]
-    monkeypatch.setattr(functions, "_select_matrix_all_rows", lambda kind, source: (source, low, None))
+    monkeypatch.setattr(analysis_matrix, "_select_matrix_all_rows", lambda kind, source: (source, low, None))
     set_localization_cutoff(0.9)
     with pytest.raises(ValueError, match="Lower the localization probability cutoff"):
-        functions.select_matrix("phospho", "filtered")
-    monkeypatch.setattr(functions, "_select_matrix_all_rows",
+        analysis_matrix.select_matrix("phospho", "filtered")
+    monkeypatch.setattr(analysis_matrix, "_select_matrix_all_rows",
                         lambda kind, source: (source, low.drop(columns="PTM_localization"), None))
     with pytest.raises(ValueError, match="Set the cutoff to 0"):
-        functions.select_matrix("phospho", "filtered")
+        analysis_matrix.select_matrix("phospho", "filtered")
 
 
 def test_api_round_trip_and_validation(example):

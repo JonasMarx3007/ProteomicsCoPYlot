@@ -5,7 +5,7 @@ frontend sends but the route omits falls back to the model default without any
 error. That is how `/stats/{kind}/ora/{direction}.png` came to draw an ANOVA
 cluster with `average` linkage while the table beside it used the linkage the
 user chose. This test derives the contract from the code: for each route in
-`routes_plots.py` that constructs a request model, every field of that model
+`plots_*.py` (the `routes_plots` modules) that constructs a request model, every field of that model
 that a client can set must be a parameter of the route, unless it is listed here
 as deliberately fixed.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-ROUTES = ROOT / "backend" / "app" / "api" / "routes_plots.py"
+ROUTES = sorted((ROOT / "backend" / "app" / "api").glob("plots_*.py"))  # one module per URL prefix
 
 # Fields a plot route may legitimately not expose, with the reason.
 FIXED_FIELDS: dict[str, set[str]] = {
@@ -39,29 +39,40 @@ def _request_models() -> dict[str, type]:
 
 
 def _route_functions():
-    tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and any(
-            isinstance(d, ast.Call) and getattr(d.func, "attr", "") in {"get", "post"} for d in node.decorator_list
-        ):
-            yield node
+    for path in ROUTES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and any(
+                isinstance(d, ast.Call) and getattr(d.func, "attr", "") in {"get", "post"} for d in node.decorator_list
+            ):
+                yield node
 
 
 def test_every_plot_route_declares_the_request_fields_it_builds() -> None:
     models = _request_models()
     problems: list[str] = []
+    checked: set[str] = set()
     for route in _route_functions():
         params = {a.arg for a in route.args.args + route.args.kwonlyargs}
         for call in ast.walk(route):
-            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in models):
+            if not isinstance(call, ast.Call):
+                continue
+            constructor = call.func
+            if (isinstance(constructor, ast.Attribute) and constructor.attr == "model_validate"
+                    and len(call.args) == 1 and isinstance(call.args[0], ast.Call)
+                    and isinstance(call.args[0].func, ast.Name) and call.args[0].func.id == "dict"):
+                constructor, call = constructor.value, call.args[0]
+            if not (isinstance(constructor, ast.Name) and constructor.id in models):
                 continue
             # Only routes that build the model from individual parameters are
             # checked; a route taking the model as its body already gets every field.
             if any(isinstance(k.value, ast.Name) and k.value.id in params and k.arg is None for k in call.keywords):
                 continue
-            fields = set(models[call.func.id].model_fields)
+            checked.add(route.name)
+            fields = set(models[constructor.id].model_fields)
             passed = {k.arg for k in call.keywords if k.arg}
             missing = fields - passed - FIXED_FIELDS.get(route.name, set())
             if missing:
-                problems.append(f"{route.name} builds {call.func.id} without {sorted(missing)}")
+                problems.append(f"{route.name} builds {constructor.id} without {sorted(missing)}")
+    assert {"stats_anova_route", "stats_ora_route", "stats_simulation_route"} <= checked
     assert not problems, "\n".join(problems)

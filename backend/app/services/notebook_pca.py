@@ -7,8 +7,8 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once, qc_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_qc import qc_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_provenance import input_history
 
 PROJECTION_OPTIONS = ("data_source", "plot_dim", "method", "umap_n_neighbors", "umap_min_dist",
@@ -29,8 +29,8 @@ def _method_key(method):
 def pca_source(interactive=False, method="pca"):
     method = _method_key(method)
     name, prefix = METHODS[method]
-    rendering = _source("plot_images.py")
-    projection = _definition(rendering, "_pca_projection")
+    rendering = module_source("plot_images.py")
+    projection = function_definition(rendering, "_pca_projection")
     for before, after in (
         ("def _pca_projection(", "def project("),
         ("    kind: AnnotationKind,", "    data, metadata,"),
@@ -38,7 +38,7 @@ def pca_source(interactive=False, method="pca"):
         ("_get_sample_columns(kind, frame)", "metadata['sample'].tolist()"),
         ("_metadata_for_kind(kind, frame, sample_columns).copy()", "metadata.copy()"),
     ):
-        projection = _replace_once(projection, before, after)
+        projection = replace_once(projection, before, after)
     # Include only the selected algorithm, not the other methods' dependencies.
     start = projection.index('    if method_key == "pca":')
     umap = projection.index('    elif method_key == "umap":', start)
@@ -50,9 +50,9 @@ def pca_source(interactive=False, method="pca"):
     projection = projection.replace("Use PCA, UMAP, or t-SNE.", f"This notebook exports {name} only.")
     projection = projection.replace('method: str = "PCA"', f'method: str = "{name}"')
     renderer = "qc_pca_interactive_html" if interactive else "qc_pca_plot"
-    figure = _definition(rendering, renderer)
-    figure = _replace_once(figure, f"def {renderer}(", "def plot_figure(")
-    figure = _replace_once(figure, "    kind: AnnotationKind,", "    scores, explained, cluster_labels, condition_colors,")
+    figure = function_definition(rendering, renderer)
+    figure = replace_once(figure, f"def {renderer}(", "def plot_figure(")
+    figure = replace_once(figure, "    kind: AnnotationKind,", "    scores, explained, cluster_labels, condition_colors,")
     begin = figure.index("    pca_scores, explained, axis_prefix = _pca_projection(")
     end = figure.index("    plot_3d =" if interactive else "    n_components =", begin)
     figure = figure[:begin] + f'    pca_scores = scores.copy()\n    axis_prefix = "{prefix}"\n' + figure[end:]
@@ -60,26 +60,26 @@ def pca_source(interactive=False, method="pca"):
     end = figure.index("    if cluster_labels is not None:", begin)
     figure = figure[:begin] + figure[end:]
     palette = "None" if interactive else "plt"
-    figure = _replace_once(figure, f"advanced_condition_colors(kind, {palette}, groups, advanced)", "condition_colors")
+    figure = replace_once(figure, f"advanced_condition_colors(kind, {palette}, groups, advanced)", "condition_colors")
     if interactive:
         assert figure.count("return _plotly_html(fig)") == 2
         figure = figure.replace("return _plotly_html(fig)", "return force_svg_rendering(fig)")
         figure = figure.replace("_get_plotly()", "get_plotly()").replace("_cm_to_px(", "cm_to_px(")
     else:
-        figure = _replace_once(figure, "return _to_png_bytes(fig, plt, dpi=dpi)", "return fig")
+        figure = replace_once(figure, "return _to_png_bytes(fig, plt, dpi=dpi)", "return fig")
     figure = figure.replace("_get_plt()", "get_plt()").replace("_cm_to_inch(", "cm_to_inch(")
     shared = extract_notebook_source(qc_source("coverage").code, (
         "get_plt", "to_png_bytes", "cm_to_inch", "_make_fig", "advanced_anchor", "advanced_label",
         "marker_style", "apply_advanced_axes")).code
-    styles = extract_notebook_source(_source("plot_styling.py"), ("pca_default_size",)).code
+    styles = extract_notebook_source(module_source("plot_styling.py"), ("pca_default_size",)).code
     if interactive:
         from app.services.notebook_interactive import abundance_source
         shared = extract_notebook_source(abundance_source().code, (
             "get_plotly", "plotly_html", "cm_to_px", "force_svg_rendering", "advanced_label",
             "advanced_element_text", "apply_plotly_group_markers", "advanced_plotly_layout")).code
     helpers = extract_notebook_source(rendering, ("_pca_feature_matrix", "_compute_cluster_labels", "_cluster_display_label", "fitted_group_ellipse")).code
-    scaling = extract_notebook_source(_source("functions.py"), ("resolve_feature_scaling",)).code
-    source = _merge_source(shared, styles, helpers, scaling, projection, figure)
+    scaling = extract_notebook_source(module_source("functions.py"), ("resolve_feature_scaling",)).code
+    source = merge_source(shared, styles, helpers, scaling, projection, figure)
     serializers = ("plotly_html",) if interactive else ("to_png_bytes", "get_plt")
     return extract_notebook_source(source, ("plot_figure", "project", "_compute_cluster_labels", *serializers))
 
@@ -98,7 +98,7 @@ def render_pca(kind: str, *, interactive=False, **options) -> tuple[bytes | str,
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
     from app.services.data_tools import metadata_for_kind, _get_sample_columns
-    from app.services.functions import select_matrix
+    from app.services.analysis_matrix import select_matrix
     from app.services.plot_images import qc_pca_plot, qc_pca_interactive_html
     from app.services.plot_styling import advanced_condition_colors
     from app.services.plot_export import plot_output_format

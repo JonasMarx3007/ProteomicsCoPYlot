@@ -5,10 +5,9 @@ from functools import lru_cache
 import sys
 from types import ModuleType, SimpleNamespace
 
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_source import extract_notebook_source
 from app.services.notebook_volcano import volcano_source
 
 GO_ATTRIBUTION = (
@@ -22,27 +21,27 @@ GO_ATTRIBUTION = (
 
 @lru_cache(maxsize=3)
 def ora_source(upstream=None):
-    original = _source("stats_tools.py")
-    universe = _definition(original, "_prepare_ora_universe")
-    universe = _replace_once(universe, "def _prepare_ora_universe(", "def prepare_universe(database,")
-    universe = _replace_once(universe, "db = load_go_db()", "db = database")
-    enrichment = _definition(original, "_enrichment_terms").replace("EnrichmentTerm", "SimpleNamespace")
-    rendering = _definition(original, "ora_plot_png")
-    rendering = _replace_once(rendering, "def ora_plot_png(", "def render_plot(result, request,")
-    rendering = _replace_once(rendering, "    payload: EnrichmentRequest,\n", "")
-    rendering = _replace_once(rendering, "    result = run_enrichment(payload)",
+    original = module_source("stats_tools.py")
+    universe = function_definition(original, "_prepare_ora_universe")
+    universe = replace_once(universe, "def _prepare_ora_universe(", "def prepare_universe(database,")
+    universe = replace_once(universe, "db = load_go_db()", "db = database")
+    enrichment = function_definition(original, "_enrichment_terms").replace("EnrichmentTerm", "SimpleNamespace")
+    rendering = function_definition(original, "ora_plot_png")
+    rendering = replace_once(rendering, "def ora_plot_png(", "def render_plot(result, request,")
+    rendering = replace_once(rendering, "    payload: EnrichmentRequest,\n", "")
+    rendering = replace_once(rendering, "    result = run_enrichment(payload)",
         "    payload = SimpleNamespace(**request)\n"
         "    result = SimpleNamespace(**{key: [SimpleNamespace(**term) for term in value]\n"
         "        if key in {'upTerms', 'downTerms', 'clusterTerms'} else value\n"
         "        for key, value in result.items()})")
-    helpers = "\n\n".join(_definition(original, name) for name in (
+    helpers = "\n\n".join(function_definition(original, name) for name in (
         "_ora_direction_texts", "_rc_font_points", "_ora_height_needed_cm", "_ora_height_ceiling_cm",
         "_ora_label_layout", "_wrap_to_width"))
     constants = "\n\n".join(ast.get_source_segment(original, node) for node in ast.parse(original).body
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and any(
             isinstance(part, ast.Name) and (part.id.startswith("_ORA_") or part.id == "_POINTS_TO_CM")
             for part in ast.walk(node)))
-    styling = "\n".join(line for line in _source("plot_styling.py").splitlines()
+    styling = "\n".join(line for line in module_source("plot_styling.py").splitlines()
                         if not line.startswith("from app."))
     calculation = '''
 def calculate_enrichment(database, query_genes, background_genes, *, min_term_size=20,
@@ -72,12 +71,12 @@ def export_term_rows(result, request, direction):
     context.update({key: request[key] for key in keys})
     return [dict(context, **term) for term in result[f'{direction}Terms']]
 '''
-    code = _merge_source(
+    code = merge_source(
         "import numpy as np\nimport pandas as pd\nfrom types import SimpleNamespace\nfrom scipy.stats import hypergeom",
         extract_notebook_source(volcano_source().code, ("_bh_adjust", "_safe_neg_log10", "get_plt",
             "advanced_label", "advanced_number", "apply_advanced_axes")).code,
         extract_notebook_source(styling, ("advanced_color_map", "advanced_element_number")).code,
-        extract_notebook_source(_source("plot_export.py"), (
+        extract_notebook_source(module_source("plot_export.py"), (
             "to_png_bytes", "cm_to_inch", "fit_figure_to_labels", "MAX_AUTO_FIT_CM", "MAX_AUTO_FIT_PIXELS")).code,
         constants, helpers, universe, enrichment, calculation, rendering)
     for before, after in (("EnrichmentRequest", "SimpleNamespace"), ("EnrichmentResultResponse", "SimpleNamespace"),
@@ -112,8 +111,8 @@ def export_term_rows(result, request, direction):
     return ({key: _genes_from_values(values, split_groups=split_groups) for key, values in queries.items()},
             _genes_from_values(table[label].tolist(), split_groups=split_groups))
 '''
-        code = _merge_source(code, scientific, select, _definition(original, "_genes_from_values"),
-            _definition(original, "_gene_tokens"), _definition(original, "_clean_feature_name"))
+        code = merge_source(code, scientific, select, function_definition(original, "_genes_from_values"),
+            function_definition(original, "_gene_tokens"), function_definition(original, "_clean_feature_name"))
         roots += ("select_queries",)
     return extract_notebook_source(code, roots)
 

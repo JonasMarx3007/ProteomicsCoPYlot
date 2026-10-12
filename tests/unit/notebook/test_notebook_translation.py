@@ -15,7 +15,7 @@ from app.services import id_translation
 from app.services.dataset_reader import read_dataframe
 from app.services.dataset_store import get_current_dataset, save_table_dataset
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.notebook_single import render_box
 from app.services.session_context import get_session_id
 

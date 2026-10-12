@@ -85,10 +85,10 @@ def test_the_translation_download_names_the_file_safely(api, monkeypatch) -> Non
 
 
 def test_the_notebook_download_names_the_file_safely(api, monkeypatch) -> None:
-    from app.services import notebook_archive, notebook_qc
+    from app.services import notebook_archive, notebook_snapshots
 
     name = HOSTILE.replace(".csv", ".zip")
-    monkeypatch.setattr(notebook_qc.snapshots, "get", lambda session, token: object())
+    monkeypatch.setattr(notebook_snapshots.snapshots, "get", lambda session, token: object())
     monkeypatch.setattr(notebook_archive, "build_notebook_archive", lambda recipe: (name, b"PK"))
     response = api.get(f"/api/plots/notebooks/{'a' * 32}.zip")
     _assert_safe(response, name)

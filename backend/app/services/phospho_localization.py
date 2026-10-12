@@ -10,7 +10,7 @@ cannot be shown to pass it. At the default of 0 every site is kept.
 The cutoff selects which sites are analysed; it does not change how the data
 were processed. Normalization, the valid-value filter and imputation run on all
 sites when the annotation is generated, and the cutoff is applied where a
-phosphosite matrix is read (`functions.select_matrix`,
+phosphosite matrix is read (`analysis_matrix.select_matrix`,
 `phospho_tools._phospho_context`, `completeness_tools._frame_and_meta`). The
 phosphosite-to-phosphoprotein collapse takes its own cutoff, recorded with the
 phosphoprotein table.
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 
+from app.services.functions import filter_localization
 from app.services.runtime_cache import invalidate_runtime_cache
 from app.services.session_context import get_session_id
 
@@ -72,8 +73,6 @@ def restore_localization_cutoff_session_state(snapshot: float | None) -> None:
 
 def apply_session_localization_cutoff(frame):
     """`frame` without the sites below this session's cutoff (see module note)."""
-    from app.services.functions import filter_localization
-
     return filter_localization(frame, get_localization_cutoff())
 
 

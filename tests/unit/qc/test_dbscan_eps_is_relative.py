@@ -115,7 +115,7 @@ def test_no_absolute_eps_name_survives_anywhere():
 def test_routes_accept_the_factor():
     routes_with_factor = {
         name
-        for name, function in vars(routes_plots).items()
-        if inspect.isfunction(function) and "dbscanEpsFactor" in inspect.signature(function).parameters
+        for name, function in routes_plots.ROUTE_FUNCTIONS.items()
+        if "dbscanEpsFactor" in inspect.signature(function).parameters
     }
     assert len(routes_with_factor) == 3, routes_with_factor

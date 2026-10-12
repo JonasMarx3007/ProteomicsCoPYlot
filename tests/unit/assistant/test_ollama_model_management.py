@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services import chat_tools
+from app.services import chat_tools, provider_http
 
 
 @pytest.mark.parametrize("mode", ["success", "overflow", "timeout", "failure"])
@@ -113,7 +113,7 @@ def test_cli_management_and_refresh_use_chat_host(monkeypatch, action, command, 
         return io.BytesIO(b'{"models": [{"name": "fresh"}]}')
 
     monkeypatch.setattr(chat_tools, "_run_bounded_command", run)
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", urlopen)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", urlopen)
     result = getattr(chat_tools, f"ollama_{action}_model")(" synthetic-model ")
     assert calls == [(["mock-ollama", command, "synthetic-model"], base)]
     assert chat_tools._resolve_endpoint() == f"{base}/api/chat"
@@ -142,7 +142,7 @@ def test_gpu_policy_uses_resolved_host_not_override_or_call_order(monkeypatch, b
     assert hardware_probes == (['nvidia-smi'] if local else [])
     requests = []
     monkeypatch.setattr(chat_tools, '_resolve_model', lambda *a: 'synthetic')
-    monkeypatch.setattr(chat_tools, '_open_provider_request', lambda request, **kw: requests.append(request) or io.BytesIO())
+    monkeypatch.setattr(chat_tools, 'open_provider_request', lambda request, **kw: requests.append(request) or io.BytesIO())
     for value in forms:
         for enabled in (None, False, True):
             chat_tools._open_ollama_request(ChatRequest(message='test', ollamaUrl=value, gpuEnabled=enabled), messages=[{"role": "user", "content": "test"}])
@@ -165,7 +165,7 @@ def test_local_gpu_preference_is_preserved(monkeypatch, enabled, expected):
     monkeypatch.setattr(chat_tools.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout='Synthetic GPU', stderr=''))
     monkeypatch.setattr(chat_tools, '_resolve_model', lambda *a: 'synthetic')
     captured = []
-    monkeypatch.setattr(chat_tools, '_open_provider_request', lambda request, **kw: captured.append(request) or io.BytesIO())
+    monkeypatch.setattr(chat_tools, 'open_provider_request', lambda request, **kw: captured.append(request) or io.BytesIO())
     chat_tools._open_ollama_request(ChatRequest(message='test', gpuEnabled=enabled), messages=[{"role":"user", "content":"test"}])
     assert json.loads(captured[0].data)['options']['num_gpu'] == expected
 
@@ -189,7 +189,7 @@ def test_http_management_method_destination_and_refresh(monkeypatch, action, met
     def no_cli(*args, **kwargs):
         pytest.fail("Explicit endpoints must not invoke the CLI")
 
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", urlopen)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", urlopen)
     monkeypatch.setattr(chat_tools.subprocess, "run", no_cli)
     result = getattr(chat_tools, f"ollama_{action}_model")("synthetic-model", base + suffix)
     assert [(r.full_url, r.get_method()) for r in requests] == [

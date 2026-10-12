@@ -12,6 +12,7 @@ from app.services.plot_export import (
 )
 
 import math
+import re
 from typing import Any
 
 import numpy as np
@@ -20,18 +21,17 @@ import pandas as pd
 from app.schemas.annotation import AnnotationKind
 from app.services.data_tools import _get_sample_columns, metadata_for_kind as _metadata_for_kind, linear_qc_frame, log2_qc_frame
 from app.services.functions import (
-    _phosprot_values_are_centred,
     intensity_unit_label,
     resolve_feature_scaling,
     abundance_axis_label,
     condition_cvs,
-    select_matrix,
     extract_sample_id as _extract_id_or_number,
     impute_values_with_diagnostics,
     QQ_MAX_POINTS,
     qqnorm_plot_data,
     raw_zero_to_nan,
 )
+from app.services.analysis_matrix import phosprot_values_are_centred, select_matrix
 from app.services.runtime_cache import apply_cached_wrappers
 from app.services.plotting_common import get_plt as _get_plt, get_plotly as _get_plotly, plotly_html as _plotly_html
 from app.services.plot_styling import (
@@ -64,7 +64,7 @@ def _imputation_source(kind: AnnotationKind):
     return source_name, frame
 
 
-def _peptide_file_column(frame: pd.DataFrame) -> str:
+def peptide_file_column(frame: pd.DataFrame) -> str:
     if "File.Name" in frame.columns:
         return "File.Name"
     for column in frame.columns:
@@ -74,7 +74,7 @@ def _peptide_file_column(frame: pd.DataFrame) -> str:
     raise ValueError("Peptide dataset is missing a file-name column.")
 
 
-def _peptide_sequence_column(frame: pd.DataFrame) -> str:
+def peptide_sequence_column(frame: pd.DataFrame) -> str:
     if "Stripped.Sequence" in frame.columns:
         return "Stripped.Sequence"
     for column in frame.columns:
@@ -82,6 +82,16 @@ def _peptide_sequence_column(frame: pd.DataFrame) -> str:
         if "stripped" in normalized and "sequence" in normalized:
             return str(column)
     raise ValueError("Peptide dataset is missing a stripped-sequence column.")
+
+
+def peptide_precursor_column(frame: pd.DataFrame) -> str:
+    if "Precursor.Id" in frame.columns:
+        return "Precursor.Id"
+    for column in frame.columns:
+        normalized = re.sub(r"[^a-z0-9]+", "", str(column).strip().lower())
+        if "precursor" in normalized and "id" in normalized:
+            return str(column)
+    raise ValueError("Peptide dataset is missing a precursor-id column.")
 
 
 def _peptide_coverage_metadata(frame: pd.DataFrame, include_id: bool) -> pd.DataFrame:
@@ -251,7 +261,7 @@ def imputation_before_plot(
     )
     ax.legend()
     ax.set_title("Overall distribution of data with and without missing values")
-    ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_xlabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt, dpi=300)
@@ -351,7 +361,7 @@ def imputation_overall_fit_plot(
 
     method_label = "Numerical" if str(method).strip().lower() == "numerical" else "Quantile"
     ax.set_title(f"Overall data distribution and norm fit ({method_label})")
-    ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_xlabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt, dpi=300)
@@ -404,7 +414,7 @@ def imputation_after_plot(
     ax.legend()
     method_label = "Numerical" if str(method).strip().lower() == "numerical" else "Quantile"
     ax.set_title(f"Distribution of data after {method_label.lower()} imputation")
-    ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_xlabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     apply_advanced_axes(ax, advanced)
     return _to_png_bytes(fig, plt, dpi=300)
@@ -731,12 +741,12 @@ def qc_intensity_histogram_plot(
         density = kde(x_grid)
         ax.plot(x_grid, density, label=label, color=color_map[condition])
 
-    ax.set_xlabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_xlabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     ax.set_ylabel("Density")
     if header:
         # "ratio to site median" on a centred phosprot matrix: the title names
         # what the axis measures.
-        quantity = "ratio to site median" if _phosprot_values_are_centred(kind) else "intensity"
+        quantity = "ratio to site median" if phosprot_values_are_centred(kind) else "intensity"
         ax.set_title(f"Distribution of mean {quantity} per condition (log2)")
     else:
         ax.set_title("")
@@ -764,13 +774,11 @@ def _peptide_coverage_data(include_id=False, quantity_column=None, level="peptid
     if level not in {"peptide", "precursor"}:
         raise ValueError("Coverage level must be peptide or precursor.")
     frame = get_peptide_frame()
-    file_col = _peptide_file_column(frame)
+    file_col = peptide_file_column(frame)
     if level == "precursor":
-        from app.services.completeness_tools import _peptide_precursor_column
-
-        seq_col = _peptide_precursor_column(frame)
+        seq_col = peptide_precursor_column(frame)
     else:
-        seq_col = _peptide_sequence_column(frame)
+        seq_col = peptide_sequence_column(frame)
     quantity_col = resolve_peptide_quantity_column(frame, requested=quantity_column)
     meta = _peptide_coverage_metadata(frame, include_id=include_id)
 
@@ -998,9 +1006,9 @@ def qc_boxplot_plot(
             ha="center",
         )
         ax.set_xlabel("Sample")  # Mean mode says "Condition"; this axis said nothing.
-        ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+        ax.set_ylabel(intensity_unit_label(phosprot_values_are_centred(kind)))
         if header:
-            quantity = "ratio-to-site-median" if _phosprot_values_are_centred(kind) else "intensity"
+            quantity = "ratio-to-site-median" if phosprot_values_are_centred(kind) else "intensity"
             ax.set_title(f"Measured {quantity} values (log2)")
         else:
             ax.set_title("")
@@ -1064,9 +1072,9 @@ def qc_boxplot_plot(
         ax.set_xticks(positions)
         ax.set_xticklabels([advanced_label(condition, advanced, "conditionLabels") for condition in valid_conditions])
         ax.set_xlabel("Condition")
-        ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+        ax.set_ylabel(intensity_unit_label(phosprot_values_are_centred(kind)))
         if header:
-            quantity = "ratio to site median" if _phosprot_values_are_centred(kind) else "intensity"
+            quantity = "ratio to site median" if phosprot_values_are_centred(kind) else "intensity"
             ax.set_title(f"Mean {quantity} per condition (log2)")
         else:
             ax.set_title("")
@@ -2122,7 +2130,7 @@ def qc_abundance_plot(
         )
 
     ax.set_xlabel(f"{workflow} Rank")
-    ax.set_ylabel(abundance_axis_label(workflow, _phosprot_values_are_centred(kind)))
+    ax.set_ylabel(abundance_axis_label(workflow, phosprot_values_are_centred(kind)))
     if header:
         ax.set_title(f"Abundance plot - {workflow}")
     else:
@@ -2197,7 +2205,7 @@ def qc_abundance_interactive_html(
         showlegend=legend,
         title=f"Abundance plot - {workflow}" if header else None,
         xaxis_title=f"{workflow} Rank",
-        yaxis_title=abundance_axis_label(workflow, _phosprot_values_are_centred(kind)),
+        yaxis_title=abundance_axis_label(workflow, phosprot_values_are_centred(kind)),
     )
     fig.update_layout(**advanced_plotly_layout(advanced, width_px=_cm_to_px(width_cm), height_px=height_px))
     return _plotly_html(fig)

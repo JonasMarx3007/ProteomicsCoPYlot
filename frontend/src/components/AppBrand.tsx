@@ -45,6 +45,7 @@ export default function AppBrand({
             {subtitle}
           </div>
         ) : null}
+        <a className="text-xs text-slate-500 underline" href={withBasePath("/licenses.html")} target="_blank" rel="noreferrer">Licences</a>
       </div>
     </div>
   );

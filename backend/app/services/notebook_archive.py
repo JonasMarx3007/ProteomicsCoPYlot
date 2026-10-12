@@ -202,7 +202,8 @@ def build_notebook_archive(recipe: NotebookRecipe) -> tuple[str, bytes]:
     notebook["cells"].append(_cell("code", _VERIFY_CELL))
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", recipe.plot_name).strip("_")[:100] or "Plot"
     license_root = Path(sys._MEIPASS) / "notebook_sources" if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[3]
-    files = {**resources, "LICENSE": (license_root / "LICENSE").read_bytes(), "manifest.json": _json(manifest),
+    files = {**resources, "LICENSE": (license_root / "LICENSE").read_bytes(),
+             "NOTICE": (license_root / "NOTICE").read_bytes(), "manifest.json": _json(manifest),
              "requirements.txt": (f"# {python_note}\n" + "\n".join(requirements) + "\n").encode(),
              f"{stem}.ipynb": _json(notebook)}
     stream = io.BytesIO()

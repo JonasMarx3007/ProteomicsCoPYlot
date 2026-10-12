@@ -151,7 +151,7 @@ def check_service_module(source: str, path: str) -> list[Violation]:
 
 def violations(root: Path = ROOT) -> list[Violation]:
     found: list[Violation] = []
-    for path in sorted((root / "backend" / "app" / "api").glob("routes_*.py")):
+    for path in sorted((root / "backend" / "app" / "api").rglob("*.py")):
         found += check_route_module(path.read_text(encoding="utf-8"), str(path.relative_to(root)))
     for path in sorted((root / "backend" / "app" / "services").glob("*.py")):
         found += check_service_module(path.read_text(encoding="utf-8"), str(path.relative_to(root)))

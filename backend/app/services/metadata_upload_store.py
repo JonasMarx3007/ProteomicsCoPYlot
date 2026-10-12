@@ -843,6 +843,10 @@ def clear_uploaded_metadata(
 
 
 def rename_package(old_name: str, new_name: str) -> None:
+    """Follow a dataset package rename (`dataset_store.rename_package` decides it).
+
+    Nothing to do when this session uploaded no metadata under the old name.
+    """
     old_key = str(old_name or "").strip()
     new_key = str(new_name or "").strip()
     if not old_key or not new_key or old_key == new_key:

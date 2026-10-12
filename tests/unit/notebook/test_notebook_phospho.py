@@ -12,7 +12,7 @@ import pytest
 from app.services import phospho_tools
 from app.services.notebook_phospho import render_counts, count_module, render_coverage
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 

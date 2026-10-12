@@ -165,7 +165,7 @@ def analysis_database(monkeypatch):
     ('volcano_control', 'filtered', 'up', 'experiment'), ('anova', 'imputed', 'cluster', 'experiment')])
 def test_captured_ora_reruns_upstream_statistics(inputs, analysis_database, tmp_path, mode, source, direction, background):
     from app.services.notebook_ora import render_ora
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.session_context import get_session_id
     payload = EnrichmentRequest(kind='protein', source=mode, dataSource=source,
         condition1='A', condition2='B', condition1Control='C', condition2Control='D',
@@ -227,7 +227,7 @@ def test_ora_snapshot_routes_are_frozen_and_owner_scoped(inputs, analysis_databa
 
 def test_no_term_snapshot_is_exportable_without_rendering(inputs, analysis_database, tmp_path):
     from app.services.notebook_ora import render_ora
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.session_context import get_session_id
     payload = EnrichmentRequest(kind='protein', condition1='A', condition2='B',
         pValueThreshold=1, minTermSize=1, maxTermSize=30, adjPValueCutoff=1e-30)
@@ -254,7 +254,7 @@ def test_no_term_snapshot_is_exportable_without_rendering(inputs, analysis_datab
 def test_phosphoprotein_ora_keeps_collapse_history(phosphosites, monkeypatch, source):
     from app.services.phosprot_tools import aggregate_from_phospho
     from app.services.notebook_ora import render_ora
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.session_context import get_session_id
     database = pd.DataFrame([('BP', 'GO:1', 'Protein group term', 'P0;P1;P2;P3')],
                             columns=['ontology', 'term', 'description', 'genes'])

@@ -17,6 +17,7 @@ from app.services.dataset_store import reset_all_datasets
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.password_hashing import normalize_sha256, sha256_hex, validate_password_hash, verify_password
 from app.services.peptide_metadata_store import clear_peptide_metadata
+from app.services.session_cleanup import authenticated_session_rotation, register_session_auth_reset
 from app.services.session_context import get_session_id, session_isolation_enabled
 from app.services.viewer_bootstrap import (
     load_viewer_state_shared,
@@ -336,8 +337,6 @@ def viewer_session_auth() -> ViewerSessionAuth | None:
 
 
 def _initialize_authenticated_viewer(project: str, project_label: str) -> ViewerSessionAuth:
-    from app.services.session_cleanup import authenticated_session_rotation
-
     auth = ViewerSessionAuth(project=project, project_label=project_label)
     with authenticated_session_rotation() as session_id:
         _load_project_into_current_session(project, force_reload=False)
@@ -402,6 +401,7 @@ def authenticate_viewer_qr_session(token: str, *, project_root: Path | None = No
     return _initialize_authenticated_viewer(selected.project, selected.project_label)
 
 
+@register_session_auth_reset
 def clear_viewer_session_auth(*, reset_data: bool = False) -> None:
     session_id = get_session_id()
     with _LOCK:

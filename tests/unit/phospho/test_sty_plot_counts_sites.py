@@ -85,7 +85,7 @@ def test_the_exported_notebook_does_not_call_it_a_peptide_count(example_project)
 
     from app.services.notebook_archive import build_notebook_archive
     from app.services.notebook_phospho import render_sty
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.session_context import get_session_id
 
     invalidate_runtime_cache("test")

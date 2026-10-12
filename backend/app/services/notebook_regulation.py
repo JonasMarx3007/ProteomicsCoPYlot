@@ -6,25 +6,24 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source
 from app.services.notebook_volcano import volcano_source
 
 
 @lru_cache(maxsize=2)
 def regulation_source(interactive=False):
-    original = _source('phospho_tools.py')
-    table = _definition(original, 'phosprot_regulation_table')
+    original = module_source('phospho_tools.py')
+    table = function_definition(original, 'phosprot_regulation_table')
     start = table.index('    from app.services.stats_tools import _volcano_dataframe')
     end = table.index('    required =', start)
     table = table[:start] + table[end:]
     table = table.replace('def phosprot_regulation_table(\n    *,', 'def prepare_table(volcano_df, *,')
     name = 'phosprot_regulation_html' if interactive else 'phosprot_regulation_png'
-    figure = _definition(original, name).replace(f'def {name}(\n    *,', 'def render_plot(table, *,')
+    figure = function_definition(original, name).replace(f'def {name}(\n    *,', 'def render_plot(table, *,')
     start = figure.index('    table = phosprot_regulation_table(')
     end = figure.index('\n    )', start) + len('\n    )')
     figure = figure[:start] + figure[end:]
-    helpers = '\n\n'.join(_definition(original, n) for n in (
+    helpers = '\n\n'.join(function_definition(original, n) for n in (
         '_empty_phosprot_regulation_html', '_phosprot_regulation_figure')) if interactive else ''
     code = '\n\n'.join((table, figure, helpers))
     for before, after in (('plt, _ = _get_plt()', 'plt = get_plt()'),
@@ -32,13 +31,13 @@ def regulation_source(interactive=False):
             ('_get_plotly()', 'get_plotly_px()'), ('_get_plotly_go()', 'get_plotly_go()'),
             ('_plotly_html(', 'plotly_html(')):
         code = code.replace(before, after)
-    common = _source('plotting_common.py')
-    styling = '\n'.join(line for line in _source('plot_styling.py').splitlines() if not line.startswith('from app.'))
-    styling += '\n\n' + _definition(common, 'get_plt') + '\n\ndef _get_plt():\n    return get_plt()\n'
+    common = module_source('plotting_common.py')
+    styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines() if not line.startswith('from app.'))
+    styling += '\n\n' + function_definition(common, 'get_plt') + '\n\ndef _get_plt():\n    return get_plt()\n'
     styles = extract_notebook_source(styling, ('marker_style', 'plotly_marker', 'get_plt', 'apply_advanced_axes')).code
-    return extract_notebook_source(_merge_source(volcano_source(True).code, styles,
-        extract_notebook_source(_source('plot_export.py'), ('to_png_bytes', 'cm_to_inch')).code,
-        _definition(common, 'get_plotly_px'), code,
+    return extract_notebook_source(merge_source(volcano_source(True).code, styles,
+        extract_notebook_source(module_source('plot_export.py'), ('to_png_bytes', 'cm_to_inch')).code,
+        function_definition(common, 'get_plotly_px'), code,
         'PHOSPROT_REGULATION_EMPTY_MESSAGE = "No phosphosites pass the selected significance and fold-change thresholds"'),
         ('calculate_table', 'prepare_table', 'render_plot'))
 

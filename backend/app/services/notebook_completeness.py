@@ -6,8 +6,8 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once, snapshots
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_snapshots import snapshots
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 
 RENDERERS = {"missing-value": "completeness_missing_value_plot",
              "missing-heatmap": "completeness_missing_value_heatmap"}
@@ -17,30 +17,30 @@ RENDERERS = {"missing-value": "completeness_missing_value_plot",
 def completeness_source(plot):
     if plot not in RENDERERS:
         raise ValueError("Unsupported completeness notebook plot.")
-    original = _source("completeness_tools.py")
+    original = module_source("completeness_tools.py")
     names = ("_feature_label", "_renamed_meta", "_selected_matrix", "_filtered_data",
              "completeness_sample_summary_table", "completeness_feature_summary_table", RENDERERS[plot])
-    code = "\n\n".join(_definition(original, name) for name in names)
+    code = "\n\n".join(function_definition(original, name) for name in names)
     code = code.replace("kind: AnnotationKind,", "frame: pd.DataFrame, meta: pd.DataFrame,")
     code = code.replace("    frame, meta = _frame_and_meta(kind)\n", "")
     code = code.replace("_extract_id_or_number", "extract_sample_id")
-    code = _replace_once(code, f"def {RENDERERS[plot]}(", "def plot_figure(")
+    code = replace_once(code, f"def {RENDERERS[plot]}(", "def plot_figure(")
     if plot == "missing-value":
-        code += "\n\n" + _definition(original, "_missing_value_plot_from_matrix")
+        code += "\n\n" + function_definition(original, "_missing_value_plot_from_matrix")
     code = code.replace("return _to_png_bytes(fig, plt, dpi=dpi, tight=True)", "return fig")
     code = code.replace("return _to_png_bytes(fig, plt, dpi=dpi)", "return fig")
     code = code.replace("_get_plt()", "get_plt()").replace("_get_sns()", "get_sns()")
     code = code.replace("_cm_to_inch(", "cm_to_inch(")
-    styling = "\n".join(line for line in _source("plot_styling.py").splitlines()
+    styling = "\n".join(line for line in module_source("plot_styling.py").splitlines()
                         if not line.startswith("from app."))
-    styling += "\n\n" + _definition(_source("plotting_common.py"), "get_plt")
+    styling += "\n\n" + function_definition(module_source("plotting_common.py"), "get_plt")
     styling += "\n\ndef _get_plt():\n    return get_plt()\n"
     styles = extract_notebook_source(styling, (
         "advanced_label", "advanced_color", "advanced_label_size", "apply_advanced_axes", "get_plt")).code
-    notebook = extract_notebook_source(_source("notebook_functions.py"), ("extract_sample_id",)).code
-    serialization = extract_notebook_source(_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
-    combined = _merge_source("import pandas as pd", styles, notebook, serialization, code,
-                             _definition(_source("plotting_common.py"), "get_sns"))
+    notebook = extract_notebook_source(module_source("notebook_functions.py"), ("extract_sample_id",)).code
+    serialization = extract_notebook_source(module_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
+    combined = merge_source("import pandas as pd", styles, notebook, serialization, code,
+                             function_definition(module_source("plotting_common.py"), "get_sns"))
     return extract_notebook_source(combined, ("plot_figure", "to_png_bytes", "get_plt",
         "completeness_sample_summary_table", "completeness_feature_summary_table", "_selected_matrix"))
 

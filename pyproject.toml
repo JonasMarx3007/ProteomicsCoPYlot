@@ -8,8 +8,8 @@ version = "1.0.0"
 description = "Notebook-facing plotting and analysis helpers for ProteomicsCoPYlot."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "GPL-3.0-only"
-license-files = ["LICENSE", "NOTICE"]
+license = "GPL-3.0-only AND CC-BY-4.0"
+license-files = ["LICENSE", "NOTICE", "data/db/PACKAGED_README.md", "proteomicscopylot/example_data/README.md"]
 authors = [
   { name = "Jonas Marx" }
 ]
@@ -53,6 +53,7 @@ dev = [
   "nbformat>=4.2",
   "pytest",
   "pytest-cov",
+  "pytest-xdist",
   "ruff",
   "statsmodels>=0.14,<1",
   "twine",
@@ -76,7 +77,10 @@ proteomicscopylot = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "backend"]
-addopts = "-ra"
+# Each worker has its own scientific libraries, stores and figures. Default
+# to two to bound memory use; use -n auto explicitly on larger machines.
+# Temporary files remain per test (tmp_path); -n 0 runs serially.
+addopts = "-ra -n 2"
 markers = [
     # Runs the published example notebook end to end. Slower than a unit test
     # because it renders real figures; deselect with -m "not slow".

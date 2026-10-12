@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from app.schemas.assistant import AssistantRequest
+from app.schemas.assistant import AssistantRequest, UiControl
 
 # module -> (what the marks are called, words a user uses, what they show)
 MARKS: dict[str, tuple[str, str, str]] = {
@@ -72,10 +72,62 @@ def names_all_conditions(request: AssistantRequest, message: str | None = None) 
     return bool(marks and re.search(r"\b(?:" + marks[1] + r")\b", text, re.I))
 
 
+def identity(control: UiControl) -> tuple[str, str]:
+    label = control.label
+    tile = re.match(r"(Tile \d+): [^/]+ / (.*)", label)
+    prefix = tile[1].lower() + " / " if tile else ""
+    label = tile[2] if tile else label
+    parts = label.split(" / ")
+    tick = re.fullmatch(r"([XY]) tick label (.+)", label, re.I)
+    if tick: return prefix + tick[1].lower() + " ticks", tick[2].lower().replace("colour", "color")
+    if label.lower() == "title": return prefix + "title", "size" if control.type == "number" else "text"
+    item = re.search(r"(Condition|Sample) (colors?|colours?|names?|labels?) / (.+)$", label, re.I)
+    if item:
+        # Judge by the group's own word: "Names and colours / Condition names / GRK" is a
+        # name, although its card title says colours (2026-10-09: a colour went to the name).
+        kind = item[1].lower()
+        prop = "color" if re.match(r"colou?rs?", item[2], re.I) else "label"
+        return prefix + kind + ":" + item[3], prop
+    if parts[0].lower() == "font":
+        return prefix + parts[-1].lower(), "font family"
+    if "Axis frame" in parts:
+        return prefix + "frame", parts[-1].lower()
+    if parts[0].lower() in {"x axis", "y axis"}:
+        axis = parts[0][0].lower()
+        if len(parts) > 2 and parts[1].lower() == "axis label":
+            return prefix + axis + " label", parts[-1].lower().replace("colour", "color")
+        if "tick" in parts[-1].lower():
+            prop = re.sub(r"^[xy] tick label\s*", "", parts[-1].lower()).replace("colour", "color")
+            return prefix + axis + " ticks", prop
+    if len(parts) == 1 and re.fullmatch(r"(?:Top|Bottom|Left|Right) border", label, re.I):
+        return prefix + "frame", label.split()[0].lower()
+    element = " / ".join(parts[:-1]).lower() if len(parts) > 1 else "plot"
+    prop = parts[-1].lower().replace("colour", "color")
+    prop = re.sub(r"\s*\([^)]*\)", "", prop).strip()
+    if prop in {"text size", "font size"}: prop = "size"
+    if prop in {"show title", "show legend"}: prop = "visible"
+    if element in {"title", "legend"} and prop.startswith(element + " "):
+        prop = prop[len(element)+1:]
+    return prefix + element, prop
+
+
+def style_controls(request: AssistantRequest) -> dict[tuple[str, str], UiControl]:
+    candidates: dict[tuple[str, str], list[UiControl]] = {}
+    for control in request.view.controls:
+        if control.appearance and control.permission == "view" and control.type not in {"button", "multiple"}:
+            candidates.setdefault(identity(control), []).append(control)
+    result = {}
+    for key, controls in candidates.items():
+        # A colour picker and its optional text input represent the same setting.
+        if len(controls) > 1 and {c.type for c in controls} == {"color", "text"}:
+            controls = [c for c in controls if c.type == "color"]
+        if len(controls) == 1:
+            result[key] = controls[0]
+    return result
+
+
 def describe(request: AssistantRequest) -> list[str]:
     """Short lines for the planner: what each visible part is and its colour now."""
-    from app.services.assistant_styling import style_controls
-
     lines = []
     colours = condition_colours(request)
     marks = _marks(request)

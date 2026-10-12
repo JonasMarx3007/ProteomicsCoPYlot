@@ -13,7 +13,7 @@ from app.services import peptide_tools
 from app.services.dataset_store import save_peptide_path
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_sequence import capture_sequence_coverage
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 

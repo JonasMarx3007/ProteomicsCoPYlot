@@ -319,11 +319,11 @@ def test_the_export_actually_carries_the_aggregation_mode() -> None:
 def test_a_restored_robust_site_median_frame_is_still_recognised_as_centred() -> None:
     from unittest.mock import patch
 
-    from app.services.functions import _phosprot_values_are_centred
+    from app.services.analysis_matrix import phosprot_values_are_centred
     from app.services.restore_state import _coerce_phosprot_aggregation
 
     class _Annotation:
         phosprot_aggregation = _coerce_phosprot_aggregation("robust_site_median")
 
     with patch("app.services.annotation_store.get_annotation", return_value=_Annotation()):
-        assert _phosprot_values_are_centred("phosprot") is True
+        assert phosprot_values_are_centred("phosprot") is True

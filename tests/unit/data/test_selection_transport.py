@@ -25,7 +25,7 @@ from app.schemas.annotation import AnnotationFilterConfig
 from app.services import ai_functions, stats_tools
 from app.services.annotation_store import reset_all_annotations, save_annotation
 from app.services.dataset_store import reset_all_datasets, save_table_dataset
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 CONDITIONS = ["Drug, high", "A;B|δ", "x=y", "100% ready", 'quote"name']

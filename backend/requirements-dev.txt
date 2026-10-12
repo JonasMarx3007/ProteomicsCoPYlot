@@ -1,6 +1,8 @@
 -r requirements.txt
 pytest
 pytest-cov
+# Runs tests in isolated workers; `pytest -n 0` is the serial run.
+pytest-xdist
 # starlette.testclient (FastAPI TestClient) uses httpx2.
 httpx2
 build

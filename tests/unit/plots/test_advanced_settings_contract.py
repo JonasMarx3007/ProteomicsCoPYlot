@@ -43,7 +43,7 @@ def _qc_get(plot: str, **params):
 
 
 def _recorded_settings(response) -> dict:
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.session_context import get_session_id
 
     return snapshots.get(get_session_id(), response.headers["x-copylot-notebook"]).settings
@@ -60,7 +60,7 @@ def test_qc_styles_have_no_second_query_parameter(route_name, setting_keys):
 
     from app.api import routes_plots
 
-    parameters = set(inspect.signature(getattr(routes_plots, route_name)).parameters)
+    parameters = set(inspect.signature(routes_plots.ROUTE_FUNCTIONS[route_name]).parameters)
     assert "advanced" in parameters
     assert not setting_keys & parameters
 

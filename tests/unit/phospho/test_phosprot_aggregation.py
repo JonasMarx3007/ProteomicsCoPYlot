@@ -235,26 +235,26 @@ def test_robust_site_median_output_is_centred_not_abundance() -> None:
 def test_only_robust_site_median_counts_as_centred(aggregation, centred) -> None:
     from unittest.mock import patch
 
-    from app.services.functions import _phosprot_values_are_centred
+    from app.services.analysis_matrix import phosprot_values_are_centred
 
     class _Annotation:
         phosprot_aggregation = aggregation
 
     with patch("app.services.annotation_store.get_annotation", return_value=_Annotation()):
-        assert _phosprot_values_are_centred("phosprot") is centred
+        assert phosprot_values_are_centred("phosprot") is centred
 
 
 def test_the_other_kinds_are_never_centred() -> None:
     from unittest.mock import patch
 
-    from app.services.functions import _phosprot_values_are_centred
+    from app.services.analysis_matrix import phosprot_values_are_centred
 
     class _Annotation:
         phosprot_aggregation = "robust_site_median"
 
     with patch("app.services.annotation_store.get_annotation", return_value=_Annotation()):
-        assert _phosprot_values_are_centred("protein") is False
-        assert _phosprot_values_are_centred("phospho") is False
+        assert phosprot_values_are_centred("protein") is False
+        assert phosprot_values_are_centred("phospho") is False
 
 
 def test_the_axis_label_says_ratio_only_when_centred() -> None:

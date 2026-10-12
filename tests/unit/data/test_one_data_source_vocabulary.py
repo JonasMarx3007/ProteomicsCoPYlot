@@ -36,13 +36,7 @@ import pytest
 from app.main import app
 from app.schemas.annotation import DataSource, ResolvedSource
 from app.services import functions
-from app.services.functions import (
-    DATA_SOURCES,
-    data_source_options,
-    most_processed_data_source,
-    qc_matrix,
-    select_matrix,
-)
+from app.services.analysis_matrix import DATA_SOURCES, data_source_options, most_processed_data_source, qc_matrix, select_matrix
 
 
 CHOOSING_MODULES = [

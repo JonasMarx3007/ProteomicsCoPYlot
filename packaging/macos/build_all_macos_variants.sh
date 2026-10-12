@@ -39,6 +39,8 @@ build_frontend() {
 build_binary() {
   local name="$1"
   local entry_point="$2"
+  local legal_dir="$ROOT_DIR/build/legal/$name"
+  "$PYTHON_BIN" "$ROOT_DIR/tools/package_release_licenses.py" prepare --legal-dir "$legal_dir"
   local notebook_source_args=()
   local notebook_source
   while IFS= read -r notebook_source || [[ -n "$notebook_source" ]]; do
@@ -91,8 +93,11 @@ build_binary() {
       "${notebook_source_args[@]}" \
       "${notebook_metadata_args[@]}" \
       --add-data "LICENSE:notebook_sources" \
+      --add-data "NOTICE:notebook_sources" \
+      --add-data "$legal_dir:legal" \
       "$entry_point"
   )
+  "$PYTHON_BIN" "$ROOT_DIR/tools/package_release_licenses.py" finish --legal-dir "$legal_dir" --executable "$DIST_DIR/$name"
 }
 
 echo "[prep] Installing/upgrading pyinstaller in backend venv..."

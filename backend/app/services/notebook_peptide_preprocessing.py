@@ -10,7 +10,8 @@ import pandas as pd
 
 from app.services.functions import raw_zero_to_nan
 from app.services.notebook_archive import dataframe_bytes
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_snapshots import RetainedReplay
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source
 
 
 def replay_peptide_matrix(raw, config):
@@ -28,7 +29,6 @@ def bind_peptide_preprocessing(recipe):
     from app.services import peptide_tools, plot_images, completeness_tools
     from app.services.notebook_peptide import missed_cleavage_source, modification_source, interactive_rt_source
     from app.services.notebook_preprocessing import preprocessing_source
-    from app.services.notebook_qc import _source, _definition, _merge_source
     from app.services.notebook_provenance import NotebookProvenanceError
 
     raw = peptide_tools.get_peptide_frame()
@@ -57,9 +57,9 @@ def bind_peptide_preprocessing(recipe):
             'quantity_column': recipe.provenance['quantityColumn'], 'columns': expected.columns.tolist(),
             'columns_name': expected.columns.name,
             'runs': {sha256(str(run).encode()).hexdigest(): label for run, label in mapping.items()}}
-        extra = _merge_source('from hashlib import sha256',
-            _definition(_source('notebook_peptide_preprocessing.py'), 'replay_peptide_matrix'),
-            extract_notebook_source(_source('functions.py'), ('raw_zero_to_nan',)).code)
+        extra = merge_source('from hashlib import sha256',
+            function_definition(module_source('notebook_peptide_preprocessing.py'), 'replay_peptide_matrix'),
+            extract_notebook_source(module_source('functions.py'), ('raw_zero_to_nan',)).code)
         preparation = "data = functions.replay_peptide_matrix(raw, processing)\n"
         roots = ('replay_peptide_matrix',)
     elif plot in {'missed_cleavages', 'modifications'}:
@@ -88,7 +88,7 @@ def bind_peptide_preprocessing(recipe):
         roots = ()
     else:
         raise NotebookProvenanceError('This peptide output has no original-file replay recipe.')
-    source = extract_notebook_source(_merge_source(recipe.source.code, loader, extra),
+    source = extract_notebook_source(merge_source(recipe.source.code, loader, extra),
         tuple(dict.fromkeys((*recipe.source.functions, 'read_original_table', *roots))))
     resources['processing.json'] = json.dumps(config, allow_nan=False).encode()
 
@@ -124,5 +124,4 @@ def bind_peptide_preprocessing(recipe):
                 "data = data.loc[reference.index, reference.columns]\n"
                 "pd.testing.assert_frame_equal(data, reference, check_exact=True)\n")
 
-    from app.services.notebook_snapshots import RetainedReplay
     return RetainedReplay(finish, tuple(frame for frame in (raw, expected, meta) if frame is not None))

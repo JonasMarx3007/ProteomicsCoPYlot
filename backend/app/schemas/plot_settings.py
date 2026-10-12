@@ -26,17 +26,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.services.plot_styling import (
-    _LINE_STYLE_NAMES,
-    _PLOT_THEME_MAP,
-    MARKER_SHAPES,
-    PLOT_FONTS,
-)
+from app.services.plot_vocabulary import LINE_STYLE_NAMES, MARKER_SHAPES, PLOT_FONTS, PLOT_THEME_MAP
 
 MarkerShape = Literal[tuple(MARKER_SHAPES)]  # type: ignore[valid-type]
 FontName = Literal[tuple(PLOT_FONTS)]  # type: ignore[valid-type]
-LineStyle = Literal[tuple(sorted(_LINE_STYLE_NAMES))]  # type: ignore[valid-type]
-PlotTheme = Literal[("default", *_PLOT_THEME_MAP)]  # type: ignore[valid-type]
+LineStyle = Literal[tuple(sorted(LINE_STYLE_NAMES))]  # type: ignore[valid-type]
+PlotTheme = Literal[("default", *PLOT_THEME_MAP)]  # type: ignore[valid-type]
 # The renderers' own spelling: "x" draws vertical lines, "y" horizontal ones.
 GridLineAxis = Literal["both", "x", "y"]
 

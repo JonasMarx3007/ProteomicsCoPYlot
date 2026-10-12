@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 import math
 import ipaddress
-import http.client
 import os
 import re
 import shutil
 import subprocess
-import socket
 import time
-from threading import Lock, Timer
+from threading import Lock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,130 +25,9 @@ from app.services.assistant_profiles import LEVEL_NAMES, LEVELS, classify_model,
 from app.services.cloud_ai_consent import require_cloud_ai_consent
 from app.services.workload_manager import provider_deadline
 from app.services.env_settings import env_flag, env_float, env_int
-
-
-class _NoProviderRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-class _DeadlineConnection:
-    def connect(self):
-        super().connect()
-        sock = self.sock
-
-        def expire():
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
-        self.watchdog = Timer(max(0, self.deadline - time.monotonic()), expire)
-        self.watchdog.daemon = True
-        self.watchdog.start()
-
-
-class _DeadlineHTTPConnection(_DeadlineConnection, http.client.HTTPConnection):
-    pass
-
-
-class _DeadlineHTTPSConnection(_DeadlineConnection, http.client.HTTPSConnection):
-    pass
-
-
-class _TimedResponse:
-    def __init__(self, response, connection):
-        self.response = response
-        self.connection = connection
-
-    def __getattr__(self, name):
-        return getattr(self.response, name)
-
-    def read(self, size=-1):
-        if time.monotonic() >= self.connection.deadline:
-            raise ValueError("Provider operation exceeded its time limit.")
-        result = self.response.read(size)
-        if time.monotonic() >= self.connection.deadline:
-            raise ValueError("Provider operation exceeded its time limit.")
-        return result
-
-    def readline(self, size=-1):
-        if time.monotonic() >= self.connection.deadline:
-            raise ValueError("Provider operation exceeded its time limit.")
-        return self.response.readline(size)
-
-    def __iter__(self):
-        # A streamed reply (server-sent events) is read line by line, each under the deadline.
-        while True:
-            line = self.readline()
-            if not line:
-                return
-            yield line
-
-    def close(self):
-        self.connection.watchdog.cancel()
-        self.response.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
-
-class _DeadlineHandlers(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
-    def _open(self, request, connection_class, **kwargs):
-        connections = []
-
-        def connection(*args, **options):
-            conn = connection_class(*args, **options)
-            conn.deadline = request._copylot_deadline
-            connections.append(conn)
-            return conn
-
-        try:
-            response = self.do_open(connection, request, **kwargs)
-            return _TimedResponse(response, connections[0])
-        except BaseException:
-            for conn in connections:
-                if hasattr(conn, "watchdog"):
-                    conn.watchdog.cancel()
-            raise
-
-    def http_open(self, request):
-        return self._open(request, _DeadlineHTTPConnection)
-
-    def https_open(self, request):
-        return self._open(request, _DeadlineHTTPSConnection, context=self._context)
-
-
-_PROVIDER_OPENER = urllib.request.build_opener(_NoProviderRedirects(), _DeadlineHandlers())
-
-
-def _read_provider_body(response) -> bytes:
-    limit = max(1, env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
-    body = response.read(limit + 1)
-    if len(body) > limit:
-        raise ValueError("Provider response exceeds the configured size limit.")
-    return body
-
-
-def _open_provider_request(request, *, timeout, provider="Ollama"):
-    now = time.monotonic()
-    deadline = min(provider_deadline.get() or now + timeout, now + timeout)
-    if deadline <= now:
-        raise ValueError("Provider operation exceeded its time limit.")
-    request._copylot_deadline = deadline
-    try:
-        return _PROVIDER_OPENER.open(request, timeout=deadline - now)
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-        exc.close()
-        if 300 <= status < 400:
-            raise ValueError(f"{provider} redirect blocked. Configure the final endpoint directly.") from None
-        raise ValueError(f"{provider} request failed (HTTP {status}).") from None
-    except urllib.error.URLError:
-        raise ValueError(f"Could not reach {provider}. Check the endpoint and connection.") from None
+from app.services.provider_http import (
+    AssistantContextExhausted, open_provider_request, openai_content_to_text, read_json_response, read_provider_body,
+)
 
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -481,10 +358,10 @@ def _fetch_ollama_models_uncached(endpoint_override: str | None = None) -> list[
     base_url = _resolve_ollama_base_url(endpoint_override)
     endpoint = f"{base_url}/api/tags"
     request = urllib.request.Request(endpoint, method="GET")
-    response = _open_provider_request(request, timeout=12)
+    response = open_provider_request(request, timeout=12)
 
     with response:
-        payload = _read_provider_body(response).decode("utf-8", errors="replace")
+        payload = read_provider_body(response).decode("utf-8", errors="replace")
     try:
         parsed = json.loads(payload)
     except Exception as exc:
@@ -578,9 +455,9 @@ def _ollama_model_metadata(model: str, endpoint_override: str | None = None) -> 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    response = _open_provider_request(request, timeout=12)
+    response = open_provider_request(request, timeout=12)
     with response:
-        raw = _read_provider_body(response).decode("utf-8", errors="replace")
+        raw = read_provider_body(response).decode("utf-8", errors="replace")
     try:
         parsed = json.loads(raw)
     except Exception as exc:
@@ -777,9 +654,9 @@ def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: s
         headers={"Content-Type": "application/json"},
         method=method,
     )
-    response = _open_provider_request(request, timeout=max(30, env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
+    response = open_provider_request(request, timeout=max(30, env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS)))
     with response:
-        payload = _read_provider_body(response).decode("utf-8", errors="replace").strip()
+        payload = read_provider_body(response).decode("utf-8", errors="replace").strip()
     return payload
 
 
@@ -1007,7 +884,7 @@ def _open_ollama_request(
         method="POST",
     )
 
-    response = _open_provider_request(request, timeout=_provider_call_timeout())
+    response = open_provider_request(request, timeout=_provider_call_timeout())
     return model, response
 
 
@@ -1028,36 +905,6 @@ def _extract_system_and_dialogue(
             continue
         dialogue.append({"role": role, "content": content})
     return "\n\n".join(system_parts).strip(), dialogue
-
-
-def _openai_content_to_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                text = str(part.get("text", "")).strip()
-                if text:
-                    chunks.append(text)
-            elif isinstance(part, str):
-                text = part.strip()
-                if text:
-                    chunks.append(text)
-        return "\n".join(chunks).strip()
-    return ""
-
-
-def _read_json_response(response, invalid_json_message: str) -> dict[str, object]:
-    with response:
-        payload = _read_provider_body(response).decode("utf-8", errors="replace")
-    try:
-        parsed = json.loads(payload)
-    except Exception as exc:
-        raise ValueError(invalid_json_message) from exc
-    if not isinstance(parsed, dict):
-        raise ValueError(invalid_json_message)
-    return parsed
 
 
 def _provider_call_timeout() -> float:
@@ -1102,8 +949,8 @@ def _openai_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI")
-    parsed = _read_json_response(response, "OpenAI returned invalid JSON.")
+    response = open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI")
+    parsed = read_json_response(response, "OpenAI returned invalid JSON.")
     choices = parsed.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ValueError("OpenAI response did not contain choices.")
@@ -1113,7 +960,7 @@ def _openai_chat_text(
     message = first.get("message")
     if not isinstance(message, dict):
         raise ValueError("OpenAI response did not include a message.")
-    text = _openai_content_to_text(message.get("content"))
+    text = openai_content_to_text(message.get("content"))
     if not text.strip():
         raise ValueError("OpenAI response was empty.")
     return text
@@ -1150,8 +997,8 @@ def _anthropic_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="Anthropic")
-    parsed = _read_json_response(response, "Anthropic returned invalid JSON.")
+    response = open_provider_request(request, timeout=_provider_call_timeout(), provider="Anthropic")
+    parsed = read_json_response(response, "Anthropic returned invalid JSON.")
     blocks = parsed.get("content")
     if not isinstance(blocks, list) or not blocks:
         raise ValueError("Anthropic response did not include content.")
@@ -1215,8 +1062,8 @@ def _gemini_chat_text(
         },
         method="POST",
     )
-    response = _open_provider_request(request, timeout=_provider_call_timeout(), provider="Gemini")
-    parsed = _read_json_response(response, "Gemini returned invalid JSON.")
+    response = open_provider_request(request, timeout=_provider_call_timeout(), provider="Gemini")
+    parsed = read_json_response(response, "Gemini returned invalid JSON.")
     candidates = parsed.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise ValueError("Gemini response did not include candidates.")
@@ -1261,10 +1108,6 @@ ASSISTANT_OUTPUT_RESERVE = 1024 + 128
 _CLOUD_PROMPT_TOKENS = 100_000
 _NUM_CTX_IN_USE: dict[str, int] = {}
 _NUM_CTX_LOCK = Lock()
-
-
-class AssistantContextExhausted(ValueError):
-    """The request and reply do not fit the model's context window."""
 
 
 def estimate_tokens(*texts: str) -> int:
@@ -1427,7 +1270,7 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
             payload, messages=messages, output_schema=schema, num_ctx=num_ctx,
             num_predict=max_tokens, image=image,
         )
-        parsed = _read_json_response(response, "Ollama returned invalid JSON.")
+        parsed = read_json_response(response, "Ollama returned invalid JSON.")
         # Reasoning text is not an answer or an executable plan.
         message = parsed.get("message", {})
         text = message.get("content", "") if isinstance(message, dict) else ""
@@ -1464,7 +1307,6 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
     if not isinstance(text, str) or not text.strip():
         raise ValueError("The assistant returned no usable answer.")
     return model, text.strip()
-
 
 
 class NativeToolsUnavailable(ValueError):
@@ -1540,7 +1382,7 @@ def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[
                 "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": num_ctx}}
         request = urllib.request.Request(_resolve_endpoint(payload.ollamaUrl), data=json.dumps(body).encode("utf-8"),
                                          headers={"Content-Type": "application/json"}, method="POST")
-        parsed = _read_json_response(_open_provider_request(request, timeout=_provider_call_timeout()),
+        parsed = read_json_response(open_provider_request(request, timeout=_provider_call_timeout()),
                                      "Ollama returned invalid JSON.")
         message = parsed.get("message") if isinstance(parsed.get("message"), dict) else {}
         if parsed.get("done_reason") == "length":
@@ -1562,7 +1404,7 @@ def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[
         request = urllib.request.Request(_OPENAI_CHAT_ENDPOINT, data=json.dumps(body).encode("utf-8"), headers={
             "Content-Type": "application/json", "Authorization": f"Bearer {_resolve_api_key(payload, provider)}"},
             method="POST")
-        parsed = _read_json_response(_open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI"),
+        parsed = read_json_response(open_provider_request(request, timeout=_provider_call_timeout(), provider="OpenAI"),
                                      "OpenAI returned invalid JSON.")
         choices = parsed.get("choices")
         first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}

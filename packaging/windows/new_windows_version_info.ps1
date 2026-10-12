@@ -119,7 +119,7 @@ VSVersionInfo(
           StringStruct(u'FileDescription', u'$escapedDescription'),
           StringStruct(u'FileVersion', u'$escapedFileVersion'),
           StringStruct(u'InternalName', u'$escapedExecutableName'),
-          StringStruct(u'LegalCopyright', u'Copyright (c) ProteomicsCoPYlot contributors'),
+          StringStruct(u'LegalCopyright', u'Copyright (c) 2025-2026 Jonas Marx; third-party notices included'),
           StringStruct(u'OriginalFilename', u'$escapedExecutableFileName'),
           StringStruct(u'ProductName', u'$escapedProductName'),
           StringStruct(u'ProductVersion', u'$escapedProjectVersion')

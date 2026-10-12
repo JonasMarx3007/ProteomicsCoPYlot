@@ -77,3 +77,25 @@ def test_default_budget_is_generous():
     capacity = _memory_capacity_bytes()
     if capacity:
         assert session_cleanup.server_memory_budget_bytes() >= capacity // 2
+
+
+def test_discard_revokes_both_auth_stores_only_for_the_target_session(monkeypatch):
+    from app.services import tool_access, viewer_portal
+    from app.services.session_context import get_session_id
+
+    monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
+    auth = viewer_portal.ViewerSessionAuth(project="example", project_label="Example")
+    monkeypatch.setattr(tool_access, "_SESSION_AUTH", {"discarded", "retained"})
+    monkeypatch.setattr(viewer_portal, "_SESSION_AUTH", {"discarded": auth, "retained": auth})
+    monkeypatch.setattr(viewer_portal, "_BOOTSTRAPPED_SESSION_PROJECT", {
+        "discarded": "example", "retained": "example",
+    })
+    token = set_session_id("retained")
+    try:
+        session_cleanup._discard_session("discarded")
+        assert get_session_id() == "retained"
+        assert tool_access._SESSION_AUTH == {"retained"}
+        assert viewer_portal._SESSION_AUTH == {"retained": auth}
+        assert viewer_portal._BOOTSTRAPPED_SESSION_PROJECT == {"retained": "example"}
+    finally:
+        reset_session_id(token)

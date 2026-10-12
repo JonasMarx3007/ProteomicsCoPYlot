@@ -13,7 +13,7 @@ import pytest
 from app.services import stats_tools
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_pathway import render_pathway, pathway_module
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 

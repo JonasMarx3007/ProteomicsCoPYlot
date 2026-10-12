@@ -22,12 +22,11 @@ from app.services import table_functions as _table_functions
 from app.services.functions import (
     condition_sample_labels,
     parse_selection_list,
-    DATA_SOURCES,
     comparison_contrast,
-    _phosprot_values_are_centred,
     effective_test_type,
     resolve_test_type,
 )
+from app.services.analysis_matrix import DATA_SOURCES, phosprot_values_are_centred
 from app.services.peptide_tools import _sample_rename_map as _peptide_sample_rename_map
 from app.services.peptide_tools import PROTEASE_LABELS as _PROTEASE_LABELS
 from app.services.peptide_tools import get_peptide_frame
@@ -752,7 +751,7 @@ def _abundance_data_lines(workflow: str, *, limit: int = 5, condition: str = "Al
 
     # `robust_site_median` phosphoproteins are ratios to each site's own median,
     # not abundances; saying "intensity" here would put that in the answer.
-    centred = _phosprot_values_are_centred(kind)
+    centred = phosprot_values_are_centred(kind)
     value_label = (
         "log10_of_mean_ratio_to_site_median"
         if centred
@@ -1033,7 +1032,7 @@ def general_proteomics_context(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("general_proteomics_context", "\n".join(lines))
 
 
-def qc_coverage_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
+def qc_coverage_plot_context(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     parameters = _mode_fields(mode)
     level = parameters.get("level", "peptide")
@@ -1318,7 +1317,7 @@ def qc_cov_plot(workflow: str = "protein") -> dict[str, Any]:
     return _text_payload("qc_cov_plot", "\n".join(lines))
 
 
-def qc_pca_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
+def qc_pca_plot_context(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     _, entity_plural = _workflow_entity_labels(workflow_key)
     method, plot_dim, data_source = _parse_pca_mode(mode)
@@ -1384,7 +1383,7 @@ def qc_pca_plot(workflow: str = "protein", mode: ContextMode | None = None) -> d
     return _text_payload("qc_pca_plot", "\n".join(lines))
 
 
-def qc_abundance_plot(
+def qc_abundance_plot_context(
     workflow: str = "protein",
     mode: ContextMode | None = None,
 ) -> dict[str, Any]:
@@ -1445,7 +1444,7 @@ def qc_abundance_plot(
     return _text_payload("qc_abundance_plot", "\n".join(lines))
 
 
-def qc_correlation_plot(
+def qc_correlation_plot_context(
     workflow: str = "protein",
 ) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
@@ -1513,7 +1512,7 @@ def qc_correlation_plot(
     return _text_payload("qc_correlation_plot", "\n".join(lines))
 
 
-def peptide_rt_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
+def peptide_rt_plot_context(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _mode_fields(mode)
 
@@ -1605,7 +1604,7 @@ def peptide_rt_plot(workflow: str = "peptide", mode: ContextMode | None = None) 
     return _text_payload("peptide_rt_plot", "\n".join(lines))
 
 
-def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
+def peptide_modification_plot_context(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _mode_fields(mode)
 
@@ -1650,7 +1649,7 @@ def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | Non
         return _text_payload("peptide_modification_plot", "\n".join(lines))
 
     try:
-        file_col = _plot_images._peptide_file_column(frame)
+        file_col = _plot_images.peptide_file_column(frame)
     except Exception as exc:
         lines.append(f"peptide_modification_data|status=error|detail={_safe_context_text(exc)}")
         return _text_payload("peptide_modification_plot", "\n".join(lines))
@@ -1761,7 +1760,7 @@ def peptide_modification_plot(workflow: str = "peptide", mode: ContextMode | Non
     return _text_payload("peptide_modification_plot", "\n".join(lines))
 
 
-def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
+def peptide_missed_cleavage_plot_context(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _mode_fields(mode)
 
@@ -1807,8 +1806,8 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | 
         return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
 
     try:
-        file_col = _plot_images._peptide_file_column(frame)
-        seq_col = _plot_images._peptide_sequence_column(frame)
+        file_col = _plot_images.peptide_file_column(frame)
+        seq_col = _plot_images.peptide_sequence_column(frame)
     except Exception as exc:
         lines.append(f"peptide_missed_cleavage_data|status=error|detail={_safe_context_text(exc)}")
         return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
@@ -1925,7 +1924,7 @@ def peptide_missed_cleavage_plot(workflow: str = "peptide", mode: ContextMode | 
     return _text_payload("peptide_missed_cleavage_plot", "\n".join(lines))
 
 
-def peptide_sequence_coverage(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
+def peptide_sequence_coverage_context(workflow: str = "peptide", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     mode_pairs = _mode_fields(mode)
 
@@ -2018,7 +2017,7 @@ def peptide_sequence_coverage(workflow: str = "peptide", mode: ContextMode | Non
     return _text_payload("peptide_sequence_coverage", "\n".join(lines))
 
 
-def completeness_missing_value_plot(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
+def completeness_missing_value_plot_context(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     kind = _normalize_completeness_kind(workflow_key, mode)
     entity_singular, entity_plural = _COMPLETENESS_KIND_LABELS.get(kind, _COMPLETENESS_KIND_LABELS["protein"])
@@ -2091,7 +2090,7 @@ def completeness_missing_value_plot(workflow: str = "protein", mode: ContextMode
     return _text_payload("completeness_missing_value_plot", "\n".join(lines))
 
 
-def completeness_missing_value_heatmap(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
+def completeness_missing_value_heatmap_context(workflow: str = "protein", mode: ContextMode | None = None) -> dict[str, Any]:
     workflow_key = _normalize_coverage_workflow(workflow)
     kind = _normalize_completeness_kind(workflow_key, mode)
     _, entity_plural = _COMPLETENESS_KIND_LABELS.get(kind, _COMPLETENESS_KIND_LABELS["protein"])
@@ -4278,8 +4277,8 @@ __all__ = [
     "data_distribution_summary", "stats_simulation_plot", "phospho_ksea_export", "analysis_canvas_context",
     "stats_anova_plot",
     "general_proteomics_context",
-    "completeness_missing_value_plot",
-    "completeness_missing_value_heatmap",
+    "completeness_missing_value_plot_context",
+    "completeness_missing_value_heatmap_context",
     "completeness_missing_value_tables",
     "stats_volcano_plot",
     "stats_ora_plot",
@@ -4294,15 +4293,32 @@ __all__ = [
     "single_protein_boxplot",
     "single_protein_lineplot",
     "single_protein_phosphosite_heatmap",
-    "peptide_rt_plot",
-    "peptide_modification_plot",
-    "peptide_missed_cleavage_plot",
-    "peptide_sequence_coverage",
-    "qc_coverage_plot",
+    "peptide_rt_plot_context",
+    "peptide_modification_plot_context",
+    "peptide_missed_cleavage_plot_context",
+    "peptide_sequence_coverage_context",
+    "qc_coverage_plot_context",
     "qc_histogram_intensity",
     "qc_boxplot_intensity",
     "qc_cov_plot",
-    "qc_pca_plot",
-    "qc_abundance_plot",
-    "qc_correlation_plot",
+    "qc_pca_plot_context",
+    "qc_abundance_plot_context",
+    "qc_correlation_plot_context",
 ]
+
+# The assistant's tool names are the renderers' names: that is what the frontend
+# asks for and what the narrative matches on (`item.tool`). The functions that
+# build a tool's context are named `*_context`, so a renderer and its context
+# builder no longer share a name across modules; this map joins the two.
+CONTEXT_TOOL_FUNCTIONS: dict[str, str] = {
+    "qc_coverage_plot": "qc_coverage_plot_context",
+    "qc_pca_plot": "qc_pca_plot_context",
+    "qc_abundance_plot": "qc_abundance_plot_context",
+    "qc_correlation_plot": "qc_correlation_plot_context",
+    "peptide_rt_plot": "peptide_rt_plot_context",
+    "peptide_modification_plot": "peptide_modification_plot_context",
+    "peptide_missed_cleavage_plot": "peptide_missed_cleavage_plot_context",
+    "peptide_sequence_coverage": "peptide_sequence_coverage_context",
+    "completeness_missing_value_plot": "completeness_missing_value_plot_context",
+    "completeness_missing_value_heatmap": "completeness_missing_value_heatmap_context",
+}

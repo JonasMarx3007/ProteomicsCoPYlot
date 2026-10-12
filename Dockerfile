@@ -71,6 +71,7 @@ COPY proteomicscopylot/notebook_functions.py /app/proteomicscopylot/notebook_fun
 # The arithmetic the backend shares with the pip package (app.services.copylot_core).
 COPY proteomicscopylot/_core.py /app/proteomicscopylot/_core.py
 COPY LICENSE /app/LICENSE
+COPY NOTICE /app/NOTICE
 RUN mkdir -p /app/data /app/viewer_data /app/local
 COPY data/db /app/data/db
 COPY data/report /app/data/report

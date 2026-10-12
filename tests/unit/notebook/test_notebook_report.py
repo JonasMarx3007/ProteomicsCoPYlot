@@ -15,7 +15,7 @@ from app.schemas.summary import SummaryReportRequest, SummaryReportContext, Summ
 from app.services.annotation_store import save_annotation
 from app.services.dataset_store import save_table_dataset
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.notebook_report import report_with_notebook
 from app.services.report_function import report_function
 from app.services.session_context import get_session_id

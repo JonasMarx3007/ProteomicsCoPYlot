@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 from app.main import app
 from app.schemas.chat import ChatRequest
+from app.services import provider_http
 from app.services.chat_tools import _resolve_api_key
 
 ENV_NAMES = {
@@ -147,7 +148,6 @@ def test_key_is_not_echoed_by_validation_errors_or_logs() -> None:
 
 @pytest.mark.parametrize("provider", sorted(ENV_NAMES))
 def test_upstream_error_cannot_echo_server_key(provider, monkeypatch, caplog):
-    from app.services import chat_tools
 
     monkeypatch.setenv("COPYLOT_AI_MODE", "1")
     monkeypatch.setenv(ENV_NAMES[provider], SECRET)
@@ -159,7 +159,7 @@ def test_upstream_error_cannot_echo_server_key(provider, monkeypatch, caplog):
         bodies.append(body)
         raise urllib.error.HTTPError(request.full_url, 401, SECRET, {}, body)
 
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", fail)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", fail)
     with TestClient(app) as client:
         status = client.get(f"/api/chat/cloud-consent/{provider}").json()
         assert client.post(f"/api/chat/cloud-consent/{provider}/grant", json={

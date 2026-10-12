@@ -33,10 +33,10 @@ from app.services.functions import (
     impute_values_with_diagnostics,
     inverse_log2_transform_data,
     normal_fit_curve,
-    qc_matrix,
     qqnorm_plot_data,
     raw_zero_to_nan,
 )
+from app.services.analysis_matrix import qc_matrix
 from app.services.runtime_cache import apply_cached_wrappers
 from app.services.json_records import json_records
 

@@ -7,25 +7,24 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.functions import effective_test_type
-from app.services.notebook_source import extract_notebook_source
 
 
 @lru_cache(maxsize=2)
 def volcano_source(interactive=False):
-    original = _source("stats_tools.py")
-    calculation = _definition(original, "_volcano_dataframe")
-    calculation = _replace_once(calculation, "def _volcano_dataframe(\n    *,", "def calculate_table(data, metadata, imputation_mask=None, *,")
+    original = module_source("stats_tools.py")
+    calculation = function_definition(original, "_volcano_dataframe")
+    calculation = replace_once(calculation, "def _volcano_dataframe(\n    *,", "def calculate_table(data, metadata, imputation_mask=None, *,")
     start = calculation.index("    if frame_override is None and metadata_override is None:")
     end = calculation.index("    label_column =", start)
     calculation = calculation[:start] + "    source_used = data_source\n    frame = data.copy()\n    metadata = metadata.copy()\n    warnings = []\n" + calculation[end:]
     calculation = calculation.replace("    frame_override: pd.DataFrame | None = None,\n", "")
     calculation = calculation.replace("    metadata_override: pd.DataFrame | None = None,\n", "")
-    calculation = _replace_once(calculation,
+    calculation = replace_once(calculation,
         "mask = _imputation_mask(kind, source_used, frame.loc[df.index], [c for cols in count_groups.values() for c in cols])",
         "mask = imputation_mask")
-    helpers = "\n\n".join(_definition(original, name) for name in (
+    helpers = "\n\n".join(function_definition(original, name) for name in (
         "_first_available_column", "_workflow_label_candidates", "_gene_label_candidates", "_resolve_label_column",
         "_variance_and_count", "_volcano_untested_rows", "_safe_neg_log10", "_correction_label", "_clean_feature_name", "_gene_tokens",
         "_normalize_highlight_token", "_volcano_condition_texts", "_volcano_marker_style", "_volcano_top_hits",
@@ -36,26 +35,26 @@ def volcano_source(interactive=False):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and any(
             isinstance(part, ast.Name) and part.id.startswith(("VOLCANO_", "_VOLCANO_", "_LABEL_", "CORRECTION_"))
             for part in ast.walk(node)))
-    styling = "\n".join(line for line in _source("plot_styling.py").splitlines() if not line.startswith("from app."))
-    styling += "\n\n" + _definition(_source("plotting_common.py"), "get_plt")
+    styling = "\n".join(line for line in module_source("plot_styling.py").splitlines() if not line.startswith("from app."))
+    styling += "\n\n" + function_definition(module_source("plotting_common.py"), "get_plt")
     styling += "\n\ndef _get_plt():\n    return get_plt()\n"
     styles = extract_notebook_source(styling, ("advanced_label", "advanced_optional_number", "advanced_size",
         "advanced_alpha", "advanced_text", "resolve_marker_shape", "marker_area", "resolve_reference_line",
         "apply_advanced_axes", "advanced_number", "get_plt", "advanced_plotly_layout")).code
-    scientific = extract_notebook_source(_source("functions.py"), ("paired_sample_columns", "resolve_test_type", "effective_test_type",
+    scientific = extract_notebook_source(module_source("functions.py"), ("paired_sample_columns", "resolve_test_type", "effective_test_type",
         "paired_t_test", "imputed_value_counts", "constant_within_group", "constant_differences",
         "without_variation", "comparison_contrast")).code
-    core = _source("stats_core.py").replace("bh_adjust", "_bh_adjust").replace("satterthwaite", "_satterthwaite")
-    serialization = extract_notebook_source(_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
-    code = _merge_source("import numpy as np\nimport pandas as pd\nfrom typing import Any", scientific, core,
+    core = module_source("stats_core.py").replace("bh_adjust", "_bh_adjust").replace("satterthwaite", "_satterthwaite")
+    serialization = extract_notebook_source(module_source("plot_export.py"), ("to_png_bytes", "cm_to_inch")).code
+    code = merge_source("import numpy as np\nimport pandas as pd\nfrom typing import Any", scientific, core,
                          styles, serialization, constants, helpers, calculation)
     if interactive:
-        common = _source("plotting_common.py")
-        html = _definition(common, "plotly_html")
-        html = _replace_once(html, "full_html=False,", "full_html=False, div_id='copylot-plot',\n        post_script=\"window.dispatchEvent(new Event('copylot-plot-ready'));\",")
-        code = _merge_source(code, html, _definition(common, "get_plotly"), _definition(common, "get_plotly_go"),
-            extract_notebook_source(_source("plot_webgl.py"), ("force_svg_rendering",)).code,
-            extract_notebook_source(_source("html_security.py"), ("GENERATED_HTML_META",)).code)
+        common = module_source("plotting_common.py")
+        html = function_definition(common, "plotly_html")
+        html = replace_once(html, "full_html=False,", "full_html=False, div_id='copylot-plot',\n        post_script=\"window.dispatchEvent(new Event('copylot-plot-ready'));\",")
+        code = merge_source(code, html, function_definition(common, "get_plotly"), function_definition(common, "get_plotly_go"),
+            extract_notebook_source(module_source("plot_webgl.py"), ("force_svg_rendering",)).code,
+            extract_notebook_source(module_source("html_security.py"), ("GENERATED_HTML_META",)).code)
     for before, after in (("AnnotationKind", "str"), ("StatsIdentifier", "str"), ("ResolvedSource", "str"),
                           ("DataSource", "str"), ("_cm_to_inch(", "cm_to_inch(")):
         code = code.replace(before, after)

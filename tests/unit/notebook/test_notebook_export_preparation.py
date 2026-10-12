@@ -14,7 +14,7 @@ from urllib.parse import unquote
 import pytest
 
 from app.services import notebook_preprocessing
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.notebook_snapshots import PendingRecipe
 
 

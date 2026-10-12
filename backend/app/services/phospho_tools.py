@@ -17,13 +17,10 @@ from app.services.phospho_localization import apply_session_localization_cutoff
 from app.schemas.annotation import DataSource
 from app.services.data_tools import _get_current_frame, _get_sample_columns
 from app.services.functions import (
-    DATA_SOURCES,
     comparison_contrast,
-    data_source_options,
-    select_matrix,
     extract_sample_id as _extract_id_or_number,
-    imputed_data_available,
 )
+from app.services.analysis_matrix import DATA_SOURCES, data_source_options, select_matrix, imputed_data_available
 from app.services.plot_styling import (
     advanced_label,
     advanced_plotly_layout,

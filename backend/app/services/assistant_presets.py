@@ -132,8 +132,7 @@ def _width_variant(message: str) -> str:
 
 def edits(key: str, request: AssistantRequest) -> tuple[list[StyleEdit], str]:
     """The style edits for a preset on this plot, and a sentence describing them."""
-    from app.services.assistant_plot_parts import condition_colours
-    from app.services.assistant_styling import style_controls
+    from app.services.assistant_plot_parts import condition_colours, style_controls
 
     preset = PRESETS[key]
     available = style_controls(request)

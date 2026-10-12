@@ -443,7 +443,7 @@ def test_page_labels_are_literal_text():
 
 def test_a_condition_name_is_never_taken_for_its_colour():
     from app.schemas.assistant import UiControl
-    from app.services.assistant_styling import identity
+    from app.services.assistant_plot_parts import identity
 
     names = UiControl(id="n", label="Names and colours / Condition names / GRK", type="text", value="")
     colours = UiControl(id="c", label="Names and colours / Condition colors / GRK", type="color", value="#000000")

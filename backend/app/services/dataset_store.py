@@ -106,6 +106,13 @@ def create_package(package_name: str) -> str:
 
 
 def rename_package(old_name: str, new_name: str) -> str:
+    """Rename a dataset package; returns the resolved new name.
+
+    The dataset store is the one that decides whether a rename is possible, so
+    it raises on a missing or taken name. The annotation and metadata stores
+    each have a `rename_package` of their own that follows this one (see
+    routes_datasets) and quietly does nothing when they hold no such package.
+    """
     state = _session_state()
     old_resolved = _normalize_package_name(old_name)
     new_resolved = _normalize_package_name(new_name)

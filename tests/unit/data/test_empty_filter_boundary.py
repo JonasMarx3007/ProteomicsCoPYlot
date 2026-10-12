@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[3]
 from app.main import app
 from app.schemas.annotation import AnnotationFilterConfig
 from app.services import annotation_store, data_tools, dataset_store, functions
+from app.services import analysis_matrix
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.r_runtime import detect_r_runtime
 from proteomicscopylot import notebook_functions
@@ -54,13 +55,13 @@ def empty_filtered(request, tmp_path):
 def test_asking_for_the_filtered_matrix_is_refused_not_substituted(empty_filtered):
     kind, _, _ = empty_filtered
     with pytest.raises(ValueError, match="No features passed the selected filter"):
-        functions.select_matrix(kind, "filtered")
+        analysis_matrix.select_matrix(kind, "filtered")
 
 
 def test_an_empty_filter_remains_the_default_processing_stage(empty_filtered):
     """Empty is a completed result, not permission to undo filtering."""
     kind, _, _ = empty_filtered
-    options = functions.data_source_options(kind)
+    options = analysis_matrix.data_source_options(kind)
     assert options["availableDataSources"] == ["data", "filtered"]
     assert options["defaultDataSource"] == "filtered"
 
@@ -81,7 +82,7 @@ def test_selector_endpoints_keep_the_empty_filtered_stage(empty_filtered, endpoi
 def test_the_unfiltered_matrix_is_still_its_own_answer(empty_filtered):
     """"data" means the annotated matrix, so an empty filter does not block it."""
     kind, frame, _ = empty_filtered
-    source, selected, _ = functions.select_matrix(kind, "data")
+    source, selected, _ = analysis_matrix.select_matrix(kind, "data")
     assert source == "data"
     assert len(selected) == len(frame) == 2
     assert annotation_store.get_annotation(kind).filtered_data.empty

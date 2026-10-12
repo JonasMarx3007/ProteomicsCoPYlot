@@ -40,7 +40,6 @@ def recipe_size(recipe) -> int:
 
 def forget_session(session: str) -> None:
     """Drop a session's exports when its data is reset or it logs out."""
-    from app.services.notebook_qc import snapshots
     snapshots.clear_session(session)
 
 
@@ -201,3 +200,7 @@ class NotebookSnapshots:
             for token in list(self._entries):
                 if self._entries[token].session == session:
                     del self._entries[token]
+
+
+# The one store of captured notebook recipes; `notebook_qc.snapshots` is the same object.
+snapshots = NotebookSnapshots()

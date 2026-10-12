@@ -6,24 +6,25 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once, qc_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_interactive import abundance_source
+from app.services.notebook_qc import qc_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 
 
 @lru_cache(maxsize=1)
 def missed_cleavage_source():
-    original = _source('peptide_tools.py')
-    function = _definition(original, 'peptide_missed_cleavage_plot')
+    original = module_source('peptide_tools.py')
+    function = function_definition(original, 'peptide_missed_cleavage_plot')
     start = function.index('    plt = _get_plt()')
     boundary = function.index('    summary = peptide_missed_cleavage_summary(')
     preparation = ('def prepare_input(frame, meta):\n' + function[function.index('    file_col ='):boundary]
                    + '    return wide[[seq_col, *annotated_cols]], seq_col\n')
     figure = function[:start] + ('    plt = get_plt()\n    wide = data\n    meta = metadata\n'
         '    annotated_cols = [column for column in meta["new_sample"] if column in wide.columns]\n') + function[boundary:]
-    figure = _replace_once(figure, 'def peptide_missed_cleavage_plot(\n    *,',
+    figure = replace_once(figure, 'def peptide_missed_cleavage_plot(\n    *,',
                            'def render_plot(data, metadata, *, seq_col,')
     figure = figure.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
-    source = _merge_source('import numpy as np\nimport pandas as pd\nfrom matplotlib import ticker as mtick',
+    source = merge_source('import numpy as np\nimport pandas as pd\nfrom matplotlib import ticker as mtick',
         extract_notebook_source(original, ('peptide_missed_cleavage_summary', 'PROTEASE_LABELS',
                                           '_stripped_sequence_column', '_require_column')).code,
         extract_notebook_source(modification_source().code, ('_file_name_column', '_sample_rename_map')).code,
@@ -96,8 +97,8 @@ def render_missed_cleavage(**options):
 
 @lru_cache(maxsize=1)
 def modification_source():
-    original = _source('peptide_tools.py')
-    function = _definition(original, 'peptide_modification_plot')
+    original = module_source('peptide_tools.py')
+    function = function_definition(original, 'peptide_modification_plot')
     start = function.index('    plt = _get_plt()')
     boundary = function.index('    modification_counts = peptide_modification_counts(')
     preparation = ('def prepare_input(frame, meta):\n' + function[function.index('    file_col ='):boundary]
@@ -105,14 +106,14 @@ def modification_source():
     figure = function[:start] + ('    plt = get_plt()\n    filtered = data\n'
         '    ordered_samples = metadata["new_sample"].tolist()\n'
         '    annotated_cols = [column for column in ordered_samples if column in filtered.columns]\n') + function[boundary:]
-    figure = _replace_once(figure, 'def peptide_modification_plot(\n    *,', 'def render_plot(data, metadata, *,')
+    figure = replace_once(figure, 'def peptide_modification_plot(\n    *,', 'def render_plot(data, metadata, *,')
     figure = figure.replace('_cm_to_inch(', 'cm_to_inch(').replace('_to_png_bytes(', 'to_png_bytes(')
-    helpers = '\n\n'.join(_definition(original, name) for name in
+    helpers = '\n\n'.join(function_definition(original, name) for name in
         ('_file_name_column', '_require_column', '_sample_rename_map'))
     helpers = helpers.replace('_extract_id_or_number(', 'extract_sample_id(')
-    source = _merge_source('import numpy as np\nimport pandas as pd', preparation, figure, helpers,
+    source = merge_source('import numpy as np\nimport pandas as pd', preparation, figure, helpers,
         extract_notebook_source(original, ('peptide_modification_counts',)).code,
-        extract_notebook_source(_source('functions.py'), ('sample_id_map', 'extract_sample_id')).code,
+        extract_notebook_source(module_source('functions.py'), ('sample_id_map', 'extract_sample_id')).code,
         extract_notebook_source(rt_source().code,
             ('get_plt', 'to_png_bytes', 'cm_to_inch', 'apply_advanced_axes')).code)
     return extract_notebook_source(source, ('prepare_input', 'render_plot', 'peptide_modification_counts'))
@@ -180,9 +181,8 @@ def render_modification(**options):
 
 @lru_cache(maxsize=1)
 def interactive_rt_source():
-    from app.services.notebook_interactive import abundance_source
-    original = _source('peptide_tools.py')
-    function = _definition(original, 'peptide_rt_interactive_html')
+    original = module_source('peptide_tools.py')
+    function = function_definition(original, 'peptide_rt_interactive_html')
     start = function.index('    _require_column(frame, "Predicted.RT")')
     boundary = function.index('    if len(data) > 250_000:')
     preparation = ('def prepare_points(frame):\n' + function[start:boundary]
@@ -190,18 +190,18 @@ def interactive_rt_source():
     rendering = ('def plot_figure(data, *, add_line=False, header=True, sampling_seed=69, '
                  'width_cm=20, height_cm=15, advanced=None):\n    go = get_plotly()[1]\n'
                  + function[boundary:])
-    rendering = _replace_once(rendering, 'return _plotly_html(fig)', 'return force_svg_rendering(fig)')
+    rendering = replace_once(rendering, 'return _plotly_html(fig)', 'return force_svg_rendering(fig)')
     rendering = rendering.replace('_cm_to_px(', 'cm_to_px(')
-    helpers = '\n\n'.join(_definition(original, name) for name in
+    helpers = '\n\n'.join(function_definition(original, name) for name in
         ('_require_column', '_peptide_feature_column', '_file_name_column', '_short_sample_label'))
     helpers = helpers.replace('_truncate_hover_text(', 'truncate_hover_text(')
     preparation = preparation.replace('_truncate_hover_text(', 'truncate_hover_text(')
-    styling = '\n'.join(line for line in _source('plot_styling.py').splitlines() if not line.startswith('from app.'))
-    sources = _merge_source('import re\nimport numpy as np\nimport pandas as pd',
+    styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines() if not line.startswith('from app.'))
+    sources = merge_source('import re\nimport numpy as np\nimport pandas as pd',
         extract_notebook_source(abundance_source().code,
             ('get_plotly', 'plotly_html', 'force_svg_rendering', 'cm_to_px', 'advanced_plotly_layout')).code,
         extract_notebook_source(styling, ('plotly_marker', 'resolve_reference_line')).code,
-        _definition(_source('plotting_common.py'), 'truncate_hover_text'), helpers, preparation, rendering)
+        function_definition(module_source('plotting_common.py'), 'truncate_hover_text'), helpers, preparation, rendering)
     return extract_notebook_source(sources, ('prepare_points', 'plot_figure', 'plotly_html'))
 
 
@@ -260,8 +260,8 @@ def render_interactive_rt(**options):
 
 @lru_cache(maxsize=1)
 def rt_source():
-    original = _source('peptide_tools.py')
-    figure = _definition(original, 'peptide_rt_plot')
+    original = module_source('peptide_tools.py')
+    figure = function_definition(original, 'peptide_rt_plot')
     for before, after in (
         ('def peptide_rt_plot(\n    *,', 'def render_plot(frame, *,'),
         ('    frame = get_peptide_frame()\n', ''),
@@ -272,14 +272,14 @@ def rt_source():
         if before == '_cm_to_inch(':
             figure = figure.replace(before, after)
         else:
-            figure = _replace_once(figure, before, after)
+            figure = replace_once(figure, before, after)
     helpers = extract_notebook_source(qc_source('coverage').code,
         ('get_plt', 'to_png_bytes', 'cm_to_inch', 'resolve_reference_line', 'apply_advanced_axes')).code
-    styling = '\n'.join(line for line in _source('plot_styling.py').splitlines()
+    styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines()
                         if not line.startswith('from app.'))
     markers = extract_notebook_source(styling, ('marker_style',)).code
-    return extract_notebook_source(_merge_source('import pandas as pd', helpers, markers,
-        _definition(original, '_require_column'), figure), ('render_plot',))
+    return extract_notebook_source(merge_source('import pandas as pd', helpers, markers,
+        function_definition(original, '_require_column'), figure), ('render_plot',))
 
 
 @lru_cache(maxsize=1)
@@ -337,8 +337,8 @@ def render_rt(**options):
 
 @lru_cache(maxsize=1)
 def coverage_source():
-    rendering = _source("plot_images.py")
-    figure = _definition(rendering, "qc_peptide_coverage_plot")
+    rendering = module_source("plot_images.py")
+    figure = function_definition(rendering, "qc_peptide_coverage_plot")
     for before, after in (
         ("def qc_peptide_coverage_plot(", "def plot_figure(data, metadata, condition_colors,"),
         ("_get_plt()", "get_plt()"),
@@ -346,12 +346,12 @@ def coverage_source():
         ('advanced_condition_colors("protein", plt, ordered_conditions, advanced)', "condition_colors"),
         ("return _to_png_bytes(fig, plt, dpi=dpi)", "return fig"),
     ):
-        figure = _replace_once(figure, before, after)
+        figure = replace_once(figure, before, after)
     helpers = extract_notebook_source(qc_source("coverage").code, (
         "get_plt", "to_png_bytes", "_make_fig", "advanced_anchor", "advanced_label",
         "resolve_reference_line", "apply_advanced_axes")).code
-    combined = _merge_source(helpers, "import pandas as pd\nfrom typing import Any",
-        _definition(rendering, "summarize_peptide_coverage"), figure)
+    combined = merge_source(helpers, "import pandas as pd\nfrom typing import Any",
+        function_definition(rendering, "summarize_peptide_coverage"), figure)
     return extract_notebook_source(combined, ("plot_figure", "summarize_peptide_coverage", "to_png_bytes", "get_plt"))
 
 

@@ -135,8 +135,8 @@ def test_every_regulation_route_accepts_data_source():
 
     routes = {
         name: set(inspect.signature(function).parameters)
-        for name, function in vars(routes_plots).items()
-        if inspect.isfunction(function) and name.startswith("phospho_phosprot_regulation")
+        for name, function in routes_plots.ROUTE_FUNCTIONS.items()
+        if name.startswith("phospho_phosprot_regulation")
     }
     assert set(routes) == {
         "phospho_phosprot_regulation_html_route",

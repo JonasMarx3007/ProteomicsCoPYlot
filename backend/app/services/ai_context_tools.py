@@ -46,7 +46,7 @@ def _function_payload(
     workflow: str,
     mode: ContextMode | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    source_func = getattr(ai_functions, function_name, None)
+    source_func = getattr(ai_functions, ai_functions.CONTEXT_TOOL_FUNCTIONS.get(function_name, function_name), None)
     if not callable(source_func):
         return None, f"AI function '{function_name}' is not available."
     kwargs: dict[str, Any] = {}

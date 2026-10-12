@@ -139,11 +139,11 @@ def _unavailable(*_args: Any, **_kwargs: Any) -> Any:
 
 @pytest.fixture(scope="module")
 def recorded(client) -> dict[str, Any]:
-    original = routes_plots.parse_advanced_plot_settings
+    original = routes_plots.ROUTE_MODULES[0].parse_advanced_plot_settings
     patch = pytest.MonkeyPatch()
-    patch.setattr(
-        routes_plots, "parse_advanced_plot_settings", lambda raw: RecordingSettings(original(raw))
-    )
+    for module in routes_plots.ROUTE_MODULES:
+        if hasattr(module, "parse_advanced_plot_settings"):
+            patch.setattr(module, "parse_advanced_plot_settings", lambda raw: RecordingSettings(original(raw)))
     RecordingSettings.read = set()
     advanced = json.dumps(_every_setting())
     failures: dict[str, str] = {}

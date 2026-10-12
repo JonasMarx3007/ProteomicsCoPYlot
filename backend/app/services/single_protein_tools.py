@@ -15,11 +15,9 @@ from app.services.clustering_tools import drop_incomplete_features, heatmap_noti
 from app.services.functions import (
     condition_sample_labels,
     extract_sample_id as _extract_id_or_number,
-    _phosprot_values_are_centred,
-    data_source_options,
-    select_matrix,
     intensity_unit_label,
 )
+from app.services.analysis_matrix import phosprot_values_are_centred, data_source_options, select_matrix
 from app.services.plot_styling import (
     advanced_anchor,
     advanced_condition_colors,
@@ -233,6 +231,13 @@ def unmatched_names_notice(names: list[str]) -> str:
 
 
 def _identifier_options(kind: AnnotationKind, frame: pd.DataFrame) -> list[dict[str, str]]:
+    """The identifier choices of the single-protein pages.
+
+    Not the same list as `stats_tools._identifier_options`, although the two
+    read alike: here the workflow name is always offered, a phosphosite table
+    gets no gene option, and "Gene Group" is only a protein-table label.
+    Merging them would change which identifiers a page offers.
+    """
     options: list[dict[str, str]] = []
     if kind == "protein":
         workflow_label = "Protein Names"
@@ -638,7 +643,7 @@ def _heatmap_matrix(
         matrix = pd.DataFrame(row_zscore(matrix), index=matrix.index, columns=matrix.columns)
         cbar_label = "Z-score"
     elif value_type_normalized == "log2":
-        cbar_label = intensity_unit_label(_phosprot_values_are_centred(kind))
+        cbar_label = intensity_unit_label(phosprot_values_are_centred(kind))
     else:
         raise ValueError("valueType must be 'log2' or 'z'.")
 
@@ -827,7 +832,7 @@ def single_protein_lineplot_plot(
     # across-sample median, not intensities. The heatmap colourbar beside these
     # plots already asks; these two hardcoded it, so the same matrix was called
     # two different things on one page.
-    ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_ylabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         workflow = "Gene" if resolved_identifier == "genes" else ("Protein" if kind == "protein" else "Phosphosite")
@@ -1009,7 +1014,7 @@ def single_protein_boxplot_plot(
     # across-sample median, not intensities. The heatmap colourbar beside these
     # plots already asks; these two hardcoded it, so the same matrix was called
     # two different things on one page.
-    ax.set_ylabel(intensity_unit_label(_phosprot_values_are_centred(kind)))
+    ax.set_ylabel(intensity_unit_label(phosprot_values_are_centred(kind)))
     if header:
         resolved_identifier = _normalize_identifier(identifier)
         label = str(protein).strip() if resolved_identifier == "genes" else _feature_label(protein, kind)
@@ -1021,7 +1026,7 @@ def single_protein_boxplot_plot(
         # exported figure carries no data-source selector, so the title is the
         # only place that can say so.
         measured = "Measured" if data_source != "imputed" else "Imputed"
-        ax.set_title(f"{measured} {label} {intensity_unit_label(_phosprot_values_are_centred(kind)).lower()} values")
+        ax.set_title(f"{measured} {label} {intensity_unit_label(phosprot_values_are_centred(kind)).lower()} values")
 
     if legend:
         handles = [plt.Line2D([0], [0], color=condition_color[label], lw=4) for label in labels]

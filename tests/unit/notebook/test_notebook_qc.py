@@ -15,7 +15,8 @@ from app.schemas.annotation import AnnotationFilterConfig
 from app.services.annotation_store import save_annotation
 from app.services.dataset_store import save_table_dataset
 from app.services.notebook_archive import build_notebook_archive
-from app.services.notebook_qc import render_qc, snapshots
+from app.services.notebook_qc import render_qc
+from app.services.notebook_snapshots import snapshots
 from app.services.plot_images import qc_coverage_plot
 from app.services.session_context import get_session_id
 from app.services.table_functions import qc_coverage_table

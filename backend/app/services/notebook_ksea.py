@@ -6,8 +6,7 @@ import logging
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _replace_once, _merge_source
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_volcano import volcano_source
 
 LOGGER = logging.getLogger(__name__)
@@ -15,13 +14,13 @@ LOGGER = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def table_source():
-    original = _source('phospho_tools.py')
-    formatter = _definition(original, '_ksea_format')
-    formatter = _replace_once(formatter, 'def _ksea_format(frame: pd.DataFrame, organism: str)',
+    original = module_source('phospho_tools.py')
+    formatter = function_definition(original, '_ksea_format')
+    formatter = replace_once(formatter, 'def _ksea_format(frame: pd.DataFrame, organism: str)',
                               'def format_table(frame: pd.DataFrame, sequences)')
-    formatter = _replace_once(formatter, '    sequences = _ksea_protein_sequences(organism)\n', '')
-    original = original.replace(_definition(original, '_ksea_format'), formatter)
-    return extract_notebook_source(_merge_source(
+    formatter = replace_once(formatter, '    sequences = _ksea_protein_sequences(organism)\n', '')
+    original = original.replace(function_definition(original, '_ksea_format'), formatter)
+    return extract_notebook_source(merge_source(
         extract_notebook_source(volcano_source().code, ('calculate_table',)).code,
         extract_notebook_source(original, ('format_table',)).code), ('calculate_table', 'format_table'))
 

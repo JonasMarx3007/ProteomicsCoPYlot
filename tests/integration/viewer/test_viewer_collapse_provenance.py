@@ -29,7 +29,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 from app.schemas.annotation import PhosprotAggregationMode
 from app.services.annotation_store import get_annotation
-from app.services.functions import _phosprot_values_are_centred, abundance_axis_label
+from app.services.functions import abundance_axis_label
+from app.services.analysis_matrix import phosprot_values_are_centred
 from app.services.phosprot_tools import transform_phosprot
 from app.services.viewer_bootstrap import _phosprot_aggregation, load_viewer_state
 
@@ -146,8 +147,8 @@ def test_the_example_project_is_labelled_as_the_abundances_it_holds(loaded) -> N
     assert declared_mode() != "robust_site_median", (
         "this test describes the shipped example; update it with the example"
     )
-    assert _phosprot_values_are_centred("phosprot") is False
-    label = abundance_axis_label("Phosphoprotein", _phosprot_values_are_centred("phosprot"))
+    assert phosprot_values_are_centred("phosprot") is False
+    label = abundance_axis_label("Phosphoprotein", phosprot_values_are_centred("phosprot"))
     assert label == "log10 Phosphoprotein Intensity"
 
     annotation = get_annotation("phosprot")
@@ -184,9 +185,9 @@ def test_a_centred_project_is_labelled_as_ratios(loaded) -> None:
     original = annotation.phosprot_aggregation
     annotation.phosprot_aggregation = "robust_site_median"
     try:
-        assert _phosprot_values_are_centred("phosprot") is True
+        assert phosprot_values_are_centred("phosprot") is True
         assert abundance_axis_label(
-            "Phosphoprotein", _phosprot_values_are_centred("phosprot")
+            "Phosphoprotein", phosprot_values_are_centred("phosprot")
         ) == "log10 Phosphoprotein Ratio to Site Median"
     finally:
         annotation.phosprot_aggregation = original

@@ -131,7 +131,7 @@ def test_a_session_over_its_budget_drops_its_own_oldest_export() -> None:
 
 
 def test_logout_and_reset_forget_the_sessions_exports() -> None:
-    from app.services.notebook_qc import snapshots
+    from app.services.notebook_snapshots import snapshots
     from app.services.notebook_snapshots import forget_session
     token = snapshots.capture("leaving", _recipe(10))
     forget_session("leaving")

@@ -5,8 +5,9 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from app.services import annotation_store, comparison_tools, data_tools, functions, single_protein_tools
-from app.services.functions import DATA_SOURCES
+from app.services import annotation_store, comparison_tools, data_tools, single_protein_tools
+from app.services import analysis_matrix
+from app.services.analysis_matrix import DATA_SOURCES
 from app.services.runtime_cache import invalidate_runtime_cache
 
 
@@ -117,7 +118,7 @@ def test_visualization_sources_are_explicit_and_never_substituted(source_annotat
         "imputed": source_annotation.imputed_data,
     }
     for requested, expected_frame in expected.items():
-        source, frame, metadata = functions.select_matrix(
+        source, frame, metadata = analysis_matrix.select_matrix(
             "protein", data_source=requested
         )
         assert source == requested
@@ -207,7 +208,7 @@ def test_unavailable_imputation_fails_and_options_fall_back_to_data(
     source_annotation.imputed_data = pd.DataFrame()
 
     with pytest.raises(ValueError, match="Run imputation successfully first"):
-        functions.select_matrix("protein", data_source="imputed")
+        analysis_matrix.select_matrix("protein", data_source="imputed")
 
     comparison = comparison_tools.comparison_options("protein")
     single = single_protein_tools.single_protein_options(
@@ -242,15 +243,15 @@ def test_canvas_unavailable_imputation_never_substitutes_a_matrix(source_annotat
 def test_the_plot_routes_read_selections_one_way(raw, expected):
     # 2026-10-02: the /api/analysis boxplot and lineplot routes this was compared
     # with were removed (no page called them); the canvas uses these routes.
-    from app.api import routes_plots
+    from app.api import plot_responses
     from app.services.functions import parse_selection_list
-    assert routes_plots._csv_values(raw) == parse_selection_list(raw) == expected
+    assert plot_responses.csv_values(raw) == parse_selection_list(raw) == expected
 
 
 def test_the_plot_routes_reject_non_string_json():
-    from app.api import routes_plots
+    from app.api import plot_responses
     with pytest.raises(ValueError):
-        routes_plots._csv_values('["K0", 42]')
+        plot_responses.csv_values('["K0", 42]')
 
 
 def test_comparison_and_single_protein_use_the_selected_matrix(source_annotation) -> None:
@@ -302,14 +303,14 @@ def test_every_name_selects_exactly_one_matrix(source_annotation, token: str) ->
         "filtered": source_annotation.filtered_data,
         "imputed": source_annotation.imputed_data,
     }[token]
-    source, frame, _ = functions.select_matrix("protein", token)
+    source, frame, _ = analysis_matrix.select_matrix("protein", token)
     assert source == token
     pd.testing.assert_frame_equal(frame, expected)
 
 
 def test_data_is_the_unfiltered_annotated_matrix(source_annotation) -> None:
     """The word that used to mean two things."""
-    _, frame, _ = functions.select_matrix("protein", "data")
+    _, frame, _ = analysis_matrix.select_matrix("protein", "data")
     pd.testing.assert_frame_equal(frame, source_annotation.log2_data)
     assert not frame.equals(source_annotation.filtered_data)
 
@@ -318,33 +319,33 @@ def test_data_is_the_unfiltered_annotated_matrix(source_annotation) -> None:
 def test_unknown_tokens_are_rejected_rather_than_defaulted(token: str) -> None:
     """Including the two names that used to work: they were the ambiguity."""
     with pytest.raises(ValueError, match="Unsupported data source"):
-        functions.select_matrix("protein", token)
+        analysis_matrix.select_matrix("protein", token)
 
 
 @pytest.mark.parametrize("token", ["", None, "  DATA  "])
 def test_blank_and_padded_spellings_mean_the_unfiltered_matrix(source_annotation, token) -> None:
-    _, frame, _ = functions.select_matrix("protein", token)
+    _, frame, _ = analysis_matrix.select_matrix("protein", token)
     pd.testing.assert_frame_equal(frame, source_annotation.log2_data)
 
 
 def test_the_ladder_offers_the_most_processed_matrix_that_exists(source_annotation) -> None:
     """What a fresh panel opens on: imputed > filtered > data."""
-    assert functions.most_processed_data_source("protein") == "imputed"
+    assert analysis_matrix.most_processed_data_source("protein") == "imputed"
     source_annotation.imputation = SimpleNamespace(mode="none", applied=False)
     source_annotation.imputed_data = pd.DataFrame()
-    assert functions.most_processed_data_source("protein") == "filtered"
+    assert analysis_matrix.most_processed_data_source("protein") == "filtered"
     source_annotation.filtered_data = pd.DataFrame()
-    assert functions.most_processed_data_source("protein") == "data"
+    assert analysis_matrix.most_processed_data_source("protein") == "data"
 
 
 def test_availability_matches_what_can_actually_be_selected(source_annotation) -> None:
     """A source is offered only when choosing it would work."""
-    for token, available in functions.data_source_availability("protein").items():
+    for token, available in analysis_matrix.data_source_availability("protein").items():
         if available:
-            functions.select_matrix("protein", token)
+            analysis_matrix.select_matrix("protein", token)
         else:
             with pytest.raises(ValueError):
-                functions.select_matrix("protein", token)
+                analysis_matrix.select_matrix("protein", token)
 
 
 def test_the_chat_layer_accepts_exactly_what_the_engine_accepts() -> None:

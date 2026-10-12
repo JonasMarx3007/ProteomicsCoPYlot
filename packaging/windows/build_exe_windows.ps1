@@ -28,6 +28,7 @@ $FrontendTargetMode = if ($Target -eq "Viewer") { "viewer" } else { "analysis" }
 $ViewerProjectRegex = '^[A-Za-z0-9_.-]{1,128}$'
 $VersionInfoScript = Join-Path $PSScriptRoot "new_windows_version_info.ps1"
 $SigningScript = Join-Path $PSScriptRoot "sign_windows_executables.ps1"
+$ReleaseHelper = Join-Path $RootDir "tools\package_release_licenses.py"
 
 if (-not $ExecutableName) {
   $ExecutableName = if ($Target -eq "Viewer") { "DataViewer" } else { "ProteomicsCoPYlot" }
@@ -144,6 +145,9 @@ function Invoke-PyInstallerBuild {
   if (-not (Test-Path (Join-Path $RootDir $EntryPoint))) {
     throw "Entry point missing: $EntryPoint"
   }
+  $LegalDir = Join-Path $RootDir "build\legal\$Name"
+  & $PythonExe $ReleaseHelper prepare --legal-dir $LegalDir
+  Assert-LastExitCode -Step "Collect release licences and corresponding source"
 
   $pyInstallerArgs = @(
     "--noconfirm",
@@ -197,6 +201,8 @@ function Invoke-PyInstallerBuild {
   # The arithmetic the backend shares with the pip package; app.services.copylot_core loads it from here.
   $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "proteomicscopylot\_core.py");notebook_sources")
   $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "LICENSE");notebook_sources")
+  $pyInstallerArgs += @("--add-data", "$(Join-Path $RootDir "NOTICE");notebook_sources")
+  $pyInstallerArgs += @("--add-data", "$LegalDir;legal")
   $pyInstallerArgs += $EntryPoint
 
   & $PythonExe -m PyInstaller @pyInstallerArgs
@@ -328,6 +334,8 @@ $ExecutablePath = Join-Path $RootDir "dist\$ExecutableName.exe"
 if ($Sign) {
   & $SigningScript -ExecutablePath $ExecutablePath -MachineCertificateStore:$machineStore
 }
+& $PythonExe $ReleaseHelper finish --legal-dir (Join-Path $RootDir "build\legal\$ExecutableName") --executable $ExecutablePath
+Assert-LastExitCode -Step "Package executable, licences and corresponding source"
 
 Write-Host ""
 Write-Host "Build completed."

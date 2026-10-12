@@ -29,6 +29,11 @@ import urllib.request
 
 from app.schemas.chat import ChatRequest, OllamaModelsResponse
 from app.services.env_settings import env_flag, env_int
+from app.services.provider_http import (
+    PROVIDER_OPENER, AssistantContextExhausted, open_provider_request, openai_content_to_text, read_json_response,
+    read_provider_body,
+)
+from app.services.workload_manager import provider_deadline
 
 PROVIDER = "openai_compatible"
 LABEL = "Local server (OpenAI-compatible)"
@@ -131,11 +136,10 @@ def _headers(api_key: str) -> dict[str, str]:
 
 
 def _get_json(url: str, api_key: str, *, timeout: float) -> dict:
-    from app.services.chat_tools import _open_provider_request, _read_json_response
 
     request = urllib.request.Request(url, headers=_headers(api_key), method="GET")
-    response = _open_provider_request(request, timeout=timeout, provider="The local AI server")
-    return _read_json_response(response, "The local AI server returned invalid JSON.")
+    response = open_provider_request(request, timeout=timeout, provider="The local AI server")
+    return read_json_response(response, "The local AI server returned invalid JSON.")
 
 
 def server_models(endpoint: str | None, api_key: str | None = None) -> OllamaModelsResponse:
@@ -260,28 +264,26 @@ def _post(url: str, body: dict, api_key: str, progress_id: str | None = None) ->
     With a ``progress_id`` the reply is streamed and the phase and token count
     are published for the chat's progress line (assistant_progress); the
     result is assembled into the same shape as an ordinary reply."""
-    from app.services.chat_tools import _read_json_response, _read_provider_body
 
     request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=_headers(api_key), method="POST")
     try:
         response = _open_provider_request_raising(request)
     except urllib.error.HTTPError as exc:
         try:
-            text = _read_provider_body(exc).decode("utf-8", errors="replace")[:2000]
+            text = read_provider_body(exc).decode("utf-8", errors="replace")[:2000]
         except Exception:
             text = ""
         finally:
             exc.close()
         return exc.code, None, text
     if not body.get("stream"):
-        return 200, _read_json_response(response, "The local AI server returned invalid JSON."), ""
+        return 200, read_json_response(response, "The local AI server returned invalid JSON."), ""
     return 200, _read_stream(response, progress_id), ""
 
 
 def _read_stream(response, progress_id: str | None) -> dict:
     """Assemble a streamed chat completion, publishing progress as it arrives."""
     from app.services import assistant_progress
-    from app.services.chat_tools import provider_deadline
 
     content: list[str] = []
     reasoning = 0
@@ -336,17 +338,15 @@ def _read_stream(response, progress_id: str | None) -> dict:
 
 
 def _open_provider_request_raising(request):
-    """`chat_tools._open_provider_request`, except that a 4xx/5xx reaches the caller."""
-    from app.services import chat_tools
-
+    """`provider_http.open_provider_request`, except that a 4xx/5xx reaches the caller."""
     now = time.monotonic()
     limit = request_timeout()
-    deadline = min(chat_tools.provider_deadline.get() or now + limit, now + limit)
+    deadline = min(provider_deadline.get() or now + limit, now + limit)
     if deadline <= now:
         raise ValueError("Provider operation exceeded its time limit.")
     request._copylot_deadline = deadline
     try:
-        return chat_tools._PROVIDER_OPENER.open(request, timeout=deadline - now)
+        return PROVIDER_OPENER.open(request, timeout=deadline - now)
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
             exc.close()
@@ -366,7 +366,6 @@ def chat_message(payload: ChatRequest, messages: list[dict], *, model: str, sche
     that reads images. ``effort`` is a reasoning effort for servers whose chat
     template supports it; ``COPYLOT_LOCAL_AI_REASONING_EFFORT`` overrides it
     (``server`` leaves the server's own default)."""
-    from app.services.chat_tools import AssistantContextExhausted
 
     base = resolve_base_url(payload.localServerUrl)
     sent: list[dict] = [dict(message) for message in messages]
@@ -449,11 +448,10 @@ def chat_text(payload: ChatRequest, messages: list[dict[str, str]], *, model: st
               schema: dict | None, context_window: int, max_tokens: int = 1024,
               image: str | None = None, effort: str | None = None) -> str:
     """One completion's text (reasoning models' thinking is left out)."""
-    from app.services.chat_tools import _openai_content_to_text
 
     message = chat_message(payload, messages, model=model, schema=schema, context_window=context_window,
                            max_tokens=max_tokens, image=image, effort=effort)
-    text = _openai_content_to_text(message.get("content"))
+    text = openai_content_to_text(message.get("content"))
     if not text.strip():
         raise ValueError("The local AI server returned an empty answer.")
     return text

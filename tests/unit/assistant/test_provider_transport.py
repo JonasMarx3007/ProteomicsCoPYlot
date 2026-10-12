@@ -7,7 +7,7 @@ from email.message import Message
 
 import pytest
 
-from app.services import chat_tools
+from app.services import chat_tools, provider_http
 
 
 @pytest.mark.parametrize("stage", ["headers", "stall", "trickle", "success"])
@@ -48,16 +48,16 @@ def test_actual_http_deadline_interrupts_slow_provider(stage):
     try:
         def read_response():
             nonlocal response
-            response = chat_tools._open_provider_request(
+            response = provider_http.open_provider_request(
                 urllib.request.Request(f"http://127.0.0.1:{server.server_port}/"), timeout=5,
             )
             with response:
-                return chat_tools._read_provider_body(response)
+                return provider_http.read_provider_body(response)
         if stage == "success":
             assert read_response() == b"ok"
             assert response.connection.watchdog.finished.is_set()
         else:
-            with pytest.raises((ValueError, OSError, chat_tools.http.client.HTTPException)):
+            with pytest.raises((ValueError, OSError, provider_http.http.client.HTTPException)):
                 read_response()
         assert time.monotonic() - start < 1.5
         if response is not None:
@@ -76,7 +76,7 @@ def test_ollama_assistant_uses_fixed_limits_and_structured_nonstreaming_transpor
     monkeypatch.setattr(chat_tools, "_resolve_model", lambda *args: "synthetic")
     monkeypatch.setattr(chat_tools, "_resolve_endpoint", lambda *args: "http://127.0.0.1:11434/api/chat")
     monkeypatch.setattr(chat_tools, "_resolve_gpu_enabled", lambda *args: False)
-    monkeypatch.setattr(chat_tools, "_open_provider_request", lambda request, **kwargs: requests.append(request) or io.BytesIO())
+    monkeypatch.setattr(chat_tools, "open_provider_request", lambda request, **kwargs: requests.append(request) or io.BytesIO())
     schema = {"type": "object"}
     messages = [{"role": "system", "content": "Bounded instructions"}, {"role": "user", "content": "Synthetic question"}]
     model, response = chat_tools._open_ollama_request(ChatRequest(message="Synthetic question"), messages=messages, output_schema=schema)
@@ -96,10 +96,10 @@ def test_ollama_assistant_uses_fixed_limits_and_structured_nonstreaming_transpor
 
 def test_expired_operation_never_opens_next_request(monkeypatch):
     token = chat_tools.provider_deadline.set(1)
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", lambda *a, **k: pytest.fail("Expired provider request opened"))
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", lambda *a, **k: pytest.fail("Expired provider request opened"))
     try:
         with pytest.raises(ValueError, match="time limit"):
-            chat_tools._open_provider_request(urllib.request.Request("http://localhost/"), timeout=5)
+            provider_http.open_provider_request(urllib.request.Request("http://localhost/"), timeout=5)
     finally:
         chat_tools.provider_deadline.reset(token)
 
@@ -108,13 +108,13 @@ def test_deadline_https_handler_keeps_certificate_verification(monkeypatch):
     import ssl
     import time
 
-    handler = chat_tools._DeadlineHandlers()
+    handler = provider_http._DeadlineHandlers()
     request = urllib.request.Request("https://provider.invalid/")
     request._copylot_deadline = time.monotonic() + 10
 
     def open_connection(factory, request, **kwargs):
         connection = factory("provider.invalid", timeout=1, **kwargs)
-        assert isinstance(connection, chat_tools._DeadlineHTTPSConnection)
+        assert isinstance(connection, provider_http._DeadlineHTTPSConnection)
         assert connection._context.verify_mode == ssl.CERT_REQUIRED
         assert connection._context.check_hostname
         if handler._context is not None:
@@ -139,9 +139,9 @@ def test_provider_json_reads_are_bounded_and_closed(monkeypatch, oversized):
     body = Body(json.dumps({"text": "x" * (100 if oversized else 10)}).encode())
     if oversized:
         with pytest.raises(ValueError, match="size limit"):
-            chat_tools._read_json_response(body, "Invalid JSON")
+            provider_http.read_json_response(body, "Invalid JSON")
     else:
-        assert chat_tools._read_json_response(body, "Invalid JSON") == {"text": "x" * 10}
+        assert provider_http.read_json_response(body, "Invalid JSON") == {"text": "x" * 10}
     assert body.closed
 
 
@@ -174,15 +174,15 @@ def test_redirects_never_send_a_second_request(monkeypatch, status, method, sche
 
         https_open = http_open
 
-    opener = urllib.request.build_opener(chat_tools._NoProviderRedirects(), Transport())
-    monkeypatch.setattr(chat_tools, "_PROVIDER_OPENER", opener)
+    opener = urllib.request.build_opener(provider_http._NoProviderRedirects(), Transport())
+    monkeypatch.setattr(provider_http, "PROVIDER_OPENER", opener)
     request = urllib.request.Request(
         f"{scheme}://127.0.0.1:11434/api/chat", method=method,
         headers={"Authorization": "Bearer synthetic-secret"},
         data=b"private context" if method != "GET" else None,
     )
     with pytest.raises(ValueError):
-        chat_tools._open_provider_request(request, timeout=1)
+        provider_http.open_provider_request(request, timeout=1)
     assert requests == [request]
 
 
@@ -196,9 +196,9 @@ def test_http_error_body_is_not_read_and_is_closed(monkeypatch):
     def fail(*args, **kwargs):
         raise urllib.error.HTTPError("https://provider.invalid", 401, "synthetic-secret", {}, body)
 
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", fail)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", fail)
     with pytest.raises(ValueError, match=r"request failed \(HTTP 401\)") as error:
-        chat_tools._open_provider_request(urllib.request.Request("https://provider.invalid"), timeout=1)
+        provider_http.open_provider_request(urllib.request.Request("https://provider.invalid"), timeout=1)
     assert "synthetic-secret" not in str(error.value)
     assert error.value.__suppress_context__
     assert body.closed
@@ -219,7 +219,7 @@ def test_cloud_success_still_uses_authenticated_post(monkeypatch, provider, payl
         assert "synthetic-secret" in str(request.headers)
         return response
 
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", open_request)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", open_request)
     result = getattr(chat_tools, f"_{provider}_chat_text")(
         model="synthetic-model", api_key="synthetic-secret",
         messages=[{"role": "user", "content": "Hello"}], temperature=0.2, max_tokens=20,
@@ -235,7 +235,7 @@ def test_connection_error_reason_is_not_exposed(monkeypatch):
     def fail(*args, **kwargs):
         raise urllib.error.URLError("synthetic-secret")
 
-    monkeypatch.setattr(chat_tools._PROVIDER_OPENER, "open", fail)
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", fail)
     with pytest.raises(ValueError, match="Could not reach") as error:
-        chat_tools._open_provider_request(urllib.request.Request("https://provider.invalid"), timeout=1)
+        provider_http.open_provider_request(urllib.request.Request("https://provider.invalid"), timeout=1)
     assert "synthetic-secret" not in str(error.value)

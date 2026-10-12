@@ -15,10 +15,10 @@ from app.schemas.data_tools import ImputationRunRequest
 from app.services.annotation_store import save_annotation, get_annotation
 from app.services.dataset_store import save_table_dataset
 from app.services.data_tools import run_imputation
-from app.services.functions import select_matrix
+from app.services.analysis_matrix import select_matrix
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_pca import render_pca, _pca_module
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.plot_images import qc_pca_plot, _pca_projection
 from app.services.session_context import get_session_id
 

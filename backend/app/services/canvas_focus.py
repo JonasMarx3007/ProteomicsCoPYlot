@@ -3,7 +3,7 @@ import json
 import re
 
 from app.schemas.assistant import CanvasFocusRequest, ContextMode
-from app.services.functions import select_matrix
+from app.services.analysis_matrix import select_matrix
 
 
 class CanvasIdentifierCandidate(ValueError):

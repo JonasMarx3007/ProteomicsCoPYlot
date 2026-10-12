@@ -34,6 +34,21 @@ def test_the_backend_follows_every_rule() -> None:
 ROUTE_HEADER = "import logging\nfrom fastapi import HTTPException\nLOGGER = logging.getLogger(__name__)\n"
 
 
+@pytest.mark.parametrize("filename", ["routes_example.py", "plots_qc.py", "plot_responses.py", "nested/helper.py"])
+def test_all_api_modules_are_scanned(tmp_path, filename):
+    path = tmp_path / "backend" / "app" / "api" / filename
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        ROUTE_HEADER + "def route():\n    try:\n        pass\n"
+        "    except Exception:\n        raise HTTPException(status_code=500, detail='Failed.')\n",
+        encoding="utf-8",
+    )
+    problems = _checker().violations(tmp_path)
+    assert [(problem.path, problem.rule) for problem in problems] == [
+        (str(path.relative_to(tmp_path)), "unlogged-500"),
+    ]
+
+
 @pytest.mark.parametrize("body,rule", [
     # The exception's own text in the response, however it is spelled.
     ("    except Exception as e:\n        LOGGER.exception('x')\n"

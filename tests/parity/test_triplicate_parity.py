@@ -106,6 +106,10 @@ def _is_web_app_rendering(name: str) -> bool:
 # The allowlists are written as tuples so that a name listed twice can be
 # detected; the sets the tests use are built from them.
 BACKEND_ONLY_ANALYSIS_NAMES = (
+    # The readers of the session's live matrices (select_matrix, qc_matrix, the
+    # data-source ladder, phosprot_values_are_centred) left functions.py for
+    # app.services.analysis_matrix on 2026-10-09, so they are not in this
+    # module's inventory any more; the notebooks hand their own frame in.
     "comparison_contrast",  # UI contrast label, not a separate statistical method.
     # Names the test a control-corrected volcano ran ("unpaired" -> Welch with
     # propagated control variance) for the notebook settings and the assistant
@@ -116,20 +120,10 @@ BACKEND_ONLY_ANALYSIS_NAMES = (
     "entity_labels_for_kind",  # Entity nouns for report/UI prose, not a method.
     "intensity_unit_label",  # UI units for stored phosphoprotein provenance.
     "parse_selection_list",  # JSON/legacy HTTP selection transport.
-    "select_matrix",
-    "select_matrix_all_rows",  # select_matrix before the session's localization cutoff; store plumbing.
-    "qc_matrix",
     "build_metadata_from_conditions",
     "auto_sample_columns",  # build_metadata_from_conditions' upload fallback; the packages take explicit samples.
     "choose_best_source",
-    "imputed_data_available",
     "use_existing_log2_data",
-    # Plumbing that answers "which matrices does this level have"; the
-    # notebooks hand their own frame in and never ask.
-    "data_source_availability",
-    "data_source_options",
-    "most_processed_data_source",
-    "phosprot_values_are_centred",
     "impute_values_with_diagnostics",
     "comparative_histogram",
     "histogram",

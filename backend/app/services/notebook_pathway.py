@@ -6,40 +6,39 @@ from types import ModuleType
 
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
-from app.services.notebook_qc import _source, _definition, _merge_source, _replace_once
-from app.services.notebook_source import extract_notebook_source
+from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source, replace_once
 from app.services.notebook_ora import ora_source, GO_ATTRIBUTION
 from app.services.notebook_volcano import volcano_source
 
 
 @lru_cache(maxsize=1)
 def pathway_source():
-    original = _source('stats_tools.py')
-    function = _definition(original, 'pathway_heatmap_png')
+    original = module_source('stats_tools.py')
+    function = function_definition(original, 'pathway_heatmap_png')
     boundary = function.index('    fig, ax = plt.subplots')
     prepare = function[:boundary] + '    return heatmap_data, total_genes, color_label\n'
-    prepare = _replace_once(prepare, 'def pathway_heatmap_png(\n    *,',
+    prepare = replace_once(prepare, 'def pathway_heatmap_png(\n    *,',
                            'def prepare_matrix(data, metadata, database, *, centered=False,')
-    prepare = _replace_once(prepare, '    plt = _get_plt()\n    _, frame, metadata, _ = _stats_source(kind, data_source=data_source)',
+    prepare = replace_once(prepare, '    plt = _get_plt()\n    _, frame, metadata, _ = _stats_source(kind, data_source=data_source)',
                            '    frame = data')
-    prepare = _replace_once(prepare, '    db = load_go_db()', '    db = database')
-    prepare = _replace_once(prepare, '_phosprot_values_are_centred(kind)', 'centered')
+    prepare = replace_once(prepare, '    db = load_go_db()', '    db = database')
+    prepare = replace_once(prepare, 'phosprot_values_are_centred(kind)', 'centered')
     for parameter in ('    header: bool,\n', '    width_cm: float,\n', '    height_cm: float,\n',
                       '    dpi: int,\n', '    data_source: str = "data",\n', '    advanced: dict | None = None,\n'):
-        prepare = _replace_once(prepare, parameter, '')
+        prepare = replace_once(prepare, parameter, '')
     prepare = prepare.replace(') -> bytes:', '):').replace('AnnotationKind', 'str').replace('HeatmapValueType', 'str')
     prepare = prepare.replace('_extract_id_or_number(', 'extract_sample_id(')
     render = ('def render_plot(heatmap_data, total_genes, color_label, *, pathway, value_type, header, '
               'width_cm, height_cm, dpi, advanced=None):\n    plt = get_plt()\n' + function[boundary:])
-    helpers = '\n\n'.join(_definition(original, name) for name in (
+    helpers = '\n\n'.join(function_definition(original, name) for name in (
         '_aggregate_pathway_gene_values', '_gene_tokens', '_wrapped_title'))
-    code = _merge_source('import numpy as np\nimport pandas as pd\n'
+    code = merge_source('import numpy as np\nimport pandas as pd\n'
         'from scipy.cluster.hierarchy import leaves_list, linkage\nfrom scipy.spatial.distance import pdist',
         extract_notebook_source(ora_source().code, ('get_plt', 'to_png_bytes', 'cm_to_inch',
             'fit_figure_to_labels', 'advanced_color_map', 'advanced_label', 'apply_advanced_axes', '_wrap_to_width')).code,
         extract_notebook_source(volcano_source().code, ('_first_available_column', '_gene_label_candidates')).code,
-        extract_notebook_source(_source('clustering_tools.py'), ('row_zscore', 'drop_incomplete_features', 'heatmap_notice')).code,
-        extract_notebook_source(_source('functions.py'), ('intensity_unit_label', 'extract_sample_id')).code,
+        extract_notebook_source(module_source('clustering_tools.py'), ('row_zscore', 'drop_incomplete_features', 'heatmap_notice')).code,
+        extract_notebook_source(module_source('functions.py'), ('intensity_unit_label', 'extract_sample_id')).code,
         helpers, prepare, render)
     for before, after in (('_cm_to_inch(', 'cm_to_inch('), ('_to_png_bytes(', 'to_png_bytes('),
                           ('_fit_figure_to_labels(', 'fit_figure_to_labels(')):
@@ -59,7 +58,7 @@ def render_pathway(**options):
     from app.services import stats_tools
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
-    from app.services.functions import _phosprot_values_are_centred
+    from app.services.analysis_matrix import phosprot_values_are_centred
     from app.services.notebook_provenance import input_history
     from app.services.plot_export import plot_output_format
     from app.services.runtime_cache import runtime_cache_version
@@ -73,7 +72,7 @@ def render_pathway(**options):
     source, data, metadata, warnings = stats_tools._stats_source(kind, data_source=settings['data_source'])
     annotation, dataset = get_annotation(kind), get_current_dataset(kind)
     lineage, imputation, uses_imputed, imputation_text = input_history(kind, annotation, dataset, source=source)
-    settings.update(data_source=source, centered=_phosprot_values_are_centred(kind))
+    settings.update(data_source=source, centered=phosprot_values_are_centred(kind))
     metadata = metadata[['sample', 'condition']].copy(deep=True)
     if settings['conditions']:
         metadata = metadata.loc[metadata['condition'].isin(settings['conditions'])].copy()

@@ -18,7 +18,6 @@ from app.services.annotation_processor import resolve_log2_state
 from app.services.dataset_store import save_table_dataset
 from app.services.phospho_localization import localization_cutoff_description, validate_localization_cutoff
 from app.services.functions import (
-    _select_matrix_all_rows,
     filter_localization,
     choose_best_source,
     filter_data,
@@ -27,6 +26,7 @@ from app.services.functions import (
     raw_zero_to_nan,
     use_existing_log2_data,
 )
+from app.services.analysis_matrix import _select_matrix_all_rows
 
 _REQUIRED_PHOSPHO_COLUMNS = [
     "UPD_seq",

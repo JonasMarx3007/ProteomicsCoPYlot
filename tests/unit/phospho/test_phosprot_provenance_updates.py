@@ -11,7 +11,7 @@ from app.main import app
 from app.schemas.data_tools import ImputationRunRequest
 from app.services import annotation_store, data_tools, phosprot_tools, plot_images, restore_state
 from app.services.dataset_store import reset_all_datasets, save_table_dataset
-from app.services.functions import _phosprot_values_are_centred
+from app.services.analysis_matrix import phosprot_values_are_centred
 from app.services.metadata_upload_store import reset_all_uploaded_metadata
 from app.services.dataset_store import get_current_dataset
 from app.services.metadata_upload_store import create_profile, set_active_profile
@@ -90,7 +90,7 @@ def test_aggregation_update_plot_restore(tmp_path, monkeypatch, mode, source):
     def check_interpretation():
         current = annotation_store.get_annotation("phosprot")
         assert current.phosprot_aggregation == mode
-        assert _phosprot_values_are_centred("phosprot") == (mode == "robust_site_median")
+        assert phosprot_values_are_centred("phosprot") == (mode == "robust_site_median")
         figure = plot_images.qc_abundance_interactive_html("phosprot")
         assert ("Ratio to Site Median" in figure.layout.yaxis.title.text) == (mode == "robust_site_median")
         return current

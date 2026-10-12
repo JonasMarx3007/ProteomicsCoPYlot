@@ -10,8 +10,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.schemas.annotation import AnnotationFilterConfig, AnnotationImputationInfo
+from app.schemas.annotation import AnnotationFilterConfig
+from app.schemas.data_tools import ImputationRunRequest
 from app.services.annotation_store import get_annotation
+from app.services.data_tools import run_imputation
+from app.services.functions import filter_data
 from app.services.viewer_bootstrap import load_viewer_state
 
 
@@ -112,19 +115,18 @@ def test_report_mentions_annotation_filtering() -> None:
         minPercentage=70,
         mode="overall",
     )
-    protein_annotation.imputation = AnnotationImputationInfo(
-        mode="numerical",
-        # The tool only ever stores applied=True, on success; applied=False with
-        # a real mode means the imputation was asked for and refused, and the
-        # report deliberately does not describe those settings as if they had
-        # been used. This fixture is about the wording of a successful
-        # imputation, so it has to say so.
-        applied=True,
+    protein_annotation.filtered_data = filter_data(
+        protein_annotation.log2_data, protein_annotation.metadata,
+        min_present=3, mode="overall", method="percentage", min_percentage=70,
+    )
+    # Exercise a real imputed matrix, not just metadata claiming it exists.
+    run_imputation(ImputationRunRequest(
+        kind="protein", method="numerical",
         downShift=1.8,
         width=0.3,
         seed=1337,
         sampleWise=False,
-    )
+    ))
     with TestClient(app) as client:
         response = client.post(
             "/api/summary/report",
@@ -141,6 +143,7 @@ def test_report_mentions_annotation_filtering() -> None:
         )
     assert response.status_code == 200
     report_html = response.json()["html"]
+    assert "Could not render" not in report_html
     # Two level preambles plus the two PCA blocks, which now carry the same
     # provenance block as a volcano: source, then filtering, then imputation.
     assert report_html.count("<strong>Filtering:</strong>") == 4
@@ -157,7 +160,7 @@ def test_report_mentions_annotation_filtering() -> None:
     assert report_html.count("<strong>Normalization:</strong>") == 0
     assert report_html.count(" of ") >= 2 and report_html.count("it uses all ") >= 1
     assert "<strong>Data source:</strong> Imputed Data" in report_html
-    assert "<strong>Data source:</strong> Data" in report_html
+    assert "<strong>Data source:</strong> Unfiltered Data" in report_html
     imputation_text = (
         "For analyses based on imputed data, missing values were sampled from a shifted "
         "normal distribution with a downshift of 1.8 standard deviations and width "

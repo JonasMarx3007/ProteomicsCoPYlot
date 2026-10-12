@@ -11,8 +11,7 @@ import pandas as pd
 import pytest
 
 from app.services.notebook_archive import NotebookRecipe, build_notebook_archive, dataframe_bytes
-from app.services.notebook_source import extract_notebook_source
-from app.services.notebook_qc import _source
+from app.services.notebook_source import extract_notebook_source, module_source
 from app.services.notebook_snapshots import NotebookSnapshots
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -93,8 +92,8 @@ def test_dataframe_private_attrs_are_not_exported_or_changed_in_original():
 def recipe(**changes):
     frame = pd.DataFrame({"ProteinNames": ["P1", "P2"], "A1": [1., 2.], "A2": [2., 3.]})
     metadata = pd.DataFrame({"sample": ["A1", "A2"], "condition": ["A", "A"]})
-    # Through `_source`, which inlines the shared core the way every export does.
-    source = extract_notebook_source(_source("notebook_functions.py"), ("coverage_plot",))
+    # Through `module_source`, which inlines the shared core the way every export does.
+    source = extract_notebook_source(module_source("notebook_functions.py"), ("coverage_plot",))
     values = dict(plot_name="Coverage Plot", source=source,
                   calculation="figure = functions.coverage_plot(data, metadata, **settings)\nfigure.savefig('reproduced.png')",
                   settings={"id": False, "dpi": 100}, provenance={"normalization": "none"},

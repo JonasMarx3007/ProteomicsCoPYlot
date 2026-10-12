@@ -1446,7 +1446,7 @@ def _phosprot_aggregation(
     provenance, not an instruction -- but it is provenance the tool needs.
     `robust_site_median` centres every site on its own across-sample median, so
     those values are ratios to that median rather than abundances, and
-    `_phosprot_values_are_centred` reads this to label the axes accordingly.
+    `phosprot_values_are_centred` reads this to label the axes accordingly.
 
     Dropping it, as this loader used to, made a shared phosphoprotein project
     label ratios as "Intensity" for everyone viewing it.

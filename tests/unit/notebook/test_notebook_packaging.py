@@ -26,6 +26,7 @@ def source_bundle(tmp_path, monkeypatch):
     shutil.copyfile(ROOT / 'proteomicscopylot/notebook_functions.py', destination / 'notebook_functions.py')
     shutil.copyfile(ROOT / 'proteomicscopylot/_core.py', destination / '_core.py')
     shutil.copyfile(ROOT / 'LICENSE', destination / 'LICENSE')
+    shutil.copyfile(ROOT / 'NOTICE', destination / 'NOTICE')
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)
     return destination
@@ -92,6 +93,7 @@ def test_frozen_archive_includes_license_and_no_backend_import(source_bundle):
     _, payload = build_notebook_archive(recipe())
     with ZipFile(io.BytesIO(payload)) as archive:
         assert archive.read('LICENSE') == (source_bundle / 'LICENSE').read_bytes()
+        assert archive.read('NOTICE') == (source_bundle / 'NOTICE').read_bytes()
         assert b'from app.' not in archive.read('functions.py')
 
 

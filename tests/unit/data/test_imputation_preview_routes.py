@@ -25,24 +25,19 @@ PARAMETERS = ("method", "qValue", "adjustStd", "downShift", "width", "seed", "sa
 
 @pytest.mark.parametrize("route", sorted(PREVIEWS))
 def test_the_preview_takes_every_imputation_parameter(route: str) -> None:
-    parameters = set(inspect.signature(getattr(routes_plots, route)).parameters)
+    parameters = set(inspect.signature(routes_plots.ROUTE_FUNCTIONS[route]).parameters)
     assert set(PARAMETERS) <= parameters, sorted(set(PARAMETERS) - parameters)
 
 
 @pytest.mark.parametrize("route", sorted(PREVIEWS))
 def test_the_preview_has_no_way_to_read_a_stored_matrix(route: str) -> None:
-    assert "dataSource" not in inspect.signature(getattr(routes_plots, route)).parameters
+    assert "dataSource" not in inspect.signature(routes_plots.ROUTE_FUNCTIONS[route]).parameters
 
 
 @pytest.mark.parametrize("route,path", sorted(PREVIEWS.items()))
 def test_the_names_match_the_paths(route: str, path: str) -> None:
     """The functions above are the routes the page's three plots call."""
-    endpoints = {
-        api_route.endpoint.__name__: api_route.path
-        for api_route in routes_plots.router.routes
-        if hasattr(api_route, "endpoint")
-    }
-    assert endpoints[route] == f"/api/plots/imputation/{{kind}}/{path}.png"
+    assert routes_plots.ROUTE_PATHS[route] == f"/api/plots/imputation/{{kind}}/{path}.png"
 
 
 def test_previewing_stores_nothing(client) -> None:

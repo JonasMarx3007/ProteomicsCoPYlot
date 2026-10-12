@@ -16,7 +16,7 @@ from app.services.dataset_store import save_table_dataset
 from app.services import completeness_tools
 from app.services.notebook_archive import build_notebook_archive
 from app.services.notebook_completeness import render_completeness
-from app.services.notebook_qc import snapshots
+from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 
@@ -147,10 +147,10 @@ def test_linear_zeros_and_nonfinite_values_are_captured_as_missing(completeness_
 
 
 def test_unannotated_completeness_plot_remains_available(monkeypatch):
-    from app.api.routes_plots import _completeness_notebook_plot
+    from app.api.plots_data import _completeness_notebook_plot
     from app.services import annotation_store
     monkeypatch.setattr(annotation_store, "get_annotation", lambda kind: None)
-    monkeypatch.setattr("app.api.routes_plots.completeness_missing_value_plot", lambda **kwargs: b"original")
+    monkeypatch.setattr("app.api.plots_data.completeness_missing_value_plot", lambda **kwargs: b"original")
     response = _completeness_notebook_plot("missing-value", kind="protein", table_include_id=True, outlier_threshold=50.)
     assert response.body == b"original"
     assert "X-CoPYlot-Notebook" not in response.headers

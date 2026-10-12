@@ -82,7 +82,7 @@ def test_ai_modification_context_uses_shared_counts_and_correct_scientific_terms
         lambda source, include_id: metadata.copy(),
     )
 
-    text = ai_functions.peptide_modification_plot()["data"]["text"]
+    text = ai_functions.peptide_modification_plot_context()["data"]["text"]
 
     assert "Carbamidomethylation" in text
     assert "Carbamylation" not in text
@@ -137,7 +137,7 @@ def test_ai_does_not_duplicate_unimod_matching_logic(monkeypatch) -> None:
     if getattr(ai_functions, "_peptide_modification_counts", None) is real_counts:
         monkeypatch.setattr(ai_functions, "_peptide_modification_counts", marked_counts)
 
-    text = ai_functions.peptide_modification_plot()["data"]["text"]
+    text = ai_functions.peptide_modification_plot_context()["data"]["text"]
 
     assert calls, "the AI context never asked the shared classifier"
     assert "carbamidomethylation=1002" in text
@@ -191,7 +191,7 @@ def test_ai_missed_cleavage_context_uses_selected_backend_rule(monkeypatch) -> N
         lambda source, include_id: metadata.copy(),
     )
 
-    text = ai_functions.peptide_missed_cleavage_plot(
+    text = ai_functions.peptide_missed_cleavage_plot_context(
         mode={"protease": "trypsin_lysc"}
     )["data"]["text"]
 

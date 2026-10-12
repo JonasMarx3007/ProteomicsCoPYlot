@@ -9,17 +9,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.api.routes_plots import _table_rows
+from app.api.plot_responses import table_rows
 from app.main import app
-
-API = ROOT / "backend" / "app" / "api"
-ROUTE_FILES = sorted(API.glob("routes_*.py"))
-
 
 def test_table_rows_serializes_missing_categorical_values() -> None:
     frame = pd.DataFrame({"group": pd.Categorical(["A", None])})
 
-    assert _table_rows(frame) == {"rows": [{"group": "A"}, {"group": ""}]}
+    assert table_rows(frame) == {"rows": [{"group": "A"}, {"group": ""}]}
 
 
 ENUM_PROBES = [

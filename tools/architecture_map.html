@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>Proteomics CoPYlot Map</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1f23; --muted: #6b7079; --line: #e3e3df;
+  --c0: #2f6fdb; --c1: #7a4fd6; --c2: #13836f; --c3: #b8730b; --edge: #8a8f99; --hi: #e0457b;
+  --chip: #f0f0ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171b; --panel: #1d2026; --ink: #e8e9ec; --muted: #9aa0aa; --line: #2c3038;
+    --c0: #6d9cf0; --c1: #a587ec; --c2: #3cc0a6; --c3: #e3a548; --edge: #6b717c; --hi: #ff6f9f;
+    --chip: #262a31;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15171b; --panel: #1d2026; --ink: #e8e9ec; --muted: #9aa0aa; --line: #2c3038;
+  --c0: #6d9cf0; --c1: #a587ec; --c2: #3cc0a6; --c3: #e3a548; --edge: #6b717c; --hi: #ff6f9f;
+  --chip: #262a31;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { padding: 18px 20px 10px; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.meta { color: var(--muted); font-size: 12.5px; }
+.stale { color: var(--hi); font-weight: 600; }
+.tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+input[type=search] { width: 260px; max-width: 60vw; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); font: inherit; }
+button { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--ink); font: inherit; cursor: pointer; }
+.wrap { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 0; border-top: 1px solid var(--line); }
+.wrap.collapsed { grid-template-columns: minmax(0, 1fr); }
+.wrap.collapsed aside { display: none; }
+#panelbtn.on { background: var(--chip); }
+@media (max-width: 1000px) { .wrap { grid-template-columns: 1fr; } aside { border-left: 0; border-top: 1px solid var(--line); } }
+@media (max-width: 1000px) {
+  .wrap:not(.collapsed) .canvas { max-height: 45vh; }
+  .wrap aside { position: static; min-height: 0; max-height: 45vh; }
+}
+.canvas { overflow: auto; padding: 8px 12px 24px; }
+svg { display: block; }
+.colhead { font-size: 12px; font-weight: 600; fill: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+.colsub { font-size: 11.5px; fill: var(--muted); }
+.node rect { fill: var(--panel); stroke-width: 1.5; rx: 7; }
+.node text { font-size: 12.5px; fill: var(--ink); pointer-events: none; }
+.node .count { fill: var(--muted); font-size: 11px; }
+.node { cursor: pointer; transition: opacity .12s; }
+.edge { fill: none; stroke: var(--edge); stroke-opacity: .28; transition: stroke-opacity .12s, opacity .12s; }
+.dim .node:not(.on) { opacity: .18; }
+.dim .edge:not(.on) { opacity: .06; }
+.edge.on { stroke: var(--hi); stroke-opacity: .75; }
+.node.pinned rect { stroke-width: 3; }
+.node.match rect { stroke: var(--hi) !important; stroke-width: 3; }
+aside { border-left: 1px solid var(--line); background: var(--panel); padding: 16px 18px; min-height: 60vh;
+  max-height: calc(100vh - 70px); overflow: auto; position: sticky; top: 0; }
+aside h2 { font-size: 16px; margin: 0 0 4px; word-break: break-word; }
+aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+aside p { margin: 6px 0; }
+.kind { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.ep { border-top: 1px solid var(--line); padding: 7px 0; font-size: 12.5px; }
+.ep code { font-size: 12px; word-break: break-all; }
+.m { display: inline-block; min-width: 46px; font-weight: 700; font-size: 11px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.chip { background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 11.5px; cursor: pointer; }
+.hint { color: var(--muted); font-size: 13px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); padding: 0 20px 10px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 6px; vertical-align: -1px; background: var(--k); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Proteomics CoPYlot Map</h1>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div class="tools">
+    <input type="search" id="q" placeholder="Search: volcano, imputation, assistant…" aria-label="Search the map">
+    <button id="clear" type="button">Clear</button>
+    <button id="theme" type="button" aria-label="Toggle light and dark">◐</button>
+    <button id="panelbtn" type="button" aria-label="Show or hide the details panel" title="Show or hide the details panel">Details</button>
+  </div>
+</header>
+<div class="legend">
+  <span style="--k: var(--c0)">Page (frontend feature)</span>
+  <span style="--k: var(--c1)">API route group</span>
+  <span style="--k: var(--c2)">Service dependencies</span>
+  <span style="--k: var(--c3)">Shared dependencies</span>
+  <span>Static source links, not runtime traces · hover to trace a path · click to pin</span>
+</div>
+<div class="wrap collapsed">
+  <div class="canvas"><svg id="svg" role="img" aria-label="Flow from pages to API to services"></svg></div>
+  <aside id="panel"><p class="hint">Hover a box to trace what it connects to. Click to pin it and see the details:
+    endpoints with their handler and line, the pages that call them, and their source dependencies. Dynamic dispatch may be missing; frontend links are inferred from API paths.</p>
+    <p class="hint">The search also finds endpoints by path or handler name, e.g. <em>ksea</em>, <em>restore</em>, <em>pairing</em>.</p></aside>
+</div>
+<script id="model" type="application/json">__MODEL__</script>
+<script>
+(() => {
+  const M = JSON.parse(document.getElementById("model").textContent);
+  const svg = document.getElementById("svg"), panel = document.getElementById("panel");
+  const intro = panel.innerHTML;
+  const NS = "http://www.w3.org/2000/svg";
+  const COLS = [["Pages", "frontend features"], ["API", "backend route groups"],
+                ["Services", "route imports and calls"], ["Core", "shared imports"]];
+  const COLOR = ["var(--c0)", "var(--c1)", "var(--c2)", "var(--c3)"];
+  const W = 196, GAP = 128, H = 24, VG = 7, TOP = 58;
+  document.getElementById("meta").innerHTML =
+    `Source ${M.fingerprint} · ${M.counts.files} versioned source files · ` +
+    `${M.endpoints.length} endpoints`;
+
+  const byId = new Map(M.nodes.map(n => [n.id, n]));
+  const links = M.links.filter(l => byId.has(l.s) && byId.has(l.t));
+  const out = new Map(), inn = new Map();
+  for (const l of links) {
+    (out.get(l.s) || out.set(l.s, []).get(l.s)).push(l);
+    (inn.get(l.t) || inn.set(l.t, []).get(l.t)).push(l);
+  }
+  const weight = n => (out.get(n.id) || []).concat(inn.get(n.id) || []).reduce((a, l) => a + l.n, 0);
+  const cols = [0, 1, 2, 3].map(c => M.nodes.filter(n => n.col === c));
+  cols.forEach(c => c.sort((a, b) => weight(b) - weight(a)));
+  // order columns to reduce crossings (barycentre, a few sweeps)
+  const pos = new Map();
+  const place = () => cols.forEach(c => c.forEach((n, i) => pos.set(n.id, i)));
+  place();
+  for (let sweep = 0; sweep < 6; sweep++) {
+    const forward = sweep % 2 === 0;
+    for (const ci of forward ? [1, 2, 3] : [2, 1, 0]) {
+      const bary = n => {
+        const ls = forward ? (inn.get(n.id) || []) : (out.get(n.id) || []);
+        let s = 0, w = 0;
+        for (const l of ls) { const o = forward ? l.s : l.t; s += pos.get(o) * l.n; w += l.n; }
+        return w ? s / w : pos.get(n.id);
+      };
+      const b = new Map(cols[ci].map(n => [n.id, bary(n)]));
+      cols[ci].sort((x, y) => b.get(x.id) - b.get(y.id));
+      place();
+    }
+  }
+  const maxRows = Math.max(...cols.map(c => c.length));
+  const height = TOP + maxRows * (H + VG) + 20;
+  const width = 4 * W + 3 * GAP + 8;
+  svg.setAttribute("width", width); svg.setAttribute("height", height);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const xy = new Map();
+  cols.forEach((c, ci) => {
+    c.forEach((n, i) => xy.set(n.id, { x: 4 + ci * (W + GAP), y: TOP + i * (H + VG) }));
+  });
+  const el = (tag, attrs, parent) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(e); return e;
+  };
+  COLS.forEach(([t, s], ci) => {
+    el("text", { x: 4 + ci * (W + GAP), y: 18, class: "colhead" }).textContent = `${t} (${cols[ci].length})`;
+    el("text", { x: 4 + ci * (W + GAP), y: 34, class: "colsub" }).textContent = s;
+  });
+  const gEdges = el("g", {}), gNodes = el("g", {});
+  const edgeEls = links.map(l => {
+    const a = xy.get(l.s), b = xy.get(l.t);
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, dx = (x2 - x1) * 0.5;
+    const p = el("path", { d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`, class: "edge",
+      "stroke-width": (0.8 + Math.log2(l.n + 1) * 1.1).toFixed(2) }, gEdges);
+    p.dataset.s = l.s; p.dataset.t = l.t;
+    const tip = el("title", {}, p); tip.textContent = `${byId.get(l.s).label} → ${byId.get(l.t).label}: ${l.n}`;
+    return p;
+  });
+  const nodeEls = new Map();
+  M.nodes.forEach(n => {
+    const { x, y } = xy.get(n.id);
+    const g = el("g", { class: "node", transform: `translate(${x},${y})`, tabindex: 0, role: "button",
+      "aria-label": n.label }, gNodes);
+    el("rect", { width: W, height: H, stroke: COLOR[n.col] }, g);
+    el("rect", { width: 5, height: H, style: `fill:${COLOR[n.col]};stroke:none` }, g);
+    const t = el("text", { x: 11, y: H / 2 + 4.5 }, g);
+    t.textContent = n.label.length > 22 ? n.label.slice(0, 21) + "…" : n.label;
+    const c = el("text", { x: W - 8, y: H / 2 + 4, "text-anchor": "end", class: "count" }, g);
+    c.textContent = n.col === 1 ? M.endpoints.filter(e => e.group === n.id).length : (n.usedBy ?? "");
+    const tip = el("title", {}, g);
+    tip.textContent = n.label + (n.usedBy != null ? ` · used by ${n.usedBy} files` : "");
+    g.addEventListener("mouseenter", () => { if (!pinned) light(trace(n.id)); });
+    g.addEventListener("mouseleave", () => { if (!pinned) light(null); });
+    g.addEventListener("click", () => pin(n.id));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pin(n.id); } });
+    nodeEls.set(n.id, g);
+  });
+
+  function trace(id) {
+    const on = new Set([id]);
+    const walk = (start, map, key) => {
+      const stack = [start];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const l of map.get(cur) || []) { const nx = l[key]; if (!on.has(nx)) { on.add(nx); stack.push(nx); } }
+      }
+    };
+    walk(id, out, "t"); walk(id, inn, "s");
+    return on;
+  }
+  function light(on) {
+    svg.classList.toggle("dim", !!on);
+    nodeEls.forEach((g, id) => g.classList.toggle("on", !!on && on.has(id)));
+    edgeEls.forEach(p => p.classList.toggle("on", !!on && on.has(p.dataset.s) && on.has(p.dataset.t)));
+  }
+  let pinned = null;
+  function pin(id) {
+    if (pinned) nodeEls.get(pinned).classList.remove("pinned");
+    pinned = id; nodeEls.get(id).classList.add("pinned");
+    light(trace(id)); show(byId.get(id));
+  }
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const chips = ids => `<div class="chips">${ids.map(i => byId.has(i)
+      ? `<span class="chip" data-go="${esc(i)}">${esc(byId.get(i).label)}</span>` : `<span class="chip">${esc(i)}</span>`).join("")}</div>`;
+  const epHtml = e => `<div class="ep"><span class="m">${e.method}</span><code>${esc(e.path)}</code><br>
+      <span class="hint">${esc(e.handler)} · ${esc(e.where)}</span>
+      ${e.pages.length ? `<div class="hint">pages: ${e.pages.map(esc).join(", ")}</div>` : ""}
+      ${e.calls.length ? `<div class="hint">calls: ${e.calls.map(esc).join(", ")}</div>` : ""}</div>`;
+  function show(n) {
+    const kinds = ["Page", "API route group", "Service", "Core"];
+    const from = (inn.get(n.id) || []).map(l => l.s), to = (out.get(n.id) || []).map(l => l.t);
+    let h = `<div class="kind" style="color:${COLOR[n.col]}">${kinds[n.col]}</div><h2>${esc(n.label)}</h2>`;
+    if (n.file) h += `<div class="hint">${esc(n.file)}${n.usedBy != null ? ` · used by ${n.usedBy} files` : ""}</div>`;
+    if (n.doc) h += `<p>${esc(n.doc)}</p>`;
+    if (n.files) h += `<div class="hint">${n.files.map(esc).join(", ")}</div>`;
+    if (from.length) h += `<h3>${n.col === 1 ? "Called from pages" : n.col === 2 ? "Called from API groups" : "Used by services"}</h3>${chips(from)}`;
+    if (to.length) h += `<h3>${n.col === 0 ? "Uses API groups" : n.col === 1 ? "Calls services" : "Builds on"}</h3>${chips(to)}`;
+    let eps = [];
+    if (n.col === 0) eps = M.endpoints.filter(e => e.pages.includes(n.id.slice(5)));
+    if (n.col === 1) eps = M.endpoints.filter(e => e.group === n.id);
+    if (n.col >= 2) eps = M.endpoints.filter(e => e.services.includes(n.id));
+    if (eps.length) h += `<h3>Endpoints (${eps.length})</h3>` + eps.map(epHtml).join("");
+    panel.innerHTML = h;
+    panel.querySelectorAll("[data-go]").forEach(c => c.addEventListener("click", () => pin(c.dataset.go)));
+  }
+  const q = document.getElementById("q");
+  q.addEventListener("input", () => {
+    const s = q.value.trim().toLowerCase();
+    nodeEls.forEach(g => g.classList.remove("match"));
+    if (!s) { if (!pinned) { light(null); panel.innerHTML = intro; } return; }
+    const hit = new Set();
+    M.nodes.forEach(n => { if (n.label.toLowerCase().includes(s) || (n.doc || "").toLowerCase().includes(s)) hit.add(n.id); });
+    const eps = M.endpoints.filter(e => (e.path + " " + e.handler + " " + e.calls.join(" ")).toLowerCase().includes(s));
+    eps.forEach(e => {
+      hit.add(e.group); e.pages.forEach(p => hit.add("page:" + p));
+      e.services.forEach(id => { if (byId.has(id)) hit.add(id); });
+    });
+    hit.forEach(id => nodeEls.get(id) && nodeEls.get(id).classList.add("match"));
+    light(hit.size ? hit : null);
+    if (eps.length) panel.innerHTML = `<div class="kind">Search</div><h2>${eps.length} endpoint(s) match “${esc(q.value)}”</h2>` + eps.map(epHtml).join("");
+  });
+  document.getElementById("clear").addEventListener("click", () => {
+    q.value = ""; nodeEls.forEach(g => g.classList.remove("match", "pinned")); pinned = null; light(null);
+    panel.innerHTML = intro;
+  });
+  const wrap = document.querySelector(".wrap"), panelBtn = document.getElementById("panelbtn");
+  const setPanel = (open) => { wrap.classList.toggle("collapsed", !open); panelBtn.classList.toggle("on", open); };
+  panelBtn.addEventListener("click", () => setPanel(wrap.classList.contains("collapsed")));
+  // A pin or a search writes into the panel; if it is hidden, show it again.
+  new MutationObserver(() => { if (panel.innerHTML !== intro && wrap.classList.contains("collapsed")) setPanel(true); })
+    .observe(panel, { childList: true });
+  document.getElementById("theme").addEventListener("click", () => {
+    const root = document.documentElement;
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+  });
+})();
+</script>
+</body>
+</html>
