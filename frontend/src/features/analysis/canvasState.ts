@@ -2,7 +2,8 @@
 // of AnalysisPage.tsx so they can be tested directly
 // (tests/unit/shared-helpers.test.ts, tests/unit/plot-control-visibility.test.tsx).
 import type { AdvancedPlotVisibleControls } from "../../components/plots/AdvancedPlotOptions";
-import type { AdvancedPlotSettings, ListEnrichmentRequest, ListEnrichmentResultResponse } from "../../lib/types";
+import type { AdvancedPlotSettings, EnrichmentOrganism, ListEnrichmentRequest, ListEnrichmentResultResponse } from "../../lib/types";
+import { ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 
 export function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -89,6 +90,7 @@ export type OraState = {
   genesText: string;
   backgroundMode: "experiment" | "global";
   backgroundText: string;
+  organism: EnrichmentOrganism;
   topN: number;
   minTermSize: number;
   maxTermSize: number;
@@ -102,7 +104,10 @@ export function restoredOraState(value: unknown): OraState {
     sourceMode: saved.sourceMode === "list" ? "list" : "manual",
     selectedListName: asString(saved.selectedListName), genesText: asString(saved.genesText),
     backgroundMode: saved.backgroundMode === "global" ? "global" : "experiment",
-    backgroundText: asString(saved.backgroundText), topN: asNumber(saved.topN, 10),
+    backgroundText: asString(saved.backgroundText),
+    organism: ENRICHMENT_ORGANISM_OPTIONS.some((option) => option.value === saved.organism)
+      ? (saved.organism as EnrichmentOrganism) : "human",
+    topN: asNumber(saved.topN, 10),
     minTermSize: asNumber(saved.minTermSize, 20), maxTermSize: asNumber(saved.maxTermSize, 300),
     adjPValueCutoff: asNumber(saved.adjPValueCutoff, 0.05),
     completed: isCompletedOra(saved.completed) ? saved.completed : null,

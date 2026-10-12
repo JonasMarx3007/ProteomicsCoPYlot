@@ -74,10 +74,11 @@ def capture_sequence_coverage(*, species, protein, chunk_size=100):
                 b'License: CC BY 4.0 https://creativecommons.org/licenses/by/4.0/\n'
                 b'Policy: https://www.uniprot.org/help/license\n'
                 b'The selected record is serialized as Parquet; its sequence is unchanged.\n'
-                b'The upstream release/preparation date is not recorded. No warranties are provided.\n'},
+                b'The release of the bundled proteome is recorded in data/db/README.md of the CoPYlot '
+                b'repository (UniProt 2026_03 since 2026-10-12). No warranties are provided.\n'},
         provenance={'kind': 'peptide', 'output': 'sequence_coverage', 'species': species,
             'referenceAccession': str(reference.iloc[0]['accession']),
-            'referenceRelease': 'not recorded', 'normalizationApplied': False, 'imputationApplied': False,
+            'referenceRelease': 'recorded in data/db/README.md of the CoPYlot repository', 'normalizationApplied': False, 'imputationApplied': False,
             'selection': 'unique stripped sequences assigned to the exact selected protein-group member, '
                 'measured above 0 in at least one row when the file has Precursor.Quantity'},
         input_explanation='Only peptide rows assigned to the selected protein and the exact selected reference '

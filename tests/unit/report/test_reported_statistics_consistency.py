@@ -357,7 +357,7 @@ def test_pathway_heatmap_units_follow_provenance(monkeypatch, aggregation, value
     frame = pd.DataFrame({"GeneNames": ["G"], "a": [-1.5], "b": [1.5]})
     meta = pd.DataFrame({"sample": ["a", "b"], "condition": ["A", "B"]})
     monkeypatch.setattr(stats_tools, "_stats_source", lambda *a, **k: ("filtered", frame, meta, []))
-    monkeypatch.setattr(stats_tools, "load_go_db", lambda: pd.DataFrame({"description": ["path"], "genes": ["G"]}))
+    monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": pd.DataFrame({"description": ["path"], "genes": ["G"]}))
     monkeypatch.setattr(annotation_store, "get_annotation", lambda kind: SimpleNamespace(phosprot_aggregation=aggregation))
     expected = "Z-score" if value_type == "z" else (
         "log2 Ratio to Site Median" if aggregation == "robust_site_median" else "log2 Intensity"

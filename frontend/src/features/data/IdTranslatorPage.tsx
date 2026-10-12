@@ -28,6 +28,12 @@ const DEFAULT_DATABASES = [
   "UniProt Description",
   "UniProt Secondary Accession",
   "UniProt All Accessions",
+  "Entrez Gene ID",
+  "OMIM",
+  "MGI ID",
+  "MGI Symbol",
+  "MGI Name",
+  "MGI Synonym",
 ];
 
 export default function IdTranslatorPage() {

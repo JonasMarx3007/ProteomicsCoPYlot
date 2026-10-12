@@ -145,9 +145,9 @@ export function OraPanel({
   const [backgroundMode, setBackgroundMode] = useState<"experiment" | "global">(() =>
     String(persisted.backgroundMode ?? "experiment") === "global" ? "global" : "experiment"
   );
-  // One organism today. It is a request parameter rather than a constant so the
-  // result says which database produced it, and so a second organism is a list
-  // entry rather than a new code path.
+  // Human or mouse GO table. It is a request parameter rather than a constant so
+  // the result says which database produced it, and so another organism is a
+  // list entry rather than a new code path.
   const [organism, setOrganism] = useState<EnrichmentOrganism>(() =>
     ENRICHMENT_ORGANISM_OPTIONS.some((option) => option.value === persisted.organism)
       ? (persisted.organism as EnrichmentOrganism)
@@ -637,7 +637,7 @@ export function OraPanel({
               onChange={(value) => setBackgroundMode(value as "experiment" | "global")}
               options={[
                 { value: "experiment", label: "Tested genes in this analysis (recommended)" },
-                { value: "global", label: "All annotated human genes (global)" },
+                { value: "global", label: "All annotated genes (global)" },
               ]}
             />
           </div>

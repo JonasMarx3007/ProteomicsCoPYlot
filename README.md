@@ -43,7 +43,7 @@ On macOS and Linux, the same launchers are in `packaging/unix/` (for example `ba
 
 See [Installation, Running, and Packaging](docs/INSTALLATION.md) (and [Environment variables](docs/ENVIRONMENT.md)) for every supported platform, AI variants, production launch, Docker, viewer portals, and executable/package builds.
 
-For code navigation, see the [interactive architecture map and regeneration instructions](docs/ARCHITECTURE.md).
+For code navigation, explore the [interactive architecture](https://jonasmarx3007.github.io/ProteomicsCoPYlot/).
 
 ## Application modes
 
@@ -154,11 +154,11 @@ The installable package includes:
 - `proteomicscopylot/notebook_functions.py`
 - `proteomicscopylot/notebook_functions.R`
 - `proteomicscopylot/example_data/`
-- the Gene Ontology reference table
+- the human and mouse Gene Ontology reference tables
 
 The Settings page reports whether `Rscript` is available. Detection checks explicit CoPYlot/R environment variables, `PATH`, and common platform installation locations.
 
-## Repository map
+## Architecture
 
 - `backend/`: FastAPI routes, schemas, services, and runtime stores.
 - `frontend/`: React/TypeScript UI and public assets.
@@ -170,7 +170,7 @@ The Settings page reports whether `Rscript` is available. Detection checks expli
 - `viewer_data/`: checked-in viewer examples and local/private project locations.
 - `data/`: intentionally versioned biological reference resources.
 
-See [Architecture and Repository Map](docs/ARCHITECTURE.md) for runtime flow and directory ownership.
+See [Architecture](docs/ARCHITECTURE.md) for runtime flow and directory ownership.
 
 ## Viewer configuration
 

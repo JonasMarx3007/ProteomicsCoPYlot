@@ -99,9 +99,10 @@ test('a scale hint under the log2 box flags values that look like log10', async 
   await page.getByLabel('Sample columns', { exact: true }).selectOption(['A1', 'A2', 'A3', 'A4']);
   await detected;
   const scale = page.getByLabel('Dataset is already log2 transformed');
-  const hint = page.getByRole('note').filter({ hasText: 'log2 intensities are usually around 15-30' });
+  const hint = page.getByRole('note').filter({ hasText: 'These summaries cannot determine the data scale.' });
   await expect(scale).toBeChecked();
   await expect(hint).toContainText('The values have a median of 4.0');
+  await expect(hint).toContainText('convert them to log2 before uploading');
   await scale.uncheck();
   await expect(hint).toHaveCount(0);
   await scale.check();

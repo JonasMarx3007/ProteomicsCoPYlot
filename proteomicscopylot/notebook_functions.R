@@ -4306,7 +4306,8 @@ enrichment_data <- function(
   background=NULL,
   background_mode="experiment",
   adj_p_value_cutoff=0.05,
-  workflow="Protein"
+  workflow="Protein",
+  organism="human"
 ) {
   # The over-representation table behind `enrichment_analysis`. Split out so the
   # numbers can be read, exported and compared across the three pipelines;
@@ -4321,7 +4322,7 @@ enrichment_data <- function(
     stop("min_num cannot be larger than max_num.", call. = FALSE)
   }
 
-  db <- load_go_db()
+  db <- load_go_db(organism)
   term_genes <- strsplit(as.character(db$genes), ";", fixed = TRUE)
   term_genes <- lapply(term_genes, function(values) {
     sort(unique(trimws(values[nzchar(trimws(values))])))
@@ -4406,7 +4407,8 @@ enrichment_analysis <- function(
   background=NULL,
   background_mode="experiment",
   adj_p_value_cutoff=0.05,
-  workflow="Protein"
+  workflow="Protein",
+  organism="human"
 ) {
   result <- enrichment_data(
     gene_list = gene_list,
@@ -4416,7 +4418,8 @@ enrichment_analysis <- function(
     background = background,
     background_mode = background_mode,
     adj_p_value_cutoff = adj_p_value_cutoff,
-    workflow = workflow
+    workflow = workflow,
+    organism = organism
   )
   if (!nrow(result)) return(NULL)
 
@@ -4459,26 +4462,44 @@ enrichment_analysis <- function(
   .plot_result()
 }
 
-load_go_db <- function() {
-  configured <- trimws(Sys.getenv("COPYLOT_GO_DB", unset = ""))
+# Organism key -> bundled Gene Ontology table (built by
+# tools/build_reference_databases.py; see data/db/README.md). Nothing falls
+# back to human: a wrong organism gives real numbers for the wrong species.
+.go_databases <- c(human = "all_go_terms_genes.csv", mouse = "all_go_terms_genes_mouse.csv")
+
+load_go_db <- function(organism = "human") {
+  # The GO term-to-gene table for `organism` ("human" or "mouse").
+  # `COPYLOT_GO_DB` overrides the human table only; `COPYLOT_GO_DB_MOUSE` the mouse one.
+  key <- tolower(trimws(as.character(organism)))
+  if (!nzchar(key)) key <- "human"
+  if (!key %in% names(.go_databases)) {
+    stop(
+      sprintf("No Gene Ontology database is bundled for '%s'. Available: %s.",
+              organism, paste(sort(names(.go_databases)), collapse = ", ")),
+      call. = FALSE
+    )
+  }
+  filename <- .go_databases[[key]]
+  variable <- if (key == "human") "COPYLOT_GO_DB" else paste0("COPYLOT_GO_DB_", toupper(key))
+  configured <- trimws(Sys.getenv(variable, unset = ""))
   candidates <- c(
     if (nzchar(configured)) configured else character(),
     if (nzchar(.copylot_source_dir)) {
-      file.path(.copylot_source_dir, "data", "all_go_terms_genes.csv")
+      file.path(.copylot_source_dir, "data", filename)
     } else {
       character()
     },
     if (nzchar(.copylot_source_dir)) {
-      file.path(.copylot_source_dir, "..", "data", "db", "all_go_terms_genes.csv")
+      file.path(.copylot_source_dir, "..", "data", "db", filename)
     } else {
       character()
     },
-    file.path(getwd(), "data", "db", "all_go_terms_genes.csv")
+    file.path(getwd(), "data", "db", filename)
   )
   existing <- candidates[file.exists(candidates)]
   if (!length(existing)) {
     stop(
-      "Could not find all_go_terms_genes.csv. Set COPYLOT_GO_DB or install the packaged database.",
+      sprintf("Could not find %s. Set %s or install the packaged database.", filename, variable),
       call. = FALSE
     )
   }

@@ -1,3 +1,4 @@
+import gzip
 import os
 import warnings
 import re
@@ -3816,6 +3817,7 @@ def enrichment_data(
     background_mode="experiment",
     adj_p_value_cutoff=0.05,
     workflow="Protein",
+    organism="human",
 ):
     """The over-representation table behind `enrichment_analysis`.
 
@@ -3835,7 +3837,7 @@ def enrichment_data(
     if min_num > max_num:
         raise ValueError("min_num cannot be larger than max_num.")
 
-    db = load_go_db().copy()
+    db = load_go_db(organism).copy()
     db["gene_list"] = db["genes"].fillna("").astype(str).apply(
         lambda value: sorted({gene.strip() for gene in value.split(";") if gene.strip()})
     )
@@ -3925,6 +3927,7 @@ def enrichment_analysis(
     background_mode="experiment",
     adj_p_value_cutoff=0.05,
     workflow="Protein",
+    organism="human",
 ):
     """Dot plot of the table returned by `enrichment_data`."""
     res = enrichment_data(
@@ -3936,6 +3939,7 @@ def enrichment_analysis(
         background_mode=background_mode,
         adj_p_value_cutoff=adj_p_value_cutoff,
         workflow=workflow,
+        organism=organism,
     )
     if res.empty:
         return None
@@ -3973,10 +3977,30 @@ def enrichment_analysis(
     return fig
 
 
-def load_go_db():
-    filename = "all_go_terms_genes.csv"
+# Organism key -> bundled Gene Ontology table (built by
+# tools/build_reference_databases.py; see data/db/README.md). Nothing falls
+# back to human: a wrong organism gives real numbers for the wrong species.
+GO_DATABASES = {
+    "human": "all_go_terms_genes.csv",
+    "mouse": "all_go_terms_genes_mouse.csv",
+}
+
+
+def load_go_db(organism="human"):
+    """The GO term-to-gene table for `organism` ("human" or "mouse").
+
+    `COPYLOT_GO_DB` overrides the human table only; `COPYLOT_GO_DB_MOUSE` the
+    mouse one.
+    """
+    key = str(organism).strip().lower() or "human"
+    if key not in GO_DATABASES:
+        raise ValueError(
+            f"No Gene Ontology database is bundled for '{organism}'. "
+            f"Available: {', '.join(sorted(GO_DATABASES))}."
+        )
+    filename = GO_DATABASES[key]
     candidates = []
-    configured = os.getenv("COPYLOT_GO_DB", "").strip()
+    configured = os.getenv("COPYLOT_GO_DB" if key == "human" else f"COPYLOT_GO_DB_{key.upper()}", "").strip()
     if configured:
         candidates.append(configured)
     if getattr(sys, 'frozen', False):
@@ -3990,7 +4014,7 @@ def load_go_db():
         if os.path.isfile(db_file):
             return pd.read_csv(db_file)
     raise FileNotFoundError(
-        "Could not find all_go_terms_genes.csv. Checked: " + ", ".join(candidates)
+        f"Could not find {filename}. Checked: " + ", ".join(candidates)
     )
 
 
@@ -4300,7 +4324,8 @@ def read_fasta(path):
     """
     sequences = {}
     header, chunks = None, []
-    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+    opener = gzip.open if str(path).endswith(".gz") else open  # the bundled proteomes are gzipped
+    with opener(path, "rt", encoding="utf-8", errors="ignore") as handle:
         for raw in handle:
             line = raw.strip()
             if not line:
@@ -4952,7 +4977,11 @@ def fasta_to_dataframe(fasta_path):
             "Install ProteomicsCoPYlot with: pip install 'proteomicscopylot[bio]'"
         )
 
-    records = list(SeqIO.parse(fasta_path, "fasta"))
+    if str(fasta_path).endswith(".gz"):
+        with gzip.open(fasta_path, "rt", encoding="utf-8", errors="ignore") as handle:
+            records = list(SeqIO.parse(handle, "fasta"))
+    else:
+        records = list(SeqIO.parse(fasta_path, "fasta"))
     data = {"full_header": [rec.id for rec in records], "V1": [str(rec.seq) for rec in records]}
     df = pd.DataFrame(data)
     df["name"] = df["full_header"].apply(lambda x: x.split("|")[-1])

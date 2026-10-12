@@ -18,6 +18,7 @@ from app.schemas.stats import (
     AnovaClusterMethod,
     AnovaRequest,
     AnovaResultResponse,
+    EnrichmentOrganism,
     EnrichmentRequest,
     EnrichmentResultResponse,
     HeatmapValueType,
@@ -411,12 +412,14 @@ def stats_pathway_heatmap_route(
     heightCm: float = 12,
     dpi: int = 300,
     advanced: str = "",
+    organism: EnrichmentOrganism = "human",
 ) -> Response:
     with plot_errors("Failed to render pathway heatmap"):
         condition_list = parse_selection_list(conditions)
         options: dict[str, Any] = dict(
             kind=kind,
             pathway=pathway,
+            organism=organism,
             conditions=condition_list,
             value_type=valueType,
             include_id=includeId,

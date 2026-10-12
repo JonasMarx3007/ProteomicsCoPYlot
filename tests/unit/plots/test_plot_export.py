@@ -299,7 +299,7 @@ def test_pathway_heatmap_renders_at_the_page_default_size(monkeypatch):
     monkeypatch.setattr(
         stats_tools,
         'load_go_db',
-        lambda: pd.DataFrame({'description': [pathway], 'genes': [';'.join(genes)]}),
+        lambda organism="human": pd.DataFrame({'description': [pathway], 'genes': [';'.join(genes)]}),
     )
 
     content = stats_tools.pathway_heatmap_png(
@@ -361,7 +361,7 @@ def test_every_bundled_pathway_name_renders_at_the_page_default_size(monkeypatch
         monkeypatch.setattr(
             stats_tools,
             'load_go_db',
-            lambda: pd.DataFrame({'description': [pathway], 'genes': [';'.join(genes)]}),
+            lambda organism="human": pd.DataFrame({'description': [pathway], 'genes': [';'.join(genes)]}),
         )
 
         content = stats_tools.pathway_heatmap_png(

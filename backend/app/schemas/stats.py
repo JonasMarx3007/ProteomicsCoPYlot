@@ -39,12 +39,12 @@ HeatmapValueType = Literal["log2", "z"]
 EnrichmentSource = Literal["volcano", "volcano_control", "anova"]
 EnrichmentBackgroundMode = Literal["experiment", "global"]
 
-# Which Gene Ontology database the query is matched against. One entry today --
-# the bundled human GO -- and it is a request parameter rather than a constant
-# so that adding a second organism is a database and a Literal member, not a new
-# code path. An unrecognised value is refused; it must never fall back to human,
-# because the numbers would be real and the species wrong.
-EnrichmentOrganism = Literal["human"]
+# Which Gene Ontology database the query is matched against: the bundled human
+# or mouse table (data/db/all_go_terms_genes*.csv). It is a request parameter
+# rather than a constant so that adding an organism is a database and a Literal
+# member, not a new code path. An unrecognised value is refused; it must never
+# fall back to human, because the numbers would be real and the species wrong.
+EnrichmentOrganism = Literal["human", "mouse"]
 SimulationSource = Literal["volcano"]
 SimulationTestType = Literal["unpaired", "unpaired_welch"]
 

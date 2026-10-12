@@ -24,7 +24,7 @@ jobs:
     # GitHub permits CodeQL for public repositories and private repositories
     # covered by GitHub Advanced Security. Keep the workflow ready for
     # publication without making every private-repository check fail.
-    if: github.event.repository.visibility == 'public'
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

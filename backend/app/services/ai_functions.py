@@ -2730,6 +2730,9 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
     background_mode = str(mode_pairs.get("backgroundmode", "experiment")).strip().lower()
     if background_mode not in {"experiment", "global"}:
         background_mode = "experiment"
+    # The organism selects the GO table; an unknown one is refused by the
+    # request schema below, never replaced by human.
+    organism = str(mode_pairs.get("organism", "human")).strip().lower() or "human"
 
     max_gene_preview = int(
         _float_from_mode(
@@ -2779,7 +2782,7 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
             "ora_flow|downregulated_cluster=downregulated_genes_to_enriched_pathways"
         )
     lines.append(
-        f"ora_parameters|source={source}|data_source={data_source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}|background_mode={background_mode}"
+        f"ora_parameters|source={source}|data_source={data_source}|test_type={test_type}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}|background_mode={background_mode}|organism={_safe_context_text(organism)}"
     )
     lines.append(
         f"ora_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
@@ -2827,6 +2830,7 @@ def stats_ora_plot(workflow: str = "protein", mode: ContextMode | None = None) -
             minTermSize=int(min_term_size),
             maxTermSize=int(max_term_size),
             backgroundMode=background_mode,  # type: ignore[arg-type]
+            organism=organism,  # type: ignore[arg-type]
         )
         result = _stats_tools.run_enrichment(payload)
     except Exception as exc:
@@ -2944,6 +2948,7 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: ContextMode | No
     _, entity_plural = _entity_labels_from_stats_kind(kind)
 
     pathway = str(mode_pairs.get("pathway", "")).strip()
+    organism = str(mode_pairs.get("organism", "human")).strip().lower() or "human"
     selected_conditions = _split_mode_list(mode_pairs.get("conditions", ""))
     value_type = str(mode_pairs.get("valuetype", mode_pairs.get("value_type", "z"))).strip().lower()
     if value_type not in {"log2", "z"}:
@@ -2982,7 +2987,7 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: ContextMode | No
         f"pathway_heatmap_overview|workflow={workflow_key}|dataset_level={kind}|entity={entity_plural}"
     )
     lines.append(
-        f"pathway_heatmap_selection|pathway={_safe_context_text(pathway)}|data_source={data_source}|value_type={'z_score' if value_type == 'z' else 'log2'}|remove_empty={'true' if remove_empty else 'false'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|cluster_rows={'true' if cluster_rows else 'false'}|cluster_cols={'true' if cluster_cols else 'false'}"
+        f"pathway_heatmap_selection|pathway={_safe_context_text(pathway)}|organism={_safe_context_text(organism)}|data_source={data_source}|value_type={'z_score' if value_type == 'z' else 'log2'}|remove_empty={'true' if remove_empty else 'false'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|cluster_rows={'true' if cluster_rows else 'false'}|cluster_cols={'true' if cluster_cols else 'false'}"
     )
     if selected_conditions:
         condition_preview, condition_truncated = _preview_items(selected_conditions, max_condition_preview)
@@ -3018,7 +3023,7 @@ def stats_pathway_heatmap_plot(workflow: str = "protein", mode: ContextMode | No
         return _text_payload("stats_pathway_heatmap_plot", "\n".join(lines))
 
     try:
-        db = _stats_tools.load_go_db()
+        db = _stats_tools.load_go_db(organism)
         pathway_row = db.loc[db["description"].astype(str).str.lower() == pathway.strip().lower()]
         if pathway_row.empty:
             raise ValueError(f"No pathway found matching '{pathway}'.")

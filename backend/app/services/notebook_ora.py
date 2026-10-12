@@ -14,8 +14,9 @@ GO_ATTRIBUTION = (
     'Gene Ontology Consortium, copyright 1999-present. CC BY 4.0: '
     'https://creativecommons.org/licenses/by/4.0/\n'
     'Source and citation policy: https://geneontology.org/docs/go-citation-policy/\n'
-    'Human GO term-to-gene mapping prepared for CoPYlot; serialized as Parquet for this export. '
-    'Exact upstream release and preparation steps were not recorded. No warranties. '
+    'GO term-to-gene mapping (human or mouse; the organism is recorded in provenance) built for CoPYlot '
+    'from the GO Consortium release recorded in data/db/README.md and data/reference-sources/manifest.json '
+    'of the CoPYlot repository; serialized as Parquet for this export. No warranties. '
     'The original database checksum is recorded in provenance; resource checksums identify this export.\n').encode()
 
 
@@ -24,7 +25,7 @@ def ora_source(upstream=None):
     original = module_source("stats_tools.py")
     universe = function_definition(original, "_prepare_ora_universe")
     universe = replace_once(universe, "def _prepare_ora_universe(", "def prepare_universe(database,")
-    universe = replace_once(universe, "db = load_go_db()", "db = database")
+    universe = replace_once(universe, "db = load_go_db(organism)", "db = database")
     enrichment = function_definition(original, "_enrichment_terms").replace("EnrichmentTerm", "SimpleNamespace")
     rendering = function_definition(original, "ora_plot_png")
     rendering = replace_once(rendering, "def ora_plot_png(", "def render_plot(result, request,")
@@ -163,7 +164,7 @@ def render_ora(payload, *, direction, advanced=None, width_cm=26, height_cm=12, 
         figure=dict(direction=direction, advanced=advanced, width_cm=width_cm, height_cm=height_cm, dpi=dpi))
     module = ora_module(mode)
     queries, tested = module.select_queries(data, metadata, mask, settings)
-    database = stats_tools.load_go_db()[['ontology', 'term', 'description', 'genes']].copy(deep=True)
+    database = stats_tools.load_go_db(payload.organism)[['ontology', 'term', 'description', 'genes']].copy(deep=True)
     background = tested if payload.backgroundMode == 'experiment' else None
     for key, genes in queries.items():
         calculated = module.calculate_enrichment(database, genes, background, **settings['enrichment'])

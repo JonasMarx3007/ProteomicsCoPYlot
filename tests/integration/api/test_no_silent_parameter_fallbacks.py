@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[3]
 from app.api.plot_responses import table_rows
 from app.main import app
 
+API = ROOT / "backend" / "app" / "api"
+ROUTE_FILES = sorted(API.glob("routes_*.py"))
+
+
 def test_table_rows_serializes_missing_categorical_values() -> None:
     frame = pd.DataFrame({"group": pd.Categorical(["A", None])})
 
@@ -45,7 +49,7 @@ ENUM_PROBES = [
 WT, GRK = "WT", "GRK"
 SAMPLE_1 = "[6] 20240822_nElute_tims1_JM_HEK293_WP_WT_1_Slot1-61_1_8064.d.PG.Log2Quantity"
 SAMPLE_2 = "[7] 20240822_nElute_tims1_JM_HEK293_WP_WT_2_Slot1-62_1_8065.d.PG.Log2Quantity"
-A_PATHWAY = "mitochondrial genome maintenance"
+A_PATHWAY = "apoptotic process"  # a term with many genes that is not obsolete in the GO release used
 
 ENUM_PROBES += [
     ("/api/plots/comparison/protein/pearson.png", "mode", "NOT_A_MODE", "Single",

@@ -3474,8 +3474,11 @@
             "type": "integer"
           },
           "organism": {
-            "const": "human",
             "default": "human",
+            "enum": [
+              "human",
+              "mouse"
+            ],
             "title": "Organism",
             "type": "string"
           },
@@ -4275,8 +4278,11 @@
             "type": "integer"
           },
           "organism": {
-            "const": "human",
             "default": "human",
+            "enum": [
+              "human",
+              "mouse"
+            ],
             "title": "Organism",
             "type": "string"
           },
@@ -16602,6 +16608,20 @@
               "title": "Advanced",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "organism",
+            "required": false,
+            "schema": {
+              "default": "human",
+              "enum": [
+                "human",
+                "mouse"
+              ],
+              "title": "Organism",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -18022,6 +18042,22 @@
     "/api/stats/pathways": {
       "get": {
         "operationId": "pathway_options_route_api_stats_pathways_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "organism",
+            "required": false,
+            "schema": {
+              "default": "human",
+              "enum": [
+                "human",
+                "mouse"
+              ],
+              "title": "Organism",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -18032,6 +18068,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Pathway Options Route",

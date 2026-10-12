@@ -24,7 +24,7 @@ def database(monkeypatch):
         ('BP', 'GO:4', 'Another process', 'B;C;D'),
         ('BP', 'GO:5', 'Tied molecular membership', 'A;B'),
     ], columns=['ontology', 'term', 'description', 'genes'])
-    monkeypatch.setattr(stats_tools, 'load_go_db', lambda: frame.copy())
+    monkeypatch.setattr(stats_tools, 'load_go_db', lambda organism="human": frame.copy())
     return frame
 
 
@@ -156,7 +156,7 @@ def analysis_database(monkeypatch):
         ('MF', 'GO:2', 'First subset', ';'.join(f'G{i}' for i in range(8))),
         ('CC', 'GO:3', 'Second subset', ';'.join(f'G{i}' for i in range(7, 20))),
     ], columns=['ontology', 'term', 'description', 'genes'])
-    monkeypatch.setattr(stats_tools, 'load_go_db', lambda: database.copy())
+    monkeypatch.setattr(stats_tools, 'load_go_db', lambda organism="human": database.copy())
     return database
 
 
@@ -258,7 +258,7 @@ def test_phosphoprotein_ora_keeps_collapse_history(phosphosites, monkeypatch, so
     from app.services.session_context import get_session_id
     database = pd.DataFrame([('BP', 'GO:1', 'Protein group term', 'P0;P1;P2;P3')],
                             columns=['ontology', 'term', 'description', 'genes'])
-    monkeypatch.setattr(stats_tools, 'load_go_db', lambda: database)
+    monkeypatch.setattr(stats_tools, 'load_go_db', lambda organism="human": database)
     annotation = aggregate_from_phospho('mean', source)
     payload = EnrichmentRequest(kind='phosprot', condition1='A', condition2='B', pValueThreshold=1,
         log2fcThreshold=0, minTermSize=1, maxTermSize=30, adjPValueCutoff=1)

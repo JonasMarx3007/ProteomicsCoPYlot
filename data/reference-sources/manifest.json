@@ -1,0 +1,223 @@
+{
+  "build": {
+    "pandas": "3.0.5",
+    "python": "3.13.3",
+    "script": "tools/build_reference_databases.py",
+    "sources_sha256": {
+      "go_annotations_human": "db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30",
+      "go_annotations_mouse": "9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30",
+      "go_ontology": "6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404",
+      "hgnc_complete_set": "9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c",
+      "mgi_gene_model_coord": "b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263",
+      "mgi_marker_list": "14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e",
+      "mgi_uniprot": "f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9",
+      "uniprot_human_entries": "dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec",
+      "uniprot_human_proteome_fasta": "64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce",
+      "uniprot_mouse_entries": "9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a",
+      "uniprot_mouse_proteome_fasta": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93",
+      "uniprot_secondary_accessions": "05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19"
+    }
+  },
+  "outputs": {
+    "BioNamesDB.txt.gz": {
+      "built": "2026-10-12T15:34:39Z",
+      "bytes": 18884960,
+      "records": 280689,
+      "sha256": "a5968748aca7f88728ffd46494adc9a21469a8bfdb778e420a185b270083c816"
+    },
+    "UP000000589_10090.fasta.gz": {
+      "built": "2026-10-12T15:34:39Z",
+      "bytes": 8053531,
+      "records": 21860,
+      "sha256": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93"
+    },
+    "UP000005640_9606.fasta.gz": {
+      "built": "2026-10-12T15:34:39Z",
+      "bytes": 7728297,
+      "records": 20652,
+      "sha256": "64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce"
+    },
+    "all_go_terms_genes.csv": {
+      "built": "2026-10-12T15:34:39Z",
+      "bytes": 10606830,
+      "records": 20941,
+      "sha256": "b314eda0ae2164a6bdc137899330b7b2fb568b85610d2e5bb99a13fc6e298e21"
+    },
+    "all_go_terms_genes_mouse.csv": {
+      "built": "2026-10-12T15:34:39Z",
+      "bytes": 12548425,
+      "records": 21864,
+      "sha256": "9ecf591d37b77bd8132597c8e07fcbb22e97f4aa3faaba4d5a581cf384fc7452"
+    }
+  },
+  "sources": {
+    "go_annotations_human": {
+      "bytes": 15041996,
+      "citation": "Gene Ontology Consortium. The Gene Ontology knowledgebase in 2023. Genetics 224, iyad031 (2023); Ashburner et al. Gene Ontology: tool for the unification of biology. Nat Genet 25, 25-29 (2000).",
+      "file": "goa_human.gaf.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://geneontology.org/docs/go-citation-policy/",
+      "provider": "go",
+      "release": "2026-08-05",
+      "release_date": "2026-08-05",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30",
+      "upstream_last_modified": "Thu, 28 May 2026 21:18:27 GMT",
+      "url": "https://current.geneontology.org/annotations/goa_human.gaf.gz"
+    },
+    "go_annotations_mouse": {
+      "bytes": 14020707,
+      "citation": "Gene Ontology Consortium. The Gene Ontology knowledgebase in 2023. Genetics 224, iyad031 (2023); Ashburner et al. Gene Ontology: tool for the unification of biology. Nat Genet 25, 25-29 (2000).",
+      "file": "mgi.gaf.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://geneontology.org/docs/go-citation-policy/",
+      "provider": "go",
+      "release": "2026-08-05",
+      "release_date": "2026-08-05",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30",
+      "upstream_last_modified": "Thu, 28 May 2026 21:16:29 GMT",
+      "url": "https://current.geneontology.org/annotations/mgi.gaf.gz"
+    },
+    "go_ontology": {
+      "bytes": 4473129,
+      "citation": "Gene Ontology Consortium. The Gene Ontology knowledgebase in 2023. Genetics 224, iyad031 (2023); Ashburner et al. Gene Ontology: tool for the unification of biology. Nat Genet 25, 25-29 (2000).",
+      "file": "go-basic.obo.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://geneontology.org/docs/go-citation-policy/",
+      "provider": "go",
+      "release": "2026-08-05 (obo data-version releases/2026-07-26)",
+      "release_date": "2026-08-05",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404",
+      "upstream_last_modified": "Sat, 08 Aug 2026 22:27:06 GMT",
+      "url": "https://current.geneontology.org/ontology/go-basic.obo"
+    },
+    "hgnc_complete_set": {
+      "bytes": 4059076,
+      "citation": "HGNC Database, HUGO Gene Nomenclature Committee (HGNC), EMBL-EBI. www.genenames.org",
+      "file": "hgnc_complete_set.txt.gz",
+      "licence": "CC0 1.0",
+      "licence_url": "https://www.genenames.org/about/license/",
+      "provider": "hgnc",
+      "release": "Fri, 09 Oct 2026 13:40:48 GMT",
+      "release_date": "Fri, 09 Oct 2026 13:40:48 GMT",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c",
+      "upstream_last_modified": "Fri, 09 Oct 2026 13:40:48 GMT",
+      "url": "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt"
+    },
+    "mgi_gene_model_coord": {
+      "bytes": 3579399,
+      "citation": "Mouse Genome Informatics (MGI), The Jackson Laboratory. www.informatics.jax.org",
+      "file": "mgi_MGI_Gene_Model_Coord.rpt.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.informatics.jax.org/mgihome/other/copyright.shtml",
+      "provider": "mgi",
+      "release": "Mon, 12 Oct 2026 12:00:31 GMT",
+      "release_date": "Mon, 12 Oct 2026 12:00:31 GMT",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263",
+      "upstream_last_modified": "Mon, 12 Oct 2026 12:00:31 GMT",
+      "url": "https://www.informatics.jax.org/downloads/reports/MGI_Gene_Model_Coord.rpt"
+    },
+    "mgi_marker_list": {
+      "bytes": 12514599,
+      "citation": "Mouse Genome Informatics (MGI), The Jackson Laboratory. www.informatics.jax.org",
+      "file": "mgi_MRK_List2.rpt.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.informatics.jax.org/mgihome/other/copyright.shtml",
+      "provider": "mgi",
+      "release": "Mon, 12 Oct 2026 12:01:06 GMT",
+      "release_date": "Mon, 12 Oct 2026 12:01:06 GMT",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e",
+      "upstream_last_modified": "Mon, 12 Oct 2026 12:01:06 GMT",
+      "url": "https://www.informatics.jax.org/downloads/reports/MRK_List2.rpt"
+    },
+    "mgi_uniprot": {
+      "bytes": 751759,
+      "citation": "Mouse Genome Informatics (MGI), The Jackson Laboratory. www.informatics.jax.org",
+      "file": "mgi_MRK_SwissProt_TrEMBL.rpt.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.informatics.jax.org/mgihome/other/copyright.shtml",
+      "provider": "mgi",
+      "release": "Mon, 12 Oct 2026 12:01:08 GMT",
+      "release_date": "Mon, 12 Oct 2026 12:01:08 GMT",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9",
+      "upstream_last_modified": "Mon, 12 Oct 2026 12:01:08 GMT",
+      "url": "https://www.informatics.jax.org/downloads/reports/MRK_SwissProt_TrEMBL.rpt"
+    },
+    "uniprot_human_entries": {
+      "bytes": 6626360,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "uniprot_human_UP000005640_entries.tsv.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-12T13:35:32Z",
+      "sha256": "dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec",
+      "upstream_last_modified": "",
+      "url": "https://rest.uniprot.org/uniprotkb/stream?query=(proteome:UP000005640)&format=tsv&fields=accession,id,reviewed,protein_name,gene_primary,gene_names,organism_id,length,xref_hgnc,xref_mgi,xref_ensembl,xref_geneid,xref_refseq&compressed=true"
+    },
+    "uniprot_human_proteome_fasta": {
+      "bytes": 7728297,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "UP000005640_9606.fasta.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-12T13:35:32Z",
+      "sha256": "64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce",
+      "upstream_last_modified": "Tue, 15 Sep 2026 09:21:31 GMT",
+      "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000005640/UP000005640_9606.fasta.gz"
+    },
+    "uniprot_mouse_entries": {
+      "bytes": 2935567,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "uniprot_mouse_UP000000589_entries.tsv.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-12T13:35:32Z",
+      "sha256": "9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a",
+      "upstream_last_modified": "",
+      "url": "https://rest.uniprot.org/uniprotkb/stream?query=(proteome:UP000000589)&format=tsv&fields=accession,id,reviewed,protein_name,gene_primary,gene_names,organism_id,length,xref_hgnc,xref_mgi,xref_ensembl,xref_geneid,xref_refseq&compressed=true"
+    },
+    "uniprot_mouse_proteome_fasta": {
+      "bytes": 8053531,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "UP000000589_10090.fasta.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-12T13:35:32Z",
+      "sha256": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93",
+      "upstream_last_modified": "Thu, 03 Sep 2026 18:00:00 GMT",
+      "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000000589/UP000000589_10090.fasta.gz"
+    },
+    "uniprot_secondary_accessions": {
+      "bytes": 7254764,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "uniprot_sec_ac.txt.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-12T13:34:37Z",
+      "sha256": "05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19",
+      "upstream_last_modified": "Thu, 03 Sep 2026 18:00:00 GMT",
+      "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/docs/sec_ac.txt"
+    }
+  }
+}

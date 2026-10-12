@@ -9,9 +9,9 @@ def universe(monkeypatch):
     background = {f'G{i}' for i in range(20)}
     terms = [('BP', 'one', 'one', {'G0'}), ('MF', 'two', 'two', {'G0', 'G1'}),
              ('BP', 'zero', 'zero', {'G19'})]
-    monkeypatch.setattr(stats_tools, '_prepare_ora_universe', lambda *_: (background, terms))
+    monkeypatch.setattr(stats_tools, '_prepare_ora_universe', lambda *_, **__: (background, terms))
     monkeypatch.setattr(stats_tools, '_species_overlap_warning', lambda *_: None)
-    monkeypatch.setattr(stats_tools, '_go_database_sha256', lambda: 'synthetic')
+    monkeypatch.setattr(stats_tools, '_go_database_sha256', lambda organism='human': 'synthetic')
     return background, terms
 
 

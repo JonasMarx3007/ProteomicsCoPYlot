@@ -7,8 +7,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, getPathwayOptions, isAbortError } from "../../lib/api";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
-import type { ContextMode, AnnotationKind, PathwayOptionsResponse, DataSource, StatisticalOptionsResponse } from "../../lib/types";
-import { dataSourceOptions } from "../../lib/types";
+import type { ContextMode, AnnotationKind, EnrichmentOrganism, PathwayOptionsResponse, DataSource, StatisticalOptionsResponse } from "../../lib/types";
+import { dataSourceOptions, ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
@@ -61,6 +61,14 @@ export function PathwayHeatmapPanel({
   const [options, setOptions] = useState<StatisticalOptionsResponse | null>(null);
   const [pathways, setPathways] = useState<PathwayOptionsResponse | null>(null);
   const [pathway, setPathway] = useState(() => String(persisted.pathway ?? ""));
+  // Human or mouse GO table; the pathway list and the gene membership both come
+  // from the chosen one. Unknown keys are refused by the backend, never mapped
+  // to human.
+  const [organism, setOrganism] = useState<EnrichmentOrganism>(() =>
+    ENRICHMENT_ORGANISM_OPTIONS.some((option) => option.value === persisted.organism)
+      ? (persisted.organism as EnrichmentOrganism)
+      : "human"
+  );
   const [selectedConditions, setSelectedConditions] = useState<string[]>(() =>
     Array.isArray(persisted.selectedConditions)
       ? persisted.selectedConditions.map((value) => String(value ?? ""))
@@ -110,10 +118,12 @@ export function PathwayHeatmapPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    getPathwayOptions({ signal: controller.signal })
+    getPathwayOptions({ signal: controller.signal }, organism)
       .then((data) => {
         setPathways(data);
-        setPathway((current) => current || data.pathways[0] || "");
+        // A pathway of the other organism's table is kept only if this one
+        // has it too; otherwise the first of the new list is taken.
+        setPathway((current) => (current && data.pathways.includes(current) ? current : data.pathways[0] || ""));
       })
       .catch((err) => {
         if (!isAbortError(err)) {
@@ -121,13 +131,14 @@ export function PathwayHeatmapPanel({
         }
       });
     return () => controller.abort();
-  }, []);
+  }, [organism]);
 
   useEffect(() => {
     if (!onContextModeChange) return;
     const mode: ContextMode = {
       kind: kind,
       pathway: pathway,
+      organism: organism,
       conditions: selectedConditions,
       valueType: valueType,
       dataSource: dataSource,
@@ -143,6 +154,7 @@ export function PathwayHeatmapPanel({
     onContextModeChange,
     kind,
     pathway,
+    organism,
     selectedConditions,
     valueType,
     dataSource,
@@ -156,6 +168,7 @@ export function PathwayHeatmapPanel({
 
   const heatmapUrl = buildPlotUrl(`/api/plots/stats/${kind}/pathway-heatmap.png`, {
     pathway,
+    organism,
     dataSource,
     conditions: JSON.stringify(selectedConditions),
     valueType,
@@ -174,6 +187,7 @@ export function PathwayHeatmapPanel({
     writePersistedUiState("stats.pathwayHeatmap.v1", {
       kind,
       pathway,
+      organism,
       selectedConditions,
       valueType,
       dataSource,
@@ -190,6 +204,7 @@ export function PathwayHeatmapPanel({
   }, [
     kind,
     pathway,
+    organism,
     selectedConditions,
     valueType,
     dataSource,
@@ -215,6 +230,12 @@ export function PathwayHeatmapPanel({
 
       <SectionCard title="Options">
         <div className="grid gap-4 lg:grid-cols-3">
+          <SelectField
+            label="Organism"
+            value={organism}
+            onChange={(value) => setOrganism(value as EnrichmentOrganism)}
+            options={ENRICHMENT_ORGANISM_OPTIONS}
+          />
           <SelectField label="Pathway" value={pathway} onChange={setPathway} options={(pathways?.pathways ?? []).map((item) => ({ value: item, label: item }))} />
           <SelectField
             label="Value type"

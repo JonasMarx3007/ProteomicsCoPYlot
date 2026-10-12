@@ -22,13 +22,13 @@ import type {
   StatsTestType,
   StatisticalOptionsResponse,
 } from "../../lib/types";
-import { DATA_SOURCE_LABELS, dataSourceOptions } from "../../lib/types";
+import { DATA_SOURCE_LABELS, dataSourceOptions, ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { useCanvasFocus } from "../../lib/canvasFocus";
 import SelectField from "../../components/SelectField";
 import NumberField from "../../components/NumberField";
 import TextField from "../../components/TextField";
-import type { ContextMode } from "../../lib/types";
+import type { ContextMode, EnrichmentOrganism } from "../../lib/types";
 import LocalizationCutoffField from "../../components/LocalizationCutoffField";
 import {
   asNumber, asString, CANVAS_VOLCANO_VISIBLE_CONTROLS, canvasImageVisibleControls, canvasPointStyle,
@@ -1350,7 +1350,7 @@ function OraListTile({
 }) {
   const genesFieldId = useId();
   const backgroundFieldId = useId();
-  const { sourceMode, selectedListName, genesText, backgroundMode, backgroundText,
+  const { sourceMode, selectedListName, genesText, backgroundMode, backgroundText, organism,
     topN, minTermSize, maxTermSize, adjPValueCutoff, completed } = state;
   const setField = useCallback(<K extends keyof OraState,>(key: K, value: OraState[K]) =>
     onChange(tileId, { [key]: value }), [onChange, tileId]);
@@ -1402,10 +1402,9 @@ function OraListTile({
       minTermSize: Math.max(1, Math.round(minTermSize)),
       maxTermSize: Math.max(1, Math.round(maxTermSize)),
       adjPValueCutoff: Math.max(1e-12, Math.min(1, adjPValueCutoff)),
-      // The canvas tile has no organism picker -- it is a compact tile, and the
-      // Statistics page is where an ORA is configured. Named rather than left
-      // to the schema default so the request says which database it wants.
-      organism: "human",
+      // Named rather than left to the schema default so the request says
+      // which database it wants; an unknown key is refused by the backend.
+      organism,
     };
     try {
       const response = await runListEnrichmentAnalysis(request, { signal: controller.signal });
@@ -1493,11 +1492,21 @@ function OraListTile({
       <div className="mt-3">
         <SelectField
           emptyLabel="No options"
+          label="Organism"
+          value={organism}
+          options={ENRICHMENT_ORGANISM_OPTIONS}
+          onChange={(value) => setField("organism", value as EnrichmentOrganism)}
+        />
+      </div>
+
+      <div className="mt-3">
+        <SelectField
+          emptyLabel="No options"
           label="Background"
           value={backgroundMode}
           options={[
             { value: "experiment", label: "Custom tested-gene background (recommended)" },
-            { value: "global", label: "All annotated human genes (global)" },
+            { value: "global", label: "All annotated genes (global)" },
           ]}
           onChange={(value) => setField("backgroundMode", value as "experiment" | "global")}
         />

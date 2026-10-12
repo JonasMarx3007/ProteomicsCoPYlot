@@ -21,7 +21,7 @@ from proteomicscopylot import notebook_functions as notebook
 
 REPO = Path(__file__).resolve().parents[3]
 EXAMPLE_PP = REPO / "proteomicscopylot" / "example_data" / "20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv"
-HUMAN_FASTA = REPO / "data" / "db" / "UP000005640_9606.fasta"
+HUMAN_FASTA = REPO / "data" / "db" / "UP000005640_9606.fasta.gz"
 
 #                    1234567890123456789012345
 PROTEIN = {"P1": "MKRRASLDEFGHIKLMNPQRSTVWY", "P2": "MSTY"}

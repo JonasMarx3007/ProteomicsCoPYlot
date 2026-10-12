@@ -21,7 +21,7 @@ def pathway_source():
                            'def prepare_matrix(data, metadata, database, *, centered=False,')
     prepare = replace_once(prepare, '    plt = _get_plt()\n    _, frame, metadata, _ = _stats_source(kind, data_source=data_source)',
                            '    frame = data')
-    prepare = replace_once(prepare, '    db = load_go_db()', '    db = database')
+    prepare = replace_once(prepare, '    db = load_go_db(organism)', '    db = database')
     prepare = replace_once(prepare, 'phosprot_values_are_centred(kind)', 'centered')
     for parameter in ('    header: bool,\n', '    width_cm: float,\n', '    height_cm: float,\n',
                       '    dpi: int,\n', '    data_source: str = "data",\n', '    advanced: dict | None = None,\n'):
@@ -78,7 +78,7 @@ def render_pathway(**options):
         metadata = metadata.loc[metadata['condition'].isin(settings['conditions'])].copy()
     columns = list(dict.fromkeys(metadata['sample'].astype(str).tolist() + ['GeneNames', 'Gene_group']))
     data = data[[c for c in columns if c in data]].copy(deep=True)
-    database = stats_tools.load_go_db()
+    database = stats_tools.load_go_db(settings['organism'])
     membership = database.loc[database['description'].astype(str).str.lower() == settings['pathway'].strip().lower()]
     membership = membership[['ontology', 'term', 'description', 'genes']].head(1).copy(deep=True)
     module = pathway_module()
@@ -99,7 +99,8 @@ def render_pathway(**options):
             f'original.{fmt}': bytes(content), 'GO_ATTRIBUTION.txt': GO_ATTRIBUTION},
         uses_imputed_input=uses_imputed, imputation_recipe=imputation_text,
         provenance=dict(kind=kind, plot='pathway', sourceUsed=source, warnings=warnings,
-            databaseSha256=stats_tools._go_database_sha256(), totalPathwayGenes=total, displayedGenes=len(matrix),
+            databaseSha256=stats_tools._go_database_sha256(settings['organism']),
+            organism=stats_tools.resolve_enrichment_organism(settings['organism']), totalPathwayGenes=total, displayedGenes=len(matrix),
             normalization=annotation.filter_config.normalization, filter=annotation.filter_config.model_dump(),
             upstreamCollapse=lineage.model_dump() if lineage else None,
             imputation=imputation.model_dump() if imputation else None),

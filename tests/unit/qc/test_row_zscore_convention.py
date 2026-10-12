@@ -144,7 +144,7 @@ def _app_heatmaps() -> dict:
         "anova": lambda: stats_tools.anova_png(AnovaRequest(kind="protein")),
         "anova cluster": lambda: stats_tools.anova_png(AnovaRequest(kind="protein", source="anova_cluster")),
         "pathway": lambda: stats_tools.pathway_heatmap_png(
-            kind="protein", pathway="mitochondrial genome maintenance", conditions=[], value_type="z",
+            kind="protein", pathway="apoptotic process", conditions=[], value_type="z",
             include_id=False, header=True, remove_empty=True, cluster_rows=False, cluster_cols=False,
             width_cm=20, height_cm=12, dpi=72),
         "phosphosites on a protein": lambda: single_protein_tools.single_protein_heatmap_plot(

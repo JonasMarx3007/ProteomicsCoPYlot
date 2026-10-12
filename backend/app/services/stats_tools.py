@@ -11,9 +11,8 @@ from app.services.plot_export import (
     fit_figure_to_labels as _fit_figure_to_labels,
 )
 
-import logging
-
 import hashlib
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -100,6 +99,8 @@ from app.services.stats_core import (
 # `neg_log10_selected_pval` the plotted -log10 of it. `correction` states which.
 CORRECTION_BENJAMINI_HOCHBERG = "Benjamini-Hochberg"
 CORRECTION_NONE = "none (uncorrected)"
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _correction_label(use_uncorrected: bool) -> str:
@@ -1810,13 +1811,45 @@ def anova_png(payload: AnovaRequest, selected_cluster: int | None = None, advanc
     return _to_png_bytes(fig, plt, dpi=150)
 
 
-def _go_db_candidates() -> list[Path]:
-    return reference_db_candidates("all_go_terms_genes.csv")
+# The organism keys the API accepts: display name and the bundled table each
+# one names (built by tools/build_reference_databases.py; see data/db/README.md).
+GO_DATABASES: dict[str, tuple[str, str]] = {
+    "human": ("Homo sapiens", "all_go_terms_genes.csv"),
+    "mouse": ("Mus musculus", "all_go_terms_genes_mouse.csv"),
+}
+GO_DATABASE_ORGANISM = GO_DATABASES["human"][0]
 
 
-@lru_cache(maxsize=1)
-def load_go_db() -> pd.DataFrame:
-    for path in _go_db_candidates():
+def _organism_key(organism: str = "human") -> str:
+    """The registry key for an organism, refusing anything not bundled.
+
+    Blank means "not specified", not "an organism named nothing", so it takes
+    the default the same way a missing field does. Nothing falls back to human:
+    the numbers would be real and the species wrong, which is the one failure an
+    enrichment result cannot survive.
+    """
+    key = (str(organism).strip().lower() or "human")
+    if key not in GO_DATABASES:
+        offered = ", ".join(sorted(GO_DATABASES))
+        raise ValueError(
+            f"No Gene Ontology database is bundled for '{organism}'. Available: {offered}."
+        )
+    return key
+
+
+def resolve_enrichment_organism(organism: str = "human") -> str:
+    """The display name of the GO database for this organism key."""
+    return GO_DATABASES[_organism_key(organism)][0]
+
+
+def _go_db_candidates(organism: str = "human") -> list[Path]:
+    return reference_db_candidates(GO_DATABASES[_organism_key(organism)][1])
+
+
+@lru_cache(maxsize=len(GO_DATABASES))
+def load_go_db(organism: str = "human") -> pd.DataFrame:
+    organism = _organism_key(organism)
+    for path in _go_db_candidates(organism):
         if path.exists():
             frame = pd.read_csv(path)
             digest = hashlib.sha256()
@@ -1824,17 +1857,18 @@ def load_go_db() -> pd.DataFrame:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
             frame.attrs["database_sha256"] = digest.hexdigest()
+            frame.attrs["organism"] = organism
             return frame
-    searched = ", ".join(str(path) for path in _go_db_candidates())
+    searched = ", ".join(str(path) for path in _go_db_candidates(organism))
     LOGGER.error("Gene Ontology database not found. Searched: %s", searched)
     raise ValueError(
-        "Could not find the bundled Gene Ontology database (all_go_terms_genes.csv). "
+        f"Could not find the bundled Gene Ontology database ({GO_DATABASES[organism][1]}). "
         "The searched locations are recorded in the server log."
     )
 
 
-def _go_database_sha256() -> str:
-    db = load_go_db()
+def _go_database_sha256(organism: str = "human") -> str:
+    db = load_go_db(organism)
     loaded_digest = str(db.attrs.get("database_sha256", "")).strip()
     if loaded_digest:
         return loaded_digest
@@ -1842,36 +1876,9 @@ def _go_database_sha256() -> str:
     return hashlib.sha256(canonical_csv).hexdigest()
 
 
-LOGGER = logging.getLogger(__name__)
-
-GO_DATABASE_ORGANISM = "Homo sapiens"
-
-# The organism keys the API accepts, and the database each one names. One entry
-# today; a second organism is a row here plus its table, not a new code path.
-GO_DATABASES: dict[str, str] = {"human": GO_DATABASE_ORGANISM}
-
-
-def resolve_enrichment_organism(organism: str = "human") -> str:
-    """The display name of the GO database for this organism key.
-
-    Refuses anything it does not have rather than falling back to human: the
-    numbers would be real and the species wrong, which is the one failure an
-    enrichment result cannot survive.
-    """
-    # Blank means "not specified", not "an organism named nothing", so it takes
-    # the default the same way a missing field does.
-    key = (str(organism).strip().lower() or "human")
-    if key not in GO_DATABASES:
-        offered = ", ".join(sorted(GO_DATABASES))
-        raise ValueError(
-            f"No Gene Ontology database is bundled for '{organism}'. Available: {offered}."
-        )
-    return GO_DATABASES[key]
-
-
-@lru_cache(maxsize=1)
-def _annotated_gene_universe() -> frozenset[str]:
-    db = load_go_db()
+@lru_cache(maxsize=len(GO_DATABASES))
+def _annotated_gene_universe(organism: str = "human") -> frozenset[str]:
+    db = load_go_db(organism)
     universe: set[str] = set()
     for genes_text in db["genes"]:
         universe.update(
@@ -1880,31 +1887,30 @@ def _annotated_gene_universe() -> frozenset[str]:
     return frozenset(universe)
 
 
-def _species_overlap_warning(genes: list[str]) -> str | None:
-    """Warn when the supplied gene symbols barely overlap the bundled GO universe.
+def _species_overlap_warning(genes: list[str], organism: str = "human") -> str | None:
+    """Warn when the supplied gene symbols barely overlap the chosen GO universe.
 
-    The bundled Gene Ontology table is Homo sapiens only. Symbols from another
-    species still produce a syntactically valid result - almost everything simply
-    fails to map - so a low overlap is the practical signal that the wrong
-    organism was loaded.
+    Symbols from another species still produce a syntactically valid result -
+    almost everything simply fails to map - so a low overlap is the practical
+    signal that the wrong organism was chosen.
     """
     cleaned = {str(gene).strip() for gene in genes if str(gene or "").strip()}
     if len(cleaned) < 50:
         return None
-    matched = len(cleaned & _annotated_gene_universe())
+    matched = len(cleaned & _annotated_gene_universe(organism))
     fraction = matched / len(cleaned)
     if fraction >= 0.2:
         return None
+    name = resolve_enrichment_organism(organism)
     return (
         f"Only {matched} of {len(cleaned)} gene symbols ({fraction:.0%}) are present in the "
-        f"bundled {GO_DATABASE_ORGANISM} Gene Ontology database. Enrichment assumes "
-        f"{GO_DATABASE_ORGANISM} symbols; if this data is from another organism the result "
-        "is not interpretable."
+        f"bundled {name} Gene Ontology database. Enrichment assumes {name} symbols; "
+        "if this data is from another organism, choose it in the organism selector."
     )
 
 
-def pathway_options() -> PathwayOptionsResponse:
-    db = load_go_db()
+def pathway_options(organism: str = "human") -> PathwayOptionsResponse:
+    db = load_go_db(organism)
     pathways = sorted(db["description"].dropna().astype(str).drop_duplicates().tolist())
     return PathwayOptionsResponse(pathways=pathways)
 
@@ -2043,10 +2049,11 @@ def _prepare_ora_universe(
     background_genes: list[str] | None,
     min_term_size: int,
     max_term_size: int,
+    organism: str = "human",
 ) -> tuple[set[str], list[tuple[str, str, str, set[str]]]]:
     records: list[tuple[str, str, str, set[str]]] = []
     annotated_genes: set[str] = set()
-    db = load_go_db()
+    db = load_go_db(organism)
     for ontology, term_id, description, genes_text in db[
         ["ontology", "term", "description", "genes"]
     ].itertuples(index=False, name=None):
@@ -2187,6 +2194,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
             background,
             payload.minTermSize,
             payload.maxTermSize,
+            organism=payload.organism,
         )
         cluster_terms = _enrichment_terms(
             cluster_genes,
@@ -2196,7 +2204,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
             eligible_terms,
             term_counts.setdefault("cluster", {}),
         )
-        species_warning = _species_overlap_warning(tested_genes)
+        species_warning = _species_overlap_warning(tested_genes, payload.organism)
         if species_warning:
             warnings = [*warnings, species_warning]
         return EnrichmentResultResponse(
@@ -2210,7 +2218,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
             backgroundSize=len(background) if background is not None else len(effective_background),
             annotatedBackgroundSize=len(effective_background),
             organism=resolve_enrichment_organism(payload.organism),
-            databaseSha256=_go_database_sha256(),
+            databaseSha256=_go_database_sha256(payload.organism),
             testedTermCount=len(eligible_terms),
             termCounts=term_counts,
             upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
@@ -2236,6 +2244,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         background,
         payload.minTermSize,
         payload.maxTermSize,
+        organism=payload.organism,
     )
     up_terms = _enrichment_terms(
         up_genes,
@@ -2253,7 +2262,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         eligible_terms,
         term_counts.setdefault("down", {}),
     )
-    species_warning = _species_overlap_warning(tested_genes)
+    species_warning = _species_overlap_warning(tested_genes, payload.organism)
     if species_warning:
         warnings = [*warnings, species_warning]
     return EnrichmentResultResponse(
@@ -2269,7 +2278,7 @@ def run_enrichment(payload: EnrichmentRequest) -> EnrichmentResultResponse:
         annotatedBackgroundSize=len(effective_background),
         organism=resolve_enrichment_organism(payload.organism),
         upstreamCorrectionMethod=_correction_label(payload.useUncorrected),
-        databaseSha256=_go_database_sha256(),
+        databaseSha256=_go_database_sha256(payload.organism),
         testedTermCount=len(eligible_terms),
         termCounts=term_counts,
         warnings=warnings,
@@ -2308,6 +2317,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         background,
         payload.minTermSize,
         payload.maxTermSize,
+        organism=payload.organism,
     )
     terms = _enrichment_terms(
         cleaned_genes,
@@ -2323,7 +2333,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         warnings.append("No valid genes were provided in the input list.")
     elif not terms:
         warnings.append("No enrichment terms found for the provided gene list and parameters.")
-    species_warning = _species_overlap_warning(cleaned_background or cleaned_genes)
+    species_warning = _species_overlap_warning(cleaned_background or cleaned_genes, payload.organism)
     if species_warning:
         warnings.append(species_warning)
 
@@ -2335,7 +2345,7 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
         backgroundSize=len(background) if background is not None else len(effective_background),
         annotatedBackgroundSize=len(effective_background),
         organism=resolve_enrichment_organism(payload.organism),
-        databaseSha256=_go_database_sha256(),
+        databaseSha256=_go_database_sha256(payload.organism),
         testedTermCount=len(eligible_terms),
         termCounts=term_counts,
         warnings=warnings,
@@ -2728,6 +2738,7 @@ def pathway_heatmap_png(
     data_source: str = "data",
     show_source_count: bool = False,
     advanced: dict | None = None,
+    organism: str = "human",
 ) -> bytes:
     plt = _get_plt()
     _, frame, metadata, _ = _stats_source(kind, data_source=data_source)
@@ -2735,7 +2746,7 @@ def pathway_heatmap_png(
     if gene_column is None:
         raise ValueError("A gene label column is required for pathway heatmaps.")
 
-    db = load_go_db()
+    db = load_go_db(organism)
     pathway_row = db.loc[db["description"].astype(str).str.lower() == pathway.strip().lower()]
     if pathway_row.empty:
         raise ValueError(f"No pathway found matching '{pathway}'.")

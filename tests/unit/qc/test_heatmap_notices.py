@@ -68,7 +68,7 @@ def test_anova_notice_counts_significant_input_and_actual_image(data):
 def test_pathway_notice_counts_genes_not_source_rows(monkeypatch, data, cluster, used):
     frame, meta = data
     monkeypatch.setattr(stats, "_stats_source", lambda *a, **k: ("data", frame, meta, []))
-    monkeypatch.setattr(stats, "load_go_db", lambda: pd.DataFrame({"description": ["test"], "genes": ["G1;G2;G3;G4"]}))
+    monkeypatch.setattr(stats, "load_go_db", lambda organism="human": pd.DataFrame({"description": ["test"], "genes": ["G1;G2;G3;G4"]}))
     # Capture the renderer's exact figure before serialization to avoid font-dependent layout.
     captured = {}
     def capture(fig, plt, **kwargs):
@@ -122,7 +122,7 @@ def test_pathway_title_is_wrapped_to_the_heatmap_not_the_figure(monkeypatch, dat
     frame, meta = data
     monkeypatch.setattr(stats, "_stats_source", lambda *a, **k: ("data", frame, meta, []))
     long_name = "positive regulation of transcription by RNA polymerase II in response to a very long stimulus"
-    monkeypatch.setattr(stats, "load_go_db", lambda: pd.DataFrame({"description": [long_name], "genes": ["G1;G2;G3;G4"]}))
+    monkeypatch.setattr(stats, "load_go_db", lambda organism="human": pd.DataFrame({"description": [long_name], "genes": ["G1;G2;G3;G4"]}))
     captured = {}
 
     def capture(fig, plt, **kwargs):

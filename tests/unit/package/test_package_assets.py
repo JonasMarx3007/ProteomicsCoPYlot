@@ -34,9 +34,10 @@ def test_go_database_is_available_to_source_and_wheel_builds() -> None:
     assert (ROOT / "data" / "db" / "README.md").is_file()
     setup_text = (ROOT / "setup.py").read_text(encoding="utf-8")
     assert "all_go_terms_genes.csv" in setup_text
-    # The wheel ships only the GO table, so it gets the notice written for it alone.
+    # The wheel ships only the GO tables, so it gets the notice written for them alone.
     assert '"PACKAGED_README.md"' in setup_text
     manifest_text = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "all_go_terms_genes_mouse.csv" in setup_text and "all_go_terms_genes_mouse.csv" in manifest_text
     assert "data/db/README.md" in manifest_text
     assert "data/db/PACKAGED_README.md" in manifest_text
     assert Path(sys.prefix).is_dir()
@@ -45,10 +46,11 @@ def test_go_database_is_available_to_source_and_wheel_builds() -> None:
 def test_packaged_go_notice_states_the_shipped_file_checksum() -> None:
     import hashlib
 
-    digest = hashlib.sha256((ROOT / "data" / "db" / "all_go_terms_genes.csv").read_bytes()).hexdigest()
     packaged = (ROOT / "data" / "db" / "PACKAGED_README.md").read_text(encoding="utf-8")
     repository = (ROOT / "data" / "db" / "README.md").read_text(encoding="utf-8")
-    assert digest in packaged and digest in repository
+    for shipped in ("all_go_terms_genes.csv", "all_go_terms_genes_mouse.csv"):
+        digest = hashlib.sha256((ROOT / "data" / "db" / shipped).read_bytes()).hexdigest()
+        assert digest in packaged and digest in repository
     for other in ("BioNamesDB.txt", ".fasta"):
         assert other not in packaged
 
@@ -62,7 +64,7 @@ def test_ora_requires_an_explicit_experiment_background(monkeypatch) -> None:
             "genes": ["TP53;BRCA1", "EGFR", "BRCA1"],
         }
     )
-    monkeypatch.setattr(notebook_functions, "load_go_db", lambda: database)
+    monkeypatch.setattr(notebook_functions, "load_go_db", lambda organism="human": database)
 
     with pytest.raises(ValueError, match="tested-gene background"):
         notebook_functions.enrichment_analysis(["TP53"])
@@ -437,7 +439,7 @@ def test_the_plotting_calls_cover_every_function_named_as_a_plot(plot_inputs, mo
     """
     import inspect
 
-    monkeypatch.setattr(notebook_functions, "load_go_db", lambda: plot_inputs["go_db"])
+    monkeypatch.setattr(notebook_functions, "load_go_db", lambda organism="human": plot_inputs["go_db"])
     calls = _plot_calls(notebook_functions, plot_inputs)
     public = {
         name for name, value in vars(notebook_functions).items()
@@ -459,7 +461,7 @@ def test_every_plotting_function_returns_its_figure(plot_inputs, monkeypatch) ->
     from matplotlib.figure import Figure
     from plotly.graph_objects import Figure as PlotlyFigure
 
-    monkeypatch.setattr(notebook_functions, "load_go_db", lambda: plot_inputs["go_db"])
+    monkeypatch.setattr(notebook_functions, "load_go_db", lambda organism="human": plot_inputs["go_db"])
     offenders = []
     for name, call in _plot_calls(notebook_functions, plot_inputs).items():
         plt.close("all")
@@ -501,7 +503,7 @@ def test_the_plotting_functions_run_with_the_repository_hidden(plot_inputs, monk
             monkeypatch.setitem(sys.modules, name, None)
     for name in forbidden:
         monkeypatch.setitem(sys.modules, name, None)
-    monkeypatch.setattr(notebook_functions, "load_go_db", lambda: plot_inputs["go_db"])
+    monkeypatch.setattr(notebook_functions, "load_go_db", lambda organism="human": plot_inputs["go_db"])
 
     for name, call in _plot_calls(notebook_functions, plot_inputs).items():
         with warnings.catch_warnings():

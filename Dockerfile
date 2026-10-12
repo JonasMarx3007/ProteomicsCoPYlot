@@ -7,6 +7,7 @@ COPY frontend/package*.json ./
 RUN npm ci
 
 COPY frontend/ ./
+COPY LICENSE NOTICE /build/
 ARG FRONTEND_APP_MODE=analysis
 ARG FRONTEND_AI_ENABLED=0
 ARG FRONTEND_BASE_PATH=/

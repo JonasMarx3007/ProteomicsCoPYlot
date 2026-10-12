@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Published UniProt secondary-accession snapshot checksum"
+condition = "AND"
+paths = ['''(^|[/\\])data[/\\]reference-sources[/\\]manifest\.json$''']
+regexTarget = "secret"
+regexes = ['''^05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19$''']
+
+[[rules.allowlists]]
+description = "React field key, not a credential"
+condition = "AND"
+paths = ['''(^|[/\\])frontend[/\\]src[/\\]features[/\\]phospho[/\\]PhosphoSpecificPage\.tsx$''']
+regexTarget = "secret"
+regexes = ['''^log2fcThreshold$''']
