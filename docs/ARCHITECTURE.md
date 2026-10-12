@@ -1,48 +1,6 @@
-# Architecture and Repository Map
+# Architecture
 
-## Interactive map
-
-The [interactive map](architecture/index.html) connects frontend features, API
-routes and Python services. Download the HTML and open it in a browser, or view
-it on GitHub Pages after enabling publication. Search for a feature or endpoint,
-then select a node to inspect its connections.
-
-The map uses static source analysis, not runtime traces. Python links come from
-imports and calls; frontend links are inferred from API paths and named imports.
-Dynamic dispatch, indirect frontend wrappers and runtime-generated paths may be
-missing. A link does not establish scientific correctness or test coverage.
-
-### Regenerate
-
-From the repository root, run:
-
-```sh
-python tools/build_architecture_map.py
-```
-
-Only versioned application source and the published API schema are read. Add new
-source files to Git before regenerating. No application is started, no model is
-called and no data is sent over the network. Python's standard library is enough;
-the private Graphify installation and graph are not required or published.
-
-The output contains repository-relative filenames, symbol names, API paths and
-inferred connections. It excludes source bodies, docstrings, datasets, local
-configuration and internal reports. A source fingerprint identifies the input
-snapshot. Commit the regenerated HTML alongside relevant code changes.
-
-### GitHub Pages
-
-1. In repository **Settings > Pages**, select **GitHub Actions** as the source.
-2. In **Settings > Secrets and variables > Actions > Variables**, add
-   `PUBLISH_ARCHITECTURE_MAP` with the value `true`.
-3. Run **Architecture map** from the Actions tab, or push to `main`.
-
-The workflow rebuilds the map from that commit and publishes only the generated
-HTML, never the repository or `local/`. Its deployment summary provides the live
-URL. Without the variable, the workflow validates the map but does not deploy.
-GitHub Pages availability depends on repository visibility and the account plan.
-
-See [GitHub's Pages workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+Explore the [interactive architecture](https://jonasmarx3007.github.io/ProteomicsCoPYlot/) to see how frontend features, API routes and Python services connect.
 
 ## Runtime flow
 

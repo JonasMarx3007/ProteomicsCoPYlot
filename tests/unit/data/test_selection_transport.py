@@ -69,7 +69,7 @@ def awkward_project(monkeypatch):
 
     database = pd.DataFrame([("BP", "GO:1", PATHWAY, "G0;G1;G2;G3")],
                             columns=["ontology", "term", "description", "genes"])
-    monkeypatch.setattr(stats_tools, "load_go_db", lambda: database.copy())
+    monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": database.copy())
     yield
     reset_all_datasets()
     reset_all_annotations()

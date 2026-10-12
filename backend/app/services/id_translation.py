@@ -44,6 +44,15 @@ DB_TO_COL = {
     "UniProt Description": "uniprot_description",
     "UniProt Secondary Accession": "uniprot_alternative",
     UNIPROT_ALL_ACCESSIONS: VIRTUAL_COL_UNIPROT_ALL,
+    # Added with the 2026-10-12 rebuild of BioNamesDB (human + mouse; see
+    # data/db/README.md). The HGNC columns are filled for human genes, the MGI
+    # columns for mouse genes; Entrez and Ensembl for both.
+    "Entrez Gene ID": "entrez_gene_id",
+    "OMIM": "omim_id",
+    "MGI ID": "mgi_id",
+    "MGI Symbol": "mgi_symbol",
+    "MGI Name": "mgi_name",
+    "MGI Synonym": "mgi_synonym",
 }
 
 OUT_LABEL_TO_COLNAME = {
@@ -65,6 +74,12 @@ OUT_LABEL_TO_COLNAME = {
     "UniProt Description": "UniProtDescriptionNames",
     "UniProt Secondary Accession": "UniProtSecondaryAccessionNames",
     UNIPROT_ALL_ACCESSIONS: "UniProtAllAccessionsNames",
+    "Entrez Gene ID": "EntrezGeneIDNames",
+    "OMIM": "OMIMNames",
+    "MGI ID": "MGIIDNames",
+    "MGI Symbol": "MGISymbolNames",
+    "MGI Name": "MGINames",
+    "MGI Synonym": "MGISynonymNames",
 }
 
 SPLIT_SEMI = re.compile(r"\s*;\s*")
@@ -86,7 +101,7 @@ def _get_current_frame(kind: AnnotationKind) -> tuple[pd.DataFrame, str]:
 
 
 def resolve_bionamesdb_path() -> Path:
-    return resolve_reference_db("BioNamesDB.txt", "identifier database (BioNamesDB.txt)")
+    return resolve_reference_db("BioNamesDB.txt.gz", "identifier database (BioNamesDB.txt.gz)")
 
 
 @lru_cache(maxsize=1)

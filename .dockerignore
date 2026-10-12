@@ -5,6 +5,7 @@ local
 tests
 examples
 docs
+data/reference-sources
 packaging
 
 **/__pycache__/

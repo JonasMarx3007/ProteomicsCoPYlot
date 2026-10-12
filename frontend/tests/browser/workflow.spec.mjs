@@ -576,11 +576,16 @@ test('ORA plot tables and gene lists share reproducible notebook downloads', asy
   expect((await download('Upregulated Terms')).equals(noTerms)).toBe(true);
 });
 
-test('pathway notebook follows the rendered heatmap and disables on plot failure', async ({ page }, testInfo) => {
+for (const organism of ['human', 'mouse']) {
+test(`pathway notebook follows the rendered ${organism} heatmap and disables on plot failure`, async ({ page }, testInfo) => {
   test.setTimeout(120_000);
-  await annotated(page, '3', { kind: 'protein', table: signalingProteins });
+  const table = organism === 'human' ? signalingProteins : signalingProteins.replace(
+    /TP53|AKT1|MTOR|EGFR|ERBB2|MAPK1|MAPK3|MAPK8|STAT3|JUN|FOS|MYC/g,
+    gene => gene === 'TP53' ? 'Trp53' : gene[0] + gene.slice(1).toLowerCase());
+  await annotated(page, '3', { kind: 'protein', table });
   await tab(page, 'Statistical Analysis').click();
   await tab(page, 'Pathway Heatmap').click();
+  await field(page, 'Organism').selectOption(organism);
   await field(page, 'Pathway').selectOption('positive regulation of apoptotic process');
   const button = page.getByRole('button', { name: 'Export notebook', exact: true });
   const plot = page.getByRole('img', { name: 'Pathway Heatmap', exact: true });
@@ -610,6 +615,7 @@ test('pathway notebook follows the rendered heatmap and disables on plot failure
   await page.getByLabel('Cluster rows', { exact: true }).check();
   await expect(button).toBeEnabled({ timeout: 30_000 });
 });
+}
 
 test('committed number fields show the accepted rounded or clamped value', async ({ page }) => {
   await annotated(page);

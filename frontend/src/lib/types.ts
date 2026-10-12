@@ -461,14 +461,15 @@ export type VolcanoControlRequest = VolcanoRequest & {
 
 export type VolcanoResultResponse = Served<Schemas["VolcanoResultResponse"]>;
 
-/** Which Gene Ontology database the query is matched against. One entry today;
- * a second organism is a member here and a table on the backend, not a new code
- * path. The backend refuses a key it has no database for rather than falling
- * back to human. */
-export type EnrichmentOrganism = "human";
+/** Which Gene Ontology database the query is matched against: the bundled
+ * human or mouse table. Another organism is a member here and a table on the
+ * backend, not a new code path. The backend refuses a key it has no database
+ * for rather than falling back to human. */
+export type EnrichmentOrganism = "human" | "mouse";
 
 export const ENRICHMENT_ORGANISM_OPTIONS: { value: EnrichmentOrganism; label: string }[] = [
   { value: "human", label: "Human (Homo sapiens)" },
+  { value: "mouse", label: "Mouse (Mus musculus)" },
 ];
 
 export type EnrichmentRequest = {

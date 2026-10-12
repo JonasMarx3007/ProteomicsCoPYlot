@@ -7,6 +7,7 @@ The small TLS proxy tests transport, not a production reverse-proxy deployment.
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import secrets
 import ssl
@@ -25,7 +26,20 @@ from app.services.password_hashing import hash_password
 
 
 def docker(*args):
-    return subprocess.run(["docker", *args], check=True, capture_output=True, text=True).stdout.strip()
+    result = subprocess.run(["docker", *args], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"Docker failed ({result.returncode}): {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def create_certificate(image, root):
+    # On Linux the bind mount retains the host owner's private permissions.
+    user = ["--user", f"{os.getuid()}:{os.getgid()}"] if os.name == "posix" else []
+    docker("run", "--rm", "--network", "none", *user,
+           "--mount", f"type=bind,source={root},target=/check",
+           image, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+           "-keyout", "/check/key.pem", "-out", "/check/cert.pem", "-subj", "/CN=localhost",
+           "-addext", "subjectAltName=DNS:localhost")
 
 
 def check(client, method, path, **kwargs):
@@ -40,10 +54,7 @@ def main(image):
     with tempfile.TemporaryDirectory(prefix="copylot-docker-check-") as directory:
         root = Path(directory)
         (root / "auth.json").write_text(json.dumps({"password_pbkdf2_sha256": hash_password(password)}))
-        docker("run", "--rm", "--network", "none", "--mount", f"type=bind,source={root},target=/check",
-               image, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-               "-keyout", "/check/key.pem", "-out", "/check/cert.pem", "-subj", "/CN=localhost",
-               "-addext", "subjectAltName=DNS:localhost")
+        create_certificate(image, root)
         started = False
         proxy = None
         try:

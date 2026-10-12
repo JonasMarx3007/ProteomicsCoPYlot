@@ -1,0 +1,95 @@
+
+== build 2026-10-12 13:35 UTC
+source  goa_human.gaf.gz                              release 2026-08-05               sha256 db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30
+source  mgi.gaf.gz                                    release 2026-08-05               sha256 9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30
+source  go-basic.obo.gz                               release 2026-08-05 (obo data-version releases/2026-07-26) sha256 6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404
+source  hgnc_complete_set.txt.gz                      release Fri, 09 Oct 2026 13:40:48 GMT sha256 9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c
+source  mgi_MGI_Gene_Model_Coord.rpt.gz               release Mon, 12 Oct 2026 12:00:31 GMT sha256 b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263
+source  mgi_MRK_List2.rpt.gz                          release Mon, 12 Oct 2026 12:01:06 GMT sha256 14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e
+source  mgi_MRK_SwissProt_TrEMBL.rpt.gz               release Mon, 12 Oct 2026 12:01:08 GMT sha256 f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9
+source  uniprot_human_UP000005640_entries.tsv.gz      release 2026_03                  sha256 dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec
+source  UP000005640_9606.fasta.gz                     release 2026_03                  sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+source  uniprot_mouse_UP000000589_entries.tsv.gz      release 2026_03                  sha256 9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a
+source  UP000000589_10090.fasta.gz                    release 2026_03                  sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+source  uniprot_sec_ac.txt.gz                         release 2026_03                  sha256 05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19
+output  BioNamesDB.txt.gz                             records 280,689   sha256 ccca7e789b2a8730114d6c01f6b84df561efc5eab7b28f43214542af2c6a49c1
+output  all_go_terms_genes.csv                        records 21,062    sha256 d9c718103350c1d4abc2e2092bf931a83469d808e66f051ec506da61d3af2cdd
+output  all_go_terms_genes_mouse.csv                  records 21,892    sha256 538e07f7b70086990d5fdcadaf3fe82da3b6bf6b583f493ee9b028aa8209df07
+output  UP000005640_9606.fasta.gz                     records 20,652    sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+output  UP000000589_10090.fasta.gz                    records 21,860    sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+
+== build 2026-10-12 13:36 UTC
+source  goa_human.gaf.gz                              release 2026-08-05               sha256 db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30
+source  mgi.gaf.gz                                    release 2026-08-05               sha256 9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30
+source  go-basic.obo.gz                               release 2026-08-05 (obo data-version releases/2026-07-26) sha256 6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404
+source  hgnc_complete_set.txt.gz                      release Fri, 09 Oct 2026 13:40:48 GMT sha256 9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c
+source  mgi_MGI_Gene_Model_Coord.rpt.gz               release Mon, 12 Oct 2026 12:00:31 GMT sha256 b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263
+source  mgi_MRK_List2.rpt.gz                          release Mon, 12 Oct 2026 12:01:06 GMT sha256 14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e
+source  mgi_MRK_SwissProt_TrEMBL.rpt.gz               release Mon, 12 Oct 2026 12:01:08 GMT sha256 f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9
+source  uniprot_human_UP000005640_entries.tsv.gz      release 2026_03                  sha256 dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec
+source  UP000005640_9606.fasta.gz                     release 2026_03                  sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+source  uniprot_mouse_UP000000589_entries.tsv.gz      release 2026_03                  sha256 9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a
+source  UP000000589_10090.fasta.gz                    release 2026_03                  sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+source  uniprot_sec_ac.txt.gz                         release 2026_03                  sha256 05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19
+output  BioNamesDB.txt.gz                             records 280,689   sha256 ccca7e789b2a8730114d6c01f6b84df561efc5eab7b28f43214542af2c6a49c1
+output  all_go_terms_genes.csv                        records 20,943    sha256 aafd7bfb02d31642224237f1a1aca66464b6df980ce9b3d5837af2347f57e8d3
+output  all_go_terms_genes_mouse.csv                  records 21,864    sha256 7556ca81292860d983bc7c6e3e8ad80db16c18e4dc3fe23ddf335b62aa41aafe
+output  UP000005640_9606.fasta.gz                     records 20,652    sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+output  UP000000589_10090.fasta.gz                    records 21,860    sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+
+== build 2026-10-12 14:19 UTC
+source  goa_human.gaf.gz                              release 2026-08-05               sha256 db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30
+source  mgi.gaf.gz                                    release 2026-08-05               sha256 9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30
+source  go-basic.obo.gz                               release 2026-08-05 (obo data-version releases/2026-07-26) sha256 6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404
+source  hgnc_complete_set.txt.gz                      release Fri, 09 Oct 2026 13:40:48 GMT sha256 9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c
+source  mgi_MGI_Gene_Model_Coord.rpt.gz               release Mon, 12 Oct 2026 12:00:31 GMT sha256 b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263
+source  mgi_MRK_List2.rpt.gz                          release Mon, 12 Oct 2026 12:01:06 GMT sha256 14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e
+source  mgi_MRK_SwissProt_TrEMBL.rpt.gz               release Mon, 12 Oct 2026 12:01:08 GMT sha256 f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9
+source  uniprot_human_UP000005640_entries.tsv.gz      release 2026_03                  sha256 dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec
+source  UP000005640_9606.fasta.gz                     release 2026_03                  sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+source  uniprot_mouse_UP000000589_entries.tsv.gz      release 2026_03                  sha256 9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a
+source  UP000000589_10090.fasta.gz                    release 2026_03                  sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+source  uniprot_sec_ac.txt.gz                         release 2026_03                  sha256 05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19
+output  BioNamesDB.txt.gz                             records 280,689   sha256 ccca7e789b2a8730114d6c01f6b84df561efc5eab7b28f43214542af2c6a49c1
+output  all_go_terms_genes.csv                        records 20,941    sha256 7b359b128abe6695d8543924ecc00043b176bbc4bc02fcfbc8ab4d80eb166b58
+output  all_go_terms_genes_mouse.csv                  records 21,864    sha256 9ecf591d37b77bd8132597c8e07fcbb22e97f4aa3faaba4d5a581cf384fc7452
+output  UP000005640_9606.fasta.gz                     records 20,652    sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+output  UP000000589_10090.fasta.gz                    records 21,860    sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+
+== build 2026-10-12 14:20 UTC
+source  goa_human.gaf.gz                              release 2026-08-05               sha256 db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30
+source  mgi.gaf.gz                                    release 2026-08-05               sha256 9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30
+source  go-basic.obo.gz                               release 2026-08-05 (obo data-version releases/2026-07-26) sha256 6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404
+source  hgnc_complete_set.txt.gz                      release Fri, 09 Oct 2026 13:40:48 GMT sha256 9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c
+source  mgi_MGI_Gene_Model_Coord.rpt.gz               release Mon, 12 Oct 2026 12:00:31 GMT sha256 b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263
+source  mgi_MRK_List2.rpt.gz                          release Mon, 12 Oct 2026 12:01:06 GMT sha256 14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e
+source  mgi_MRK_SwissProt_TrEMBL.rpt.gz               release Mon, 12 Oct 2026 12:01:08 GMT sha256 f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9
+source  uniprot_human_UP000005640_entries.tsv.gz      release 2026_03                  sha256 dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec
+source  UP000005640_9606.fasta.gz                     release 2026_03                  sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+source  uniprot_mouse_UP000000589_entries.tsv.gz      release 2026_03                  sha256 9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a
+source  UP000000589_10090.fasta.gz                    release 2026_03                  sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+source  uniprot_sec_ac.txt.gz                         release 2026_03                  sha256 05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19
+output  BioNamesDB.txt.gz                             records 280,689   sha256 ccca7e789b2a8730114d6c01f6b84df561efc5eab7b28f43214542af2c6a49c1
+output  all_go_terms_genes.csv                        records 20,941    sha256 b314eda0ae2164a6bdc137899330b7b2fb568b85610d2e5bb99a13fc6e298e21
+output  all_go_terms_genes_mouse.csv                  records 21,864    sha256 9ecf591d37b77bd8132597c8e07fcbb22e97f4aa3faaba4d5a581cf384fc7452
+output  UP000005640_9606.fasta.gz                     records 20,652    sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+output  UP000000589_10090.fasta.gz                    records 21,860    sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+
+== build 2026-10-12 15:34 UTC
+source  goa_human.gaf.gz                              release 2026-08-05               sha256 db472faff1785878521693af62646546cea6af4a386609dd01c72c0554a46a30
+source  mgi.gaf.gz                                    release 2026-08-05               sha256 9b7613f786f9f805531a8f6768f310220d28c82095f938e1212c86f39596ce30
+source  go-basic.obo.gz                               release 2026-08-05 (obo data-version releases/2026-07-26) sha256 6723f1cb15b6967331016295cdbfad42e09b0544bcfaf9c3637a04b3acef7404
+source  hgnc_complete_set.txt.gz                      release Fri, 09 Oct 2026 13:40:48 GMT sha256 9f516930890041b588f1c4c4bd7ab3490c41a5485420c8c52366cc74e7e9284c
+source  mgi_MGI_Gene_Model_Coord.rpt.gz               release Mon, 12 Oct 2026 12:00:31 GMT sha256 b5d9c1b9c79ee2892f4f4906ce2c057232f8a2c2ca736933e43d7b6ee51fb263
+source  mgi_MRK_List2.rpt.gz                          release Mon, 12 Oct 2026 12:01:06 GMT sha256 14591193928b86564c680c8d0890128c3e80f67aa53724d1482674b401c8717e
+source  mgi_MRK_SwissProt_TrEMBL.rpt.gz               release Mon, 12 Oct 2026 12:01:08 GMT sha256 f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9
+source  uniprot_human_UP000005640_entries.tsv.gz      release 2026_03                  sha256 dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec
+source  UP000005640_9606.fasta.gz                     release 2026_03                  sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+source  uniprot_mouse_UP000000589_entries.tsv.gz      release 2026_03                  sha256 9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a
+source  UP000000589_10090.fasta.gz                    release 2026_03                  sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93
+source  uniprot_sec_ac.txt.gz                         release 2026_03                  sha256 05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19
+output  BioNamesDB.txt.gz                             records 280,689   sha256 a5968748aca7f88728ffd46494adc9a21469a8bfdb778e420a185b270083c816
+output  all_go_terms_genes.csv                        records 20,941    sha256 b314eda0ae2164a6bdc137899330b7b2fb568b85610d2e5bb99a13fc6e298e21
+output  all_go_terms_genes_mouse.csv                  records 21,864    sha256 9ecf591d37b77bd8132597c8e07fcbb22e97f4aa3faaba4d5a581cf384fc7452
+output  UP000005640_9606.fasta.gz                     records 20,652    sha256 64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce
+output  UP000000589_10090.fasta.gz                    records 21,860    sha256 c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93

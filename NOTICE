@@ -17,3 +17,18 @@ The Python implementation is a modified version, not the upstream R program.
 
 Upstream plugin copyright notice (retained verbatim from AssemblyInfo.cs):
 Copyright © Max-Plank Institute of Biochemistry and Novo-Nordisk Foundation Center of Protein Research 2018
+
+Reference data (data/db, built from data/reference-sources)
+-----------------------------------------------------------
+UniProt reference proteomes UP000005640 (human) and UP000000589 (mouse),
+UniProtKB entries and secondary accessions, release 2026_03: copyright The
+UniProt Consortium, CC BY 4.0 (https://www.uniprot.org/help/license).
+HGNC complete set (2026-10-09): HUGO Gene Nomenclature Committee, EMBL-EBI,
+CC0 1.0 (https://www.genenames.org/about/license/).
+MGI marker reports (2026-10-12): Mouse Genome Informatics, The Jackson
+Laboratory, CC BY 4.0 (https://www.informatics.jax.org/mgihome/other/copyright.shtml).
+Gene Ontology release 2026-08-05 (go-basic.obo, goa_human.gaf, mgi.gaf):
+copyright 1999-present Gene Ontology Consortium, CC BY 4.0
+(https://geneontology.org/docs/go-citation-policy/).
+The exact files, checksums and the build are recorded in
+data/reference-sources/manifest.json and data/db/README.md.

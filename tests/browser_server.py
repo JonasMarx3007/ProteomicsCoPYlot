@@ -73,6 +73,10 @@ if __name__ == "__main__":
         if os.environ.get("COPYLOT_BROWSER_ASSISTANT_STUB") == "1":
             from app.services import scientific_assistant
             scientific_assistant._execution_profile = lambda *args: ("extended", 4, 2000)
+            def scripted_tool_turn(*args, **kwargs):
+                # This fixture scripts JSON plans, not a live provider's native tools.
+                raise scientific_assistant.NativeToolsUnavailable("scripted JSON provider")
+            scientific_assistant.assistant_tool_turn = scripted_tool_turn
             def scripted_completion(request, instruction, data, **kwargs):
                 if "task" in kwargs["schema"]["properties"]:
                     reply = {"task": "current_plot"}

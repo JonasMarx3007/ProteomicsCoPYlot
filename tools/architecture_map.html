@@ -106,13 +106,14 @@ aside p { margin: 6px 0; }
 (() => {
   const M = JSON.parse(document.getElementById("model").textContent);
   const svg = document.getElementById("svg"), panel = document.getElementById("panel");
-  const intro = panel.innerHTML;
+  const intro = Array.from(panel.childNodes, node => node.cloneNode(true));
+  const resetPanel = () => panel.replaceChildren(...intro.map(node => node.cloneNode(true)));
   const NS = "http://www.w3.org/2000/svg";
   const COLS = [["Pages", "frontend features"], ["API", "backend route groups"],
                 ["Services", "route imports and calls"], ["Core", "shared imports"]];
   const COLOR = ["var(--c0)", "var(--c1)", "var(--c2)", "var(--c3)"];
   const W = 196, GAP = 128, H = 24, VG = 7, TOP = 58;
-  document.getElementById("meta").innerHTML =
+  document.getElementById("meta").textContent =
     `Source ${M.fingerprint} · ${M.counts.files} versioned source files · ` +
     `${M.endpoints.length} endpoints`;
 
@@ -215,35 +216,52 @@ aside p { margin: 6px 0; }
     pinned = id; nodeEls.get(id).classList.add("pinned");
     light(trace(id)); show(byId.get(id));
   }
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const chips = ids => `<div class="chips">${ids.map(i => byId.has(i)
-      ? `<span class="chip" data-go="${esc(i)}">${esc(byId.get(i).label)}</span>` : `<span class="chip">${esc(i)}</span>`).join("")}</div>`;
-  const epHtml = e => `<div class="ep"><span class="m">${e.method}</span><code>${esc(e.path)}</code><br>
-      <span class="hint">${esc(e.handler)} · ${esc(e.where)}</span>
-      ${e.pages.length ? `<div class="hint">pages: ${e.pages.map(esc).join(", ")}</div>` : ""}
-      ${e.calls.length ? `<div class="hint">calls: ${e.calls.map(esc).join(", ")}</div>` : ""}</div>`;
+  const html = (tag, text = "", className = "") => {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    node.className = className;
+    return node;
+  };
+  const chips = ids => {
+    const group = html("div", "", "chips");
+    ids.forEach(id => {
+      const chip = html("span", byId.has(id) ? byId.get(id).label : id, "chip");
+      if (byId.has(id)) chip.addEventListener("click", () => pin(id));
+      group.append(chip);
+    });
+    return group;
+  };
+  const endpoint = e => {
+    const row = html("div", "", "ep");
+    row.append(html("span", e.method, "m"), html("code", e.path), html("br"),
+      html("span", `${e.handler} · ${e.where}`, "hint"));
+    if (e.pages.length) row.append(html("div", `pages: ${e.pages.join(", ")}`, "hint"));
+    if (e.calls.length) row.append(html("div", `calls: ${e.calls.join(", ")}`, "hint"));
+    return row;
+  };
   function show(n) {
     const kinds = ["Page", "API route group", "Service", "Core"];
     const from = (inn.get(n.id) || []).map(l => l.s), to = (out.get(n.id) || []).map(l => l.t);
-    let h = `<div class="kind" style="color:${COLOR[n.col]}">${kinds[n.col]}</div><h2>${esc(n.label)}</h2>`;
-    if (n.file) h += `<div class="hint">${esc(n.file)}${n.usedBy != null ? ` · used by ${n.usedBy} files` : ""}</div>`;
-    if (n.doc) h += `<p>${esc(n.doc)}</p>`;
-    if (n.files) h += `<div class="hint">${n.files.map(esc).join(", ")}</div>`;
-    if (from.length) h += `<h3>${n.col === 1 ? "Called from pages" : n.col === 2 ? "Called from API groups" : "Used by services"}</h3>${chips(from)}`;
-    if (to.length) h += `<h3>${n.col === 0 ? "Uses API groups" : n.col === 1 ? "Calls services" : "Builds on"}</h3>${chips(to)}`;
+    const kind = html("div", kinds[n.col], "kind");
+    kind.style.color = COLOR[n.col];
+    panel.replaceChildren(kind, html("h2", n.label));
+    if (n.file) panel.append(html("div", n.file + (n.usedBy != null ? ` · used by ${n.usedBy} files` : ""), "hint"));
+    if (n.doc) panel.append(html("p", n.doc));
+    if (n.files) panel.append(html("div", n.files.join(", "), "hint"));
+    if (from.length) panel.append(html("h3", n.col === 1 ? "Called from pages" : n.col === 2 ? "Called from API groups" : "Used by services"), chips(from));
+    if (to.length) panel.append(html("h3", n.col === 0 ? "Uses API groups" : n.col === 1 ? "Calls services" : "Builds on"), chips(to));
     let eps = [];
     if (n.col === 0) eps = M.endpoints.filter(e => e.pages.includes(n.id.slice(5)));
     if (n.col === 1) eps = M.endpoints.filter(e => e.group === n.id);
     if (n.col >= 2) eps = M.endpoints.filter(e => e.services.includes(n.id));
-    if (eps.length) h += `<h3>Endpoints (${eps.length})</h3>` + eps.map(epHtml).join("");
-    panel.innerHTML = h;
-    panel.querySelectorAll("[data-go]").forEach(c => c.addEventListener("click", () => pin(c.dataset.go)));
+    if (eps.length) panel.append(html("h3", `Endpoints (${eps.length})`), ...eps.map(endpoint));
+    setPanel(true);
   }
   const q = document.getElementById("q");
   q.addEventListener("input", () => {
     const s = q.value.trim().toLowerCase();
     nodeEls.forEach(g => g.classList.remove("match"));
-    if (!s) { if (!pinned) { light(null); panel.innerHTML = intro; } return; }
+    if (!s) { if (!pinned) { light(null); resetPanel(); } return; }
     const hit = new Set();
     M.nodes.forEach(n => { if (n.label.toLowerCase().includes(s) || (n.doc || "").toLowerCase().includes(s)) hit.add(n.id); });
     const eps = M.endpoints.filter(e => (e.path + " " + e.handler + " " + e.calls.join(" ")).toLowerCase().includes(s));
@@ -253,18 +271,19 @@ aside p { margin: 6px 0; }
     });
     hit.forEach(id => nodeEls.get(id) && nodeEls.get(id).classList.add("match"));
     light(hit.size ? hit : null);
-    if (eps.length) panel.innerHTML = `<div class="kind">Search</div><h2>${eps.length} endpoint(s) match “${esc(q.value)}”</h2>` + eps.map(epHtml).join("");
+    if (eps.length) {
+      panel.replaceChildren(html("div", "Search", "kind"),
+        html("h2", `${eps.length} endpoint(s) match “${q.value}”`), ...eps.map(endpoint));
+      setPanel(true);
+    }
   });
   document.getElementById("clear").addEventListener("click", () => {
     q.value = ""; nodeEls.forEach(g => g.classList.remove("match", "pinned")); pinned = null; light(null);
-    panel.innerHTML = intro;
+    resetPanel();
   });
   const wrap = document.querySelector(".wrap"), panelBtn = document.getElementById("panelbtn");
   const setPanel = (open) => { wrap.classList.toggle("collapsed", !open); panelBtn.classList.toggle("on", open); };
   panelBtn.addEventListener("click", () => setPanel(wrap.classList.contains("collapsed")));
-  // A pin or a search writes into the panel; if it is hidden, show it again.
-  new MutationObserver(() => { if (panel.innerHTML !== intro && wrap.classList.contains("collapsed")) setPanel(true); })
-    .observe(panel, { childList: true });
   document.getElementById("theme").addEventListener("click", () => {
     const root = document.documentElement;
     const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;

@@ -10,6 +10,7 @@ import type {
   AnalysisVolcanoResponse,
   AnnotationKind,
   AnnotationResultResponse,
+  EnrichmentOrganism,
   Log2DetectionRequest,
   Log2DetectionResponse,
   ComparisonOptionsResponse,
@@ -1355,9 +1356,10 @@ export async function removeOllamaModel(model: string, endpoint?: string): Promi
 }
 
 export async function getPathwayOptions(
-  requestOptions: ApiRequestOptions = {}
+  requestOptions: ApiRequestOptions = {},
+  organism: EnrichmentOrganism = "human"
 ): Promise<PathwayOptionsResponse> {
-  const data = await request(`/api/stats/pathways`, {
+  const data = await request(`/api/stats/pathways?organism=${encodeURIComponent(organism)}`, {
     signal: requestOptions.signal,
     fallback: "Failed to load pathway options",
   });

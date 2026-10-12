@@ -200,7 +200,7 @@ def _value_renderers() -> dict:
 
 
 # A GO term with enough of its genes in the example's protein matrix to draw.
-A_PATHWAY = "mitochondrial genome maintenance"
+A_PATHWAY = "apoptotic process"  # a term with many genes that is not obsolete in the GO release used
 
 
 VALUE_RENDERERS = list(_value_renderers())

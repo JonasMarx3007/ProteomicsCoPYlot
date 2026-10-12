@@ -101,6 +101,12 @@ def test_packaging_includes_canonical_example_data() -> None:
     assert "proteomicscopylot/example_data:proteomicscopylot/example_data" in macos_build
 
 
+def test_docker_frontend_build_has_project_licence_inputs() -> None:
+    frontend_stage = (ROOT / "Dockerfile").read_text(encoding="utf-8").split("FROM python:", 1)[0]
+    assert "COPY LICENSE NOTICE /build/" in frontend_stage
+    assert frontend_stage.index("COPY LICENSE NOTICE /build/") < frontend_stage.index("RUN npm run build")
+
+
 def test_deployment_and_reference_ci_use_exact_dependency_locks() -> None:
     runtime_lock = ROOT / "backend" / "requirements-runtime.lock"
     development_lock = ROOT / "backend" / "requirements.lock"

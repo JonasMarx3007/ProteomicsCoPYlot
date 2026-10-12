@@ -8,6 +8,7 @@ from app.schemas.annotation import AnnotationKind
 from app.schemas.stats import (
     AnovaRequest,
     AnovaResultResponse,
+    EnrichmentOrganism,
     EnrichmentRequest,
     EnrichmentResultResponse,
     ListEnrichmentRequest,
@@ -111,9 +112,9 @@ def ora_list_route(payload: ListEnrichmentRequest) -> ListEnrichmentResultRespon
 
 
 @router.get("/pathways", response_model=PathwayOptionsResponse)
-def pathway_options_route() -> PathwayOptionsResponse:
+def pathway_options_route(organism: EnrichmentOrganism = "human") -> PathwayOptionsResponse:
     try:
-        return pathway_options()
+        return pathway_options(organism)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

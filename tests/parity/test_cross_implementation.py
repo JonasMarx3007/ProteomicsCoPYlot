@@ -716,11 +716,12 @@ def test_phosprot_regulation_tables_agree(results) -> None:
             assert left == right, column
 
 
-def test_enrichment_corrects_over_tested_terms_not_eligible_ones() -> None:
+@pytest.mark.parametrize("organism", ["human", "mouse"])
+def test_enrichment_corrects_over_tested_terms_not_eligible_ones(organism) -> None:
     from app.services.stats_tools import _enrichment_terms
 
     notebook = _notebook()
-    go_db = notebook.load_go_db()
+    go_db = notebook.load_go_db(organism)
     term_sizes = go_db["genes"].astype(str).str.count(";") + 1
     source_term = go_db[(term_sizes >= 30) & (term_sizes <= 80)].iloc[0]
     query = [g.strip() for g in str(source_term["genes"]).split(";") if g.strip()][:30]
@@ -731,7 +732,7 @@ def test_enrichment_corrects_over_tested_terms_not_eligible_ones() -> None:
 
     package = notebook.enrichment_data(
         query, top_n=10**6, min_num=5, max_num=500, background=background,
-        background_mode="experiment", adj_p_value_cutoff=1.0,
+        background_mode="experiment", adj_p_value_cutoff=1.0, organism=organism,
     )
 
     universe_set = set(background)
@@ -759,6 +760,34 @@ def test_enrichment_corrects_over_tested_terms_not_eligible_ones() -> None:
         f"(median ratio {np.median(left / np.maximum(right, 1e-300)):.3f}x); "
         "the Benjamini-Hochberg denominators have drifted apart"
     )
+
+
+def test_mouse_enrichment_matches_r(tmp_path, require_r):
+    require_r()
+    notebook = _notebook()
+    db = notebook.load_go_db("mouse")
+    genes = sorted(set(db.loc[db["description"] == "apoptotic process", "genes"].iloc[0].split(";")))
+    query, background = genes[:30], genes
+    expected = notebook.enrichment_data(query, min_num=5, max_num=500, top_n=100000,
+        background=background, adj_p_value_cutoff=1, organism="mouse").sort_values("term_id")
+    pd.DataFrame({"gene": query}).to_csv(tmp_path / "query.csv", index=False)
+    pd.DataFrame({"gene": background}).to_csv(tmp_path / "background.csv", index=False)
+    script = '''
+      source("proteomicscopylot/notebook_functions.R")
+      folder <- commandArgs(trailingOnly=TRUE)[1]
+      query <- read.csv(file.path(folder, "query.csv"))$gene
+      background <- read.csv(file.path(folder, "background.csv"))$gene
+      result <- enrichment_data(query, min_num=5, max_num=500, top_n=100000,
+          background=background, adj_p_value_cutoff=1, organism="mouse")
+      write.csv(result, file.path(folder, "result.csv"), row.names=FALSE)
+    '''
+    run = subprocess.run([RSCRIPT, "-e", script, str(tmp_path)], cwd=ROOT,
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+    actual = pd.read_csv(tmp_path / "result.csv").sort_values("term_id")
+    assert expected["term_id"].tolist() == actual["term_id"].tolist()
+    np.testing.assert_allclose(expected[["p_value", "adj_p_value"]],
+                               actual[["p_value", "adj_p_value"]], rtol=1e-10, atol=1e-15)
 
 
 @pytest.mark.parametrize(

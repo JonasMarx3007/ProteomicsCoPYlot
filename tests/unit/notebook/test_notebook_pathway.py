@@ -23,7 +23,7 @@ def pathway_database(monkeypatch):
         ('BP', 'GO:1', 'Test pathway', 'G0;G1;G2;G3;G4;G5;G6;absent'),
         ('BP', 'GO:2', 'Test pathway', 'G14'),
     ], columns=['ontology', 'term', 'description', 'genes'])
-    monkeypatch.setattr(stats_tools, 'load_go_db', lambda: database.copy())
+    monkeypatch.setattr(stats_tools, 'load_go_db', lambda organism="human": database.copy())
     return database
 
 
@@ -94,7 +94,7 @@ def test_phosprot_pathway_preserves_original_imputation_history(phosphosites, mo
     from app.services.phosprot_tools import aggregate_from_phospho
     database = pd.DataFrame([('BP', 'GO:1', 'Test pathway', 'P0;P1;P2;P3')],
         columns=['ontology', 'term', 'description', 'genes'])
-    monkeypatch.setattr(stats_tools, 'load_go_db', lambda: database)
+    monkeypatch.setattr(stats_tools, 'load_go_db', lambda organism="human": database)
     annotation = aggregate_from_phospho('mean', source)
     kwargs = options()
     kwargs.update(kind='phosprot', value_type='log2', show_source_count=True)

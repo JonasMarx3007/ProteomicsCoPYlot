@@ -33,7 +33,7 @@ def test_ora_uses_custom_background_and_corrects_only_tested_terms(monkeypatch) 
             "genes": ["A;B", "C;D", "E;F"],
         }
     )
-    monkeypatch.setattr(stats_tools, "load_go_db", lambda: database)
+    monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": database)
 
     custom = stats_tools.run_enrichment_from_list(
         ListEnrichmentRequest(
@@ -77,7 +77,7 @@ def test_ora_rejects_missing_or_incomplete_experiment_background(monkeypatch) ->
             "genes": ["A;B"],
         }
     )
-    monkeypatch.setattr(stats_tools, "load_go_db", lambda: database)
+    monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": database)
 
     with pytest.raises(ValueError, match="tested-gene background"):
         stats_tools.run_enrichment_from_list(
@@ -104,7 +104,7 @@ def test_anova_ora_reports_its_tested_gene_background(monkeypatch) -> None:
             "genes": ["A;B"],
         }
     )
-    monkeypatch.setattr(stats_tools, "load_go_db", lambda: database)
+    monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": database)
     monkeypatch.setattr(
         stats_tools,
         "_anova_cluster_genes",
@@ -316,7 +316,7 @@ def test_pathway_heatmap_labels_show_source_feature_counts(monkeypatch) -> None:
     monkeypatch.setattr(
         stats_tools,
         "load_go_db",
-        lambda: pd.DataFrame(
+        lambda organism="human": pd.DataFrame(
             {"description": ["Test pathway"], "genes": ["AKT1;AKT10"]}
         ),
     )
@@ -473,7 +473,7 @@ def test_ora_bh_denominator_is_the_number_of_tested_terms(monkeypatch) -> None:
             }
             for i in range(padding)
         ]
-        monkeypatch.setattr(stats_tools, "load_go_db", lambda: pd.DataFrame(rows))
+        monkeypatch.setattr(stats_tools, "load_go_db", lambda organism="human": pd.DataFrame(rows))
         return stats_tools.run_enrichment_from_list(
             ListEnrichmentRequest(
                 genes=query,

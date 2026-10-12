@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+
 
 from app.services.plot_export import (
     to_png_bytes as _to_png_bytes,
@@ -821,7 +823,8 @@ def _load_fasta_dataframe_cached(path_str: str, modified_ns: int) -> pd.DataFram
     current_header: str | None = None
     current_sequence: list[str] = []
 
-    with Path(path_str).open("r", encoding="utf-8", errors="ignore") as handle:
+    opener = gzip.open if path_str.endswith(".gz") else open
+    with opener(path_str, "rt", encoding="utf-8", errors="ignore") as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
@@ -848,7 +851,7 @@ def _load_fasta_dataframe_cached(path_str: str, modified_ns: int) -> pd.DataFram
 
 
 def _fasta_path(species: PeptideSpecies) -> Path:
-    filename = "UP000005640_9606.fasta" if species == "human" else "UP000000589_10090.fasta"
+    filename = "UP000005640_9606.fasta.gz" if species == "human" else "UP000000589_10090.fasta.gz"
     return resolve_reference_db(filename, f"FASTA database for {species}")
 
 
