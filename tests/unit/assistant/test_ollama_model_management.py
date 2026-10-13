@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
@@ -8,27 +9,29 @@ import pytest
 from app.services import chat_tools, provider_http
 
 
-@pytest.mark.parametrize("mode", ["success", "overflow", "timeout", "failure"])
-def test_real_command_output_and_time_are_bounded(monkeypatch, mode):
-    import sys
-    import time
+@pytest.mark.parametrize("action", ["install", "remove"])
+@pytest.mark.parametrize("failure", ["overflow", "expired", "http", "invalid_name"])
+def test_model_management_failure_never_reports_success_or_refreshes(monkeypatch, action, failure):
+    monkeypatch.setenv("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", "16")
+    calls = []
 
-    monkeypatch.setenv("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", "1024")
-    code = {
-        "success": "import sys; print('normal'); print('diagnostic', file=sys.stderr)",
-        "overflow": "import sys; sys.stdout.write('x' * 1000000); sys.stdout.flush()",
-        "timeout": "import time; time.sleep(20)",
-        "failure": "import sys; print('private detail', file=sys.stderr); sys.exit(3)",
-    }[mode]
-    start = time.monotonic()
-    if mode == "success":
-        result = chat_tools._run_bounded_command([sys.executable, "-c", code], env=os.environ.copy(), timeout=3)
-        assert "normal" in result and "diagnostic" in result
-    else:
-        message = {"overflow": "size limit", "timeout": "time limit", "failure": "exit code 3"}[mode]
-        with pytest.raises(ValueError, match=message):
-            chat_tools._run_bounded_command([sys.executable, "-c", code], env=os.environ.copy(), timeout=0.3 if mode == "timeout" else 3)
-    assert time.monotonic() - start < 5
+    def urlopen(request, **kwargs):
+        calls.append(request)
+        if failure == "http":
+            raise urllib.error.HTTPError(request.full_url, 500, "private server detail", {}, None)
+        return io.BytesIO(b"x" * 17)
+
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", urlopen)
+    monkeypatch.setattr(chat_tools, "_invalidate_models_cache", lambda *a: pytest.fail("Failed operation invalidated caches"))
+    monkeypatch.setattr(chat_tools, "ollama_models", lambda **kw: pytest.fail("Failed operation reported success"))
+    deadline = provider_http.provider_deadline.set(1 if failure == "expired" else None)
+    try:
+        with pytest.raises(ValueError) as error:
+            getattr(chat_tools, f"ollama_{action}_model")("--insecure" if failure == "invalid_name" else "synthetic")
+        assert "private server detail" not in str(error.value)
+        assert len(calls) == (0 if failure in {"expired", "invalid_name"} else 1)
+    finally:
+        provider_http.provider_deadline.reset(deadline)
 
 
 @pytest.mark.parametrize("cache_name,ttl_name", [
@@ -91,31 +94,29 @@ def test_concurrent_cache_writes_respect_capacity(monkeypatch):
     assert len(cache) == 8
 
 
-@pytest.mark.parametrize("action,command", [("install", "pull"), ("remove", "rm")])
+@pytest.mark.parametrize("action,method,path", [("install", "POST", "pull"), ("remove", "DELETE", "delete")])
 @pytest.mark.parametrize("configured", [False, True])
-def test_cli_management_and_refresh_use_chat_host(monkeypatch, action, command, configured):
+def test_default_management_and_refresh_use_chat_host(monkeypatch, action, method, path, configured):
     base = "http://127.0.0.1:11435" if configured else "http://127.0.0.1:11434"
     monkeypatch.delenv("COPYLOT_OLLAMA_URL", raising=False)
     if configured:
         monkeypatch.setenv("COPYLOT_OLLAMA_URL", f"{base}/api/chat")
     monkeypatch.setenv("OLLAMA_HOST", "http://unrelated.invalid:11434")
     monkeypatch.setattr(chat_tools, "_MODELS_CACHE", {base: (float("inf"), ["stale"])})
-    monkeypatch.setattr(chat_tools.shutil, "which", lambda _: "mock-ollama")
     calls = []
 
-    def run(args, **kwargs):
-        calls.append((args, kwargs["env"]["OLLAMA_HOST"]))
-        return ""
-
     def urlopen(request, **kwargs):
-        assert request.full_url == f"{base}/api/tags"
-        assert request.get_method() == "GET"
-        return io.BytesIO(b'{"models": [{"name": "fresh"}]}')
+        calls.append((request.full_url, request.get_method()))
+        if request.full_url.endswith("/api/tags"):
+            return io.BytesIO(b'{"models": [{"name": "fresh"}]}')
+        assert json.loads(request.data)["name"] == "synthetic-model"
+        assert kwargs["timeout"] > 0
+        return io.BytesIO(b'{}')
 
-    monkeypatch.setattr(chat_tools, "_run_bounded_command", run)
+    monkeypatch.setattr(chat_tools.subprocess, "Popen", lambda *a, **kw: pytest.fail("Model management must not start a process"))
     monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", urlopen)
     result = getattr(chat_tools, f"ollama_{action}_model")(" synthetic-model ")
-    assert calls == [(["mock-ollama", command, "synthetic-model"], base)]
+    assert calls == [(f"{base}/api/{path}", method), (f"{base}/api/tags", "GET")]
     assert chat_tools._resolve_endpoint() == f"{base}/api/chat"
     assert os.environ["OLLAMA_HOST"] == "http://unrelated.invalid:11434"
     assert result.ok and result.models == ["fresh"]

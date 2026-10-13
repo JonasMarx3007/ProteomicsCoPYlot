@@ -134,12 +134,13 @@ def _plot_request() -> Request:
     )
 
 
-def test_plot_conversion_sanitizes_internal_errors(monkeypatch) -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, OSError])
+def test_plot_conversion_sanitizes_internal_errors(monkeypatch, error_type) -> None:
     secret = r"C:\\private\\plot.png"
     monkeypatch.setattr(
         main,
         "_convert_png_bytes",
-        lambda content, target: (_ for _ in ()).throw(RuntimeError(secret)),
+        lambda content, target: (_ for _ in ()).throw(error_type(secret)),
     )
 
     async def call_next(_request: Request) -> Response:
@@ -149,6 +150,18 @@ def test_plot_conversion_sanitizes_internal_errors(monkeypatch) -> None:
     assert response.status_code == 500
     assert secret.encode() not in response.body
     assert b"Failed to convert plot download" in response.body
+
+
+def test_unsupported_download_format_is_rejected_before_rendering() -> None:
+    request = _plot_request()
+    request.scope["query_string"] = b"downloadFormat=not-a-format"
+
+    async def call_next(_request):
+        pytest.fail("An unsupported format must not start a render")
+
+    response = asyncio.run(main.plot_download_format_middleware(request, call_next))
+    assert response.status_code == 400
+    assert json.loads(response.body) == {"detail": "Unsupported download format. Choose png, jpg, jpeg, webp, pdf or svg."}
 
 
 def test_plot_conversion_rejects_excessive_generated_image(monkeypatch) -> None:

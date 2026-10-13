@@ -662,6 +662,8 @@ async def plot_download_format_middleware(request: Request, call_next):
     native_format = "png"
     if request.method == "GET" and request.url.path.startswith("/api/plots/"):
         asked = request.query_params.get("downloadFormat", "").strip().lower()
+        if asked and asked not in _SUPPORTED_DOWNLOAD_FORMATS:
+            return JSONResponse(status_code=400, content={"detail": "Unsupported download format. Choose png, jpg, jpeg, webp, pdf or svg."})
         if asked in _NATIVE_DOWNLOAD_FORMATS:
             native_format = asked
     token = plot_output_format.set(native_format)
@@ -738,9 +740,7 @@ async def plot_download_format_middleware(request: Request, call_next):
 
     try:
         converted, converted_media_type = _convert_png_bytes(bytes(body), requested_format)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except Exception as exc:
+    except Exception:
         LOGGER.exception("Failed to convert plot download")
         return JSONResponse(
             status_code=500,

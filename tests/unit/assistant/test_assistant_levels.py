@@ -72,7 +72,7 @@ def test_basic_models_get_journal_styles_from_the_application(assistant_rig):
     assert changes["font"] == "helvetica" and changes["title"] == "7" and changes["xt"] == "6"
     assert changes["w"] == "8.9" and changes["h"] == "4.5" and changes["grid"] is False
     assert changes["ca"] in assistant_presets.OKABE_ITO and changes["ca"] != changes["cb"]
-    assert "Nature" in result.answer and "nature.com" in result.answer
+    assert assistant_presets.PRESETS["nature"].source in result.answer
     assert result.actionBudget >= len(result.actions) > 8
 
 
@@ -94,7 +94,7 @@ def test_advanced_models_use_presets_and_their_own_edits(advanced):
                           view=_coverage_view())
     changes = _targets(result)
     assert changes["title"] == "9" and changes["w"] == "8.5" and changes["frame"] == "0.75"
-    assert "Cell Press" in result.answer and "cell.com" in result.answer
+    assert assistant_presets.PRESETS["cell"].source in result.answer
     record = advanced.records[0]
     assert "presets" in record["data"] and record["schema"]["properties"]["preset"]["enum"][1:] == list(assistant_presets.PRESETS)
     assert "Never invent journal requirements" not in record["instruction"]
