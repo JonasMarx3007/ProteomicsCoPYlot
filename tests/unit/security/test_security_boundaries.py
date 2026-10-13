@@ -428,9 +428,11 @@ def test_anonymous_public_requests_do_not_evict_protected_sessions(monkeypatch, 
     assert victim not in dataset_store._DATASET_SESSIONS
 
 
+@pytest.mark.parametrize("secure", [False, True])
 def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
     monkeypatch,
     tmp_path,
+    secure,
 ) -> None:
     """Login must hand back exactly one session cookie.
 
@@ -455,7 +457,8 @@ def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
     monkeypatch.setenv("COPYLOT_SESSION_ISOLATION", "1")
     monkeypatch.delenv("COPYLOT_VIEWER_PORTAL_ENABLED", raising=False)
 
-    with TestClient(app) as client:
+    monkeypatch.setenv("COPYLOT_SESSION_COOKIE_SECURE", str(int(secure)))
+    with TestClient(app, base_url="https://testserver" if secure else "http://testserver") as client:
         client.cookies.clear()
         login = client.post("/api/tool/auth/login", json={"password": "test-password"})
         assert login.status_code == 200
@@ -467,6 +470,9 @@ def test_a_browser_that_only_has_cookies_stays_logged_in_after_rotation(
             and value.lstrip().startswith(b"copylot_session_id=")
         ]
         assert len(handed_out) == 1, f"login set {len(handed_out)} session cookies: {handed_out}"
+        assert "test-password" not in handed_out[0]
+        assert "HttpOnly" in handed_out[0] and "SameSite=lax" in handed_out[0]
+        assert ("Secure" in handed_out[0]) is secure
         assert client.cookies.get("copylot_session_id") == _rotated_session_id(login)
 
         assert client.get("/api/datasets/current").status_code == 200

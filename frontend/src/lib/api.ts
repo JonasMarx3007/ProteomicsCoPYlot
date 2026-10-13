@@ -1633,7 +1633,10 @@ export async function generateSummaryReport(
 }
 
 export function buildPlotUrl(path: string, params?: Record<string, string | number | boolean>) {
-  const base = `${API_BASE}${path}`;
+  if (!path.startsWith("/api/") || path.split("/").some((part) => part === "." || part === "..")) {
+    throw new Error("Plot paths must stay within the application API.");
+  }
+  const base = `${API_BASE}${path.split("/").map((part) => encodeURIComponent(part)).join("/")}`;
   const query = new URLSearchParams();
   if (params) {
     const normalizedParams =

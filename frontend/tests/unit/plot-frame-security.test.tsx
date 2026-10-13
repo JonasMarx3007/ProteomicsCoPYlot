@@ -12,7 +12,7 @@
  * frame in src/features carries the same sandbox is now an ESLint rule
  * (eslint.config.js, FRAME_RULES).
  */
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import InteractivePlot from "../../src/components/InteractivePlot";
 import { PlotFrame } from "../../src/features/stats/statsShared";
@@ -32,6 +32,33 @@ describe("plot frames", () => {
     const { container } = render(<InteractivePlot url="/api/plots/x.html" title="Plot" height={400} onRendered={() => {}} />);
     await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
     expect(sandboxOf(container.querySelector("iframe"))).toEqual(["allow-downloads", "allow-scripts"]);
+  });
+
+  it("keeps the readiness nonce out of executable code and rejects forged messages", async () => {
+    const token = "a".repeat(32);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html><head></head><body>plot</body></html>", {
+      headers: { "X-CoPYlot-Notebook": token },
+    })));
+    const onRendered = vi.fn();
+    const { container } = render(<InteractivePlot url="/api/plots/x.html" title="Plot" height={400} onRendered={onRendered} />);
+    await waitFor(() => expect(container.querySelector("iframe")).not.toBeNull());
+    const frame = container.querySelector("iframe")!;
+    const doc = new DOMParser().parseFromString(frame.srcdoc, "text/html");
+    const bridge = doc.querySelector<HTMLScriptElement>("script[data-copylot-ready]")!;
+    const nonce = bridge.dataset.copylotReady!;
+    await act(async () => {});
+    expect(nonce).toMatch(/^[a-f0-9]{32}$/);
+    expect(bridge.textContent).not.toContain(nonce);
+    for (const [source, value] of [[window, nonce], [frame.contentWindow, "wrong"]] as const) {
+      window.dispatchEvent(new MessageEvent("message", { source, data: { type: "copylot-plot-ready", nonce: value } }));
+    }
+    expect(onRendered).not.toHaveBeenCalled();
+    await waitFor(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source: frame.contentWindow, data: { type: "copylot-plot-ready", nonce },
+      }));
+      expect(onRendered).toHaveBeenCalledWith("/api/plots/x.html", token);
+    });
   });
 
   it("run a statistics plot frame with scripts and downloads only", () => {

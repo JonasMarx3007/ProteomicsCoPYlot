@@ -23,7 +23,6 @@ from app.schemas.chat import (
 )
 from app.services.assistant_profiles import LEVEL_NAMES, LEVELS, classify_model, input_limit, output_tokens, reasoning_model
 from app.services.cloud_ai_consent import require_cloud_ai_consent
-from app.services.workload_manager import provider_deadline
 from app.services.env_settings import env_flag, env_float, env_int
 from app.services.provider_http import (
     AssistantContextExhausted, open_provider_request, openai_content_to_text, read_json_response, read_provider_body,
@@ -568,77 +567,7 @@ def model_capability(
     return result
 
 
-def _run_bounded_command(args, *, env, timeout) -> str:
-    limit = max(1, env_int("COPYLOT_PROVIDER_RESPONSE_MAX_BYTES", 8 * 1024 * 1024))
-    output = bytearray()
-    deadline = min(provider_deadline.get() or time.monotonic() + timeout, time.monotonic() + timeout)
-    if time.monotonic() >= deadline:
-        raise ValueError("Model command exceeded its time limit.")
-    with subprocess.Popen(
-        args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    ) as process:
-        try:
-            while True:
-                if time.monotonic() >= deadline:
-                    raise ValueError("Model command exceeded its time limit.")
-                available = _pipe_available(process.stdout)
-                if available:
-                    chunk = os.read(process.stdout.fileno(), min(available, limit - len(output) + 1))
-                    if not chunk:
-                        break
-                    output.extend(chunk)
-                    if len(output) > limit:
-                        raise ValueError("Model command output exceeds the configured size limit.")
-                elif process.poll() is not None:
-                    break
-                else:
-                    time.sleep(0.01)
-            try:
-                process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                raise ValueError("Model command exceeded its time limit.") from None
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-        if process.returncode != 0:
-            raise ValueError(f"Model command failed (exit code {process.returncode}).")
-    return output.decode("utf-8", errors="replace").strip()
-
-
-def _pipe_available(pipe) -> int:
-    if os.name == "nt":
-        import ctypes
-        import msvcrt
-
-        available = ctypes.c_ulong()
-        handle = ctypes.c_void_p(msvcrt.get_osfhandle(pipe.fileno()))
-        if not ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
-            if ctypes.windll.kernel32.GetLastError() in {109, 232}:
-                return 0
-            raise ctypes.WinError()
-        return available.value
-    import select
-
-    return 65536 if select.select([pipe], [], [], 0)[0] else 0
-
-
-def _run_ollama_model_command(command: str, model_name: str, endpoint_override: str | None = None) -> str:
-    ollama_bin = shutil.which("ollama")
-    if not ollama_bin:
-        raise ValueError("Ollama CLI was not found on PATH.")
-    timeout_seconds = max(30, env_int("COPYLOT_OLLAMA_MODEL_MANAGE_TIMEOUT", _DEFAULT_MODEL_MANAGE_TIMEOUT_SECONDS))
-    env = os.environ.copy()
-    env["OLLAMA_HOST"] = _resolve_ollama_base_url(endpoint_override)
-    return _run_bounded_command(
-        [ollama_bin, command, model_name],
-        timeout=timeout_seconds,
-        env=env,
-    )
-
-
-def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: str) -> str:
+def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: str | None) -> str:
     base_url = _resolve_ollama_base_url(endpoint_override)
     if action == "install":
         endpoint = f"{base_url}/api/pull"
@@ -661,7 +590,7 @@ def _ollama_http_manage_model(action: str, model_name: str, endpoint_override: s
 
 
 def _validated_model_name(model_name: str) -> str:
-    """A model name Ollama would accept, and nothing the CLI could read as an option."""
+    """Accept a model identifier, not options, paths or arbitrary text."""
     model = str(model_name or "").strip()
     if not model:
         raise ValueError("Model name cannot be empty.")
@@ -675,11 +604,7 @@ def _validated_model_name(model_name: str) -> str:
 
 def ollama_install_model(model_name: str, endpoint_override: str | None = None) -> OllamaModelManageResponse:
     model = _validated_model_name(model_name)
-    output = (
-        _ollama_http_manage_model("install", model, endpoint_override)
-        if endpoint_override
-        else _run_ollama_model_command("pull", model, endpoint_override)
-    )
+    output = _ollama_http_manage_model("install", model, endpoint_override)
     _invalidate_models_cache(endpoint_override)
     refreshed = ollama_models(endpoint_override=endpoint_override)
     detail = f"Installed model '{model}'."
@@ -698,11 +623,7 @@ def ollama_install_model(model_name: str, endpoint_override: str | None = None) 
 
 def ollama_remove_model(model_name: str, endpoint_override: str | None = None) -> OllamaModelManageResponse:
     model = _validated_model_name(model_name)
-    output = (
-        _ollama_http_manage_model("remove", model, endpoint_override)
-        if endpoint_override
-        else _run_ollama_model_command("rm", model, endpoint_override)
-    )
+    output = _ollama_http_manage_model("remove", model, endpoint_override)
     _invalidate_models_cache(endpoint_override)
     refreshed = ollama_models(endpoint_override=endpoint_override)
     detail = f"Removed model '{model}'."

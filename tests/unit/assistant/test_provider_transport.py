@@ -43,7 +43,7 @@ def test_actual_http_deadline_interrupts_slow_provider(stage):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     start = time.monotonic()
-    token = chat_tools.provider_deadline.set(start + 0.2)
+    token = provider_http.provider_deadline.set(start + 0.2)
     response = None
     try:
         def read_response():
@@ -63,7 +63,7 @@ def test_actual_http_deadline_interrupts_slow_provider(stage):
         if response is not None:
             assert response.closed
     finally:
-        chat_tools.provider_deadline.reset(token)
+        provider_http.provider_deadline.reset(token)
         server.shutdown()
         server.server_close()
         thread.join()
@@ -95,13 +95,13 @@ def test_ollama_assistant_uses_fixed_limits_and_structured_nonstreaming_transpor
 
 
 def test_expired_operation_never_opens_next_request(monkeypatch):
-    token = chat_tools.provider_deadline.set(1)
+    token = provider_http.provider_deadline.set(1)
     monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", lambda *a, **k: pytest.fail("Expired provider request opened"))
     try:
         with pytest.raises(ValueError, match="time limit"):
             provider_http.open_provider_request(urllib.request.Request("http://localhost/"), timeout=5)
     finally:
-        chat_tools.provider_deadline.reset(token)
+        provider_http.provider_deadline.reset(token)
 
 
 def test_deadline_https_handler_keeps_certificate_verification(monkeypatch):

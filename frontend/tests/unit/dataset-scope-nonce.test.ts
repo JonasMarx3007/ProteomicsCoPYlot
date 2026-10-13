@@ -17,6 +17,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../src/lib/api";
+import { TAB_API_BASE } from "../../src/lib/tabSession";
 
 // Calls that replace, rebuild or re-scope a matrix.
 const MUST_BUMP = [
@@ -47,6 +48,25 @@ async function call(name: string) {
 const nonce = () => new URL(api.buildPlotUrl("/api/plots/qc/protein/cv.png", { dpi: 300 }), "http://localhost").searchParams.get("_dsn");
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("plot URL boundaries", () => {
+  it.each(["javascript:alert(1)", "//elsewhere.invalid/api/x", "/api/../private", "/api/plots/./x"])(
+    "rejects paths outside the API: %s", (path) => {
+      expect(() => api.buildPlotUrl(path)).toThrow("application API");
+    },
+  );
+
+  it("encodes path segments and query values without changing ordinary routes", () => {
+    const normal = new URL(api.buildPlotUrl("/api/plots/qc/protein/cv.png"), "https://example.org");
+    expect(normal.pathname).toBe(`${TAB_API_BASE}/api/plots/qc/protein/cv.png`);
+    const url = new URL(api.buildPlotUrl('/api/plots/a?b#c"<d>%.png', { title: '<img src=x onerror="alert(1)">' }), "https://example.org");
+    expect(url.origin).toBe(normal.origin);
+    expect(url.hash).toBe("");
+    expect(decodeURIComponent(url.pathname)).toBe(`${TAB_API_BASE}/api/plots/a?b#c"<d>%.png`);
+    expect(url.searchParams.get("title")).toBe('<img src=x onerror="alert(1)">');
+    expect(url.searchParams.has("b")).toBe(false);
+  });
+});
 
 describe("the dataset-scope nonce", () => {
   it("is part of every plot URL", () => {

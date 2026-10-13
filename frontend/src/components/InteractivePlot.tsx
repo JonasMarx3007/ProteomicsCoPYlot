@@ -28,7 +28,7 @@ function LoadedInteractivePlot({ url, title, height, onRendered }: Props) {
         const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, "0")).join("");
         // The server emits this event after Plotly's render promise resolves.
         // Keep the frame sandboxed: readiness is the only message accepted.
-        const ready = `<script>window.addEventListener('copylot-plot-ready',function(){parent.postMessage({type:'copylot-plot-ready',nonce:${JSON.stringify(nonce)}},'*')},{once:true});</script>`;
+        const ready = `<script data-copylot-ready="${nonce}">(()=>{const nonce=document.currentScript.dataset.copylotReady;window.addEventListener('copylot-plot-ready',function(){parent.postMessage({type:'copylot-plot-ready',nonce},'*')},{once:true});})();</script>`;
         setResult({ html: html.replace("</head>", ready + "</head>"), token, nonce, notice: plotNotices(response) });
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : PLOT_ERROR_FALLBACK);
