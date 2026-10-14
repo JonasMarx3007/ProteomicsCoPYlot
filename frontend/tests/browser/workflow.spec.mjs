@@ -807,6 +807,7 @@ test('scientific assistant navigates, selects an entity and applies cumulative p
   expect(settings).toMatchObject({ axisLineTop: false, xTickLabelRotation: 45, conditionColors: { A: '#ff0000' }, conditionLabels: { A: 'Control' } });
   const plot = page.locator('main img').first();
   await expect.poll(() => plot.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+  await expect.poll(() => plot.evaluate(img => img.getBoundingClientRect().top)).toBeLessThan(150);
   await page.getByPlaceholder('Ask about this analysis...').fill('Explain the current plot.');
   await tab(page, 'Send').click();
   await expect.poll(() => typeof releaseStaleReply).toBe('function');
@@ -1446,14 +1447,17 @@ test('canvas plot loading hides old results and failed renders can be retried', 
     });
     await tile.getByRole('textbox').fill('K1');
     await expect(tile.getByRole('status')).toHaveText('Loading plot…');
+    await expect(tile.locator('img')).toHaveAttribute('aria-busy', 'true');
     await expect(tile.locator('img')).toBeHidden();
     await expect(tile.getByRole('link', { name: 'Download Plot', exact: true })).toHaveCount(0);
     releaseImage();
     await expect(tile.getByRole('alert')).toContainText('Could not render');
+    await expect(tile.locator('img')).toHaveAttribute('aria-busy', 'false');
     await page.unroute(imageRoute);
     await tile.getByRole('button', { name: 'Retry plot', exact: true }).click();
     await expect(tile.locator('img')).toBeVisible();
     await expect(tile.locator('img')).toHaveAttribute('src', /_retry=1/);
+    await expect(tile.locator('img')).toHaveAttribute('aria-busy', 'false');
     await expect(tile.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', await tile.locator('img').getAttribute('src'));
   }
 });
@@ -1675,6 +1679,12 @@ for (const remove of [false, true]) {
     await annotated(page);
     await tab(page, 'Analysis').click();
     let calls = 0;
+    // Image loading adds the export controls. Force it to overlap the final
+    // planner turn so the assistant must wait for the complete canvas view.
+    await page.route('**/api/plots/single-protein/*/boxplot.png*', async route => {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      await route.continue();
+    });
     await page.route('**/api/chat/assistant', async route => {
       const { view } = route.request().postDataJSON();
       expect(view.controls.some(c => /Run ORA|Upload|Generate Annotation/.test(c.label))).toBe(false);
@@ -1688,6 +1698,7 @@ for (const remove of [false, true]) {
         : calls === 2 ? [{ type: 'set_control', target: find('Protein source'), value: 'manual' }]
         : calls === 3 ? [{ type: 'set_control', target: find('Protein or gene'), value: 'K1' }]
         : calls === 5 ? [{ type: 'activate_control', target: find('Remove') }] : [];
+      if (calls === 4) await expect(page.getByRole('img', { name: 'analysis boxplot', exact: true })).toBeVisible();
       calls++;
       await route.fulfill({ json: { model: 'scripted', revision: 1, actions, evidence: [], answer: actions.length ? '' : 'Canvas updated.' } });
     });

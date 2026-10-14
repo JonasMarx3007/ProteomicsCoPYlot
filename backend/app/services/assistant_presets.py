@@ -90,8 +90,12 @@ _NAMES = {"nature": r"\bnature\b(?!\s+of\b)", "cell": r"\bcell(?:\s+press)?\b(?=
 _OTHER_JOURNALS = re.compile(r"\b(science(?:\s+magazine)?|pnas|plos(?:\s+one)?|elife|acs|jacs|embo|lancet|nejm|jbc|"
                              r"mol(?:ecular)?\s+cell(?:ular)?\s+proteomics|mcp|journal of proteome research|jpr|"
                              r"bioinformatics|nucleic acids research|nar)\b", re.I)
-_PUBLICATION = re.compile(r"\b(?:publication|publish\w*|journal|paper|manuscript|submission)\b", re.I)
-_STYLE = re.compile(r"\b(?:style|styled|format\w*|look|guidelines?|ready|standards?|figure|fit|match|like)\b", re.I)
+# German: "Publikationsstil", "fürs Paper", "Manuskript", "Zeitschrift" (2026-10-13: a German request for a
+# publication-style volcano stopped after the contrast, the style never recognised).
+_PUBLICATION = re.compile(r"\b(?:publication|publish\w*|journal|paper|manuscript|submission|publikation\w*|ver(?:ö|oe)ffentlich\w*|"
+                          r"manuskript|zeitschrift)", re.I)
+_STYLE = re.compile(r"\b(?:style|styled|format\w*|look|guidelines?|ready|standards?|figure|fit|match|like|"
+                    r"abbildung|grafik|layout|reif|tauglich)|\w*stil\b", re.I)
 _IMPROVE = re.compile(r"\b(?:look\s+(?:better|nicer|best|good|great|professional)|nicer|prettier|more\s+professional|"
                       r"upgrade|improve|polish|beautif\w*|what\s+you\s+think\s+is\s+best|best\s+(?:style|look)|"
                       # "make it look cleaner for my lab meeting" (2026-10-08): the whole look is handed over

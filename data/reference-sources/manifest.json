@@ -13,8 +13,10 @@
       "mgi_uniprot": "f7f0435391628d773a8d0e508885a6cace0dc3f3148b2174d15b42381a6cf2a9",
       "uniprot_human_entries": "dc18fdea5f8c8c9e719fd51d7d1949048db06ba2bbdfa100c326d13dd13fe6ec",
       "uniprot_human_proteome_fasta": "64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce",
+      "uniprot_human_proteome_fasta_additional": "9cafde8f00cef658388e188392429eb2440cce95031347670492475cb656b11a",
       "uniprot_mouse_entries": "9274712581b75ae48bb3f5253564426f18b82d0fc11c465e2fcf4033977bb59a",
       "uniprot_mouse_proteome_fasta": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93",
+      "uniprot_mouse_proteome_fasta_additional": "edbde2466111e563b3a12ce4fed9c4b436782acc74ddf9adca4bc253badb8cbf",
       "uniprot_secondary_accessions": "05e97e21cbd912130341a048248f0ea867ecf75b4bf03f201235c9da2aa8ce19"
     }
   },
@@ -31,11 +33,23 @@
       "records": 21860,
       "sha256": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93"
     },
+    "UP000000589_10090_additional.fasta.gz": {
+      "built": "2026-10-14T09:34:15Z",
+      "bytes": 10453257,
+      "records": 41468,
+      "sha256": "edbde2466111e563b3a12ce4fed9c4b436782acc74ddf9adca4bc253badb8cbf"
+    },
     "UP000005640_9606.fasta.gz": {
       "built": "2026-10-12T15:34:39Z",
       "bytes": 7728297,
       "records": 20652,
       "sha256": "64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce"
+    },
+    "UP000005640_9606_additional.fasta.gz": {
+      "built": "2026-10-14T09:34:15Z",
+      "bytes": 41421368,
+      "records": 148999,
+      "sha256": "9cafde8f00cef658388e188392429eb2440cce95031347670492475cb656b11a"
     },
     "all_go_terms_genes.csv": {
       "built": "2026-10-12T15:34:39Z",
@@ -177,6 +191,20 @@
       "upstream_last_modified": "Tue, 15 Sep 2026 09:21:31 GMT",
       "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000005640/UP000005640_9606.fasta.gz"
     },
+    "uniprot_human_proteome_fasta_additional": {
+      "bytes": 41421368,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "UP000005640_9606_additional.fasta.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-14T09:34:15Z",
+      "sha256": "9cafde8f00cef658388e188392429eb2440cce95031347670492475cb656b11a",
+      "upstream_last_modified": "Tue, 15 Sep 2026 09:21:31 GMT",
+      "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000005640/UP000005640_9606_additional.fasta.gz"
+    },
     "uniprot_mouse_entries": {
       "bytes": 2935567,
       "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
@@ -204,6 +232,20 @@
       "sha256": "c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93",
       "upstream_last_modified": "Thu, 03 Sep 2026 18:00:00 GMT",
       "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000000589/UP000000589_10090.fasta.gz"
+    },
+    "uniprot_mouse_proteome_fasta_additional": {
+      "bytes": 10453257,
+      "citation": "The UniProt Consortium. UniProt: the Universal Protein Knowledgebase. Nucleic Acids Res.",
+      "file": "UP000000589_10090_additional.fasta.gz",
+      "licence": "CC BY 4.0",
+      "licence_url": "https://www.uniprot.org/help/license",
+      "provider": "uniprot",
+      "release": "2026_03",
+      "release_date": "02-September-2026",
+      "retrieved": "2026-10-14T09:34:15Z",
+      "sha256": "edbde2466111e563b3a12ce4fed9c4b436782acc74ddf9adca4bc253badb8cbf",
+      "upstream_last_modified": "Thu, 03 Sep 2026 18:00:00 GMT",
+      "url": "https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/Eukaryota/UP000000589/UP000000589_10090_additional.fasta.gz"
     },
     "uniprot_secondary_accessions": {
       "bytes": 7254764,

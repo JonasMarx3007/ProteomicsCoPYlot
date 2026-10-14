@@ -1,5 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
-import { assistantChanges, subscribeAssistantChanges, undoLastAssistantChange } from "../lib/assistantControls";
+import {
+  assistantChanges, subscribeAssistantChanges, undoLastAssistantRequest, undoableAssistantChanges,
+} from "../lib/assistantControls";
 
 function shown(value: unknown): string {
   if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
@@ -8,14 +10,18 @@ function shown(value: unknown): string {
 }
 
 /**
- * The controls the assistant changed in this session, newest last, with an
- * undo for the most recent one. Shown in the assistant sidebar only: what was
- * finally used is what the report describes, however it was set.
+ * The controls the assistant changed in the most recent request, newest last,
+ * with one undo that takes all of them back. Each sent message starts a new
+ * scope: earlier requests are counted, not undoable (2026-10-13). Shown in the
+ * assistant sidebar only: what was finally used is what the report describes,
+ * however it was set.
  */
 export default function AssistantChangeLog() {
-  const changes = useSyncExternalStore(subscribeAssistantChanges, assistantChanges, assistantChanges);
+  const all = useSyncExternalStore(subscribeAssistantChanges, assistantChanges, assistantChanges);
+  const changes = useSyncExternalStore(subscribeAssistantChanges, undoableAssistantChanges, undoableAssistantChanges);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
-  if (!changes.length && !message) return null;
+  const earlier = all.length - changes.length;
+  if (!all.length && !message) return null;
   return (
     <details className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
       <summary className="cursor-pointer font-medium">
@@ -31,6 +37,9 @@ export default function AssistantChangeLog() {
           ))}
         </ol>
       ) : null}
+      {earlier > 0 ? (
+        <div className="mt-2 text-slate-500">{earlier} earlier {earlier === 1 ? "change" : "changes"} from previous requests (not undoable).</div>
+      ) : null}
       {message ? (
         <div className={`mt-2 ${message.error ? "text-red-700" : "text-slate-600"}`} role="status">{message.text}</div>
       ) : null}
@@ -40,13 +49,13 @@ export default function AssistantChangeLog() {
           className="mt-2 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-100"
           onClick={() => {
             try {
-              setMessage({ text: undoLastAssistantChange(), error: false });
+              setMessage({ text: undoLastAssistantRequest(), error: false });
             } catch (error) {
               setMessage({ text: error instanceof Error ? error.message : "The change could not be undone.", error: true });
             }
           }}
         >
-          Undo last change
+          {changes.length === 1 ? "Undo last change" : `Undo last request (${changes.length} changes)`}
         </button>
       ) : null}
     </details>

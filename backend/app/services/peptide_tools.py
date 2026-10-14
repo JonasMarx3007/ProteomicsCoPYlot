@@ -806,9 +806,19 @@ def peptide_missed_cleavage_plot(
             .reindex(sample_order)
             .fillna(0.0)
         )
-        base_y = float(bottom.max()) * 0.03 if len(bottom) else 0.0
-        for index, value in enumerate(with_missed.tolist()):
-            ax.text(index, base_y, f"{value:.1f}%", ha="center", va="bottom", fontsize=advanced_label_size(advanced, text_size))
+        # Written at the break between the 0-class bar and the first missed-cleavage
+        # class, i.e. just above the top of the 0 bar, inside the class it counts
+        # (2026-10-14; it used to sit at the foot of the 0 bar).
+        zero_share = (
+            summary[summary["Count"] == 0]
+            .set_index("Sample")
+            .reindex(sample_order)["Percentage"]
+            .fillna(0.0)
+        )
+        offset = float(bottom.max()) * 0.01 if len(bottom) else 0.0
+        for index, (value, top_of_zero) in enumerate(zip(with_missed.tolist(), zero_share.tolist())):
+            ax.text(index, float(top_of_zero) + offset, f"{value:.1f}%", ha="center", va="bottom",
+                    fontsize=advanced_label_size(advanced, text_size))
 
     ax.legend(title="Number", bbox_to_anchor=(1.05, 1), loc="upper left")
     apply_advanced_axes(ax, advanced)
@@ -850,18 +860,33 @@ def _load_fasta_dataframe_cached(path_str: str, modified_ns: int) -> pd.DataFram
     return frame
 
 
-def _fasta_path(species: PeptideSpecies) -> Path:
-    filename = "UP000005640_9606.fasta.gz" if species == "human" else "UP000000589_10090.fasta.gz"
-    return resolve_reference_db(filename, f"FASTA database for {species}")
+def _fasta_path(species: PeptideSpecies, additional: bool = False) -> Path:
+    stem = "UP000005640_9606" if species == "human" else "UP000000589_10090"
+    filename = f"{stem}_additional.fasta.gz" if additional else f"{stem}.fasta.gz"
+    return resolve_reference_db(filename, f"{'additional ' if additional else ''}FASTA database for {species}")
 
 
 def _load_fasta_dataframe(species: PeptideSpecies) -> pd.DataFrame:
+    """The reference proteome's canonical sequences (logged in data/reference-sources/manifest.json)."""
     path = _fasta_path(species)
     stat = path.stat()
     return _load_fasta_dataframe_cached(str(path), stat.st_mtime_ns).copy()
 
 
-def _fasta_sequence(db: pd.DataFrame, protein: str) -> str | None:
+def _load_additional_fasta_dataframe(species: PeptideSpecies) -> pd.DataFrame | None:
+    """The same release's "additional" file: isoforms and the non-canonical TrEMBL entries of
+    the proteome, which a search database names too (A0A140T8R7, a mouse Rcor1 isoform,
+    2026-10-14). Logged like the canonical file; read only when the canonical lookup misses.
+    None when the file is not bundled."""
+    try:
+        path = _fasta_path(species, additional=True)
+    except ValueError:
+        return None
+    stat = path.stat()
+    return _load_fasta_dataframe_cached(str(path), stat.st_mtime_ns)
+
+
+def _fasta_sequence(db: pd.DataFrame, protein: str, species: PeptideSpecies | None = None) -> str | None:
     identifier = str(protein).strip()
     if not identifier:
         return None
@@ -869,7 +894,27 @@ def _fasta_sequence(db: pd.DataFrame, protein: str) -> str | None:
         sequence_row = db.loc[db[column].astype(str) == identifier, "V1"]
         if not sequence_row.empty:
             return str(sequence_row.iloc[0])
+    if species is not None:
+        additional = _load_additional_fasta_dataframe(species)
+        if additional is not None:
+            return _fasta_sequence(additional, identifier)
     return None
+
+
+def _missing_variant_message(species: PeptideSpecies, protein: str) -> str:
+    other: PeptideSpecies = "mouse" if species == "human" else "human"
+    if _fasta_has(other, protein):
+        return (f"The selected protein variant '{protein}' is not in the {species} database, but it is in the {other} one. "
+                f"Select {other} as the species.")
+    return (f"The selected protein variant '{protein}' does not exist in the loaded {species} database "
+            "(UniProt reference proteome, canonical and additional entries).")
+
+
+def _fasta_has(species: PeptideSpecies, identifier: str) -> bool:
+    try:
+        return _fasta_sequence(_load_fasta_dataframe(species), identifier, species) is not None
+    except (ValueError, OSError):
+        return False
 
 
 def _peptide_starts(sequence: str, peptide: str):
@@ -901,10 +946,12 @@ def _coverage_visualization(
     db: pd.DataFrame,
     protein: str,
     chunk_size: int = 30,
+    sequence: str | None = None,
 ) -> str:
     found_sequences = _protein_peptides(frame, protein)
 
-    sequence = _fasta_sequence(db, protein)
+    if sequence is None:
+        sequence = _fasta_sequence(db, protein)
     if sequence is None:
         raise ValueError(f"No sequence found in the selected database for protein: {protein}")
 
@@ -983,9 +1030,9 @@ def peptide_sequence_coverage(
         raise ValueError(f"No peptides were found for protein '{protein}'.")
 
     db = _load_fasta_dataframe(species)
-    sequence = _fasta_sequence(db, protein)
+    sequence = _fasta_sequence(db, protein, species)
     if sequence is None:
-        raise ValueError(f"The selected protein variant '{protein}' does not exist in the loaded database.")
+        raise ValueError(_missing_variant_message(species, protein))
 
     # Only peptides that occur in the selected sequence cover positions. A
     # peptide assigned to the protein group that does not occur (another
@@ -1005,7 +1052,7 @@ def peptide_sequence_coverage(
                 coverage_mask[index] = 1
 
     coverage_percent = round((sum(coverage_mask) / len(sequence)) * 100.0, 2)
-    coverage_text = _coverage_visualization(frame, db, protein, chunk_size=chunk_size)
+    coverage_text = _coverage_visualization(frame, db, protein, chunk_size=chunk_size, sequence=sequence)
 
     unmapped = sorted(unmapped)
     warnings: list[str] = []

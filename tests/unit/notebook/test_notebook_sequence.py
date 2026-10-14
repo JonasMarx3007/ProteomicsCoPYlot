@@ -38,7 +38,12 @@ def sequence_input(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('species', ['human', 'mouse'])
 @pytest.mark.parametrize('chunk_size', [10, 30])
-def test_exact_sequence_map_and_independent_replay(sequence_input, tmp_path, species, chunk_size):
+@pytest.mark.parametrize('additional', [False, True])
+def test_exact_sequence_map_and_independent_replay(sequence_input, tmp_path, monkeypatch, species, chunk_size, additional):
+    if additional:
+        database = sequence_input[1]
+        monkeypatch.setattr(peptide_tools, '_load_fasta_dataframe', lambda species: database.iloc[:0].copy())
+        monkeypatch.setattr(peptide_tools, '_load_additional_fasta_dataframe', lambda species: database.copy())
     settings = dict(species=species, protein='TEST_HUMAN', chunk_size=chunk_size)
     expected = peptide_tools.peptide_sequence_coverage(**settings)
     actual = capture_sequence_coverage(**settings)

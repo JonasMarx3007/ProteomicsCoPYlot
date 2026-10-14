@@ -10,6 +10,18 @@ import pytest
 from app.services import chat_tools, provider_http
 
 
+@pytest.mark.parametrize("text, expected", [
+    ('```json\n{"task":"ui","styles":[]}\n```', '{"task":"ui","styles":[]}'),
+    ('```\n{"task":"clarify"}\n```', '{"task":"clarify"}'),
+    ('{"task":"ui"}', '{"task":"ui"}'),
+    ('Here is a plan: ```json\n{}\n```', 'Here is a plan: ```json\n{}\n```'),
+    ('```json\n{broken}\n```', '```json\n{broken}\n```'),
+    ('```json\n{}\n```\n```json\n{}\n```', '```json\n{}\n```\n```json\n{}\n```'),
+])
+def test_json_presentation_fence_preserves_strict_plan_validation(text, expected):
+    assert chat_tools._unwrap_json_reply(text) == expected
+
+
 @pytest.mark.parametrize("stage", ["headers", "stall", "trickle", "success"])
 def test_actual_http_deadline_interrupts_slow_provider(stage):
     import threading
@@ -239,3 +251,80 @@ def test_connection_error_reason_is_not_exposed(monkeypatch):
     with pytest.raises(ValueError, match="Could not reach") as error:
         provider_http.open_provider_request(urllib.request.Request("https://provider.invalid"), timeout=1)
     assert "synthetic-secret" not in str(error.value)
+
+
+# --- Anthropic native tools (2026-10-13) ----------------------------------------
+
+def test_anthropic_gets_the_assistants_tools_as_tool_use_blocks(monkeypatch):
+    from app.schemas.chat import ChatRequest
+
+    reply = {"stop_reason": "tool_use", "content": [
+        {"type": "text", "text": "Reading first."},
+        {"type": "tool_use", "id": "toolu_1", "name": "read_results", "input": {"module": "", "kind": "results"}}]}
+    requests = []
+
+    def open_request(request, **kwargs):
+        requests.append(json.loads(request.data))
+        assert request.headers["X-api-key"] == "synthetic-secret"
+        return io.BytesIO(json.dumps(reply).encode())
+
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", open_request)
+    monkeypatch.setattr(chat_tools, "require_cloud_ai_consent", lambda provider: None)
+    payload = ChatRequest(message="x", provider="anthropic", model="claude-sonnet-5", apiKey="synthetic-secret")
+    tools = [{"type": "function", "function": {"name": "read_results", "description": "Read.", "parameters": {
+        "type": "object", "properties": {"module": {"type": "string"}}, "required": []}}}]
+    messages = [{"role": "system", "content": "Rules."}, {"role": "user", "content": "What is this?"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "toolu_0", "type": "function", "function": {
+                    "name": "find_settings", "arguments": json.dumps({"word": "title"})}}]},
+                {"role": "tool", "tool_call_id": "toolu_0", "name": "find_settings", "content": "[]"},
+                {"role": "user", "content": "Finish now."}]
+    model, message = chat_tools.assistant_tool_turn(payload, messages, tools)
+    body = requests[0]
+    assert body["system"][0]["text"] == "Rules." and "tool_choice" not in body  # "any" is refused by claude-sonnet-5-5
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"} and body["tools"][-1]["cache_control"]
+    assert body["tools"][0]["input_schema"]["properties"]["module"] == {"type": "string"}
+    roles = [turn["role"] for turn in body["messages"]]
+    assert roles == ["user", "assistant", "user"]  # the tool result and the nudge share one user turn
+    assert body["messages"][1]["content"][0] == {"type": "tool_use", "id": "toolu_0", "name": "find_settings", "input": {"word": "title"}}
+    assert body["messages"][2]["content"][0]["type"] == "tool_result" and body["messages"][2]["content"][1]["text"] == "Finish now."
+    assert model == "claude-sonnet-5" and message["content"] == "Reading first."
+    assert message["tool_calls"] == [{"id": "toolu_1", "type": "function", "function": {
+        "name": "read_results", "arguments": json.dumps({"module": "", "kind": "results"})}}]
+    assert chat_tools.native_tools_supported(payload)
+
+
+def test_anthropic_reply_cut_by_the_budget_is_refused(monkeypatch):
+    from app.schemas.chat import ChatRequest
+
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", lambda request, **kwargs: io.BytesIO(
+        json.dumps({"stop_reason": "max_tokens", "content": []}).encode()))
+    monkeypatch.setattr(chat_tools, "require_cloud_ai_consent", lambda provider: None)
+    payload = ChatRequest(message="x", provider="anthropic", model="claude-sonnet-5", apiKey="synthetic-secret")
+    with pytest.raises(ValueError, match="whole reply budget"):
+        chat_tools.assistant_tool_turn(payload, [{"role": "user", "content": "hi"}], [])
+
+
+def test_the_cloud_guard_reads_tool_message_contents_not_their_encoding(monkeypatch):
+    """A quoted key inside the payload JSON ("\\"question\\"") was read as a UNC path once the
+    message list was JSON-encoded a second time (2026-10-13, every Claude request refused)."""
+    from app.schemas.chat import ChatRequest
+
+    monkeypatch.setattr(provider_http.PROVIDER_OPENER, "open", lambda request, **kwargs: io.BytesIO(
+        json.dumps({"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}).encode()))
+    monkeypatch.setattr(chat_tools, "require_cloud_ai_consent", lambda provider: None)
+    payload = ChatRequest(message="x", provider="anthropic", model="claude-sonnet-5", apiKey="synthetic-secret")
+    inner = json.dumps({"question": "what is this \u2013 chart?", "conversation": []})
+    _, message = chat_tools.assistant_tool_turn(payload, [{"role": "user", "content": inner}], [])
+    assert message["content"] == "ok"
+    with pytest.raises(ValueError, match="protected path"):
+        chat_tools.assistant_tool_turn(payload, [{"role": "user", "content": "see C:\\data\\secret.tsv"}], [])
+
+
+def test_hosted_frontier_models_carry_their_context_window():
+    """A two-contrast read tripped the 24,000-character floor on Haiku (GRK, 2026-10-14)."""
+    from app.services.chat_tools import _cloud_context_window
+
+    assert _cloud_context_window("anthropic", "claude-haiku-5-5") == 200_000
+    assert _cloud_context_window("openai", "gpt-4.1-mini") == 128_000
+    assert _cloud_context_window("openai_compatible", "glm5") is None
+    assert _cloud_context_window("anthropic", "mystery") is None

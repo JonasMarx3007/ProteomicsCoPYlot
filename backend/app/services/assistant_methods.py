@@ -29,7 +29,7 @@ METHODS = {
     "singleProtein.heatmap": "Displays phosphorylation sites associated with the selected protein. Site-level abundance and protein-level abundance are distinct measurements.",
     "comparison.pearson": "Compares paired numerical observations using Pearson correlation. Correlation measures linear association, not agreement or causality; undefined coefficients require explicit reporting.",
     "comparison.venn": "Displays overlaps between selected entity sets. Set membership and identifier rules determine the counts; overlap alone is not an enrichment significance test.",
-    "phospho.phosphositePlot": "Displays selected phosphorylation sites. Localization and abundance are different quantities; site regulation does not alone establish kinase activity.",
+    "phospho.phosphositePlot": "Counts the phosphoproteins, phosphopeptides and phosphosites in the dataset after the localization cutoff (a bar per count; no single site is selected here, one site's values are on the Single Protein pages). Localization and abundance are different quantities; site regulation does not alone establish kinase activity.",
     "phospho.coverage": "Counts sites using the application's localization categories. Unknown localization is unclassified rather than assigned an invented quality class.",
     "phospho.distribution": "Summarizes the selected phosphosite distribution. Interpret the actual aggregation and localization selections from results rather than assuming defaults.",
     "phospho.sty": "Summarizes serine, threonine and tyrosine site composition. Composition reflects measured sites and experimental coverage, not unbiased proteome-wide phosphorylation prevalence.",

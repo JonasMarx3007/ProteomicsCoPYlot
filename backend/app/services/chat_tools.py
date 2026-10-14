@@ -469,6 +469,15 @@ def _model_name_parameter_count(model: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def _cloud_context_window(provider: str, model_name: str) -> int | None:
+    name = model_name.lower()
+    if provider == "anthropic" and "claude" in name:
+        return 200_000
+    if provider == "openai" and re.search(r"gpt-4o|gpt-4\.1|gpt-5|^o[1-9]", name):
+        return 128_000
+    return None
+
+
 def model_capability(
     provider: ChatProvider,
     model: str,
@@ -540,6 +549,10 @@ def model_capability(
         if parameter_count_b is None:
             parameter_count_b = _model_name_parameter_count(model_name)
             source = "model_name" if parameter_count_b is not None else "fallback"
+    elif provider in {"openai", "anthropic"}:
+        # Hosted frontier models publish their windows; without one the prompt budget stayed at the
+        # 24,000-character floor and a two-contrast read tripped it (GRK, 2026-10-14).
+        context_window = _cloud_context_window(provider, model_name)
     quantization = str(metadata.get("details", {}).get("quantization_level", "")) if provider == "ollama" and isinstance(metadata.get("details"), dict) else ""
     context_tier, assessment, reason = classify_model(provider, model_name, parameter_count_b, context_window, supports_tools, quantization)
     level = {"compact": 1, "standard": 2, "extended": 3}[context_tier]
@@ -1227,7 +1240,21 @@ def assistant_completion(payload: ChatRequest, instruction: str, data: str, *, s
                           temperature=0, max_tokens=max_tokens, image=image)
     if not isinstance(text, str) or not text.strip():
         raise ValueError("The assistant returned no usable answer.")
-    return model, text.strip()
+    return model, _unwrap_json_reply(text) if schema else text.strip()
+
+
+def _unwrap_json_reply(text: str) -> str:
+    """Remove a single presentation fence, never repair or extract a partial plan."""
+    text = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced[1].strip()
+        try:
+            json.loads(candidate)
+        except ValueError:
+            return text
+        return candidate
+    return text
 
 
 class NativeToolsUnavailable(ValueError):
@@ -1248,9 +1275,105 @@ def native_tools_supported(payload: ChatRequest) -> bool:
         if provider == "ollama":
             model = _resolve_model(payload.model, payload.ollamaUrl)
             return bool(model_capability("ollama", model, payload.ollamaUrl).supportsTools)
-        return provider == "openai"
+        return provider in {"openai", "anthropic"}
     except ValueError:
         return False
+
+
+def _anthropic_tool_messages(messages: list[dict], image: str | None) -> tuple[str, list[dict]]:
+    """The assistant's tool conversation (OpenAI shape) as Messages API blocks.
+
+    Tool calls become tool_use blocks, tool replies tool_result blocks in the
+    user message that follows, and neighbouring same-role messages are merged,
+    which the Messages API requires."""
+    system_text = "\n\n".join(str(item.get("content") or "").strip() for item in messages
+                              if item.get("role") == "system" and str(item.get("content") or "").strip())
+    turns: list[dict] = []
+
+    def add(role: str, blocks: list[dict]) -> None:
+        if turns and turns[-1]["role"] == role:
+            turns[-1]["content"].extend(blocks)
+        else:
+            turns.append({"role": role, "content": blocks})
+
+    for item in messages:
+        role = str(item.get("role") or "")
+        text = str(item.get("content") or "").strip()
+        if role == "user":
+            add("user", [{"type": "text", "text": text}] if text else [])
+        elif role == "assistant":
+            blocks: list[dict] = [{"type": "text", "text": text}] if text else []
+            for call in item.get("tool_calls") or []:
+                function = call.get("function") or {}
+                try:
+                    arguments = json.loads(function.get("arguments") or "{}")
+                except ValueError:
+                    arguments = {}
+                blocks.append({"type": "tool_use", "id": str(call.get("id") or "call"), "name": str(function.get("name") or ""),
+                               "input": arguments if isinstance(arguments, dict) else {}})
+            add("assistant", blocks)
+        elif role == "tool":
+            add("user", [{"type": "tool_result", "tool_use_id": str(item.get("tool_call_id") or "call"), "content": text}])
+    turns = [turn for turn in turns if turn["content"]]
+    if image and turns and turns[-1]["role"] == "user":
+        turns[-1]["content"].append({"type": "image", "source": {
+            "type": "base64", "media_type": image[5:image.index(";")], "data": image.split(",", 1)[1]}})
+    return system_text, turns
+
+
+def _anthropic_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[dict], *, max_tokens: int,
+                         image: str | None) -> tuple[str, dict]:
+    """One Messages API turn with the assistant's tools; the reply in the OpenAI message shape."""
+    model = _resolve_chat_model(payload, "anthropic")
+    check_ai_operator_policy("anthropic", model)
+    system_text, turns = _anthropic_tool_messages(messages, image)
+    body: dict[str, object] = {
+        "model": model, "messages": turns, "max_tokens": max_tokens,
+        "tools": [{"name": tool["function"]["name"], "description": tool["function"].get("description", ""),
+                   "input_schema": tool["function"]["parameters"]} for tool in tools],
+    }
+    # No tool_choice: claude-sonnet-5-5 refuses "any" (HTTP 400, 2026-10-13), and a reply
+    # written as text instead of a call is handled by the assistant's tool loop.
+    if system_text:
+        # The instruction and the tools repeat unchanged across the calls of one question (and
+        # across questions on one page), so they are marked for the provider's prompt cache.
+        body["system"] = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+    if body["tools"]:
+        body["tools"][-1]["cache_control"] = {"type": "ephemeral"}  # type: ignore[index]
+    request = urllib.request.Request(_ANTHROPIC_MESSAGES_ENDPOINT, data=json.dumps(body).encode("utf-8"), headers={
+        "Content-Type": "application/json", "x-api-key": _resolve_api_key(payload, "anthropic"),
+        "anthropic-version": "2023-06-01"}, method="POST")
+    parsed = read_json_response(open_provider_request(request, timeout=_provider_call_timeout(), provider="Anthropic"),
+                                 "Anthropic returned invalid JSON.")
+    if parsed.get("stop_reason") == "max_tokens":
+        raise ValueError(f"The model used its whole reply budget ({max_tokens} tokens) before it finished. "
+                         "Nothing was changed. Ask for a smaller step.")
+    texts: list[str] = []
+    calls: list[dict] = []
+    for block in parsed.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and str(block.get("text") or "").strip():
+            texts.append(str(block["text"]).strip())
+        elif block.get("type") == "tool_use":
+            calls.append({"id": str(block.get("id") or f"call_{len(calls)}"), "type": "function",
+                          "function": {"name": str(block.get("name") or ""),
+                                       "arguments": json.dumps(block.get("input") if isinstance(block.get("input"), dict) else {})}})
+    message: dict = {"role": "assistant", "content": "\n".join(texts)}
+    if calls:
+        message["tool_calls"] = calls
+    return model, message
+
+
+def _tool_messages_text(messages: list[dict]) -> str:
+    """Every string a tool conversation carries: contents, tool arguments and tool results."""
+    parts: list[str] = []
+    for item in messages:
+        parts.append(str(item.get("content") or ""))
+        for call in item.get("tool_calls") or []:
+            function = call.get("function") or {}
+            parts.append(str(function.get("arguments") or ""))
+    return "\n".join(parts)
 
 
 def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[dict], *,
@@ -1266,7 +1389,9 @@ def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[
     if len(text) > assistant_input_limit(payload) * 2:
         raise ValueError("This assistant request is too large. Ask a shorter, more focused question.")
     if provider not in LOCAL_PROVIDERS:
-        _validate_cloud_analysis_context(text)
+        # The contents, not their JSON encoding: encoded once more, an escaped quote
+        # inside the payload looks like a UNC path to the guard (2026-10-13).
+        _validate_cloud_analysis_context(_tool_messages_text(messages))
     max_tokens = assistant_output_tokens(payload)
     progress = getattr(payload, "progressId", None)
     assistant_progress.update(progress, "waiting")
@@ -1334,4 +1459,6 @@ def assistant_tool_turn(payload: ChatRequest, messages: list[dict], tools: list[
                              "Nothing was changed. Ask for a smaller step.")
         message = first.get("message")
         return model, message if isinstance(message, dict) else {}
+    if provider == "anthropic":
+        return _anthropic_tool_turn(payload, messages, tools, max_tokens=max_tokens, image=image)
     raise NativeToolsUnavailable(f"{provider} is used through the JSON plan.")

@@ -5,6 +5,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 # A viewer-config fixture has to sit beside the real one, because the shipped
 # config's data paths are relative to the repository root. The fixture removes
 # its own copy, but a crashed run would otherwise leave a committable stray.

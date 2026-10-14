@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Sidebar from "./Sidebar";
+import { resizeHandleClass, useResizablePanel } from "../lib/useResizablePanel";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import Modal from "./Modal";
 import type { ContextMode, SidebarSection } from "../lib/types";
 
@@ -29,6 +31,8 @@ import {
 } from "../lib/api";
 import { runAssistant, ShownAssistantError } from "../lib/runAssistant";
 import { capturePlotImage } from "../lib/plotImage";
+import { focusNavigatedPlot } from "../lib/assistantNavigation";
+import { beginAssistantRequest } from "../lib/assistantControls";
 import { savedStyleNames } from "../lib/plotStyles";
 import AssistantChangeLog from "./AssistantChangeLog";
 import { AssistantConversation } from "../lib/assistantConversation";
@@ -114,6 +118,11 @@ export default function AppShell({
   onAssistantNavigate,
 }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
+  const navigationPanel = useResizablePanel("layout.navigationWidth.v1", 288, "navigation panel");
+  const chatPanel = useResizablePanel("layout.chatWidth.v1", 320, "chatbot panel");
+  // Below these widths the panels overlay the page instead of pushing it (the former md:/lg: rules).
+  const pushForNavigation = useMediaQuery("(min-width: 768px)");
+  const pushForChat = useMediaQuery("(min-width: 1024px)");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -161,7 +170,9 @@ export default function AppShell({
   const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
   const [gpuStatusMessage, setGpuStatusMessage] = useState<string | null>(null);
   const [gpuRemoteEndpoint, setGpuRemoteEndpoint] = useState(false);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const stopPlotFocus = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopPlotFocus.current?.(), []);
   const chatAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => chatAbortRef.current?.abort(), []);
   const chatOllamaEndpointAppliedRef = useRef(DEFAULT_OLLAMA_ENDPOINT);
@@ -236,7 +247,8 @@ export default function AppShell({
 
   useEffect(() => {
     if (!chatOpen) return;
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const pane = chatScrollRef.current;
+    if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [chatMessages, chatLoading, chatOpen]);
 
   useEffect(() => {
@@ -530,6 +542,8 @@ export default function AppShell({
         next[history.length] = { role: "assistant", content };
         return next;
       });
+      let navigated = false;
+      beginAssistantRequest();  // what the assistant changes from here is one undo unit
       const response = await runAssistant({
         message, messages: historyForModelBase, provider: chatProvider, model: selectedModel,
         gpuEnabled: usingOllama && gpuEligible && gpuEnabled,
@@ -541,6 +555,7 @@ export default function AppShell({
       }, () => viewRef.current, destination => {
         if (!onAssistantNavigate) throw new Error("Navigation is unavailable here.");
         onAssistantNavigate(destination);
+        navigated = true;
       }, updateAnswer, controller.signal, conversationRef.current, {
         slow: Boolean(modelCapability?.reasoning) || (usingLocalProvider && effectiveLevel === "advanced"),
         plotImage: effectiveLevel === "advanced" && modelCapability?.supportsVision ? () => capturePlotImage() : undefined,
@@ -548,6 +563,10 @@ export default function AppShell({
       if (controller.signal.aborted) return;
       setEvidenceByMessage(current => ({ ...current, [history.length]: response.evidence }));
       updateAnswer(response.answer);
+      if (navigated) {
+        stopPlotFocus.current?.();
+        stopPlotFocus.current = focusNavigatedPlot();
+      }
     } catch (err) {
       const consentRequired = err instanceof CloudAiConsentRequiredError;
       if (consentRequired) {
@@ -626,6 +645,7 @@ export default function AppShell({
           });
         }}
         sections={sections}
+        panel={navigationPanel}
       />
 
       {!sidebarOpen ? (
@@ -646,14 +666,16 @@ export default function AppShell({
             aria-hidden={!chatOpen}
             aria-label="Chatbot"
             className={[
-              "fixed inset-y-0 right-0 z-40 flex h-screen w-80 shrink-0 flex-col border-l border-slate-200 bg-white transition-transform duration-300",
+              "fixed inset-y-0 right-0 z-40 flex h-screen shrink-0 flex-col border-l border-slate-200 bg-white transition-transform duration-300",
               chatOpen ? "translate-x-0" : "translate-x-full",
             ].join(" ")}
+            style={{ width: `${chatPanel.width}px` }}
           >
+            <div className={resizeHandleClass("left")} {...chatPanel.handleProps("left")} />
             <div className="flex items-start justify-between border-b border-slate-200 p-5">
-              <div className="pr-4">
+              <div className="min-w-0 pr-4">
                 <div className="text-xl font-bold tracking-tight text-slate-900">Chatbot</div>
-                <div className="mt-1 text-xs text-slate-500">
+                <div className="mt-1 truncate text-xs text-slate-500">
                   Model: <span className="font-medium text-slate-700">{selectedChatModel || "Not selected"}</span>
                 </div>
                 {selectedChatModel ? (
@@ -988,7 +1010,7 @@ export default function AppShell({
                 </svg>
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <div ref={chatScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div className="space-y-3">
                 {chatMessages.map((item, index) => (
                   <div
@@ -1016,7 +1038,6 @@ export default function AppShell({
                     )}
                   </div>
                 ))}
-                <div ref={chatBottomRef} />
               </div>
             </div>
             <div className="border-t border-slate-200 p-4">
@@ -1128,11 +1149,11 @@ export default function AppShell({
       ) : null}
 
       <div
-        className={[
-          "min-h-screen min-w-0 transition-all duration-300",
-          sidebarOpen ? "md:ml-72" : "ml-0",
-          chatOpen ? "lg:pr-[20rem]" : "pr-0",
-        ].join(" ")}
+        className="min-h-screen min-w-0 transition-[padding,margin] duration-300"
+        style={{
+          marginLeft: sidebarOpen && pushForNavigation ? `${navigationPanel.width}px` : 0,
+          paddingRight: chatOpen && pushForChat ? `${chatPanel.width}px` : 0,
+        }}
       >
         {topBar ? <div className="shrink-0">{topBar}</div> : null}
 

@@ -16,8 +16,17 @@ def sequence_source():
     function = replace_once(function, 'def peptide_sequence_coverage(\n    *,', 'def calculate(data, database, *,')
     function = replace_once(function, '    frame = get_peptide_frame()', '    frame = data')
     function = replace_once(function, '    db = _load_fasta_dataframe(species)', '    db = database')
+    # The notebook carries the selected record itself; no bundled file is consulted on a miss.
+    function = replace_once(function, '    sequence = _fasta_sequence(db, protein, species)', '    sequence = _fasta_sequence(db, protein)')
+    function = replace_once(function, '        raise ValueError(_missing_variant_message(species, protein))',
+                            '        raise ValueError(f"The selected protein variant \'{protein}\' is not the record carried by this notebook.")')
     function = function.replace('species: PeptideSpecies', 'species: str')
     original = original.replace(function_definition(original, 'peptide_sequence_coverage'), function)
+    original = replace_once(original, '    if species is not None:\n        additional = _load_additional_fasta_dataframe(species)\n'
+                            '        if additional is not None:\n            return _fasta_sequence(additional, identifier)\n    return None\n',
+                            '    return None\n')
+    original = replace_once(original, 'def _fasta_sequence(db: pd.DataFrame, protein: str, species: PeptideSpecies | None = None) -> str | None:',
+                            'def _fasta_sequence(db: pd.DataFrame, protein: str, species: str | None = None) -> str | None:')
     return extract_notebook_source(original, ('calculate',))
 
 
@@ -53,10 +62,18 @@ def capture_sequence_coverage(*, species, protein, chunk_size=100):
     data = frame.loc[selected, columns].copy(deep=True)
     database = peptide_tools._load_fasta_dataframe(species)
     reference = database.iloc[:0]
-    for column in ('name', 'accession'):
-        matches = database.loc[database[column].astype(str) == str(protein).strip()]
-        if not matches.empty:
-            reference = matches.head(1)
+    for additional in (False, True):
+        if additional:
+            extra = peptide_tools._load_additional_fasta_dataframe(species)
+            if extra is None:
+                break
+            database = extra
+        for column in ('name', 'accession'):
+            matches = database.loc[database[column].astype(str) == str(protein).strip()]
+            if not matches.empty:
+                reference = matches.head(1)
+                break
+        if not reference.empty:
             break
     reference = reference[['full_header', 'name', 'accession', 'V1']].copy(deep=True)
     settings = dict(species=species, protein=protein, chunk_size=chunk_size)

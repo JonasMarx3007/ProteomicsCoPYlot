@@ -39,6 +39,20 @@ body {
   min-height: 100vh;
 }
 
+/* Text follows the box it is in: a long identifier or file name wraps at any point rather than
+   running out of a card or a narrowed panel (2026-10-14, resizable side panels). Pre-formatted
+   blocks keep their own rules. */
+main,
+aside {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+main pre,
+aside pre {
+  overflow-wrap: normal;
+}
+
 html.dark {
   color-scheme: dark;
   background: #020617;

@@ -120,7 +120,8 @@ _FAMILIES: list[tuple[str, dict]] = [
      r"zephyr|vicuna|wizardlm|orca|starling|tinyllama|stablelm|nous|dolphin|baichuan|chatglm", {"legacy": True}),
 ]
 _CLOUD_FRONTIER = re.compile(r"^(?:gpt-?(?:4o|4\.1|5(?:\.\d)?)(?!.*(?:mini|nano))|o[134](?!.*mini)|chatgpt|"
-                             r"claude.*(?:opus|sonnet)|claude-(?:opus|sonnet)|gemini.*pro|grok-?[3-9](?!.*mini))", re.I)
+                             r"claude.*(?:opus|sonnet|fable|mythos)|claude-(?:opus|sonnet)|claude-?haiku-?(?:4[.-]5|[5-9])|"
+                             r"gemini.*pro|grok-?[3-9](?!.*mini))", re.I)
 _CLOUD_SMALL = re.compile(r"nano|lite|8b", re.I)
 _REASONING_NAME = re.compile(r"(?:^|[-_.:/])(?:o[134]|gpt-?5|qwq|r1|thinking|think|reason\w*|magistral|gpt-oss)"
                              r"(?:$|[-_.:/\d])|gemini-?(?:2\.5|[3-9])|glm-?(?:4\.[5-9]|[5-9])", re.I)

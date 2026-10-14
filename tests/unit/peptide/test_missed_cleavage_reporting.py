@@ -68,6 +68,7 @@ def _rendered_bar_texts(**kwargs) -> list[str]:
 
     def capture(fig, plt, **_kwargs) -> bytes:
         captured["texts"] = [text.get_text() for text in fig.axes[0].texts]
+        captured["text_y"] = [float(text.get_position()[1]) for text in fig.axes[0].texts]
         captured["title"] = fig.axes[0].get_title()
         plt.close(fig)
         return b"png"
@@ -82,7 +83,16 @@ def _rendered_bar_texts(**kwargs) -> list[str]:
         pt.peptide_missed_cleavage_plot(**kwargs)
 
     assert captured["title"], "the figure lost its title"
+    _rendered_bar_texts.last_y = list(captured["text_y"])  # type: ignore[attr-defined]
     return list(captured["texts"])  # type: ignore[arg-type]
+
+
+def test_the_bar_text_sits_at_the_break_above_the_zero_class() -> None:
+    """One sequence in four has no missed cleavage, so the 0-class bar ends at 25 %; the label
+    is written just above that break, inside the first missed-cleavage class (2026-10-14)."""
+    _rendered_bar_texts()
+    ys = _rendered_bar_texts.last_y  # type: ignore[attr-defined]
+    assert ys and all(25.0 < y < 30.0 for y in ys), ys
 
 
 def test_the_bar_text_is_the_share_with_at_least_one_missed_cleavage() -> None:

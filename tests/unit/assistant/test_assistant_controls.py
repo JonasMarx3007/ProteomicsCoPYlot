@@ -188,6 +188,8 @@ def test_a_colour_put_into_a_name_says_where_it_belongs(assistant_rig):
 @pytest.mark.parametrize("message,allowed", [
     ("Open the volcano for Treated versus Vehicle and tell me what it means.", True),
     ("Please set the comparison to Vehicle vs Treated.", True),
+    ("Make the Vehicle vs Treated volcano publication ready, Nature style.", True),  # GRK, 2026-10-14
+    ("Mouse liver proteomics. Make the Vehicle vs Treated volcano publication ready.", True),
     ("Is Treated versus Vehicle significant?", False),
     ("Do not change the comparison to Treated versus Vehicle.", False),
     ("Use Missing versus Vehicle.", False),

@@ -31,6 +31,12 @@ What is built, and from what:
   symbol the identifier table knows for its accession, or left out.
 * `UP000005640_9606.fasta.gz`, `UP000000589_10090.fasta.gz` -- the reference
   proteome FASTA files for sequence coverage, as published (canonical entries).
+* `UP000005640_9606_additional.fasta.gz`, `UP000000589_10090_additional.fasta.gz`
+  -- the same release's "additional" files (isoforms and the non-canonical
+  TrEMBL entries of the proteome), consulted when a search database entry is
+  not among the canonical sequences (2026-10-14: A0A140T8R7, a mouse Rcor1
+  isoform). They are large (41 MB / 10 MB), so they are stored once, under
+  `data/db/` only, and logged in the manifest like every other source.
 """
 from __future__ import annotations
 
@@ -80,6 +86,10 @@ SOURCE_FILES = {
                                      "uniprot", "UP000005640_9606.fasta.gz", True),
     "uniprot_mouse_proteome_fasta": (f"{UNIPROT_FTP}/knowledgebase/reference_proteomes/Eukaryota/UP000000589/UP000000589_10090.fasta.gz",
                                      "uniprot", "UP000000589_10090.fasta.gz", True),
+    "uniprot_human_proteome_fasta_additional": (f"{UNIPROT_FTP}/knowledgebase/reference_proteomes/Eukaryota/UP000005640/UP000005640_9606_additional.fasta.gz",
+                                                "uniprot", "UP000005640_9606_additional.fasta.gz", True),
+    "uniprot_mouse_proteome_fasta_additional": (f"{UNIPROT_FTP}/knowledgebase/reference_proteomes/Eukaryota/UP000000589/UP000000589_10090_additional.fasta.gz",
+                                                "uniprot", "UP000000589_10090_additional.fasta.gz", True),
     "uniprot_human_entries": (f"https://rest.uniprot.org/uniprotkb/stream?query=(proteome:UP000005640)&format=tsv&fields={UNIPROT_FIELDS}&compressed=true",
                               "uniprot", "uniprot_human_UP000005640_entries.tsv.gz", True),
     "uniprot_mouse_entries": (f"https://rest.uniprot.org/uniprotkb/stream?query=(proteome:UP000000589)&format=tsv&fields={UNIPROT_FIELDS}&compressed=true",
@@ -105,7 +115,18 @@ SOURCE_FILES = {
 PROTEIN_OBJECT_TYPES = {"protein", "protein_coding_gene"}
 
 OUTPUTS = ("BioNamesDB.txt.gz", "all_go_terms_genes.csv", "all_go_terms_genes_mouse.csv",
-           "UP000005640_9606.fasta.gz", "UP000000589_10090.fasta.gz")
+           "UP000005640_9606.fasta.gz", "UP000000589_10090.fasta.gz",
+           "UP000005640_9606_additional.fasta.gz", "UP000000589_10090_additional.fasta.gz")
+
+# Sources used unchanged at runtime and too large to keep twice: stored under
+# data/db/ only (fetched there, verified there); `build` copies them to its
+# output folder only when that is somewhere else (a rebuild in isolation).
+DB_ONLY_SOURCES = {"uniprot_human_proteome_fasta_additional", "uniprot_mouse_proteome_fasta_additional"}
+DB_SOURCES = ROOT / "data" / "db"
+
+
+def source_path(name: str, stored: str) -> Path:
+    return (DB_SOURCES if name in DB_ONLY_SOURCES else SOURCES) / stored
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +212,7 @@ def fetch(names: list[str] | None = None) -> None:
             continue
         print(f"fetching {name} ...", flush=True)
         data, headers = _get(url)
-        target = SOURCES / stored
+        target = source_path(name, stored)
         if gzipped:
             target.write_bytes(data)
         else:
@@ -215,6 +236,15 @@ def fetch(names: list[str] | None = None) -> None:
             "bytes": target.stat().st_size, "sha256": sha256_of(target), **LICENCES[provider],
         }
         print(f"  {stored}: {target.stat().st_size:,} bytes, release {release}")
+        if name in DB_ONLY_SOURCES:
+            # Used unchanged, so it is an output too; the log line keeps the fetch in the history.
+            manifest.setdefault("outputs", {})[stored] = {"sha256": manifest["sources"][name]["sha256"], "bytes": target.stat().st_size,
+                                                          "records": _record_count(target), "built": retrieved}
+            manifest.setdefault("build", {}).setdefault("sources_sha256", {})[name] = manifest["sources"][name]["sha256"]
+            with BUILD_LOG.open("a", encoding="utf-8", newline="\n") as log:
+                log.write(f"\n== fetch {retrieved} (stored under data/db only)\n")
+                log.write(f"source  {stored:<45} release {release:<24} sha256 {manifest['sources'][name]['sha256']}\n")
+                log.write(f"output  {stored:<45} records {manifest['outputs'][stored]['records']:<9,} sha256 {manifest['sources'][name]['sha256']}\n")
         _write_manifest(manifest)  # after every file, so an interrupted run keeps what it got
 
 
@@ -481,7 +511,7 @@ def build_go(species: str, gene_symbols: dict[str, str] | None = None) -> "panda
 
 def build() -> None:
     manifest = _read_manifest()
-    missing = [n for n in SOURCE_FILES if n not in manifest["sources"] or not (SOURCES / manifest["sources"][n]["file"]).exists()]
+    missing = [n for n in SOURCE_FILES if n not in manifest["sources"] or not source_path(n, manifest["sources"][n]["file"]).exists()]
     if missing:
         raise SystemExit(f"sources missing, run `fetch` first: {missing}")
     verify(sources_only=True)
@@ -499,9 +529,10 @@ def build() -> None:
         (DB / name).write_text(go.to_csv(index=False, quoting=1, lineterminator="\n"), encoding="utf-8", newline="\n")
         print(f"GO {species}: {len(go):,} terms, {len(set(';'.join(go['genes']).split(';'))):,} genes")
 
-    for key in ("uniprot_human_proteome_fasta", "uniprot_mouse_proteome_fasta"):
-        source = SOURCES / manifest["sources"][key]["file"]
-        shutil.copyfile(source, DB / source.name)
+    for key in ("uniprot_human_proteome_fasta", "uniprot_mouse_proteome_fasta", *sorted(DB_ONLY_SOURCES)):
+        source = source_path(key, manifest["sources"][key]["file"])
+        if source.resolve() != (DB / source.name).resolve():
+            shutil.copyfile(source, DB / source.name)
 
     manifest["outputs"] = {}
     for name in OUTPUTS:
@@ -542,7 +573,7 @@ def verify(sources_only: bool = False) -> None:
         }:
             problems.append("outputs were not built from the currently recorded sources")
     for name, entry in manifest["sources"].items():
-        path = SOURCES / entry["file"]
+        path = source_path(name, entry["file"])
         if not path.exists():
             problems.append(f"missing source {path.name}")
         elif sha256_of(path) != entry["sha256"]:

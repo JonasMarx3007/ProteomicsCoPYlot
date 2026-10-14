@@ -226,7 +226,10 @@ def test_capability_classification_uses_observations_then_inference(monkeypatch)
     # Cloud lines.
     assert profiles.classify_model("openai", "gpt-5")[0] == "extended"
     assert profiles.classify_model("openai", "gpt-4o-mini")[0] == "standard"
-    assert profiles.classify_model("anthropic", "claude-haiku-4-5")[0] == "standard"
+    # Haiku 4.5 and later call tools reliably in a large window: Advanced since the Claude API
+    # rounds of 2026-10-13 (the token-efficient stand-in for a capable local model).
+    assert profiles.classify_model("anthropic", "claude-haiku-4-5")[0] == "extended"
+    assert profiles.classify_model("anthropic", "claude-3-haiku")[0] == "standard"
     assert profiles.classify_model("gemini", "gemini-2.5-pro")[0] == "extended"
     # The operator's setting wins over everything but the user's own choice.
     monkeypatch.setenv("COPYLOT_AI_MODEL_LEVELS", "qwen3.5:4b=advanced")

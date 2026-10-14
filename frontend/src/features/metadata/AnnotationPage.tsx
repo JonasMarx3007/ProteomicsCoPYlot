@@ -56,17 +56,6 @@ const DEFAULT_FILTER: AnnotationFilterConfig = {
   normalization: "none",
 };
 
-const PHOSPROT_MODE_DESCRIPTIONS: Record<PhosprotAggregationMode, string> = {
-  robust_site_median:
-    "Default: centre each site on log2 scale and take the protein median when at least 50% of its eligible sites have values, including imputed values. Coverage diagnostics count original observations only.",
-  sum_propagate_na:
-    "Sum the fixed eligible site set on linear scale; any missing eligible site makes that sample value missing.",
-  sum_ignore_na:
-    "Sum the linear-scale values of the sites quantified in every sample (imputed values included), so all samples sum the same sites; proteins without such a site are missing.",
-  mean:
-    "Take the linear-scale mean over the sites quantified in every sample (imputed values included), so all samples use the same sites; proteins without such a site are missing.",
-};
-
 const ANNOTATION_MANAGER_VISIBILITY_KEY = "data.annotationManager.visible.v1";
 const MAX_MANUAL_METADATA_PROFILES = 5;
 
@@ -277,11 +266,12 @@ export default function AnnotationPage() {
       return () => { cancelled = true; };
     }
     setPeptideResult(null);
+    const scaleRevision = scaleRequest.current;
     getCurrentAnnotation(kind)
       .then((stored) => {
         if (cancelled) return;
         setResult(stored);
-        if (!scaleChosen.current) {
+        if (!scaleChosen.current && scaleRevision === scaleRequest.current) {
           scaleChosen.current = true;
           setIsLog2Transformed(stored.isLog2Transformed);
         }
@@ -294,7 +284,7 @@ export default function AnnotationPage() {
       .catch(() => {
         if (cancelled) return;
         setResult(null);
-        if (!scaleChosen.current) setIsLog2Transformed(true);
+        if (!scaleChosen.current && scaleRevision === scaleRequest.current) setIsLog2Transformed(true);
       });
     return () => { cancelled = true; };
   }, [
@@ -1199,9 +1189,6 @@ export default function AnnotationPage() {
                           <option value="sum_ignore_na">Sum over sites quantified in every sample</option>
                           <option value="mean">Mean over sites quantified in every sample</option>
                         </select>
-                        <p className="mt-2 text-xs leading-5 text-slate-500">
-                          {PHOSPROT_MODE_DESCRIPTIONS[phosprotMode]}
-                        </p>
                       </div>
                       <div>
                         <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-source">
@@ -1233,11 +1220,9 @@ export default function AnnotationPage() {
                           aria-invalid={!phosprotCutoffValid}
                           className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100"
                         />
-                        <p className={`mt-2 text-xs leading-5 ${phosprotCutoffValid ? "text-slate-500" : "text-red-700"}`}>
-                          {phosprotCutoffValid
-                            ? "Only sites at or above it are collapsed; sites without a probability are left out above 0."
-                            : "Enter a value between 0.00 and 1.00."}
-                        </p>
+                        {phosprotCutoffValid ? null : (
+                          <p className="mt-2 text-xs leading-5 text-red-700">Enter a value between 0.00 and 1.00.</p>
+                        )}
                       </div>
                     </div>
                     <button

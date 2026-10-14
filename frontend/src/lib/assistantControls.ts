@@ -20,15 +20,33 @@ export const AssistantControlScope = createContext(false);
 /** One control the assistant changed: what it was, and what it became. */
 export type AssistantChange = {
   id: number; at: string; module: string; target: string; label: string; before: ControlValue; after: ControlValue;
+  /** The chat request (one sent message) this change belongs to. */
+  request: number;
 };
 // Kept for the session so a person can see what the assistant changed and take
-// the last change back. Replaced, never mutated, so React can subscribe to it.
+// the last request's changes back. Replaced, never mutated, so React can subscribe
+// to it. Undo reaches only the most recent request: sending a new message starts a
+// new scope (2026-10-13), so "undo" means "undo what the assistant just did", not
+// a walk back through the whole conversation.
 let changeLog: readonly AssistantChange[] = [];
 let nextChangeId = 1;
+let currentRequest = 0;
+/** Called when the person sends a message: changes from now on form one undo unit. */
+export function beginAssistantRequest(): number {
+  currentRequest++;
+  publishChanges(changeLog);  // the undoable set is now empty until the assistant changes something
+  return currentRequest;
+}
+
 const changeListeners = new Set<() => void>();
 const CHANGE_LOG_LIMIT = 50;
+let undoable: readonly AssistantChange[] = [];
+/** The changes of the most recent request, oldest first (the ones "Undo" takes back).
+ * Recomputed only when the log changes: useSyncExternalStore needs a stable snapshot. */
+export function undoableAssistantChanges(): readonly AssistantChange[] { return undoable; }
 function publishChanges(next: readonly AssistantChange[]) {
   changeLog = next;
+  undoable = next.filter(change => change.request === currentRequest);
   changeListeners.forEach(listener => listener());
 }
 export function subscribeAssistantChanges(listener: () => void): () => void {
@@ -36,8 +54,8 @@ export function subscribeAssistantChanges(listener: () => void): () => void {
   return () => { changeListeners.delete(listener); };
 }
 export function assistantChanges(): readonly AssistantChange[] { return changeLog; }
-function recordAssistantChange(change: Omit<AssistantChange, "id" | "at" | "module">) {
-  const entry = { ...change, id: nextChangeId++, at: new Date().toISOString(), module: surfaceModule };
+function recordAssistantChange(change: Omit<AssistantChange, "id" | "at" | "module" | "request">) {
+  const entry = { ...change, id: nextChangeId++, at: new Date().toISOString(), module: surfaceModule, request: currentRequest };
   publishChanges([...changeLog, entry].slice(-CHANGE_LOG_LIMIT));
 }
 
@@ -49,7 +67,7 @@ function recordAssistantChange(change: Omit<AssistantChange, "id" | "at" | "modu
  * assistant set (someone changed it since). The entry stays in the log then.
  */
 export function undoLastAssistantChange(): string {
-  const last = changeLog[changeLog.length - 1];
+  const last = undoableAssistantChanges().at(-1);
   if (!last) throw new Error("There is no assistant change to undo.");
   const binding = controls.get(last.target);
   const control = binding?.read();
@@ -65,11 +83,37 @@ export function undoLastAssistantChange(): string {
   if (!actual || JSON.stringify(actual.value) !== JSON.stringify(last.before)) {
     throw new Error(`${last.label} did not accept its earlier value. Check the plot controls.`);
   }
-  publishChanges(changeLog.slice(0, -1));
+  publishChanges(changeLog.filter(change => change.id !== last.id));
   return `Set ${last.label} back to ${JSON.stringify(last.before)}.`;
 }
+
+/**
+ * Take back everything the assistant changed in the most recent request, newest
+ * first. A control that cannot be undone safely (not on screen, or changed since)
+ * is reported and kept; undo stops there to preserve the order of dependent edits.
+ */
+export function undoLastAssistantRequest(): string {
+  const changes = undoableAssistantChanges();
+  if (!changes.length) throw new Error("There is no assistant change to undo.");
+  const done: string[] = [];
+  const kept: string[] = [];
+  for (let index = changes.length - 1; index >= 0; index--) {
+    try {
+      done.push(undoLastAssistantChange());
+    } catch (error) {
+      kept.push(error instanceof Error ? error.message : String(error));
+      break;  // the entries below this one are older changes of the same request; stop in order
+    }
+  }
+  if (!done.length) throw new Error(kept[0]);
+  const summary = done.length === 1 ? done[0] : `Undid ${done.length} changes of the last request.`;
+  return kept.length ? `${summary} Not undone: ${kept.join(" ")}` : summary;
+}
 let surfaceModule = "";
-export function assistantSurfaceReady(module: string) { return surfaceModule === module; }
+export function assistantSurfaceReady(module: string) {
+  // Canvas image loads add export controls; include them before taking a view snapshot.
+  return surfaceModule === module && !document.querySelector('[data-assistant-tile] [aria-busy="true"]');
+}
 export function useAssistantSurface(module: string) {
   useLayoutEffect(() => {
     surfaceModule = module;
@@ -175,11 +219,22 @@ export function isPipelineControl(label: string): boolean {
   return PIPELINE_CONTROL.test(label);
 }
 
+// Question words that name nothing: "Boxes and their points / Box border color" matched the "and"
+// of "the baseline and the 5 minute response" and 90 such cosmetics crowded out the page's own
+// selector under the 100-control cap (GRK project, 2026-10-14).
+const STOP_WORDS = new Set(["the", "and", "all", "any", "are", "but", "can", "for", "from", "has", "have", "how", "into", "its",
+  "like", "make", "many", "more", "most", "not", "now", "one", "only", "our", "out", "please", "same", "see", "set", "she", "should",
+  "show", "some", "than", "that", "then", "there", "these", "they", "this", "those", "too", "use", "very", "want", "was", "were",
+  "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "each", "every", "also", "just", "here",
+  "open", "give", "tell", "let", "get", "put", "look", "take", "across", "over", "under", "between", "after", "before", "about",
+  "mir", "und", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "mit", "für", "auf", "bitte", "zeig", "zeige",
+  "mal", "noch", "auch", "ist", "sind", "nicht", "oder", "aber", "wie", "was", "wo"]);
+
 export function readAssistantControls(question = "", searches: Record<string, string> = {}): AssistantControl[] {
   // Identifiers are short and end sentences: "K7." must still surface K7 and
   // K70-K79 among the 40 advertised options.
   const words = question.toLowerCase().split(/\s+/).map(word => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter(word => word.length > 2 || (word.length > 1 && /\d/.test(word)));
+    .filter(word => (word.length > 2 || (word.length > 1 && /\d/.test(word))) && !STOP_WORDS.has(word));
   return [...controls.values(), ...buttons.values()].flatMap(binding => {
     const control = binding.read();
     if (!control || isPipelineControl(control.label)) return [];
@@ -187,7 +242,9 @@ export function readAssistantControls(question = "", searches: Record<string, st
     const optionText = (option: string) => `${option} ${control.optionLabels?.[option] ?? ""}`.toLowerCase();
     if (searches[control.id] !== undefined) {
       const query = searches[control.id].trim().toLowerCase();
-      const matches = control.options.filter(option => optionText(option).includes(query))
+      // "RIF1 S1542" finds Q5UIP0~RIF1_S1542_M1: every word of the search must occur (GRK, 2026-10-14).
+      const words = query.split(/\s+/).filter(Boolean);
+      const matches = control.options.filter(option => { const text = optionText(option); return words.every(word => text.includes(word)); })
         .sort((a, b) => Number(b.toLowerCase() === query) - Number(a.toLowerCase() === query));
       return [{ ...control, options: matches.slice(0, 40), optionQuery: searches[control.id], optionMatchCount: matches.length }];
     }
@@ -198,9 +255,19 @@ export function readAssistantControls(question = "", searches: Record<string, st
     || Number(words.some(w => b.label.toLowerCase().includes(w))) - Number(words.some(w => a.label.toLowerCase().includes(w)))
     // The appearance panel is registered even while the user keeps it closed,
     // so its ~100 settings could push a selection control past the transport
-    // cap. Cosmetics the question does not name yield to the analysis controls.
+    // cap. Cosmetics the question does not name yield to the analysis controls,
+    // and grouped settings (the per-condition colours of a 16-condition project)
+    // yield to the page's own selectors, whatever the question says (GRK, 2026-10-14).
     || Number(!!a.appearance) - Number(!!b.appearance)
+    || Number(isGroupedSetting(a.label)) - Number(isGroupedSetting(b.label))
     || a.id.localeCompare(b.id)).slice(0, 100);
+}
+
+const ENTITY_SELECTOR = /^(?:Tile \d+: [^/]+ \/ )?(?:Protein \/ Site|Protein|Site|Gene|Protein or gene)$/i;
+
+/** A setting inside a panel group ("Names and colors / Condition colors / C0"), not a page selector. */
+export function isGroupedSetting(label: string): boolean {
+  return label.includes(" / ") && !ENTITY_SELECTOR.test(label);
 }
 
 export function searchAssistantOptions(target: string, value: ControlValue): string {

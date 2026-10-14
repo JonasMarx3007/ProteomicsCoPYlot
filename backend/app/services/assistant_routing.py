@@ -262,6 +262,10 @@ def appearance_only_request(question: str) -> bool:
     if re.search(r"\b(?:select|choose|compare|navigate|impute|normaliz\w*|filter)\b|"
                  r"\b(?:open|show|switch to)\s+(?!.*\b(?:legend|title|font|options|border)\b)", actionable, re.I):
         return False
+    # "back to the volcano: make it a Nature figure" (2026-10-13): moving to a page first is a
+    # navigation, whatever the styling after it, so the planner must be allowed to navigate.
+    if re.search(r"\b(?:back to|go to|take me to|over to|return to)\s+(?:the\s+)?[a-z]", actionable, re.I):
+        return False
     if re.search(r"\b(?:test|threshold|p-?value|data source|condition selection)\b", actionable, re.I):
         return False
     if re.search(r"\b(?:do not|don't|never)\b", actionable, re.I):
@@ -298,7 +302,7 @@ def planner_tasks(question: str) -> list[str]:
     ui = ["ui", "canvas_focus", "clarify"] if re.search(r"\bcanvas\b", text) else ["ui", "clarify"]
     # Advice/questions must not accidentally become interface mutations.
     explicit_following_action = re.search(
-        r"(?:[;.]\s*|\b(?:and|then)\s+)(?:then\s+)?(?:please\s+)?"
+        r"(?:[;.?!]\s*|\b(?:and|then)\s+)(?:then\s+)?(?:please\s+)?"
         r"(?:show|open|select|rotate|rename|recolor|colour|color|hide|bold|resize|set|change)\b", text)
     if re.match(r"^(?:please\s+)?(?:what|which|where|when|who|why|how|explain|describe|review|assess|is|are|does)\b", text) and not explicit_following_action:
         return [*science, "clarify"]
@@ -342,6 +346,10 @@ def explanation_requested(question: str) -> bool:
         r"|\bwhat\s+(?:it|this|that|the\s+(?:plot|result|change))\s+(?:shows|means)\b"
         r"|\b(?:what|which|why)\b"
         r"|\bhow\s+(?:many|much|does|do|is|are|should)\b"
+        # "open the volcano ... and tell me the three strongest hits" (2026-10-13): a ranked
+        # result asked for next to a view change is an explanation request.
+        r"|\b(?:tell|give|list|name|show)\s+(?:me\s+)?(?:the\s+)?(?:top|first|\d+|three|five|ten|strongest|biggest|largest|best|most|highest|lowest)\b"
+        r"|\b(?:top|strongest|biggest|largest|best)\s+(?:\d+\s+|three\s+|five\s+|ten\s+)?(?:hits?|proteins?|sites?|genes?|terms?|candidates?|phosphosites?)\b"
         # A yes/no question about the result next to the request: "show me the PCA? do my
         # groups separate?" (2026-10-09; "can you ..." is the request itself, not a question).
         r"|(?:^|[.?!,;]\s*|\band\s+)(?:do|does|did|is|are|was|were|can|could|should|has|have|will)\s+(?!you\b|u\b)[^?.!]*\?",

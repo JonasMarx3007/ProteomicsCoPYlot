@@ -490,3 +490,520 @@ def test_between_two_conditions_sets_them_in_the_order_written():
     plan = assistant._implied_contrast_plan(AssistantRequest(
         message="how many replicates would I need to find more hits between GRK and WT?", view=_volcano_view()))
     assert [(a["target"], a["value"]) for a in plan["actions"]] == [("c1", "GRK")]
+
+
+# --- tool-loop tolerance (2026-10-13) --------------------------------------------
+# What mid-size models get wrong in the tool protocol, each answered with one
+# deterministic correction instead of a refusal. None of it adds reach: a
+# finishing call still goes through the same validation.
+
+def _raw_turns(monkeypatch, replies):
+    """Like _tool_turns, but each reply is a full assistant message (prose, several calls, ...)."""
+    seen = []
+
+    def turn(request, messages, tools, **kwargs):
+        seen.append({"messages": json.loads(json.dumps(messages)), "tools": tools})
+        return "qwen", replies.pop(0)
+    monkeypatch.setattr(assistant, "native_tools_supported", lambda request: True)
+    monkeypatch.setattr(assistant, "assistant_tool_turn", turn)
+    return seen
+
+
+def _call(name, arguments, id_="c"):
+    return {"id": id_, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+
+def test_prose_after_reading_the_results_is_the_answer(advanced, monkeypatch):
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="current_plot", status="available", text="coverage_summary|detected_mean=7407|total=7490")]
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("read_results", {})]},
+        {"content": "Each sample detects about 7407 of 7490 proteins. That is 9999 more than expected."},
+    ])
+    result = advanced.run([], message="what is this bar chart telling me?", view=_coverage_view())
+    assert len(seen) == 2  # no reminder call: the prose was checked as the answer
+    assert "7407 of 7490" in result.answer and "9999" not in result.answer
+
+
+def test_prose_without_a_tool_gets_one_reminder_then_the_application_answers(advanced, monkeypatch):
+    seen = _raw_turns(monkeypatch, [{"content": "Sure! Let me look at that."},
+                                    {"content": "The coverage looks fine to me."}])
+    written = json.dumps({"answer": "Each bar is one sample's number of detected proteins."})
+    result = advanced.run([written], message="what is this bar chart telling me?", view=_coverage_view())
+    assert seen[1]["messages"][-1]["role"] == "user" and "tool call, not text" in seen[1]["messages"][-1]["content"]
+    assert len(seen) == 2 and result.answer.startswith("Each bar")  # written by the application
+
+
+def test_results_read_in_the_same_reply_as_the_answer_are_read_first(advanced, monkeypatch):
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="current_plot", status="available", text="coverage_summary|detected_mean=7407|total=7490")]
+    _raw_turns(monkeypatch, [{"content": "", "tool_calls": [
+        _call("answer", {"task": "current_plot", "text": "About 7407 of 7490 proteins per sample."}, "a"),
+        _call("read_results", {}, "b")]}])
+    result = advanced.run([], message="why are some samples lower than others?", view=_coverage_view())
+    assert result.answer.startswith("About 7407 of 7490") and result.evidence
+
+
+def test_a_misspelt_tool_goes_back_once_with_the_tool_names(advanced, monkeypatch):
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("apply_style", {"styles": []})]},
+        {"content": "", "tool_calls": [_call("apply_styles", {"styles": [
+            {"element": "title", "property": "size", "value": "14"}]})]},
+    ])
+    result = advanced.run([], message="make the title 14", view=_coverage_view())
+    error = json.loads(seen[1]["messages"][-1]["content"])["error"]
+    assert "no tool named 'apply_style'" in error and "apply_styles" in error
+    assert _targets(result) == {"title": "14"}
+
+
+def test_cut_off_arguments_go_back_once_then_are_refused(advanced, monkeypatch):
+    broken = {"id": "c", "type": "function", "function": {"name": "apply_styles", "arguments": '{"styles": [{"elem'}}
+    _raw_turns(monkeypatch, [{"content": "", "tool_calls": [broken]}, {"content": "", "tool_calls": [broken]}])
+    with pytest.raises(ValueError, match="not valid JSON"):
+        advanced.run([], message="make the title 14", view=_coverage_view())
+
+
+def test_a_correction_answers_every_call_in_the_batch(advanced, monkeypatch):
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("apply_style", {}, "bad"), _call("apply_styles", {}, "later")]},
+        {"content": "", "tool_calls": [_call("apply_styles", {"styles": [
+            {"element": "title", "property": "size", "value": "14"}]}, "fixed")]},
+    ])
+    result = advanced.run([], message="make the title 14", view=_coverage_view())
+    replies = [item for item in seen[1]["messages"] if item["role"] == "tool"]
+    assert [item["tool_call_id"] for item in replies] == ["bad", "later"]
+    assert "Not executed" in replies[1]["content"]
+    assert _targets(result) == {"title": "14"}
+
+
+@pytest.mark.parametrize("given", ["qc.CV", "cv", "CV Plot"])
+def test_a_module_name_that_identifies_one_module_is_read_as_it(given):
+    view = {**_coverage_view(), "destinations": {"qc.coverage": "QC Pipeline / Coverage Plot", "qc.cv": "QC Pipeline / CV Plot"}}
+    request = AssistantRequest(message="x", view=view)
+    module, note = assistant._resolve_module(request, given, ["qc.coverage", "qc.cv", "stats.volcano", "workflow.overview"])
+    assert module == "qc.cv" and "read as qc.cv" in note
+
+
+def test_an_unknown_module_is_refused_in_the_tool_result_not_read_as_the_open_plot(advanced, monkeypatch):
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="current_plot", status="available", text="coverage_summary|total=7490")]
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("read_results", {"module": "kinase.activity"})]},
+        {"content": "", "tool_calls": [_call("read_results", {})]},
+        {"content": "", "tool_calls": [_call("answer", {"task": "current_plot", "text": "7490 proteins in total."})]},
+    ])
+    result = advanced.run([], message="why are some samples lower than others?", view=_coverage_view())
+    first = seen[1]["messages"][-1]["content"]
+    assert first.startswith("Unknown module 'kinase.activity'") and "qc.coverage" in first and "7490" not in first
+    assert result.answer.startswith("7490 proteins")
+
+
+def test_a_model_that_keeps_reading_is_told_to_finish_before_the_last_round(advanced, monkeypatch):
+    reads = [{"content": "", "tool_calls": [_call("find_settings", {"word": "title"})]} for _ in range(5)]
+    seen = _raw_turns(monkeypatch, [*reads, {"content": "", "tool_calls": [_call("apply_styles", {"styles": [
+        {"element": "title", "property": "size", "value": "14"}]})]}])
+    result = advanced.run([], message="make the title 14", view=_coverage_view())
+    assert _targets(result) == {"title": "14"}
+    assert sum("Finish now" in m.get("content", "") for m in seen[-1]["messages"] if m["role"] == "user") == 1
+
+
+# --- first Claude API round (2026-10-13) -----------------------------------------
+
+def test_a_project_answer_the_model_wrote_is_kept_and_checked(advanced, monkeypatch):
+    """claude-sonnet-5-5 answered a cutoff question correctly with task=project_state; the
+    application threw the text away and rewrote it without the key sentence."""
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="project_state", status="available",
+                                  text="localization|cutoff=0|sites=11916|at_0.75=5224|at_0.9=3989")]
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("read_results", {"module": "", "kind": "results"})]},
+        {"content": "", "tool_calls": [_call("answer", {"task": "project_state", "text":
+            "The cutoff is 0, so all 11916 sites are in use. At 0.75, 5224 sites would stay. At 0.8, 4000 would stay."})]},
+    ])
+    result = advanced.run([], message="which localization cutoff is active and how many sites survive 0.75?",
+                          view=_coverage_view())
+    assert len(seen) == 2 and advanced.calls == []  # no third, application-written call
+    assert "5224 sites would stay" in result.answer and "4000" not in result.answer
+
+
+def test_visibility_given_as_a_string_boolean_is_accepted():
+    from app.schemas.assistant import StyleEdit
+    from app.services import assistant_styling
+
+    request = AssistantRequest(message="hide the grid", view=_coverage_view())
+    resolved = assistant_styling.resolve(request, [StyleEdit(element="frame and grid / grid lines", property="show", value="false")])
+    assert [(action.target, action.value) for action in resolved] == [("grid", False)]
+
+
+def test_a_view_request_answered_from_the_opened_page_keeps_the_explanation(advanced, monkeypatch):
+    """"show me the PCA, do my groups separate?" is a UI request; after opening the page the
+    model read the results and answered. The answer tool was not offered in that step and
+    Haiku invented it (2026-10-13); now it is offered and the text is the explanation."""
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="current_plot", status="available", text="pca|pc1_variance=49.65|pc2_variance=9.14")]
+    seen = _raw_turns(monkeypatch, [
+        {"content": "", "tool_calls": [_call("read_results", {"kind": "results"})]},
+        {"content": "", "tool_calls": [_call("answer", {"task": "current_plot", "text": "PC1 explains 49.65% and separates the groups."})]},
+    ])
+    view = {**_coverage_view(), "module": "qc.pca", "destinations": {"qc.pca": "QC Pipeline / PCA"}}
+    result = advanced.run([], message="show me the PCA plot", view=view, receipts=["Opened QC Pipeline / PCA."])
+    assert "answer" in {tool["function"]["name"] for tool in seen[0]["tools"]}
+    assert result.answer.startswith("PC1 explains 49.65%") and not result.actions
+
+
+def test_asking_which_contrast_after_reading_a_waiting_page_opens_that_page(advanced, monkeypatch):
+    """From the coverage page, "which phosphosites go up most in GRK?" has no change_view tool;
+    Haiku read the volcano (waiting for a contrast) and asked which one (2026-10-13). The page is
+    opened instead; the question's wording sets the contrast there."""
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="volcano_data", status="unavailable", text="volcano_data|status=incomplete_parameters")]
+    _tool_turns(monkeypatch, [("read_results", {"module": "stats.volcano", "kind": "results"}),
+                              ("ask_user", {"clarification": "condition", "question": "Shall I compare GRK against WT?"})])
+    view = {**_coverage_view(), "destinations": {"qc.coverage": "QC", "stats.volcano": "Volcano"}}
+    result = advanced.run([], message="which phosphosites go up most in GRK? top 5", view=view)
+    assert [(a.type, a.target) for a in result.actions] == [("navigate", "stats.volcano")] and result.explainAfterChanges
+    assert not result.needsClarification
+
+
+def test_a_hit_the_assistant_just_listed_can_be_shown_as_the_first_one():
+    history = [{"role": "user", "content": "give me the three strongest hits"},
+               {"role": "assistant", "content": "1. CCN1_HUMAN: log2 FC 2.75\n2. LRC58_HUMAN: 2.20\n3. ANXA3_HUMAN: 1.75"}]
+    request = AssistantRequest(message="and how does the first one look across my samples?",
+                               view={"module": "singleProtein.boxplot"},
+                               messages=[*history, {"role": "user", "content": "and how does the first one look across my samples?"}])
+    assert assistant._grounded("CCN1_HUMAN", request)
+    assert not assistant._grounded("LRC58_HUMAN", request)
+    second = request.model_copy(update={"message": "show the second one"})
+    assert assistant._grounded("LRC58_HUMAN", second) and not assistant._grounded("CCN1_HUMAN", second)
+    assert not assistant._grounded("NFM_HUMAN", request)  # never listed
+    # Without a reference to the list, a listed name is still not the user's choice.
+    assert not assistant._grounded("CCN1_HUMAN", request.model_copy(update={"message": "show me a protein boxplot"}))
+
+
+def test_a_reply_written_without_reading_is_checked_not_dropped(advanced, monkeypatch):
+    """"export the summary table as excel": the model answered without reading anything and the
+    application showed the module's method text instead (Haiku, 2026-10-13)."""
+    _raw_turns(monkeypatch, [{"content": "", "tool_calls": [_call("answer", {"task": "help", "text":
+        "I can't run exports from here. The Download CSV button above the table saves it; 9999 rows are shown."})]}])
+    result = advanced.run([], message="ok then export the summary table as excel for me", view=_coverage_view())
+    assert result.answer.startswith("I can't run exports from here") and "9999" not in result.answer
+
+
+def test_choosing_a_tile_type_on_the_canvas_does_not_finish_the_request(advanced, monkeypatch):
+    view = {"module": "analysis.canvas", "destinations": {"analysis.canvas": "Analysis"}, "controls": [
+        {"id": "add", "label": "+ Add Plot", "type": "button", "value": ""},
+        {"id": "kind", "label": "New tile type", "type": "select", "value": "volcano",
+         "options": ["volcano", "proteinBoxplot"], "optionLabels": {"volcano": "Volcano", "proteinBoxplot": "Protein Boxplot"}}]}
+    plan = json.dumps({"task": "ui", "actions": [{"type": "set_control", "target": "kind", "value": "proteinBoxplot"}]})
+    result = advanced.run([plan], message="put a boxplot of CCN1 on the analysis canvas", view=view)
+    assert _targets(result) == {"kind": "proteinBoxplot"} and not result.finished
+
+
+def test_a_batch_leaving_the_named_protein_unplaced_is_not_finished(advanced, monkeypatch):
+    view = {"module": "analysis.canvas", "destinations": {"analysis.canvas": "Analysis"}, "controls": [
+        {"id": "src", "label": "Tile 1: proteinBoxplot / Protein source", "type": "select", "value": "list",
+         "options": ["list", "manual"], "optionLabels": {"list": "List", "manual": "Manual input"}}]}
+    plan = json.dumps({"task": "ui", "actions": [{"type": "set_control", "target": "src", "value": "manual"}]})
+    result = advanced.run([plan], message="put a boxplot of CCN1 on the analysis canvas", view=view,
+                          receipts=["Opened Analysis.", "+ Add Plot: completed."])
+    assert _targets(result) == {"src": "manual"} and not result.finished
+    # Once the name is placed, the same kind of batch is complete.
+    placed = {**view, "controls": [*view["controls"], {"id": "p", "label": "Tile 1: proteinBoxplot / Protein or gene",
+                                                      "type": "text", "value": "CCN1_HUMAN"}]}
+    result = advanced.run([plan], message="put a boxplot of CCN1 on the analysis canvas", view=placed,
+                          receipts=["Opened Analysis.", "+ Add Plot: completed."])
+    assert result.finished
+
+
+def test_a_german_correlation_rounded_to_three_decimals_is_confirmed():
+    """"r = 0,994" for mean_r=0.9938: a comma after a lone zero is a decimal comma, not a thousands group."""
+    evidence = ["correlation_group_summary|group=within_condition|mean_r=0.9938|min_r=0.9910|max_r=0.9951", "total=11916"]
+    text, removed = assistant_prose.verify("Innerhalb der Bedingungen: mittleres r = 0,994 (Bereich 0,991–0,995).", evidence, "")
+    assert removed == 0 and "0,994" in text
+    text, removed = assistant_prose.verify("Alle 11,916 Sites sind drin.", evidence, "")
+    assert removed == 0  # a thousands group still reads as one
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("what changes in signalling when GRK is present?", [("c1", "GRK")]),
+    ("we knocked in GRK and I expect CCN1 and CCN2 to change", [("c1", "GRK")]),
+    ("how does the proteome respond to WT?", [("c2", "GRK")]),  # the fixture starts at WT vs WT
+    ("what differs between WT and GRK cells?", [("c2", "GRK")]),  # the existing between-rule
+    ("what changes when GRK is present compared with WT?", None),  # both named without an order: not guessed
+    ("GRK is the treatment", None),  # no change wording
+])
+def test_treatment_wording_implies_the_two_condition_contrast(message, expected):
+    plan = assistant._implied_contrast_plan(AssistantRequest(message=message, view=_volcano_view()))
+    assert (None if plan is None else [(a["target"], a["value"]) for a in plan["actions"]]) == expected
+
+
+def test_a_named_protein_question_read_from_a_waiting_page_opens_that_page(advanced, monkeypatch):
+    """"We knocked in GRK; does the data support a change in CCN1?" from the coverage page: the model
+    read the volcano (waiting for its contrast) and answered that it could not say (2026-10-13)."""
+    from app.schemas.assistant import Evidence
+
+    advanced.evidence = [Evidence(tool="volcano_data", status="unavailable", text="volcano_data|status=incomplete_parameters")]
+    _tool_turns(monkeypatch, [("read_results", {"module": "stats.volcano", "kind": "results"}),
+                              ("answer", {"task": "current_plot", "text": "I can't yet say whether CCN1 changed."})])
+    view = {**_coverage_view(), "destinations": {"qc.coverage": "QC", "stats.volcano": "Volcano"}}
+    result = advanced.run([], message="We knocked in GRK and expect CCN1 to change. Does the data support this?", view=view)
+    assert [(a.type, a.target) for a in result.actions] == [("navigate", "stats.volcano")] and result.explainAfterChanges
+
+
+def test_an_unset_contrast_takes_the_treatment_named_earlier_in_the_conversation():
+    history = [{"role": "user", "content": "we knocked in GRK and expect CCN1 to change; does the data support that?"},
+               {"role": "assistant", "content": "Yes: CCN1 log2FC 2.75."},
+               {"role": "user", "content": "run the GO enrichment on the up set"}]
+    request = AssistantRequest(message="run the GO enrichment on the up set", view=_volcano_view(), messages=history)
+    plan = assistant._implied_contrast_plan(request)
+    assert [(a["target"], a["value"]) for a in plan["actions"]] == [("c1", "GRK")]
+    # A contrast already set is never overridden from history.
+    assert assistant._implied_contrast_plan(AssistantRequest(message=request.message, view=_volcano_view("WT", "GRK"),
+                                                             messages=history)) is None
+
+
+@pytest.mark.parametrize("value, message, expected", [
+    ("P08174~CD55_Y224_M1", "show me CD55 Y224 on its own", True),
+    ("P08174~CD55_Y224_M1", "show me CD55 S101", False),
+    ("CCN1_HUMAN", "how does CCN1 look?", True),
+    ("P12345;P23456", "show me the group", False),
+])
+def test_a_site_named_by_its_parts_is_grounded(value, message, expected):
+    assert assistant._grounded(value, AssistantRequest(message=message, view={"module": "singleProtein.boxplot"})) is expected
+
+
+def test_an_identifier_the_assistant_tied_to_the_users_name_is_grounded():
+    """"GRK2 (listed as ARBK1_HUMAN)" in the last reply, then "show the plot for GRK2" (GRK project,
+    2026-10-13): the uploaded identifier follows from the assistant's own answer, not from a guess."""
+    history = [{"role": "user", "content": "look up GRK2 and GRK6 in dQ0 vs C0"},
+               {"role": "assistant", "content": "- GRK2 (listed as ARBK1_HUMAN): 0 values in dQ0, 6 in C0.\n"
+                                                "- GRK6 (listed as F8W9W2_HUMAN): the same pattern."}]
+    view = {"module": "singleProtein.boxplot"}
+    assert assistant._grounded("ARBK1_HUMAN", AssistantRequest(message="show the boxplot for GRK2", view=view, messages=history))
+    assert not assistant._grounded("F8W9W2_HUMAN", AssistantRequest(message="show the boxplot for GRK2", view=view, messages=history))
+    assert not assistant._grounded("ARBK1_HUMAN", AssistantRequest(message="show the boxplot for the kinase", view=view, messages=history))
+    assert not assistant._grounded("ARBK1_HUMAN", AssistantRequest(message="show the boxplot for GRK2", view=view))
+    same_sentence = [{"role": "assistant", "content": "GRK2 (listed as ARBK1_HUMAN) differs from GRK6 (listed as F8W9W2_HUMAN)."}]
+    assert not assistant._grounded("F8W9W2_HUMAN", AssistantRequest(message="show the boxplot for GRK2", view=view, messages=same_sentence))
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("Volcano GRK vs WT, Welch, Publikationsstil, und die drei stärksten Hits beschriftet", "publication"),
+    ("mach die Abbildung publikationsreif", "publication"),
+    ("eine Abbildung im Nature-Stil", "nature"),
+    ("what is a paper?", None),
+])
+def test_german_publication_wording_names_the_preset(message, expected):
+    from app.services import assistant_presets
+
+    assert assistant_presets.requested(message)[0] == expected
+
+
+def test_read_results_looks_up_named_features_of_the_volcano(example_project):
+    """"Are ANXA1 and ANXA3 affected, and how strongly compared to CCN1?": the ranked lists show
+    ten per direction, so a named protein needs its own row (2026-10-13)."""
+    request = AssistantRequest(message="are ANXA1 and ANXA3 affected?", view={
+        "module": "stats.volcano", "workflow": "protein",
+        "mode": {"kind": "protein", "condition1": "GRK", "condition2": "WT"}})
+    found = assistant._read_for_tools(request, {"kind": "results", "lookup": "ANXA1, CCN1, NOTAGENE"}, "compact")
+    text = "\n".join(item.text for item in found)
+    assert "volcano_lookup|query=CCN1|term=CCN1" in text and "log2FC=2.75" in text
+    assert "volcano_lookup|query=ANXA1" in text
+    assert "volcano_lookup_not_found|queries=NOTAGENE" in text
+
+
+def test_read_results_lookup_reports_rows_the_test_could_not_use(example_project):
+    """"Is GRK2 actually absent in the knockout?" A protein missing in every replicate of one
+    condition never reaches the volcano; the lookup reports its value counts instead (2026-10-13)."""
+    request = AssistantRequest(message="is CSTA absent in WT?", view={
+        "module": "stats.volcano", "workflow": "protein",
+        "mode": {"kind": "protein", "condition1": "GRK", "condition2": "WT"}})
+    found = assistant._read_for_tools(request, {"kind": "results", "lookup": "CSTA"}, "compact")
+    text = "\n".join(item.text for item in found)
+    assert "volcano_lookup_untested|query=CSTA|term=CYTA_HUMAN|n_GRK=3|n_WT=0|mean_GRK=7.49|" in text
+    assert "reason=fewer than 2 values in WT|note=values_count_per_condition_0_means_not_detected" in text
+    assert "volcano_lookup_not_found" not in text
+
+
+def test_lookup_queries_keep_a_gene_and_its_site_together():
+    """"MAP4K4 S1045, REPS1 S143" asked for two sites, not four names (GRK, 2026-10-13)."""
+    from app.services.ai_functions import _lookup_pattern, _lookup_queries
+
+    assert _lookup_queries("C2orf49 S146, MAP4K4 S1045; ANXA1 ANXA3 GRK2,S6") == ["C2orf49 S146", "MAP4K4 S1045", "ANXA1", "ANXA3", "GRK2", "S6"]
+    assert _lookup_pattern("MAP4K4 S1045").search("O95819~MAP4K4_S1045_M1")
+    assert not _lookup_pattern("MAP4K4 S1045").search("O95819~MAP4K4_S757_M1")
+    assert not _lookup_pattern("MAP4K4 S1045").search("O95819~MAP4K4_S10450_M1")
+    assert _lookup_pattern("ANXA1").search("ANXA1_HUMAN") and not _lookup_pattern("ANXA1").search("ANXA10_HUMAN")
+
+
+def test_read_results_can_read_another_contrast_and_set_two_contrasts_against_each_other(example_project):
+    """"Up after stimulation in the parental cells but not in the knockout" (GRK, 2026-10-14): one
+    read-only call; the application matches the rows, the open plot is unchanged."""
+    from app.services.ai_functions import _contrast_pair
+
+    assert _contrast_pair("C5 vs C0") == ("C5", "C0") and _contrast_pair("dQ5 versus dQ0") == ("dQ5", "dQ0")
+    assert _contrast_pair("C5,C0") == ("C5", "C0") and _contrast_pair("C0 vs C0") is None and _contrast_pair("C5") is None
+    request = AssistantRequest(message="which hits of WT vs GRK are not hits the other way?", view={
+        "module": "stats.volcano", "workflow": "protein",
+        "mode": {"kind": "protein", "condition1": "GRK", "condition2": "WT"}})
+    found = assistant._read_for_tools(request, {"kind": "results", "conditions": "WT vs GRK", "versus": "GRK vs WT"}, "compact")
+    text = "\n".join(item.text for item in found)
+    assert "volcano_comparison|condition1=WT|condition2=GRK" in text and "volcano_read_override|" in text
+    assert "volcano_versus|a=WT_vs_GRK|b=GRK_vs_WT|" in text
+    assert "volcano_versus_up|a_up=9|also_up_in_b=0|not_significant_in_b=0|opposite_in_b=9|untested_in_b=0|absent_in_b=0" in text
+    assert "volcano_versus_down|a_down=53|also_down_in_b=0|not_significant_in_b=0|opposite_in_b=53|" in text
+    # Without an override the read is the open plot's own contrast.
+    plain = "\n".join(item.text for item in assistant._read_for_tools(request, {"kind": "results"}, "compact"))
+    assert "volcano_comparison|condition1=GRK|condition2=WT" in plain and "volcano_versus" not in plain
+    # An unknown condition is an error line, never a silent substitute.
+    bad = "\n".join(item.text for item in assistant._read_for_tools(request, {"kind": "results", "conditions": "GRK vs NOPE"}, "compact"))
+    assert "volcano_data|status=error" in bad
+    for conditions in ("GRK", "WT vs WT"):
+        malformed = "\n".join(item.text for item in assistant._read_for_tools(request, {"conditions": conditions}, "compact"))
+        assert "volcano_data|status=error" in malformed
+    assert _contrast_pair("Treated cells vs. Vehicle cells") == ("Treated cells", "Vehicle cells")
+
+
+def test_cross_contrast_matching_never_collapses_repeated_gene_labels(monkeypatch):
+    import pandas as pd
+    from app.services import ai_functions, stats_tools
+
+    a = pd.DataFrame({"GeneNames": ["GENE", "GENE"], "PTM_Collapse_key": ["GENE_S1", "GENE_S2"],
+                      "log2FC": [2., 3.], "adj_pval": [.001, .001], "significance": ["Upregulated"] * 2})
+    b = a.iloc[::-1].copy()
+    b["significance"] = ["Not significant", "Upregulated"]
+    monkeypatch.setattr(stats_tools, "_volcano_dataframe", lambda **kwargs: ("data", "GeneNames", b, []))
+    kwargs = dict(kind="phospho", identifier="genes", p_value_threshold=.05, log2fc_threshold=1.,
+                  test_type="unpaired", use_uncorrected=False, data_source="data", a_pair=("A", "ref"))
+    text = "\n".join(ai_functions._volcano_contrast_difference(a, "GeneNames", ("B", "ref"), **kwargs))
+    assert "also_up_in_b=1|not_significant_in_b=1" in text
+    assert "volcano_a_specific_up|term=GENE_S2|" in text
+    b.drop(columns="PTM_Collapse_key", inplace=True)
+    assert "no_unique_shared_row_identifier" in "\n".join(ai_functions._volcano_contrast_difference(a, "GeneNames", ("B", "ref"), **kwargs))
+
+
+def test_cross_contrast_enrichment_uses_only_jointly_testable_rows(monkeypatch):
+    import pandas as pd
+    from app.services import ai_functions, stats_tools
+
+    a = pd.DataFrame({"GeneNames": [f"G{i}" for i in range(8)], "log2FC": [2.] * 8,
+                      "adj_pval": [.001] * 8, "significance": ["Upregulated"] * 8})
+    b = a.iloc[:7].copy()
+    b.loc[6, "significance"] = "Unavailable"
+    seen = []
+    monkeypatch.setattr(stats_tools, "_volcano_dataframe", lambda **kwargs: ("data", "GeneNames", b, []))
+    monkeypatch.setattr(stats_tools, "run_enrichment_from_list", lambda request: (seen.append(request) or SimpleNamespace(terms=[])))
+    lines = ai_functions._volcano_contrast_difference(a, "GeneNames", ("B", "ref"), kind="protein", identifier="genes",
+        p_value_threshold=.05, log2fc_threshold=1., test_type="paired", use_uncorrected=False,
+        data_source="data", a_pair=("A", "ref"), enrich=True, organism="mouse")
+    assert seen and seen[0].backgroundGenes == [f"G{i}" for i in range(6)]
+    assert seen[0].organism == "mouse"
+    assert "different complete pairs" in "\n".join(lines)
+    assert "|direction=" not in "\n".join(lines)
+    seen.clear()
+    lines = ai_functions._volcano_contrast_difference(a, "GeneNames", ("B", "ref"), kind="protein", identifier="genes",
+        p_value_threshold=.05, log2fc_threshold=1., test_type="unpaired", use_uncorrected=False,
+        data_source="data", a_pair=("A", "ref"), enrich=True)
+    assert not seen and "no organism was assumed" in "\n".join(lines)
+
+
+def test_a_fold_change_said_from_a_log2_fold_change_is_confirmed():
+    evidence = ["volcano_lookup|query=ANXA3|term=ANXA3_HUMAN|log2FC=1.75|adj_p_value=6.612e-08"]
+    kept, removed = assistant_prose.verify("ANXA3: log2FC 1.75 (about 3.4-fold), adjusted p 6.6e-08.", evidence, "")
+    assert removed == 0 and "3.4-fold" in kept
+    assert assistant_prose.verify("ANXA3 is about 5-fold up.", evidence, "")[1] == 1
+
+
+def test_styling_that_names_another_page_is_not_appearance_only():
+    """"Make the dQ0 vs C0 volcano publication ready" from the coverage page (GRK, 2026-10-14)."""
+    destinations = {"qc.coverage": "QC / Coverage Plot - counts", "stats.volcano": "Statistical Analysis / Volcano Plot - fold change",
+                    "singleProtein.heatmap": "Single Protein / Heatmap", "completeness.heatmap": "Completeness / Heatmap"}
+    message = "Make the dQ0 vs C0 volcano publication ready: label the three strongest hits, Nature style."
+    assert assistant._appearance_only(AssistantRequest(message=message, view={"module": "stats.volcano", "destinations": destinations}))
+    assert not assistant._appearance_only(AssistantRequest(message=message, view={"module": "qc.coverage", "destinations": destinations}))
+    # A page name shared by several destinations does not navigate away from one of them.
+    heat = "make the heatmap Nature style"
+    assert assistant._appearance_only(AssistantRequest(message=heat, view={"module": "completeness.heatmap", "destinations": destinations}))
+    assert not assistant._appearance_only(AssistantRequest(message=heat, view={"module": "qc.coverage", "destinations": destinations}))
+    assert assistant._appearance_only(AssistantRequest(message="make the title bold", view={"module": "qc.coverage", "destinations": destinations}))
+
+
+def test_a_gap_between_two_boxplot_medians_is_confirmed():
+    """"C: 6.22 at 0 min, 8.46 at 5 min (about +2.2)" was removed: the boxplot table's keys are
+    capitalised (GRK project, 2026-10-14)."""
+    evidence = ["single_protein_boxplot_table_row|rank=1|Condition=C0|N=6|Mean=6.04|Median=6.22|Q1=6.12|Q3=6.28|Min=4.85|Max=6.58\n"
+                "single_protein_boxplot_table_row|rank=2|Condition=C5|N=6|Mean=8.46|Median=8.46|Q1=8.43|Q3=8.50|Min=8.39|Max=8.53"]
+    kept, removed = assistant_prose.verify("C: 6.22 at 0 min, 8.46 at 5 min (about +2.2).", evidence, "")
+    assert removed == 0 and "+2.2" in kept
+    assert assistant_prose.verify("C: 6.22 at 0 min, 8.46 at 5 min (about +3.1).", evidence, "")[1] == 1
+
+
+def test_a_total_of_two_confirmed_figures_in_the_same_sentence_is_confirmed():
+    """"352 sites are not significant in the knockout: 174 up and 178 down" was removed as a whole
+    (GRK project, 2026-10-14); a sum or gap of two confirmed figures in the sentence is the reader's."""
+    evidence = ["volcano_versus_up|a_up=483|also_up_in_b=265|not_significant_in_b=174|opposite_in_b=1|untested_in_b=43|absent_in_b=0\n"
+                "volcano_versus_down|a_down=400|also_down_in_b=197|not_significant_in_b=178|opposite_in_b=0|untested_in_b=25|absent_in_b=0"]
+    kept, removed = assistant_prose.verify("352 sites respond in parental but not in the knockout: 174 up and 178 down.", evidence, "")
+    assert removed == 0 and "352" in kept
+    assert assistant_prose.verify("68 sites (43 up, 25 down) could not be tested in the knockout.", evidence, "")[1] == 0
+    # Two unconfirmed figures do not confirm each other, and a wrong total is still wrong.
+    assert assistant_prose.verify("360 sites respond: 174 up and 178 down.", evidence, "")[1] == 1
+    assert assistant_prose.verify("352 sites respond: 170 up and 182 down.", evidence, "")[1] == 1
+
+
+@pytest.mark.parametrize("a, b, relation, expected", [
+    (1.27, -1.15, "chained", "toward_reference"),
+    (-1.12, -1.00, "chained", "further_from_reference"),           # SCOT1: down in dQ0, further down in R20
+    (2.42, 1.91, "shared_reference", "toward_reference"),
+    (2.0, 2.1, "shared_reference", "further_from_reference"),
+    (2.0, -2.0, "shared_reference", "opposite_side_of_reference"),
+    (2.0, 0.3, "shared_reference", "toward_reference"),
+    (2.0, 2.0, "shared_reference", "same_point_estimate"),
+    (2.0, -2.0, "chained", "at_reference_point_estimate"),
+])
+def test_direction_words_say_where_contrast_b_puts_a_row(a, b, relation, expected):
+    from app.services.ai_functions import _reference_direction
+
+    assert _reference_direction(a, b, relation) == expected
+
+
+def test_versus_reports_named_rows_in_b_with_direction_words_and_enriches_derived_sets(monkeypatch):
+    """"Does GRK2 re-expression revert the baseline hits?" (GRK, 2026-10-14): the model misread the
+    sign of R20 vs dQ0 once; now the application writes the direction, and the gene sets that
+    differ between the contrasts are tested for GO over-representation."""
+    import pandas as pd
+    from app.services import ai_functions, stats_tools
+
+    ribosome = ["RPL3", "RPL4", "RPL5", "RPL6", "RPL7", "RPL8", "RPL9", "RPL10", "RPL11", "RPL12", "RPS3", "RPS4X", "RPS5", "RPS6", "RPS7"]
+    others = ["ACTB", "GAPDH", "TUBB", "VIM", "HSPA8", "EEF1A1", "PKM", "ENO1", "LDHA", "ALDOA", "TPI1", "PGK1", "MYH9", "FLNA", "ANXA2",
+              "ATP5F1A", "SLC25A5", "HSP90AA1", "CALM1", "YWHAZ", "PRDX1", "SOD1"]
+    genes = ribosome + ["CCN1", "IRS2", "OXCT1"] + others
+    frame_a = pd.DataFrame({"GeneNames": genes, "log2FC": [1.5] * 15 + [1.3, -1.2, -1.1] + [0.1] * 22,
+                            "adj_pval": [0.001] * 18 + [0.5] * 22,
+                            "significance": ["Upregulated"] * 16 + ["Downregulated"] * 2 + ["Not significant"] * 22})
+    frame_b = frame_a.copy()
+    frame_b["log2FC"] = [1.6] * 15 + [-1.15, -1.0, 0.0] + [0.1] * 22      # ribosome unchanged; CCN1 reverts, IRS2 further
+    frame_b["adj_pval"] = [0.001] * 15 + [0.2, 0.01, 0.9] + [0.5] * 22
+    frame_b["significance"] = ["Upregulated"] * 15 + ["Not significant", "Downregulated", "Not significant"] + ["Not significant"] * 22
+    monkeypatch.setattr(stats_tools, "_volcano_dataframe", lambda **kwargs: ("data", "GeneNames", frame_b, []))
+    lines = ai_functions._volcano_contrast_difference(
+        frame_a, "GeneNames", ("R20", "dQ0"), kind="protein", identifier="workflow", p_value_threshold=0.05,
+        log2fc_threshold=1.0, test_type="unpaired", use_uncorrected=False, data_source="filtered", a_pair=("dQ0", "C0"),
+        lookup=["CCN1", "IRS2"], enrich=True, organism="human")
+    text = "\n".join(lines)
+    assert "volcano_versus|a=dQ0_vs_C0|b=R20_vs_dQ0|" in text and "reference=C0|direction_words=b_is_measured_from_dQ0" in text
+    assert "volcano_versus_up|a_up=16|also_up_in_b=15|not_significant_in_b=1|" in text
+    assert "volcano_lookup_in_b|query=CCN1|term=CCN1|a_log2FC=1.30|a_significance=Upregulated|b_log2FC=-1.15|b_adj_p=2.000e-01|b_significance=Not significant|direction=toward_reference" in text
+    assert "volcano_lookup_in_b|query=IRS2|term=IRS2|" in text and "b_significance=Downregulated|direction=further_from_reference" in text
+    assert "volcano_a_specific_up|term=CCN1|" in text and "direction=toward_reference" in text
+    assert "Significant in A but not B does not establish a difference" in text
+    assert "volcano_versus_enrichment|method=over_representation_hypergeometric_BH|background=genes_with_usable_tests_in_both_contrasts|background_genes=40|" in text
+    assert "volcano_versus_enriched|set=a_specific_up|genes=1|status=too_few_genes" in text
+    shared = [line for line in lines if line.startswith("volcano_versus_enriched|set=shared_up|genes=15|rank=")]
+    assert len(shared) == 6 and all("|overlap=15|" in line and "|adj_p=" in line for line in shared)

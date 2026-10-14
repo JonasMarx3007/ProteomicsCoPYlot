@@ -218,6 +218,15 @@ jobs:
         env:
           COPYLOT_ACCESS_MODE: viewer
 
+      - name: Preserve browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-failure-diagnostics
+          path: frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   package:
     name: package distributions
     runs-on: ubuntu-latest

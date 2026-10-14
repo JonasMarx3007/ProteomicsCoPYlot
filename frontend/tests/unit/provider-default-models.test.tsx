@@ -26,7 +26,7 @@ const OPEN = { providers: ["ollama", "openai", "anthropic", "gemini"], models: {
 
 beforeEach(() => {
   // jsdom does not scroll.
-  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.scrollTo = vi.fn();
   silenceNetwork();
   serveDatasets(api);
 });

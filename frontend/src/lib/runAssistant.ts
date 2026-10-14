@@ -116,7 +116,13 @@ export async function runAssistant(
   // Requested changes the application left out (wrong scope, unavailable):
   // shown in the final answer and sent back so the planner does not retry them.
   const notes: string[] = [];
-  const note = (text: string) => { if (text && !notes.includes(text) && notes.length < 8) notes.push(text); };
+  // A note is kept paragraph by paragraph: two batches of one preset each carry the same
+  // specification paragraph (Nature, 2026-10-13), which the person should read once.
+  const note = (text: string) => {
+    const seen = new Set(notes.flatMap(entry => entry.split(/\n{2,}|\n(?=[A-Z])/)));
+    const fresh = text.split(/\n{2,}|\n(?=[A-Z])/).filter(paragraph => paragraph.trim() && !seen.has(paragraph)).join("\n");
+    if (fresh && !notes.includes(fresh) && notes.length < 8) notes.push(fresh);
+  };
   const searches: Record<string, string> = {};
   const activatedButtons = new Set<string>();
   const attemptedSteps = new Set<string>();
@@ -213,8 +219,10 @@ export async function runAssistant(
       checkAbort();
       if (typeof result.actionBudget === "number" && result.actionBudget > 0) budget = result.actionBudget;
       const now = unsavedAnalysis.capture(null);
-      if (now.pending || now.revision !== revision.revision || stableSnapshot(readView()) !== snapshot) {
-        if (answerOnly && !result.actions.length && !now.pending && now.revision === revision.revision && settleRetries < 3) {
+      const currentView = readView();
+      if (now.pending || now.revision !== revision.revision || stableSnapshot(currentView) !== snapshot) {
+        const sameScope = stableSnapshot({ ...currentView, controls: [] }) === stableSnapshot({ ...view, controls: [] });
+        if (sameScope && !result.actions.length && !now.pending && now.revision === revision.revision && settleRetries < 3) {
           settleRetries += 1;
           step -= 1;
           continue;

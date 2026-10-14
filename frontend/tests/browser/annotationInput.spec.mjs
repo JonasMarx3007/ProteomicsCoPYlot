@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { tabRequest } from './authStartup.mjs';
 
-async function openMapping(page) {
+async function openMapping(page, waitForStored = true) {
   await page.goto('/');
   await page.getByLabel('Dataset type', { exact: true }).selectOption('protein');
   await page.locator('input[type=file]').setInputFiles({
@@ -11,11 +11,26 @@ async function openMapping(page) {
   const uploaded = page.waitForResponse(r => r.url().endsWith('/api/datasets/upload'));
   await page.getByRole('button', { name: 'Upload', exact: true }).last().click();
   expect((await uploaded).ok()).toBeTruthy();
-  const stored = page.waitForResponse(r => r.url().endsWith('/api/annotations/current/protein'));
+  const stored = waitForStored
+    ? page.waitForResponse(r => r.url().endsWith('/api/annotations/current/protein'))
+    : page.waitForRequest(r => r.url().endsWith('/api/annotations/current/protein'));
   await page.getByRole('button', { name: 'Annotation', exact: true }).click();
   await stored;
   await page.getByLabel('Condition name', { exact: true }).fill('A');
 }
+
+test('a late missing stored annotation does not reset a newer scale detection', async ({ page }) => {
+  const pending = [];
+  await page.route('**/api/annotations/current/protein', route => { pending.push(route); });
+  await page.route('**/api/annotations/log2-detect', route => route.fulfill({ json: { isLog2Transformed: false } }));
+  await openMapping(page, false);
+  await page.getByLabel('Sample columns', { exact: true }).selectOption(['A1', 'A2']);
+  await expect(page.getByLabel('Dataset is already log2 transformed')).not.toBeChecked();
+  for (const route of pending) await route.fulfill({ status: 404, json: { detail: 'No annotation' } });
+  const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
+  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
+});
 
 test('manual scale survives mapping edits and an in-flight detection', async ({ page }) => {
   await openMapping(page);
