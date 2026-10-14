@@ -120,8 +120,9 @@ def _colour_names(hex_code: str) -> set[str]:
 
 _ABBREVIATION = re.compile(r"(?:\b(?:vs|e\.g|i\.e|ca|approx|Fig|fig|Nr|bzw|z\.\s?B|d\.\s?h|u\.\s?a|etc|resp|cf)\.)$")
 # A decimal comma ("log2 FC 1,12", "p 2,4e-06", "0,05"): one or two digits, or four or more, after a
-# comma are decimals; exactly three are a thousands group ("11,916").
-_DECIMAL_COMMA = re.compile(r"(?<=\d),(?=\d{1,2}(?!\d)|\d{4,})")
+# comma are decimals; exactly three are a thousands group ("11,916") -- unless the integer part is a
+# lone zero ("r = 0,994", 2026-10-13: three correct German correlation sentences were removed).
+_DECIMAL_COMMA = re.compile(r"(?<=\d),(?=\d{1,2}(?!\d)|\d{4,})|(?<=(?<![\d.])0),(?=\d{3}(?!\d))")
 
 
 def _sentences(text: str) -> list[str]:
@@ -144,8 +145,10 @@ def _sentences(text: str) -> list[str]:
 _MORE = r"higher|more|greater|larger|bigger|above|exceeds?|exceeding|outnumbers?"
 _LESS = r"lower|fewer|less|smaller|below"
 _NUM = r"[-+\u2212]?\d+(?:,\d{3})*(?:\.\d+)?"
-_STAT = re.compile(r"(?:^|\|)(?:name|condition|sample|group)=(?P<name>[^|\n]+)(?P<rest>[^\n]*)")
-_METRIC = re.compile(r"\|(mean|median|min|max|count|value|detected_features|log2fc|log2_fc)=(" + _NUM + r")")
+# Case-insensitive: the boxplot table writes Condition=C0|...|Median=6.22, and a reader's
+# "+2.2" between two medians was removed for it (GRK project, 2026-10-14).
+_STAT = re.compile(r"(?:^|\|)(?:name|condition|sample|group)=(?P<name>[^|\n]+)(?P<rest>[^\n]*)", re.I)
+_METRIC = re.compile(r"\|(mean|median|min|max|count|value|detected_features|log2fc|log2_fc)=(" + _NUM + r")", re.I)
 
 
 def _subject_values(evidence_texts: list[str]) -> dict[str, dict[str, float]]:
@@ -156,7 +159,7 @@ def _subject_values(evidence_texts: list[str]) -> dict[str, dict[str, float]]:
             match = _STAT.search(line)
             if not match:
                 continue
-            values = {key: float(value.replace(",", "").replace("\u2212", "-"))
+            values = {key.lower(): float(value.replace(",", "").replace("\u2212", "-"))
                       for key, value in _METRIC.findall(match["rest"])}
             if values:
                 found.setdefault(match["name"].strip(), {}).update(values)
@@ -226,6 +229,12 @@ def _derived(subjects: dict[str, dict[str, float]], reference: str) -> list[floa
                 if metric in centre:
                     gap = abs(number - centre[metric])
                     found.extend([gap, *(100 * gap / base for base in (centre[metric],) if base)])
+    # A log2 fold change as the fold change a reader says ("log2FC 1.75, about 3.4-fold";
+    # 2026-10-13: the ANXA3 line was removed while CCN1's 6.7-fold survived by coincidence).
+    for value in re.findall(r"\blog2_?fc\w*=(" + _NUM + r")", reference, re.I):
+        number = float(value.replace(",", "").replace("\u2212", "-"))
+        if abs(number) <= 20:
+            found.append(2 ** abs(number))
     # Each part of a stated total, as a share of it and as what remains ("55 % of the
     # detections are below 0.75", "leaving 5,021").
     for line in reference.splitlines():
@@ -251,6 +260,25 @@ _TEXTBOOK = re.compile(
 # follows the first within a few characters).
 _APPROXIMATE = re.compile(r"(?:~|\u2248|\babout|\broughly|\baround|\bapprox(?:imately|\.)?|\bnearly|\balmost|\bclose to|"
                           r"\bsome)\s*(?:[-+\u2212]?\d[\d,.]*\s*%?\s*(?:-|\u2013|to)\s*)?$", re.I)
+
+
+def _arithmetic(match: "re.Match[str]", matches: list, checks: list[bool]) -> bool:
+    """A total or gap a reader works out from two confirmed figures in the same sentence:
+    "352 sites: 174 up and 178 down", "6.22 at 0 min, 8.46 at 5 min (+2.2)" (GRK, 2026-10-14)."""
+    token = match.group(0).rstrip("%")
+    number = _value(token)
+    if match.group(1) or number is None:
+        return False
+    digits = _decimals(token)
+    tolerance = 0.5 * 10 ** -digits + 1e-9
+    others = [_value(other.group(0).rstrip("%")) for other, check in zip(matches, checks)
+              if check and other is not match and not other.group(1)]
+    values = [value for value in others if value is not None]
+    for index, first in enumerate(values):
+        for second in values[index + 1:]:
+            if any(abs(abs(number) - abs(candidate)) <= tolerance for candidate in (first + second, first - second)):
+                return True
+    return False
 
 
 def verify(answer: str, evidence_texts: list[str], context: str) -> tuple[str, int]:
@@ -280,9 +308,11 @@ def verify(answer: str, evidence_texts: list[str], context: str) -> tuple[str, i
             kept.append(sentence)
             continue
         plain = _DECIMAL_COMMA.sub(".", _TEXTBOOK.sub(" ", sentence))
-        ok = all(_confirmed(match.group(0).rstrip("%"), bool(match.group(1)), known,
-                            bool(_APPROXIMATE.search(plain[max(0, match.start() - 24):match.start()])))
-                 for match in _NUMBER.finditer(plain))
+        matches = list(_NUMBER.finditer(plain))
+        checks = [_confirmed(match.group(0).rstrip("%"), bool(match.group(1)), known,
+                             bool(_APPROXIMATE.search(plain[max(0, match.start() - 24):match.start()])))
+                  for match in matches]
+        ok = all(checks) or all(check or _arithmetic(match, matches, checks) for match, check in zip(matches, checks))
         ok = ok and all(token.upper() in _COMMON or token.casefold() in names
                         for token in _IDENTIFIER.findall(sentence))
         ok = ok and all(word.lower().replace("gray", "grey") in colours for word in _COLOUR_WORD.findall(sentence))

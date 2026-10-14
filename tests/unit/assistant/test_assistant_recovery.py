@@ -33,6 +33,19 @@ def test_a_flag_inside_the_action_list_no_longer_invalidates_the_plan(assistant_
     assert result.explainAfterChanges
 
 
+def test_an_action_list_wrapped_once_more_is_unwrapped(assistant_rig):
+    """Haiku returned "actions": [[{...}, {...}]] on the GRK project (2026-10-13)."""
+    run = assistant_rig.run
+    plan = {"task": "ui", "actions": [[{"type": "set_control", "target": "test", "value": "unpaired_welch"},
+                                       {"explainAfterChanges": True}]]}
+    result = run([json.dumps(plan)], message="Change the test to Welch and explain the result.", view=_volcano_view())
+    assert [(a.type, a.value) for a in result.actions] == [("set_control", "unpaired_welch")]
+    assert result.explainAfterChanges
+    with pytest.raises(ValueError, match="invalid plan"):
+        run([json.dumps({"task": "ui", "actions": [[[{"type": "set_control", "target": "test", "value": "unpaired_welch"}]]]})],
+            message="Change the test to Welch.", view=_volcano_view())
+
+
 @pytest.mark.parametrize("item", [{"explainAfterChanges": "yes"}, {"explainAfterChanges": True, "type": "navigate"}, {}, {"value": 1}])
 def test_only_an_exact_flag_object_is_lifted(assistant_rig, item):
     run = assistant_rig.run
@@ -269,3 +282,17 @@ def test_answer_and_repair_pin_the_model_resolved_by_planning(monkeypatch):
     result = assistant.assistant_step(AssistantRequest(message="Explain this plot", provider="ollama", view={"module": "qc.cv"}))
     assert models == [("ollama", None), ("ollama", "resolved-model"), ("ollama", "resolved-model")]
     assert result.model == "resolved-model" and "count: 12" in result.answer
+
+
+def test_a_styling_request_that_names_its_contrast_sets_the_contrast_first(assistant_rig):
+    """"Make the dQ0 vs C0 volcano publication ready" on a volcano at C0 vs C0 (GRK, 2026-10-14):
+    the application resolves the pair; the cosmetic-only guard does not block its own plan."""
+    run, calls = assistant_rig.run, assistant_rig.calls
+    view = {"module": "stats.volcano", "destinations": {"stats.volcano": "Statistical Analysis / Volcano Plot - fold change"},
+            "controls": [
+                {"id": "c1", "label": "Condition 1", "type": "select", "permission": "view", "value": "C0", "options": ["C0", "dQ0", "C5"]},
+                {"id": "c2", "label": "Condition 2", "type": "select", "permission": "view", "value": "C0", "options": ["C0", "dQ0", "C5"]},
+                {"id": "t", "label": "Title / Size", "type": "number", "permission": "view", "value": "9", "options": [], "appearance": True}]}
+    result = run([], message="Make the dQ0 vs C0 volcano publication ready: label the three strongest hits, Nature style.", view=view)
+    assert [(a.target, a.value) for a in result.actions] == [("c1", "dQ0")]
+    assert not calls  # the application set the pair itself; the styling follows in the next step

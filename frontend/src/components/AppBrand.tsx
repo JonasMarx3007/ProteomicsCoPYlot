@@ -37,7 +37,7 @@ export default function AppBrand({
         ].join(" ")}
       />
       <div className="min-w-0">
-        <div className={[titleSize, "font-bold leading-tight tracking-tight text-slate-900"].join(" ")}>
+        <div className={[titleSize, "break-words font-bold leading-tight tracking-tight text-slate-900 [overflow-wrap:normal]"].join(" ")}>
           {title}
         </div>
         {subtitle ? (

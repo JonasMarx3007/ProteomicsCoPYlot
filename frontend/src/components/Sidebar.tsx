@@ -1,4 +1,5 @@
 import type { SidebarSection } from "../lib/types";
+import { resizeHandleClass, type ResizablePanel } from "../lib/useResizablePanel";
 import AppBrand from "./AppBrand";
 
 type SidebarItem = {
@@ -27,6 +28,8 @@ type SidebarProps = {
   isOpen: boolean;
   onClose: () => void;
   sections?: SidebarSection[];
+  /** Drag-to-resize state owned by the shell, so the content margin follows the width. */
+  panel?: ResizablePanel;
 };
 
 export default function Sidebar({
@@ -35,6 +38,7 @@ export default function Sidebar({
   isOpen,
   onClose,
   sections,
+  panel,
 }: SidebarProps) {
   const visibleItems = sections
     ? items.filter((item) => sections.includes(item.key))
@@ -55,12 +59,14 @@ export default function Sidebar({
         aria-hidden={!isOpen}
         aria-label="Main navigation"
         className={[
-          "fixed inset-y-0 left-0 z-40 flex h-screen w-72 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-300",
+          "fixed inset-y-0 left-0 z-40 flex h-screen shrink-0 flex-col border-r border-slate-200 bg-white transition-transform duration-300",
           isOpen ? "translate-x-0" : "-translate-x-full",
         ].join(" ")}
+        style={{ width: panel ? `${panel.width}px` : "18rem" }}
       >
+        {panel ? <div className={resizeHandleClass("right")} {...panel.handleProps("right")} /> : null}
         <div className="flex items-start justify-between gap-3 p-5">
-          <AppBrand />
+          <AppBrand size={panel && panel.width < 300 ? "sm" : "md"} />
 
           <button
             type="button"
@@ -94,7 +100,7 @@ export default function Sidebar({
                   aria-current={active ? "page" : undefined}
                   onClick={() => { onChange(item.key); if (window.innerWidth < 768) onClose(); }}
                   className={[
-                    "w-full rounded-xl px-4 py-3 text-left text-sm transition",
+                    "w-full truncate rounded-xl px-4 py-3 text-left text-sm transition",
                     active
                       ? "bg-slate-900 text-white shadow"
                       : "text-slate-700 hover:bg-slate-100",

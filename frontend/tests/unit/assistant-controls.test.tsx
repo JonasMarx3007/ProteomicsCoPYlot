@@ -23,7 +23,13 @@ import {
   addCanvasTiles,
   applyAssistantControls,
   assistantFeatureChoices,
+  assistantSurfaceReady,
+  assistantChanges,
+  beginAssistantRequest,
+  isGroupedSetting,
   readAssistantControls,
+  undoLastAssistantRequest,
+  undoableAssistantChanges,
   searchAssistantOptions,
   type AssistantControl,
 } from "../../src/lib/assistantControls";
@@ -34,6 +40,22 @@ function Surface({ children }: { children: ReactNode }) {
 }
 
 const noop = () => {};
+
+it("waits for canvas images to settle, including failed renders", () => {
+  const canvas = (busy: boolean) => <Surface><section data-assistant-tile="boxplot">
+    <img aria-busy={busy} alt="analysis boxplot" />
+  </section></Surface>;
+  const { rerender, unmount } = render(canvas(true));
+  expect(assistantSurfaceReady("test")).toBe(false);
+  // Both successful and failed image loads clear the busy flag.
+  rerender(canvas(false));
+  expect(assistantSurfaceReady("test")).toBe(true);
+  expect(assistantSurfaceReady("another-module")).toBe(false);
+  rerender(canvas(true));
+  expect(assistantSurfaceReady("test")).toBe(false);
+  unmount();
+  expect(assistantSurfaceReady("test")).toBe(false);
+});
 
 /** A text field the assistant can set, with its caption as its label. */
 function Field({ label, initial = "1", appearance = false }: { label: string; initial?: string; appearance?: boolean }) {
@@ -142,6 +164,38 @@ describe("reading the controls", () => {
     expect(found.options).toEqual(["times"]);
     expect(found.optionMatchCount).toBe(1);
     expect(found.value).toBe("helvetica");
+  });
+
+  it("finds a site written as gene and position in a spaced search", () => {
+    // "RIF1 S1542" names Q5UIP0~RIF1_S1542_M1 (GRK project, 2026-10-14).
+    render(<Surface><Choice name="Protein / Site" initial="A~CDK1_T14_M2"
+      options={["A~CDK1_T14_M2", "Q5UIP0~RIF1_S1542_M1", "Q5UIP0~RIF1_S2205_M1", "X~SERBP1_T388_M1"]} /></Surface>);
+    const site = byLabel("Protein / Site");
+    expect(byLabel("Protein / Site", "", { [site.id]: "RIF1 S1542" }).options).toEqual(["Q5UIP0~RIF1_S1542_M1"]);
+    expect(byLabel("Protein / Site", "", { [site.id]: "rif1" }).options).toEqual(["Q5UIP0~RIF1_S1542_M1", "Q5UIP0~RIF1_S2205_M1"]);
+  });
+
+  it("keeps the page's selectors ahead of grouped per-condition settings under the 100-control cap", () => {
+    // 16 conditions x colour and name rows pushed "Protein / Site" past the cap when the question
+    // did not say "protein" (GRK project, 2026-10-14).
+    const conditions = Array.from({ length: 16 }, (_, i) => `K${i}`);
+    render(<Surface>
+      <Choice name="Identifier" options={["workflow", "genes"]} />
+      <Choice name="Protein / Site" initial="P1" options={["P1", "P2"]} />
+      {conditions.flatMap((c) => [
+        <div key={`${c}c`} data-assistant-group="Boxes and their points / Box border color"><Choice name={c} options={["#000", "#fff"]} /></div>,
+        <div key={`${c}n`} data-assistant-group="Names and colors / Condition names"><Choice name={c} options={[c, `${c}x`]} /></div>,
+        <div key={`${c}s`} data-assistant-group="Lines and markers / Condition styles"><Choice name={c} options={["solid", "dashed"]} /></div>,
+        <div key={`${c}m`} data-assistant-group="Lines and markers / Condition markers"><Choice name={c} options={["o", "x"]} /></div>,
+      ])}
+      {Array.from({ length: 40 }, (_, i) => <div key={`g${i}`} data-assistant-group="Axes and ticks / Ticks"><Choice name={`Tick ${i}`} options={["a", "b"]} /></div>)}
+    </Surface>);
+    const labels = readAssistantControls("Show me RIF1 S1542 across all 16 conditions so I can see the baseline and the 5 minute response in every line.").map((c) => c.label);
+    expect(labels.length).toBe(100);
+    expect(labels).toContain("Protein / Site");
+    expect(labels).toContain("Identifier");
+    expect(isGroupedSetting("Protein / Site")).toBe(false);
+    expect(isGroupedSetting("Names and colors / Condition colors / C0")).toBe(true);
   });
 
   it("handles exact matches, empty results and read-only discovery in a targeted option search", () => {
@@ -277,5 +331,26 @@ describe("adding canvas tiles", () => {
     const partial: string[] = [];
     expect(() => addCanvasTiles('{"type":"volcano","count":2}', 8, (receipt) => partial.push(receipt))).toThrow(/Unavailable/);
     expect(partial.length).toBe(1);
+  });
+});
+
+describe("undo covers the last request only", () => {
+  it("takes back every change of the latest request and leaves earlier requests alone", () => {
+    const { unmount } = render(<Surface><Field label="Title size" initial="12" appearance /><Field label="Width" initial="5" appearance /></Surface>);
+    const size = () => byLabel("Title size"), width = () => byLabel("Width");
+    beginAssistantRequest();
+    applyAssistantControls([{ type: "set_control", target: size().id, value: "20" }]);
+    beginAssistantRequest();
+    applyAssistantControls([{ type: "set_control", target: width().id, value: "9" }]);
+    applyAssistantControls([{ type: "set_control", target: size().id, value: "24" }]);
+    expect(undoableAssistantChanges().map((change) => change.label)).toEqual(["Width", "Title size"]);
+    const logged = assistantChanges().length;  // the session log also holds earlier tests' changes
+    expect(undoLastAssistantRequest()).toBe("Undid 2 changes of the last request.");
+    expect(size().value).toBe("20");  // the first request's change stays
+    expect(width().value).toBe("5");
+    expect(undoableAssistantChanges()).toHaveLength(0);
+    expect(assistantChanges()).toHaveLength(logged - 2);
+    expect(() => undoLastAssistantRequest()).toThrow(/no assistant change to undo/);
+    unmount();
   });
 });

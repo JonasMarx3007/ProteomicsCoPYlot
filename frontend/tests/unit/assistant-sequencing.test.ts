@@ -359,6 +359,18 @@ describe("runAssistant", () => {
     await expect(scenario([navigate(), {}, churn, churn, churn, churn], { controls })).rejects.toThrow(/view or analysis changed/);
   });
 
+  it('a changed view is re-read even when the planning step only answers', async () => {
+    const controls = [{ id: 'pathway', label: 'Pathway', value: '' }];
+    const evidence = [{ tool: 't', status: 'available', text: 'x' }];
+    const { result, calls } = await scenario([navigate(), {
+      mutate: () => { controls[0].value = 'loaded'; }, answer: 'Stale explanation.', evidence,
+    },
+      { answer: 'Explained.', evidence }], { controls });
+    expect(result.answer).toMatch(/Explained/);
+    expect(result.answer).not.toMatch(/Stale/);
+    expect(calls.at(-1).view.controls[0].value).toBe('loaded');
+  });
+
   it('late explanation retries do not consume the last planning slot', async () => {
     const controls = [{ id: 'width', label: 'Width', value: 0 }];
     const changes = Array.from({ length: 6 }, (_, index) => ({

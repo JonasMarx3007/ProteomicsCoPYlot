@@ -2,6 +2,7 @@
 import { oraListExportRows } from "../stats/oraExport";
 import { collectColumns, csvDataUrl, rowsToQuotedCsv } from "../../lib/tableData";
 import { linkedConditionsParam } from "./linkedConditions";
+import { resizeHandleClass, useResizablePanel } from "../../lib/useResizablePanel";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
 import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
@@ -448,6 +449,7 @@ export default function AnalysisPage({
   });
   const [opTarget, setOpTarget] = useState(() => asString(persisted.opTarget));
   const listSidebarOpen = rightPanel === "list";
+  const listPanel = useResizablePanel("layout.listWidth.v1", 320, "protein list panel");
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
   function conditionsValid(settings: VolcanoControlSettings, control: boolean) {
@@ -772,10 +774,8 @@ export default function AnalysisPage({
 
   return (
     <div
-      className={[
-        "relative space-y-6 transition-[padding] duration-300",
-        listSidebarOpen ? "pr-[20rem]" : "pr-0",
-      ].join(" ")}
+      className="relative space-y-6 transition-[padding] duration-300"
+      style={{ paddingRight: listSidebarOpen ? `${listPanel.width}px` : 0 }}
     >
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-slate-900">Global Controls</h3>
@@ -1159,10 +1159,12 @@ export default function AnalysisPage({
 
       <aside
         className={[
-          "fixed inset-y-0 right-0 z-40 flex h-screen w-80 shrink-0 flex-col border-l border-slate-200 bg-white transition-transform duration-300",
+          "fixed inset-y-0 right-0 z-40 flex h-screen shrink-0 flex-col border-l border-slate-200 bg-white transition-transform duration-300",
           listSidebarOpen ? "translate-x-0" : "translate-x-full",
         ].join(" ")}
+        style={{ width: `${listPanel.width}px` }}
       >
+        <div className={resizeHandleClass("left")} {...listPanel.handleProps("left")} />
         <div className="flex items-start justify-between p-5">
           <div className="pr-4">
             <div className="text-xl font-bold tracking-tight text-slate-900">Protein Lists</div>
@@ -2335,6 +2337,7 @@ function CanvasImagePlot({ url, alt, ...options }: React.ComponentProps<typeof C
     {!ready ? <CanvasPlotStatus error={current && render.status === "error" ? "Could not render this plot. Check the selection or try again." : undefined}
       onRetry={() => setRender(previous => ({ ...previous, attempt: previous.attempt + 1, status: "loading" }))} /> : null}
     <img key={imageUrl} src={imageUrl} alt={alt} onLoad={() => status("ready")} onError={() => status("error")}
+      aria-busy={!current || render.status === "loading"}
       className={ready ? "mt-3 w-full rounded-xl border border-slate-200 bg-white" : "hidden"} />
   </>;
 }

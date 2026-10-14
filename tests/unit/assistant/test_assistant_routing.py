@@ -26,6 +26,17 @@ from assistant_support import (
 )
 
 
+@pytest.mark.parametrize("question, expected", [
+    ("What am I looking at here, in plain language?", True),
+    ("Please what can I see on this page?", True),
+    ("What is this showing?", True),
+    ("What can I see and make the legend smaller", False),
+    ("What am I looking at in the PCA plot?", False),
+])
+def test_visible_description_shortcut_is_read_only_and_current_scope(question, expected):
+    assert bool(assistant._VISIBLE_DESCRIPTION.fullmatch(question)) is expected
+
+
 @pytest.mark.parametrize("message", [
     "If I select K23, what would happen?", "I might select K23 later.",
     "Select K23 or K17.", "Select K23 and K17.", "Select K23, K17.",
@@ -519,3 +530,38 @@ def test_activity_uses_only_the_uploaded_snapshot(monkeypatch):
         "mode": {"externalPlotPresent": True, "externalEvidenceToken": "snapshot"}})
     result = assistant.scientific_evidence(request, AssistantPlan(task="current_plot", module="external_activity"))
     assert result[0].tool == "uploaded" and seen[0][:2] == ("snapshot", "external_ksea")
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("open the volcano for GRK against WT and tell me the three strongest hits", True),
+    ("set GRK vs WT and list the top 5 proteins", True),
+    ("show the volcano with the strongest hits", True),
+    ("open the volcano for GRK against WT", False),
+    ("make the title bigger", False),
+])
+def test_a_ranked_result_next_to_a_view_change_is_an_explanation_request(question, expected):
+    from app.services.assistant_routing import explanation_requested
+
+    assert explanation_requested(question) is expected
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("back to the volcano: make it ready for a Nature figure and label CCN1 and CCN2", False),
+    ("go to the PCA and make the dots bigger", False),
+    ("make the title bold and the legend smaller", True),
+])
+def test_moving_to_a_page_first_is_not_appearance_only(question, expected):
+    from app.services.assistant_routing import appearance_only_request
+
+    assert appearance_only_request(question) is expected
+
+
+@pytest.mark.parametrize("message, ui", [
+    ("Which proteins differ at baseline? Open the volcano dQ0 vs C0 and give me all significant proteins.", True),
+    ("Which proteins differ at baseline? I want the knockout-specific ones.", False),
+    ("What does this plot show? Show me the volcano for dQ0 vs C0", True),
+])
+def test_a_question_followed_by_an_action_keeps_the_ui_task(message, ui):
+    """"Which proteins differ…? Open the volcano dQ0 vs C0…" was planned without UI tools, so the
+    contrast was never set (GRK project, 2026-10-14)."""
+    assert ("ui" in planner_tasks(message)) is ui

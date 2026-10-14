@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any, cast, get_args
 from app.services.peptide_quantity import resolve_peptide_quantity_column
 import json
+import re
 
+import numpy as np
 import pandas as pd
 
 from app.schemas.assistant import ContextMode
 from app.schemas.annotation import AnnotationKind
-from app.schemas.stats import AnovaRequest, SimulationRequest, EnrichmentRequest, StatsTestType
+from app.schemas.stats import AnovaRequest, SimulationRequest, EnrichmentRequest, ListEnrichmentRequest, StatsTestType
 from app.services.annotation_store import get_annotation
 from app.services.dataset_store import get_active_package, get_all_current_datasets
 from app.services.condition_palette_store import build_condition_color_map
@@ -275,6 +277,196 @@ def _safe_context_text(value: Any) -> str:
     if not text:
         return "unknown"
     return text
+
+
+def _lookup_queries(text: str) -> list[str]:
+    """Names to look up: separated by commas or semicolons; "MAP4K4 S1045" stays one query
+    (a gene and its site), while "ANXA1 ANXA3" is two names (GRK, 2026-10-13)."""
+    queries: list[str] = []
+    for chunk in re.split(r"[,;]+", text):
+        tokens = [token for token in chunk.split() if token]
+        while tokens:
+            if len(tokens) >= 2 and re.fullmatch(r"[STYsty]\d{1,5}", tokens[1]) and not re.fullmatch(r"[STYsty]\d{1,5}", tokens[0]):
+                queries.append(tokens[0] + " " + tokens[1])
+                tokens = tokens[2:]
+            else:
+                queries.append(tokens[0])
+                tokens = tokens[1:]
+    return queries
+
+
+def _lookup_pattern(query: str) -> "re.Pattern[str]":
+    """A whole-token match of each part of the query, in order, within one identifier cell."""
+    parts = [r"(?<![A-Za-z0-9])" + re.escape(part) + r"(?![A-Za-z0-9])" for part in query.split()]
+    return re.compile(r".*?".join(parts), re.I)
+
+
+def _contrast_pair(text: str) -> tuple[str, str] | None:
+    """"C5 vs C0", "C5 versus C0" or "C5, C0": two different condition names, else nothing."""
+    match = re.fullmatch(r"\s*(.{1,60}?)\s*(?:\s+vs\.?\s+|\s+versus\s+|\s+minus\s+|,|;)\s*(.{1,60}?)\s*", text, re.I)
+    if not match or match.group(1) == match.group(2):
+        return None
+    return match.group(1), match.group(2)
+
+
+def _reference_direction(a_value: float, b_value: float, relation: str) -> str:
+    """Where contrast B puts a row relative to A's reference condition.
+
+    relation "shared_reference": A = X vs ref, B = Y vs ref (both measured from the same
+    reference); "chained": A = X vs ref, B = Y vs X (B measured from A's first condition).
+    The words are what a reader would otherwise have to work out from two signs
+    ("CCN1 R20 vs dQ0 = -1.15 after dQ0 vs C0 = +1.27 is a move back toward C0";
+    GRK project, 2026-10-14)."""
+    if relation == "chained":
+        # Y's position from the reference is a + b.
+        position = a_value + b_value
+    else:
+        position = b_value
+    if not np.isfinite(a_value) or not np.isfinite(position):
+        return "unavailable"
+    if position == a_value:
+        return "same_point_estimate"
+    if position == 0:
+        return "at_reference_point_estimate"
+    if a_value * position < 0:
+        return "opposite_side_of_reference"
+    if abs(position) < abs(a_value):
+        return "toward_reference"
+    return "further_from_reference"
+
+
+def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versus: tuple[str, str], *, kind: str,
+                                 identifier: str, p_value_threshold: float, log2fc_threshold: float, test_type: str,
+                                 use_uncorrected: bool, data_source: str, a_pair: tuple[str, str],
+                                 lookup: list[str] | None = None, enrich: bool = False, organism: str = "") -> list[str]:
+    """Contrast A's significant rows seen in contrast B, computed with the same settings
+    ("up after stimulation in parental cells but not in the knockout", GRK, 2026-10-14).
+    Rows are matched by identifier; the set algebra is done here, not by the model.
+    When B shares A's reference condition, or is measured from A's first condition, each row
+    also says whether B has moved it back toward that reference. With ``enrich`` the
+    A-specific and shared gene sets use genes with usable tests in both contrasts as the GO background."""
+    a_label = f"{a_pair[0]}_vs_{a_pair[1]}"
+    b_label = f"{versus[0]}_vs_{versus[1]}"
+    relation = "shared_reference" if versus[1] == a_pair[1] else "chained" if versus[1] == a_pair[0] else ""
+    if test_type == "paired":
+        # Complete pairs can differ between contrasts, so their estimates need
+        # not share the same reference mean and cannot safely be added.
+        relation = ""
+    untested_out: list = []
+    try:
+        _, label_b, frame_b, _ = _stats_tools._volcano_dataframe(
+            kind=kind,  # type: ignore[arg-type]
+            condition1=versus[0], condition2=versus[1], identifier=identifier,  # type: ignore[arg-type]
+            p_value_threshold=p_value_threshold, log2fc_threshold=log2fc_threshold, test_type=test_type,
+            use_uncorrected=use_uncorrected, data_source=data_source, untested_out=untested_out)  # type: ignore[arg-type]
+    except Exception as exc:
+        return [f"volcano_versus|b={_safe_context_text(b_label)}|status=error|detail={_safe_context_text(exc)}"]
+    key_a = frame_a[label_column].astype(str) if label_column in frame_a.columns else frame_a.iloc[:, 0].astype(str)
+    key_b = frame_b[label_b].astype(str) if label_b in frame_b.columns else frame_b.iloc[:, 0].astype(str)
+    # Display labels (especially genes for phosphosites) need not identify a row.
+    # Use a common unique workflow identifier; never discard repeated labels.
+    for column in _stats_tools._workflow_label_candidates(kind):  # type: ignore[arg-type]
+        if column in frame_a and column in frame_b and frame_a[column].notna().all() and frame_b[column].notna().all():
+            candidate_a, candidate_b = frame_a[column].astype(str), frame_b[column].astype(str)
+            if candidate_a.is_unique and candidate_b.is_unique:
+                key_a, key_b = candidate_a, candidate_b
+                break
+    if not key_a.is_unique or not key_b.is_unique:
+        return ["volcano_versus|status=unavailable|reason=no_unique_shared_row_identifier"]
+    b = frame_b.assign(_key=key_b.values).set_index("_key")
+    untested_b = untested_out[0] if untested_out and isinstance(untested_out[0], pd.DataFrame) else pd.DataFrame()
+    key_column = str(key_b.name)
+    untested_keys = set(untested_b[key_column].astype(str)) if not untested_b.empty and key_column in untested_b.columns else set()
+    header = (f"volcano_versus|a={_safe_context_text(a_label)}|b={_safe_context_text(b_label)}|"
+              f"b_tested={int(frame_b.shape[0])}|b_untested={len(untested_keys)}|same_settings=true|rows_matched_by_identifier=true")
+    if relation == "shared_reference":
+        header += f"|reference={_safe_context_text(a_pair[1])}|direction_words=position_of_{_safe_context_text(versus[0])}_relative_to_{_safe_context_text(a_pair[0])}_both_measured_from_the_reference"
+    elif relation == "chained":
+        header += (f"|reference={_safe_context_text(a_pair[1])}|direction_words=b_is_measured_from_{_safe_context_text(a_pair[0])}_so_a_plus_b_is_"
+                   f"{_safe_context_text(versus[0])}_relative_to_the_reference")
+    lines = [header, "volcano_versus_caution|message=Significant in A but not B does not establish a difference between contrasts. "
+             "Direction describes point estimates only, not evidence of rescue, equivalence or an interaction."]
+    if test_type == "paired":
+        lines.append("volcano_versus_caution|message=Paired contrasts can use different complete pairs; no common-reference direction was inferred.")
+
+    def _p(value: object) -> str:
+        return _fmt_probability(float(value)) if pd.notna(value) else "unavailable"  # type: ignore[arg-type]
+
+    def _direction(a_value: float, b_value: float) -> str:
+        return f"|direction={_reference_direction(a_value, b_value, relation)}" if relation else ""
+
+    gene_sets: dict[str, list[str]] = {}
+    gene_column = next((column for column in _stats_tools._gene_label_candidates(kind) if column in frame_a.columns), None)  # type: ignore[arg-type]
+    split_groups = kind == "phosprot" or gene_column == "Gene_group"
+    for direction, group in (("Upregulated", "up"), ("Downregulated", "down")):
+        rows = frame_a[frame_a["significance"].astype(str) == direction].copy()
+        rows["_key"] = key_a[rows.index].values
+        rows["_b_sig"] = [str(b.loc[k, "significance"]) if k in b.index else ("untested" if k in untested_keys else "absent") for k in rows["_key"]]
+        counts = rows["_b_sig"].value_counts()
+        lines.append(f"volcano_versus_{group}|a_{group}={int(rows.shape[0])}|also_{group}_in_b={int(counts.get(direction, 0))}|"
+                     f"not_significant_in_b={int(counts.get('Not significant', 0))}|opposite_in_b={int(counts.get('Downregulated' if group == 'up' else 'Upregulated', 0))}|"
+                     f"untested_in_b={int(counts.get('untested', 0))}|absent_in_b={int(counts.get('absent', 0))}|unavailable_in_b={int(counts.get('Unavailable', 0))}")
+        specific = rows[rows["_b_sig"] == "Not significant"].copy()
+        specific["_score"] = specific["log2FC"].abs() + (-np.log10(specific["adj_pval"].astype(float).clip(lower=1e-300)))
+        for _, row in specific.sort_values("_score", ascending=False).head(10).iterrows():
+            b_row = b.loc[row["_key"]]
+            lines.append(f"volcano_a_specific_{group}|term={_primary_term_label(row['_key'])}|a_log2FC={_fmt_value(float(row['log2FC']))}|"
+                         f"a_adj_p={_p(row['adj_pval'])}|b_log2FC={_fmt_value(float(b_row['log2FC']))}|b_adj_p={_p(b_row['adj_pval'])}|b=not_significant"
+                         + _direction(float(row["log2FC"]), float(b_row["log2FC"])))
+        if specific.shape[0] > 10:
+            lines.append(f"volcano_a_specific_{group}_truncated|rows={int(specific.shape[0])}|shown=10|rank=effect_and_significance_in_a")
+        shared = rows[rows["_b_sig"] == direction].copy()
+        shared["_score"] = shared["log2FC"].abs() + (-np.log10(shared["adj_pval"].astype(float).clip(lower=1e-300)))
+        for _, row in shared.sort_values("_score", ascending=False).head(5).iterrows():
+            b_row = b.loc[row["_key"]]
+            lines.append(f"volcano_shared_{group}|term={_primary_term_label(row['_key'])}|a_log2FC={_fmt_value(float(row['log2FC']))}|"
+                         f"b_log2FC={_fmt_value(float(b_row['log2FC']))}|b_adj_p={_p(b_row['adj_pval'])}"
+                         + _direction(float(row["log2FC"]), float(b_row["log2FC"])))
+        if enrich and gene_column:
+            gene_sets[f"a_specific_{group}"] = _stats_tools._genes_from_values(specific[gene_column].tolist(), split_groups=split_groups)
+            gene_sets[f"shared_{group}"] = _stats_tools._genes_from_values(shared[gene_column].tolist(), split_groups=split_groups)
+    if lookup:
+        # The named rows in B as well, with the direction words (rescue / reversion questions).
+        for name in lookup:
+            pattern = _lookup_pattern(name)
+            mask_a = key_a.str.contains(pattern, na=False) | frame_a[label_column].astype(str).str.contains(pattern, na=False)
+            for key, a_row in frame_a[mask_a].assign(_key=key_a[mask_a].values).head(6).set_index("_key").iterrows():
+                if key in b.index:
+                    b_row = b.loc[key]
+                    lines.append(f"volcano_lookup_in_b|query={_safe_context_text(name)}|term={_primary_term_label(key)}|a_log2FC={_fmt_value(float(a_row['log2FC']))}|"
+                                 f"a_significance={_safe_context_text(a_row['significance'])}|b_log2FC={_fmt_value(float(b_row['log2FC']))}|"
+                                 f"b_adj_p={_p(b_row['adj_pval'])}|b_significance={_safe_context_text(b_row['significance'])}"
+                                 + _direction(float(a_row["log2FC"]), float(b_row["log2FC"])))
+                else:
+                    lines.append(f"volcano_lookup_in_b|query={_safe_context_text(name)}|term={_primary_term_label(key)}|b={'untested' if key in untested_keys else 'absent'}")
+    if enrich and gene_column:
+        if organism not in {"human", "mouse"}:
+            lines.append("volcano_versus_enrichment|status=unavailable|reason=Choose human or mouse before enrichment; no organism was assumed.")
+            return lines
+        usable = {"Upregulated", "Downregulated", "Not significant"}
+        usable_b = set(b.index[b["significance"].isin(usable)])
+        jointly_tested = frame_a[frame_a["significance"].isin(usable) & key_a.isin(usable_b)]
+        background = _stats_tools._genes_from_values(jointly_tested[gene_column].tolist(), split_groups=split_groups)
+        lines.append(f"volcano_versus_enrichment|method=over_representation_hypergeometric_BH|background=genes_with_usable_tests_in_both_contrasts|background_genes={len(background)}|"
+                     f"organism={_safe_context_text(organism)}|term_size=20_to_300|adj_p_cutoff=0.05|top=6_per_set|note=gene_level_a_site_set_counts_each_gene_once")
+        for set_name, genes in gene_sets.items():
+            if len(genes) < 5:
+                lines.append(f"volcano_versus_enriched|set={set_name}|genes={len(genes)}|status=too_few_genes")
+                continue
+            try:
+                result = _stats_tools.run_enrichment_from_list(ListEnrichmentRequest(
+                    genes=genes, backgroundMode="experiment", backgroundGenes=background, topN=6,
+                    minTermSize=20, maxTermSize=300, adjPValueCutoff=0.05, organism=organism))  # type: ignore[arg-type]
+            except Exception as exc:
+                lines.append(f"volcano_versus_enriched|set={set_name}|genes={len(genes)}|status=error|detail={_safe_context_text(exc)}")
+                continue
+            if not result.terms:
+                lines.append(f"volcano_versus_enriched|set={set_name}|genes={len(genes)}|significant_terms=0")
+                continue
+            for rank, term in enumerate(result.terms[:6], start=1):
+                lines.append(f"volcano_versus_enriched|set={set_name}|genes={len(genes)}|rank={rank}|term={_safe_context_text(term.name)}|"
+                             f"source={_safe_context_text(term.source)}|overlap={term.intersectionSize}|term_size={term.termSize}|adj_p={_fmt_probability(float(term.adjPValue))}")
+    return lines
 
 
 def _primary_term_label(value: Any) -> str:
@@ -2415,6 +2607,17 @@ def stats_volcano_plot(
     condition2 = str(mode_pairs.get("condition2", "")).strip()
     condition1_control = str(mode_pairs.get("condition1control", "")).strip()
     condition2_control = str(mode_pairs.get("condition2control", "")).strip()
+    override = _contrast_pair(str(mode_pairs.get("conditions", "")))
+    for field in ("conditions", "versus"):
+        if str(mode_pairs.get(field, "")).strip() and not _contrast_pair(str(mode_pairs[field])):
+            return _text_payload("stats_volcano_plot", f"volcano_data|status=error|detail=Invalid {field}: supply two distinct condition names separated by ' vs '.")
+    if override:
+        if source == "volcano_control":
+            return _text_payload("stats_volcano_plot", "volcano_data|status=error|detail=Reading another control-corrected contrast requires both control conditions; no ordinary contrast was substituted.")
+        # A read of another contrast with the open plot's settings (GRK, 2026-10-14): the page
+        # itself is not changed; every line below describes the requested pair.
+        condition1, condition2 = override
+    versus = _contrast_pair(str(mode_pairs.get("versus", "")))
     identifier = str(mode_pairs.get("identifier", "workflow")).strip().lower()
     if identifier not in {"workflow", "genes"}:
         identifier = "workflow"
@@ -2506,6 +2709,8 @@ def stats_volcano_plot(
     lines.append(
         f"volcano_comparison|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}"
     )
+    if override:
+        lines.append("volcano_read_override|note=this_read_uses_the_requested_conditions_with_the_open_plot_settings;_the_open_plot_itself_is_unchanged")
     if source == "volcano_control":
         lines.append(
             f"volcano_control_comparison|condition1_control={_safe_context_text(condition1_control)}|condition2_control={_safe_context_text(condition2_control)}"
@@ -2516,6 +2721,8 @@ def stats_volcano_plot(
         lines.append("volcano_data|status=incomplete_parameters")
         return _text_payload("stats_volcano_plot", "\n".join(lines))
 
+    lookup = _lookup_queries(str(mode_pairs.get("lookup", "")))
+    untested_out: list = []
     try:
         source_used, label_column, df, warnings = _stats_tools._volcano_dataframe(
             kind=kind,  # type: ignore[arg-type]
@@ -2529,6 +2736,7 @@ def stats_volcano_plot(
             data_source=data_source,  # type: ignore[arg-type]
             condition1_control=condition1_control if source == "volcano_control" else None,
             condition2_control=condition2_control if source == "volcano_control" else None,
+            untested_out=untested_out if lookup else None,
         )
     except Exception as exc:
         lines.append(f"volcano_data|status=error|detail={_safe_context_text(exc)}")
@@ -2572,6 +2780,65 @@ def stats_volcano_plot(
     has_significant = not significant_frame.empty
     lines.append(f"volcano_significant|count={int(significant_frame.shape[0])}|present={'true' if has_significant else 'false'}")
 
+    if lookup:
+        # Named features wherever they rank ("are there sites on RPS6 that go down?", 2026-10-13):
+        # the ranked lists show ten per direction, which answers nothing about a named protein.
+        # A name is looked for in every identifier column the row carries, not only the label.
+        def _matches(table: pd.DataFrame, pattern: "re.Pattern[str]") -> pd.Series:
+            columns = [column for column in table.columns
+                       if (pd.api.types.is_string_dtype(table[column]) or table[column].dtype == object)
+                       and not str(column).startswith(("n_", "mean_")) and column != "reason"]
+            mask = pd.Series(False, index=table.index)
+            for column in columns:
+                mask |= table[column].astype(str).str.contains(pattern, na=False)
+            return mask
+        untested = untested_out[0] if untested_out and isinstance(untested_out[0], pd.DataFrame) else pd.DataFrame()
+        found: set[str] = set()
+        shown = 0
+        for name in lookup:
+            pattern = _lookup_pattern(name)
+            hits = frame[_matches(frame, pattern)]
+            if not untested.empty:
+                # Rows the test could not use (a knocked-out protein is missing in every replicate
+                # of one condition): their value counts per condition are the answer (GRK, 2026-10-13).
+                untested_hits = untested[_matches(untested, pattern)]
+                for _, row in untested_hits.head(6).iterrows():
+                    found.add(name)
+                    counts = "|".join(f"{column}={int(row[column])}" for column in untested.columns if str(column).startswith("n_") and column != "n_pairs")
+                    means = "|".join(f"{column}={_fmt_value(float(row[column]))}" for column in untested.columns
+                                     if str(column).startswith("mean_") and pd.notna(row[column]))
+                    label = _primary_term_label(row.get(label_column, "")) if label_column in untested.columns else _safe_context_text(str(row.iloc[0]))
+                    lines.append(f"volcano_lookup_untested|query={_safe_context_text(name)}|term={label}|{counts}|{means}|"
+                                 f"reason={_safe_context_text(row.get('reason', ''))}|note=values_count_per_condition_0_means_not_detected_in_any_replicate")
+                if len(untested_hits) > 6:
+                    lines.append(f"volcano_lookup_untested_truncated|query={_safe_context_text(name)}|matching_rows={len(untested_hits)}|shown=6")
+            if hits.empty:
+                continue
+            found.add(name)
+            limit = min(12, max(0, 40 - shown))
+            for _, row in hits.head(limit).iterrows():
+                shown += 1
+                lines.append(
+                    f"volcano_lookup|query={_safe_context_text(name)}|term={_primary_term_label(row.get(label_column, ''))}|"
+                    f"significance={_safe_context_text(row.get('significance', ''))}|log2FC={_fmt_value(float(row.get('log2FC', 0.0)))}|"
+                    f"adj_p_value={_fmt_probability(float(row['adj_pval'])) if pd.notna(row.get('adj_pval')) else 'unavailable'}|"
+                    f"p_value={_fmt_probability(float(row['pval'])) if pd.notna(row.get('pval')) else 'unavailable'}"
+                )
+            if hits.shape[0] > limit:
+                lines.append(f"volcano_lookup_truncated|query={_safe_context_text(name)}|matching_rows={int(hits.shape[0])}|shown={limit}")
+        missing = [name for name in lookup if name not in found]
+        if missing:
+            where = "not_in_the_tested_or_untested_rows_of_this_comparison_(absent_from_the_data_used)" if not untested.empty else "not_in_the_tested_rows_of_this_comparison"
+            lines.append(f"volcano_lookup_not_found|queries={_safe_context_text(';'.join(missing))}|note={where}")
+    if versus and source == "volcano_control":
+        lines.append("volcano_versus|status=unavailable|reason=Control-corrected contrasts require their own control pairs; no ordinary contrast was substituted.")
+    elif versus:
+        lines.extend(_volcano_contrast_difference(
+            frame, label_column, versus, kind=kind, identifier=identifier, p_value_threshold=float(p_value_threshold),
+            log2fc_threshold=float(log2fc_threshold), test_type=test_type, use_uncorrected=bool(use_uncorrected),
+            data_source=data_source, a_pair=(condition1, condition2), lookup=lookup or None,
+            enrich=_bool_from_mode(mode_pairs, "enrich", default=False),
+            organism=str(mode_pairs.get("organism", "")).strip().lower()))
     if has_significant:
         up_ranked, up_truncated = _volcano_ranked_rows(
             significant_frame[significant_frame["significance"] == "Upregulated"].copy(),
@@ -4040,7 +4307,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
         f"single_protein_lineplot_selection|proteins={_safe_context_text(','.join(selected_proteins)) if selected_proteins else 'none_selected'}|conditions={_safe_context_text(','.join(selected_conditions)) if selected_conditions else 'all_available'}|include_id={'true' if include_id else 'false'}|header={'true' if header else 'false'}|legend={'true' if legend else 'false'}"
     )
     lines.append(
-        "single_protein_lineplot_context_policy|data_volume_control=use_per_entity_min_max_mean_median_only_no_row_level_dump"
+        "single_protein_lineplot_context_policy|data_volume_control=per_entity_min_max_mean_median_plus_per_sample_values_when_at_most_40_points"
     )
     lines.append(
         "single_protein_lineplot_general|description=each_selected_entity_is_plotted_as_an_independent_trajectory_across_ordered_samples_and_conditions"
@@ -4146,7 +4413,7 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
             f"single_protein_lineplot_not_found|count={len(not_found)}|preview_truncated={'true' if not_found_truncated else 'false'}|values={_safe_context_text(json.dumps(not_found_preview, ensure_ascii=False))}|not_plotted=true"
         )
     lines.append(
-        "single_protein_lineplot_focus|answer_entity_questions_using_only_per_entity_min_max_mean_median_and_plot_structure_explanation"
+        "single_protein_lineplot_focus|answer_entity_questions_using_the_per_entity_and_per_condition_statistics_and_listed_sample_values_and_plot_structure_explanation"
     )
 
     observed_conditions = data["Condition"].drop_duplicates().tolist()
@@ -4173,6 +4440,18 @@ def single_protein_lineplot(workflow: str = "protein", mode: ContextMode | None 
             f"mean={_fmt_value(values_all.mean())}|median={_fmt_value(values_all.median())}|"
             f"min={_fmt_value(values_all.min())}|max={_fmt_value(values_all.max())}{count_fields}"
         )
+        if int(data.shape[0]) <= 40:
+            # A few proteins across a few samples is what the plot shows point by point, and
+            # "how does CCN1 look across my samples?" asks for exactly those values (2026-10-13).
+            for condition, group in feature_data.groupby("Condition", sort=False):
+                values = group["Value"].astype(float)
+                points = ";".join(f"{sample}={_fmt_value(value)}" for sample, value in zip(group["Sample"], values))
+                lines.append(
+                    "single_protein_lineplot_entity_condition|"
+                    f"entity={_safe_context_text(feature)}|condition={_safe_context_text(str(condition))}|n_values={int(values.shape[0])}|"
+                    f"mean={_fmt_value(values.mean())}|median={_fmt_value(values.median())}|"
+                    f"min={_fmt_value(values.min())}|max={_fmt_value(values.max())}|samples={_safe_context_text(points)}"
+                )
     lines.append(
         f"single_protein_lineplot_final_entities|values={_safe_context_text(';'.join(feature_values))}"
     )

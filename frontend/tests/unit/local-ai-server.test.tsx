@@ -18,7 +18,7 @@ const PRESET = "http://10.0.0.5:8084/v1";
 const POLICY = { providers: ["ollama", "openai_compatible", "openai"], models: {}, modelManagement: false };
 
 beforeEach(() => {
-  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.scrollTo = vi.fn();
   silenceNetwork();
   serveDatasets(api);
   vi.mocked(api.getProviderDefaults).mockResolvedValue({ models: {}, policy: POLICY, localServerUrl: PRESET });

@@ -47,12 +47,12 @@ def _capture(monkeypatch):
     return captured
 
 
-def test_the_total_line_is_named_last_in_the_legend(annotated, monkeypatch) -> None:
+def test_the_total_line_is_named_first_in_the_legend(annotated, monkeypatch) -> None:
     captured = _capture(monkeypatch)
     plot_images.qc_coverage_plot("protein", text=True)
     ax = captured["fig"].axes[0]
     labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert labels == ["A", "B", "Total (quantified in ≥1 sample)"]
+    assert labels == ["Total", "A", "B"]  # "Total", first (2026-10-14)
     assert ax.get_title() == "Proteins per sample"
     # Count labels start at the bar top, not on the bar face.
     bars = [patch for patch in ax.patches if patch.get_height() > 0]
@@ -67,7 +67,7 @@ def test_summary_mode_names_conditions_and_keeps_only_the_line_entry(annotated, 
     ax = captured["fig"].axes[0]
     assert ax.get_title() == "Proteins per condition"
     labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert len(labels) == 1 and labels[0].startswith("Total (")
+    assert len(labels) == 1 and labels[0] == "Total"
 
 
 def test_the_panel_can_drop_the_entry_and_keep_the_line(annotated, monkeypatch) -> None:

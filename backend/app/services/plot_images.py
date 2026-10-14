@@ -654,7 +654,7 @@ def qc_coverage_plot(
         if line.visible:
             # The line says what it is in the legend (the panel can drop the
             # entry and keep the line); the bars below it add up to this total.
-            label = "Total (quantified in \u22651 sample)" if line.legend_entry else None
+            label = "Total" if line.legend_entry else None
             ax.axhline(y=red_line_value, label=label, **line.matplotlib())
             ymax = max(ymax, float(red_line_value))
 
@@ -667,8 +667,9 @@ def qc_coverage_plot(
     # Summary mode has no condition entries (the x axis names them), so its
     # legend holds only the total line -- when there is one to name.
     handles, labels = ax.get_legend_handles_labels()
-    # Conditions first, the total line last (matplotlib lists lines before bars).
-    order = sorted(range(len(labels)), key=lambda i: labels[i].startswith("Total ("))
+    # The total line first (2026-10-14; matplotlib lists lines before bars anyway, but the
+    # order is made explicit), then the conditions in panel order.
+    order = sorted(range(len(labels)), key=lambda i: labels[i] != "Total")
     if legend and handles and (not summary or any(labels)):
         ax.legend([handles[i] for i in order], [labels[i] for i in order],
                   title="Condition" if not summary else None,

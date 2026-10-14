@@ -80,6 +80,23 @@ def catalogue(request: AssistantRequest, keep: list[int] | None = None, narrow: 
     return rows
 
 
+def compact(rows: list[dict]) -> str:
+    """The catalogue as one line per element: "title: size=14, bold=false, color=#000000".
+
+    The row form repeats each select's choice names for every row (9.7k characters
+    on the coverage plot, 2026-10-13); a model with tools can ask find_settings
+    for the choices, so the planner payload carries only what each setting is now.
+    Choices stay listed once, as the keys the tool accepts."""
+    lines: dict[str, list[str]] = {}
+    for row in rows:
+        current = row.get("current")
+        shown = "true" if current is True else "false" if current is False else str(current if current not in (None, "") else "default")
+        if row.get("choices"):
+            shown += " (" + "|".join(str(choice) if choice != "" else "default" for choice in row["choices"]) + ")"
+        lines.setdefault(str(row["element"]), []).append(f"{row['property']}={shown}")
+    return "\n".join(f"{element}: {', '.join(props)}" for element, props in lines.items())
+
+
 def _number(value: str | bool | list[str]) -> float:
     try:
         number = float(value)
@@ -143,6 +160,10 @@ def resolve(request: AssistantRequest, edits: list[StyleEdit]) -> list[UiAction]
             if control.min is not None and number < control.min or control.max is not None and number > control.max:
                 raise ValueError(f"The requested value is outside the bounds for {control.label}.")
         elif control.type == "checkbox":
+            # "true"/"false" as strings are the same choice; models that stringify every
+            # value (claude-sonnet-5-5, 2026-10-13) used to cost a correction round.
+            if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+                value = value.strip().lower() == "true"
             if not isinstance(value, bool): raise ValueError("Visibility requires true or false.")
         elif not isinstance(value, str):
             raise ValueError("This styling setting requires text.")

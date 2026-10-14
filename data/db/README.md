@@ -17,6 +17,8 @@ The manifest identifies the inputs and outputs of the current build; `BUILD.log`
 | `all_go_terms_genes_mouse.csv` | The same for mouse (organism `mouse` in the ORA and pathway-heatmap organism selectors and in `enrichment_data(organism=)`) | 21,864 terms, 22,002 genes | GO release 2026-08-05: `mgi.gaf.gz` + `go-basic.obo`, symbols from `BioNamesDB` |
 | `UP000005640_9606.fasta.gz` | Human reference proteome, canonical sequences, for sequence coverage | 20,652 sequences | UniProt 2026_03 reference proteomes FTP, unchanged |
 | `UP000000589_10090.fasta.gz` | Mouse reference proteome, canonical sequences, for sequence coverage | 21,860 sequences | UniProt 2026_03 reference proteomes FTP, unchanged |
+| `UP000005640_9606_additional.fasta.gz` | Human reference proteome, additional sequences (isoforms, non-canonical TrEMBL entries), consulted when a selected variant is not among the canonical sequences | 148,999 sequences | UniProt 2026_03 reference proteomes FTP, unchanged; stored here only (41 MB), logged in the manifest like every source (fetched 2026-10-14) |
+| `UP000000589_10090_additional.fasta.gz` | The same for mouse | 41,468 sequences | UniProt 2026_03 reference proteomes FTP, unchanged; stored here only (10 MB), logged in the manifest (fetched 2026-10-14) |
 
 The SHA-256 of every file is in `data/reference-sources/manifest.json` (`outputs`) and in
 `BUILD.log`. Results should cite the upstream release (and may cite the checksum); the executables
@@ -29,6 +31,8 @@ and the Docker image ship this folder, not `data/reference-sources/`.
 | `BioNamesDB.txt.gz` | `a5968748aca7f88728ffd46494adc9a21469a8bfdb778e420a185b270083c816` |
 | `UP000000589_10090.fasta.gz` | `c24568f70ce9ffd7693a1ecd31c23eaa97a1f43d9305e2ff5401bdf30e2a0a93` |
 | `UP000005640_9606.fasta.gz` | `64299d01e8f41fb6ef03cdf7ec051d3d4e5f041003b6b0fa75b09d439af79dce` |
+| `UP000005640_9606_additional.fasta.gz` | `9cafde8f00cef658388e188392429eb2440cce95031347670492475cb656b11a` |
+| `UP000000589_10090_additional.fasta.gz` | `edbde2466111e563b3a12ce4fed9c4b436782acc74ddf9adca4bc253badb8cbf` |
 | `all_go_terms_genes.csv` | `b314eda0ae2164a6bdc137899330b7b2fb568b85610d2e5bb99a13fc6e298e21` |
 | `all_go_terms_genes_mouse.csv` | `9ecf591d37b77bd8132597c8e07fcbb22e97f4aa3faaba4d5a581cf384fc7452` |
 

@@ -1519,6 +1519,10 @@ function KnownOverrideRows({
                   />
                 ) : null}
                 <AssistantInput data-assistant-permission="view"
+                  // The assistant names a sample by what the plot shows ("GRK_1"), not by
+                  // its 90-character raw column header (2026-10-13: ten such names in every
+                  // planner call).
+                  aria-label={displayLabel && displayLabel !== item ? displayLabel : undefined}
                   value={current}
                   onChange={(event) => onChange(item, event.target.value)}
                   placeholder={placeholder}
