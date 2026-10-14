@@ -53,6 +53,14 @@ aside pre {
   overflow-wrap: normal;
 }
 
+/* Tables are exempt: with "anywhere" a cell's minimum width shrinks to one character, so the
+   auto table layout squeezed every column below its header and broke headers mid-word.
+   Tables keep their natural column widths and scroll inside their own frame instead. */
+main table,
+aside table {
+  overflow-wrap: normal;
+}
+
 html.dark {
   color-scheme: dark;
   background: #020617;

@@ -18,18 +18,44 @@ const aiEnabled = ["1", "true", "yes", "on"].includes(
   (process.env.VITE_AI_ENABLED ?? "").trim().toLowerCase()
 );
 
+// The licences page. The production build writes it as a file next to the bundle;
+// the dev server (run_app.bat, Vite on port 5173) serves the same page from memory,
+// because a build-only asset does not exist there and the Licences link fell
+// through to the app. Only the frontend third-party list is build-only: Vite
+// writes THIRD_PARTY_LICENSES.md while bundling.
+function licensesHtml(dev: boolean): string {
+  const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const notice = readFileSync(new URL("../NOTICE", import.meta.url), "utf8");
+  const license = readFileSync(new URL("../LICENSE", import.meta.url), "utf8");
+  const thirdParty = dev
+    ? "Frontend third-party licences (listed in the production build)"
+    : '<a href="THIRD_PARTY_LICENSES.md">Frontend third-party licences</a>';
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CoPYlot licences</title><body><h1>CoPYlot licences</h1><p>${thirdParty} | <a href="https://github.com/JonasMarx3007/ProteomicsCoPYlot">Source code</a></p><pre style="white-space:pre-wrap">${escape(notice)}\n${escape(license)}</pre></body></html>`;
+}
+
+function licensesOnDevServer(): Plugin {
+  return {
+    name: "copylot-licenses-dev",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if ((request.url ?? "").split("?")[0].endsWith("/licenses.html")) {
+          response.setHeader("Content-Type", "text/html; charset=utf-8");
+          response.end(licensesHtml(true));
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 function buildModeManifest(): Plugin {
   return {
     name: "copylot-build-mode",
     apply: "build",
     generateBundle() {
-      const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-      const notice = readFileSync(new URL("../NOTICE", import.meta.url), "utf8");
-      const license = readFileSync(new URL("../LICENSE", import.meta.url), "utf8");
-      this.emitFile({
-        type: "asset", fileName: "licenses.html",
-        source: `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CoPYlot licences</title><body><h1>CoPYlot licences</h1><p><a href="THIRD_PARTY_LICENSES.md">Frontend third-party licences</a> | <a href="https://github.com/JonasMarx3007/ProteomicsCoPYlot">Source code</a></p><pre style="white-space:pre-wrap">${escape(notice)}\n${escape(license)}</pre></body></html>`,
-      });
+      this.emitFile({ type: "asset", fileName: "licenses.html", source: licensesHtml(false) });
       this.emitFile({
         type: "asset",
         fileName: "build-mode.json",
@@ -41,7 +67,7 @@ function buildModeManifest(): Plugin {
 
 export default defineConfig({
   base: basePath,
-  plugins: [react(), tailwindcss(), buildModeManifest()],
+  plugins: [react(), tailwindcss(), buildModeManifest(), licensesOnDevServer()],
   build: { license: { fileName: "THIRD_PARTY_LICENSES.md" } },
   server: {
     port: 5173,
