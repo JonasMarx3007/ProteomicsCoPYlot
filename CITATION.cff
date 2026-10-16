@@ -2,7 +2,7 @@ cff-version: "1.2.0"
 message: "If you use Proteomics CoPYlot, please cite this software and the methods it builds on."
 title: "Proteomics CoPYlot"
 type: "software"
-version: "1.0.0"
+version: "1.0.0b1"
 license: "GPL-3.0-only"
 repository-code: "https://github.com/JonasMarx3007/ProteomicsCoPYlot"
 authors:

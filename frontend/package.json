@@ -2,7 +2,7 @@
   "name": "frontend",
   "private": true,
   "license": "GPL-3.0-only",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "type": "module",
   "scripts": {
     "test:browser": "playwright test",

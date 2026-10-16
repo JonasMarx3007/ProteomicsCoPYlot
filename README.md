@@ -19,6 +19,10 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 
 ## Quick start
 
+The current development release is **1.0.0 Beta 1** (planned GitHub tag
+`v1.0.0-beta.1`). Python metadata uses the equivalent version `1.0.0b1`.
+See [release versions](docs/RELEASING.md) for the naming convention.
+
 Install backend and frontend dependencies on Windows:
 
 ```powershell

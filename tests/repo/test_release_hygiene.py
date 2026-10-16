@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,8 +30,11 @@ def test_application_version_is_consistent_across_release_metadata():
         "lockfile": lock["version"],
         "lockfile root package": lock["packages"][""]["version"],
         "citation": re.search(r'^version: "([^"]+)"$', citation, re.M).group(1),
+        "OpenAPI snapshot": json.loads(
+            (ROOT / "frontend/src/lib/generated/openapi.json").read_text(encoding="utf-8")
+        )["info"]["version"],
     }
-    assert all(value == expected for value in versions.values()), versions
+    assert all(Version(value) == Version(expected) for value in versions.values()), versions
 
 
 def test_the_package_the_citation_and_the_license_name_the_same_author():
@@ -75,7 +79,7 @@ def test_secret_and_local_artifact_ignore_contract() -> None:
         "private/server.key",
         "backup.sql",
         "cache.sqlite3",
-        "release/python/1.0.0/package.whl",
+        "release/python/1.0.0-beta.1/package.whl",
     ]
     visible = [
         ".env.example",
@@ -118,8 +122,19 @@ def test_release_output_is_version_scoped() -> None:
     build_script = _load_build_script()
     version = build_script.project_version()
     output = build_script.release_output_dir(version)
-    assert output == (ROOT / "release" / "python" / version).resolve()
+    frontend = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
+    assert output == (ROOT / "release" / "python" / frontend["version"]).resolve()
     assert output.parent == (ROOT / "release" / "python").resolve()
+
+
+@pytest.mark.parametrize("version,label", [
+    ("1.0.0b1", "1.0.0-beta.1"),
+    ("1.0.0b21", "1.0.0-beta.21"),
+    ("1.0.0", "1.0.0"),
+    ("1.0.1", "1.0.1"),
+])
+def test_release_label_preserves_beta_sequence(version: str, label: str) -> None:
+    assert _load_build_script().release_label(version) == label
 
 
 def test_release_build_cleans_only_managed_python_output(

@@ -10,6 +10,7 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
+from app.app_version import APP_VERSION
 from app.services.notebook_archive import NotebookRecipe, build_notebook_archive, dataframe_bytes
 from app.services.notebook_source import extract_notebook_source, module_source
 from app.services.notebook_snapshots import NotebookSnapshots
@@ -113,7 +114,7 @@ def test_archive_is_deterministic_and_path_free():
             assert member.date_time == (1980, 1, 1, 0, 0, 0)
             assert b"private-user" not in archive.read(member)
         manifest = json.loads(archive.read("manifest.json"))
-        assert manifest["toolVersion"] == "1.0.0"
+        assert manifest["toolVersion"] == APP_VERSION
         assert manifest["originalFilename"] == "example.tsv"
         assert "coverage_plot" in archive.read("functions.py").decode()
         assert "volcano_plot" not in archive.read("functions.py").decode()

@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from packaging.version import Version
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,7 +83,8 @@ def test_project_versions_agree() -> None:
 
     package = json.loads((ROOT / "frontend/package.json").read_text(encoding="utf-8"))
     lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
-    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == version
+    assert package["version"] == lock["version"] == lock["packages"][""]["version"]
+    assert Version(package["version"]) == Version(version)
 
 
 def test_react_and_react_dom_versions_agree() -> None:
