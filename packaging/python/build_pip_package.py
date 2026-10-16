@@ -37,8 +37,13 @@ def expected_artifact_names(version: str) -> set[str]:
     }
 
 
+def release_label(version: str) -> str:
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)b(\d+)", version)
+    return f"{match.group(1)}-beta.{match.group(2)}" if match else version
+
+
 def release_output_dir(version: str) -> Path:
-    output = (RELEASE_ROOT / version).resolve()
+    output = (RELEASE_ROOT / release_label(version)).resolve()
     release_root = RELEASE_ROOT.resolve()
     if output.parent != release_root:
         raise RuntimeError("Invalid Python release output directory.")

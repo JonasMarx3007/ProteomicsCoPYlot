@@ -2,6 +2,9 @@
 
 Explore the [interactive architecture](https://jonasmarx3007.github.io/ProteomicsCoPYlot/) to see how frontend features, API routes and Python services connect.
 
+The [Beta 1 structure review](STRUCTURE_REVIEW.md) records the latest local
+Graphify map, reproduction steps, limitations and structural follow-up candidates.
+
 ## Runtime flow
 
 The React/TypeScript frontend calls FastAPI endpoints through `frontend/src/lib/api.ts`. Routes under `backend/app/api/` validate models from `backend/app/schemas/` and delegate analysis to `backend/app/services/`.
