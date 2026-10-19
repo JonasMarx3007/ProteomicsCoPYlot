@@ -30,22 +30,14 @@ or macOS, run the extracted `./ProteomicsCoPYlot` (or `./ProteomicsCoPYlotAI`)
 from a terminal. Keep the terminal open while using the app; the interface opens
 in your browser. Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
 
-**Please allow time for startup and launch only once.** The standalone application
-unpacks its bundled Python runtime and scientific libraries each time it starts.
-On our Windows test laptop, allow about **1–2 minutes** for the browser to open.
+**Please allow time for startup and launch only once.** CoPYlot first unpacks
+its bundled Python runtime, loads the scientific libraries, and starts a local
+server. The browser interface connects to that server once it is ready.
 
-| Beta 1 build | Measured startup |
+| Build (standard and AI) | Approximate startup |
 | --- | --- |
-| Windows | 78–82 seconds |
-| Windows AI | 80–103 seconds |
-| Linux (Docker/WSL2) | 17.7–18.4 seconds |
-| Linux AI (Docker/WSL2) | 16.5–17.0 seconds |
-
-These ranges cover three consecutive launches on an AMD Ryzen 5 6600U Windows
-laptop, timed until the application could serve its interface; browser rendering
-is additional. Linux was measured inside Docker, not on a native Linux desktop.
-These are not cold-boot benchmarks; disk speed, antivirus scanning and other
-running applications can change the wait.
+| Windows | 1–2 minutes |
+| Linux (Docker) | About 20 seconds |
 
 ## Quick start from source
 
