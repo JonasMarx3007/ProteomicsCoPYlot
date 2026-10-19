@@ -50,6 +50,30 @@ def test_dirty_source_is_not_presented_as_a_matching_release(monkeypatch, tmp_pa
         release.clean_revision(tmp_path)
 
 
+def test_conda_native_licenses_and_python_fallback(monkeypatch, tmp_path):
+    cache = tmp_path / "cache/llvmlite/info/licenses"
+    cache.mkdir(parents=True)
+    (cache / "LICENSE").write_text("llvmlite licence")
+    (cache / "LICENSE.thirdparty").write_text("LLVM licence")
+    records = tmp_path / "env/conda-meta"
+    records.mkdir(parents=True)
+    (records / "llvmlite.json").write_text(json.dumps({
+        "name": "llvmlite", "version": "0.49.0", "build": "test",
+        "files": ["lib/libllvmlite.dylib"], "link": {"source": str(cache.parent.parent)},
+    }))
+    monkeypatch.setattr(release.sys, "prefix", str(records.parent))
+    distribution = SimpleNamespace(files=[], metadata={"Name": "llvmlite", "License": "BSD"})
+    assert [text for _, text in release.license_texts(distribution)] == ["llvmlite licence", "LLVM licence"]
+    (cache / "LICENSE").unlink()
+    (cache / "LICENSE.thirdparty").unlink()
+    with pytest.raises(ValueError, match="Missing Conda licence"):
+        release.conda_licenses(records.parent)
+
+
+def test_no_conda_environment_has_no_extra_notices(tmp_path):
+    assert release.conda_licenses(tmp_path) == []
+
+
 @pytest.mark.parametrize("path", ["source/local/private.csv", "source/.env", "source/../private"])
 def test_source_archive_rejects_private_paths(monkeypatch, tmp_path, path):
     stream = io.BytesIO()

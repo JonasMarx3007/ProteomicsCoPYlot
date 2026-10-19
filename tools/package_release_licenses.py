@@ -24,6 +24,23 @@ def git(root: Path, *args: str) -> bytes:
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True).stdout
 
 
+def conda_licenses(prefix: Path) -> list[tuple[dict, list[tuple[str, str]]]]:
+    """Read native-library notices from the retained Conda package cache."""
+    result = []
+    for path in sorted((prefix / "conda-meta").glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if not record.get("files"):
+            continue  # Empty metapackages have no redistributable files.
+        cache = record.get("link", {}).get("source")
+        licenses = Path(cache) / "info/licenses" if cache else None
+        texts = [(str(p.relative_to(licenses)), p.read_text(encoding="utf-8", errors="replace"))
+                 for p in sorted(licenses.rglob("*")) if p.is_file()] if licenses else []
+        if not texts:
+            raise ValueError(f"Missing Conda licence texts for {record['name']}; retain the package cache.")
+        result.append((record, texts))
+    return result
+
+
 def clean_revision(root: Path) -> str:
     if git(root, "status", "--porcelain", "--untracked-files=normal").strip():
         raise ValueError("Commit the reviewed source before building a distributable release.")
@@ -44,6 +61,10 @@ def license_texts(distribution) -> list[tuple[str, str]]:
         text = distribution.metadata.get("License", "")
         if len(text) > 200 and ("permission" in text.lower() or "redistribution" in text.lower()):
             found.append(("METADATA/License", text))
+    if not found:
+        for record, texts in conda_licenses(Path(sys.prefix)):
+            if canonicalize_name(record["name"]) == canonicalize_name(distribution.metadata["Name"]):
+                return texts
     if not found:
         raise ValueError(f"No licence text found for {distribution.metadata['Name']}; fix the build environment.")
     return found
@@ -93,6 +114,11 @@ def collect_notices(root: Path) -> tuple[str, list[dict[str, str]]]:
     if not frontend.is_file() or not frontend.read_text(encoding="utf-8").strip():
         raise ValueError("Frontend dependency licences are missing; rebuild the frontend.")
     lines.extend(["## Frontend dependencies", frontend.read_text(encoding="utf-8")])
+    for record, texts in conda_licenses(Path(sys.prefix)):
+        lines.extend([f"## Conda {record['name']} {record['version']} ({record['build']})",
+                      f"Package: {record.get('url', '')}", ""])
+        for filename, text in texts:
+            lines.extend([f"### {filename}", text, ""])
     return "\n".join(lines), packages
 
 
@@ -118,6 +144,10 @@ def prepare(root: Path, output: Path) -> None:
     (output / "CoPYlot-source.zip").write_bytes(source)
     manifest = {"revision": revision, "python": platform.python_version(), "platform": platform.platform(),
                 "packages": packages, "source_sha256": hashlib.sha256(source).hexdigest()}
+    conda_packages = [{key: record.get(key) for key in ("name", "version", "build", "url", "sha256")}
+                      for record, _ in conda_licenses(Path(sys.prefix))]
+    if conda_packages:
+        manifest["conda_packages"] = conda_packages
     (output / "release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (output / "build-requirements.txt").write_text(
         "\n".join(f"{p['name']}=={p['version']}" for p in packages) + "\n", encoding="utf-8")
@@ -157,13 +187,14 @@ def main() -> None:
     parser.add_argument("action", choices=("prepare", "finish"))
     parser.add_argument("--legal-dir", required=True, type=Path)
     parser.add_argument("--executable", type=Path)
+    parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(ROOT, args.legal_dir)
+        prepare(args.root, args.legal_dir)
     elif args.executable is None:
         parser.error("finish requires --executable")
     else:
-        print(finish(ROOT, args.legal_dir, args.executable))
+        print(finish(args.root, args.legal_dir, args.executable))
 
 
 if __name__ == "__main__":
