@@ -17,7 +17,37 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 - Use optional AI features, backed by a local Ollama instance, a local server with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio), or a cloud provider.
 - Reuse analysis helpers from Python or R notebooks.
 
-## Quick start
+## Download and run
+
+Download the complete ZIP for your computer from
+[GitHub Releases](https://github.com/JonasMarx3007/ProteomicsCoPYlot/releases),
+including releases marked **Pre-release** during the beta. Choose the standard
+edition or the **AI** edition for the optional chat features, then extract the ZIP.
+These application downloads include Python; no separate Python installation is needed.
+
+On Windows, open `ProteomicsCoPYlot.exe` (or `ProteomicsCoPYlotAI.exe`). On Linux
+or macOS, run the extracted `./ProteomicsCoPYlot` (or `./ProteomicsCoPYlotAI`)
+from a terminal. Keep the terminal open while using the app; the interface opens
+in your browser. Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
+
+**Please allow time for startup and launch only once.** The standalone application
+unpacks its bundled Python runtime and scientific libraries each time it starts.
+On our Windows test laptop, allow about **1–2 minutes** for the browser to open.
+
+| Beta 1 build | Measured startup |
+| --- | --- |
+| Windows | 78–82 seconds |
+| Windows AI | 80–103 seconds |
+| Linux (Docker/WSL2) | 17.7–18.4 seconds |
+| Linux AI (Docker/WSL2) | 16.5–17.0 seconds |
+
+These ranges cover three consecutive launches on an AMD Ryzen 5 6600U Windows
+laptop, timed until the application could serve its interface; browser rendering
+is additional. Linux was measured inside Docker, not on a native Linux desktop.
+These are not cold-boot benchmarks; disk speed, antivirus scanning and other
+running applications can change the wait.
+
+## Quick start from source
 
 The current development release is **1.0.0 Beta 1** (planned GitHub tag
 `v1.0.0-beta.1`). Python metadata uses the equivalent version `1.0.0b1`.
