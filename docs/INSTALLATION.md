@@ -225,7 +225,25 @@ Never commit a PFX file, private key, or certificate password. Confirm release f
 Get-AuthenticodeSignature .\dist\*.exe | Format-Table Path, Status, StatusMessage
 ```
 
-macOS variant builds are under `packaging/macos/`.
+### macOS release downloads
+
+The **Build macOS release** workflow builds standard and AI analysis applications
+for Apple Silicon (`arm64`, macOS 14 runner) and Intel (`x86_64`, macOS 15 runner).
+After merging the workflow, open **Actions > Build macOS release > Run workflow**.
+The default source commit matches the existing `v1.0.0-beta.1` Windows/Linux
+builds. For a later release, enter its full merged `main` commit SHA.
+
+Each job checks the bundle hashes, source revision, startup, frontend, version
+and AI mode before uploading an artifact. Download all four artifacts within
+**3 days**. Extract the outer GitHub artifact ZIP; keep the versioned release ZIP
+inside intact, together with its checksum. The workflow does not create a tag or
+publish a release. These builds are not Developer ID signed or notarized.
+
+For local macOS builds, install the backend virtual environment and frontend
+dependencies first, then run
+`bash packaging/macos/build_all_macos_variants.sh --variant standard`
+(or `--variant ai`). With no variant argument, the script also builds both viewer
+editions.
 
 ## Python package
 

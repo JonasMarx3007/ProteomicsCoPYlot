@@ -1,0 +1,158 @@
+name: Build macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Full main commit to package (default matches the existing Beta 1 downloads)'
+        required: true
+        default: '56d8cf48c30fff7fe21c299dc0796a773309f7a1'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-${{ github.ref }}-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }} / ${{ matrix.variant }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            variant: standard
+            executable: ProteomicsCoPYlot
+          - runner: macos-14
+            arch: arm64
+            variant: ai
+            executable: ProteomicsCoPYlotAI
+          - runner: macos-15-intel
+            arch: x86_64
+            variant: standard
+            executable: ProteomicsCoPYlot
+          - runner: macos-15-intel
+            arch: x86_64
+            variant: ai
+            executable: ProteomicsCoPYlotAI
+    runs-on: ${{ matrix.runner }}
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      EXECUTABLE: ${{ matrix.executable }}
+      ARCH: ${{ matrix.arch }}
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - name: Check out build automation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: automation
+          persist-credentials: false
+
+      - name: Validate commit input
+        shell: bash
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'Supply a full commit SHA'; exit 1; }
+
+      - name: Check out matching application source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify main ancestry and runner architecture
+        working-directory: source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(uname -m)" = "$ARCH"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Install build dependencies
+        working-directory: source
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install -r backend/requirements-runtime.lock
+          npm ci --prefix frontend
+
+      - name: Read and validate release version
+        id: version
+        working-directory: source
+        shell: bash
+        run: |
+          backend/.venv/bin/python - <<'PY'
+          import json, os, re, runpy
+          from pathlib import Path
+          from packaging.version import Version
+          frontend = json.loads(Path('frontend/package.json').read_text())['version']
+          backend = runpy.run_path('backend/app/app_version.py')['APP_VERSION']
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?', frontend):
+              raise ValueError('Unsupported release filename version')
+          if Version(frontend) != Version(backend):
+              raise ValueError('Frontend and backend versions disagree')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={frontend}\nbackend={backend}\n')
+          PY
+
+      - name: Build application and licence bundle
+        shell: bash
+        run: |
+          COPYLOT_BUILD_ROOT="$GITHUB_WORKSPACE/source" bash automation/packaging/macos/build_all_macos_variants.sh --variant "$VARIANT"
+
+      - name: Check ZIP, source, startup, version and AI mode
+        env:
+          BACKEND_VERSION: ${{ steps.version.outputs.backend }}
+        shell: bash
+        run: |
+          test "$(lipo -archs "source/dist/$EXECUTABLE")" = "$ARCH"
+          mkdir -p downloads
+          extra=()
+          if [[ "$VARIANT" == ai ]]; then extra+=(--ai); fi
+          python automation/packaging/check_release.py \
+            --executable "source/dist/$EXECUTABLE" \
+            --bundle "source/dist/$EXECUTABLE-release.zip" \
+            --revision "$SOURCE_COMMIT" --version "$BACKEND_VERSION" \
+            --output "downloads/startup-$EXECUTABLE-macOS-$ARCH.json" "${extra[@]}"
+
+      - name: Name release download and write checksum
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          filename="$EXECUTABLE-$RELEASE_VERSION-macOS-$ARCH.zip"
+          cp "source/dist/$EXECUTABLE-release.zip" "downloads/$filename"
+          cd downloads
+          shasum -a 256 "$filename" > "$filename.sha256"
+          printf '### %s (%s)\n\nSource: `%s`\n\nDownload the artifact below and extract its outer ZIP. The versioned ZIP inside is the release asset.\n' "$EXECUTABLE" "$ARCH" "$SOURCE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save verified release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.executable }}-${{ steps.version.outputs.version }}-macOS-${{ matrix.arch }}
+          path: downloads/
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Save startup diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-${{ matrix.executable }}-${{ matrix.arch }}
+          path: downloads/*.log
+          retention-days: 3
+          if-no-files-found: ignore

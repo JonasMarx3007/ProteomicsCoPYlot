@@ -17,7 +17,29 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 - Use optional AI features, backed by a local Ollama instance, a local server with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio), or a cloud provider.
 - Reuse analysis helpers from Python or R notebooks.
 
-## Quick start
+## Download and run
+
+Download the complete ZIP for your computer from
+[GitHub Releases](https://github.com/JonasMarx3007/ProteomicsCoPYlot/releases),
+including releases marked **Pre-release** during the beta. Choose the standard
+edition or the **AI** edition for the optional chat features, then extract the ZIP.
+These application downloads include Python; no separate Python installation is needed.
+
+On Windows, open `ProteomicsCoPYlot.exe` (or `ProteomicsCoPYlotAI.exe`). On Linux
+or macOS, run the extracted `./ProteomicsCoPYlot` (or `./ProteomicsCoPYlotAI`)
+from a terminal. Keep the terminal open while using the app; the interface opens
+in your browser. Choose `arm64` for Apple Silicon Macs and `x86_64` for Intel Macs.
+
+**Please allow time for startup and launch only once.** CoPYlot first unpacks
+its bundled Python runtime, loads the scientific libraries, and starts a local
+server. The browser interface connects to that server once it is ready.
+
+| Build (standard and AI) | Approximate startup |
+| --- | --- |
+| Windows | 1–2 minutes |
+| Linux (Docker) | About 20 seconds |
+
+## Quick start from source
 
 The current development release is **1.0.0 Beta 1** (planned GitHub tag
 `v1.0.0-beta.1`). Python metadata uses the equivalent version `1.0.0b1`.
