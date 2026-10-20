@@ -15,8 +15,8 @@
     "generate:api": "python ../tools/export_openapi.py && openapi-typescript src/lib/generated/openapi.json --default-non-nullable false -o src/lib/generated/api.d.ts"
   },
   "dependencies": {
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
