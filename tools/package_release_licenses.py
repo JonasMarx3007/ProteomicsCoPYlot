@@ -46,6 +46,13 @@ def conda_licenses(prefix: Path) -> list[tuple[dict, list[tuple[str, str]]]]:
                     raise ValueError(f"Conda licence path escapes the environment: {filename}")
                 if installed.is_file():
                     texts.append((filename, installed.read_text(encoding="utf-8", errors="replace")))
+        if not texts and record["name"] == "libsqlite" and record.get("license") == "blessing":
+            # SQLite publishes its public-domain dedication in the C header.
+            header = prefix / "include/sqlite3.h"
+            if header.is_file():
+                notice = header.read_text(encoding="utf-8").split("*/", 1)[0] + "*/"
+                if "The author disclaims copyright" in notice:
+                    texts.append(("include/sqlite3.h (opening notice)", notice))
         if not texts:
             raise ValueError(f"Missing Conda licence texts for {record['name']}; retain the package cache.")
         result.append((record, texts))
