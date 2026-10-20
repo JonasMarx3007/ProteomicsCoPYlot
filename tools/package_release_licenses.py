@@ -35,6 +35,17 @@ def conda_licenses(prefix: Path) -> list[tuple[dict, list[tuple[str, str]]]]:
         licenses = Path(cache) / "info/licenses" if cache else None
         texts = [(str(p.relative_to(licenses)), p.read_text(encoding="utf-8", errors="replace"))
                  for p in sorted(licenses.rglob("*")) if p.is_file()] if licenses else []
+        # Some packages (notably GCC runtimes) install their notices alongside
+        # the libraries instead of storing them in info/licenses.
+        for filename in sorted(record["files"]):
+            relative = Path(filename)
+            if (any(part.lower() in {"licenses", "licences"} for part in relative.parts)
+                    or relative.name.lower().startswith(("license", "licence", "copying", "copyright", "notice"))):
+                installed = (prefix / relative).resolve()
+                if not installed.is_relative_to(prefix.resolve()):
+                    raise ValueError(f"Conda licence path escapes the environment: {filename}")
+                if installed.is_file():
+                    texts.append((filename, installed.read_text(encoding="utf-8", errors="replace")))
         if not texts:
             raise ValueError(f"Missing Conda licence texts for {record['name']}; retain the package cache.")
         result.append((record, texts))
