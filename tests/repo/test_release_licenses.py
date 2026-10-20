@@ -74,6 +74,38 @@ def test_no_conda_environment_has_no_extra_notices(tmp_path):
     assert release.conda_licenses(tmp_path) == []
 
 
+def test_conda_collects_installed_runtime_exception(tmp_path):
+    records = tmp_path / "conda-meta"
+    records.mkdir()
+    filename = "share/licenses/gcc-libs/RUNTIME.LIBRARY.EXCEPTION"
+    installed = tmp_path / filename
+    installed.parent.mkdir(parents=True)
+    installed.write_text("GCC runtime exception")
+    (records / "libgcc.json").write_text(json.dumps({
+        "name": "libgcc", "files": ["lib/libgcc_s.1.dylib", filename],
+    }))
+    assert release.conda_licenses(tmp_path)[0][1] == [(filename, "GCC runtime exception")]
+    installed.unlink()
+    with pytest.raises(ValueError, match="Missing Conda licence"):
+        release.conda_licenses(tmp_path)
+
+
+def test_conda_sqlite_requires_the_actual_header_notice(tmp_path):
+    records = tmp_path / "conda-meta"
+    records.mkdir()
+    header = tmp_path / "include/sqlite3.h"
+    header.parent.mkdir()
+    notice = "/* The author disclaims copyright to this source code. */"
+    header.write_text(notice + "\nint sqlite3_open();")
+    (records / "libsqlite.json").write_text(json.dumps({
+        "name": "libsqlite", "license": "blessing", "files": ["include/sqlite3.h"],
+    }))
+    assert release.conda_licenses(tmp_path)[0][1] == [("include/sqlite3.h (opening notice)", notice)]
+    header.write_text("int sqlite3_open();")
+    with pytest.raises(ValueError, match="Missing Conda licence"):
+        release.conda_licenses(tmp_path)
+
+
 @pytest.mark.parametrize("path", ["source/local/private.csv", "source/.env", "source/../private"])
 def test_source_archive_rejects_private_paths(monkeypatch, tmp_path, path):
     stream = io.BytesIO()
