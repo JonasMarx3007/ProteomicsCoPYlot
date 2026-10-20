@@ -84,7 +84,7 @@ jobs:
 
       - name: Set up Intel package installer
         if: matrix.arch == 'x86_64'
-        uses: conda-incubator/setup-miniconda@04b72d7799e2bae3771b041de9b46c710d29caab # v4
+        uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4
         with:
           miniforge-version: '26.7.2-0'
           activate-environment: ''
