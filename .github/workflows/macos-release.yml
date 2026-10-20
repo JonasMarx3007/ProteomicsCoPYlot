@@ -82,12 +82,48 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Set up Intel package installer
+        if: matrix.arch == 'x86_64'
+        uses: conda-incubator/setup-miniconda@04b72d7799e2bae3771b041de9b46c710d29caab # v4
+        with:
+          miniforge-version: '26.7.2-0'
+          activate-environment: ''
+          auto-activate: false
+          run-init: false
+          channels: conda-forge
+          conda-remove-defaults: true
+
       - name: Install build dependencies
         working-directory: source
+        shell: bash
         run: |
-          python -m venv backend/.venv
-          backend/.venv/bin/python -m pip install -r backend/requirements-runtime.lock
+          if [[ "$ARCH" == x86_64 ]]; then
+            # PyPI no longer provides Intel macOS wheels for these two packages.
+            # Read their exact versions from the selected application's lock.
+            numba_pin=$(sed -n 's/^numba==/numba=/p' backend/requirements-runtime.lock)
+            llvm_pin=$(sed -n 's/^llvmlite==/llvmlite=/p' backend/requirements-runtime.lock)
+            test -n "$numba_pin" && test -n "$llvm_pin"
+            conda create --yes --prefix "$PWD/backend/.venv" --override-channels \
+              --channel conda-forge python=3.13 pip "$numba_pin" "$llvm_pin"
+          else
+            python -m venv backend/.venv
+          fi
+          backend/.venv/bin/python -m pip install --only-binary=numba,llvmlite -r backend/requirements-runtime.lock
+          backend/.venv/bin/python -m pip check
           npm ci --prefix frontend
+
+      - name: Check scientific compiler
+        working-directory: source
+        run: |
+          backend/.venv/bin/python - <<'PY'
+          import numpy as np
+          from numba import njit
+          @njit
+          def sum_squares(values):
+              return (values * values).sum()
+          values = np.arange(100, dtype=np.float64)
+          np.testing.assert_allclose(sum_squares(values), np.dot(values, values))
+          PY
 
       - name: Read and validate release version
         id: version

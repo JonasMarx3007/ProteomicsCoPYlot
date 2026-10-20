@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="${COPYLOT_BUILD_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+AUTOMATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="${COPYLOT_BUILD_ROOT:-$AUTOMATION_DIR}"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 DIST_DIR="$ROOT_DIR/dist"
@@ -49,7 +50,7 @@ build_binary() {
   local name="$1"
   local entry_point="$2"
   local legal_dir="$ROOT_DIR/build/legal/$name"
-  "$PYTHON_BIN" "$ROOT_DIR/tools/package_release_licenses.py" prepare --legal-dir "$legal_dir"
+  "$PYTHON_BIN" "$AUTOMATION_DIR/tools/package_release_licenses.py" prepare --legal-dir "$legal_dir" --root "$ROOT_DIR"
   local notebook_source_args=()
   local notebook_source
   while IFS= read -r notebook_source || [[ -n "$notebook_source" ]]; do
@@ -107,7 +108,7 @@ build_binary() {
       --add-data "$legal_dir:legal" \
       "$ROOT_DIR/$entry_point"
   )
-  "$PYTHON_BIN" "$ROOT_DIR/tools/package_release_licenses.py" finish --legal-dir "$legal_dir" --executable "$DIST_DIR/$name"
+  "$PYTHON_BIN" "$AUTOMATION_DIR/tools/package_release_licenses.py" finish --legal-dir "$legal_dir" --root "$ROOT_DIR" --executable "$DIST_DIR/$name"
 }
 
 echo "[prep] Installing the release PyInstaller version..."
