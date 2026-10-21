@@ -199,7 +199,7 @@ def record_sample_mapping(title, mapping):
             input_explanation='Sample labels are regenerated from the report’s captured annotation metadata.',
             calculation="from IPython.display import display\n"
                 "table = functions.sample_label_frame(metadata)\n"
-                "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+                "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
                 "table.to_csv('reproduced_table.csv', index=False)\ndisplay(table)"))
     except Exception:
         LOGGER.exception('Report sample mapping notebook unavailable')
@@ -237,7 +237,7 @@ def combine_report(title, recipes, omitted=()):
         code = (f"RESOURCES = ROOT_RESOURCES / '{section}'\n"
             f"functions = report_functions.load_functions(RESOURCES / 'functions.py', '{section}')\n"
             "settings = json.loads((RESOURCES / 'settings.json').read_text(encoding='utf-8'))\n"
-            "metadata = pd.read_parquet(RESOURCES / 'metadata.parquet')\n"
+            "metadata = read_resource_table(RESOURCES / 'metadata.parquet')\n"
             f"Path('outputs/{section}').mkdir(parents=True, exist_ok=True)\n")
         if recipe.provenance.get('inputReplay') == 'original-file':
             key = recipe.provenance['kind']

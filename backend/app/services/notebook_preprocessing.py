@@ -269,10 +269,10 @@ def bind_original_preprocessing(recipe):
                 'Captured plot rows/columns define the view being reproduced. The exported input matrix is a verification '
                 'reference only: it is never substituted for the original-file calculation.' + runtime_note + projection_note,
             preparation="raw = functions.read_original_table(data_path)\n"
-                "processing_metadata = pd.read_parquet(RESOURCES / 'processing_metadata.parquet')\n"
+                "processing_metadata = read_resource_table(RESOURCES / 'processing_metadata.parquet')\n"
                 "processing = json.loads((RESOURCES / 'processing.json').read_text(encoding='utf-8'))\n"
                 f"data = functions.{replay_function}(raw, processing_metadata, processing)\n"
-                "reference = pd.read_parquet(RESOURCES / 'input.parquet')\n"
+                "reference = read_resource_table(RESOURCES / 'input.parquet')\n"
                 "data = data.loc[reference.index, reference.columns]\n"
                 "pd.testing.assert_frame_equal(data, reference, check_exact=True)\n")
 

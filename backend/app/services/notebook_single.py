@@ -209,7 +209,7 @@ def _render(plot, **options):
             f"preparation = {{k: settings[k] for k in {keys!r}}}\n"
             + ("_, _, _, table = functions.prepare_table(data, metadata, **preparation)\n" if plot == 'boxplot'
                else "table = functions.prepare_table(data, metadata, **preparation)\n") +
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('reproduced_summary.csv', index=False)\ndisplay(table)\n"
             "image = functions.render_plot(data, metadata, **settings)\n"
             "if getattr(image, 'notice', ''): print(image.notice)\n"

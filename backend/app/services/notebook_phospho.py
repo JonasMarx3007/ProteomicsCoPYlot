@@ -174,7 +174,7 @@ def _render(plot, **options):
             f"preparation = {{key: settings[key] for key in {tuple(preparation)!r}}}\n"
             + ("table = functions.prepare_table(data, metadata, **preparation)\n" if plot == 'coverage' else
                "table = functions.prepare_table(data, **preparation)\n") +
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('reproduced_counts.csv', index=False)\ndisplay(table)\n"
             + ("image = functions.render_plot(data, metadata, **settings)\n" if plot == 'coverage' else
                "image = functions.render_plot(data, **settings)\n") +

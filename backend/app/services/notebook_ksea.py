@@ -99,13 +99,13 @@ def _table_recipe(settings, table):
             'then constructs motif windows using the captured reference subset or peptide fallback. '
             'Imputed values are frozen. Original-upload preprocessing is documented, not rerun.',
         calculation="mask_path = RESOURCES / 'imputation_mask.parquet'\n"
-            "mask = pd.read_parquet(mask_path) if mask_path.exists() else None\n"
+            "mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
             "_, _, statistics, _ = functions.calculate_table(data, metadata, mask, **settings['calculation'])\n"
             "if settings['request']['source'] == 'volcano_control':\n"
             "    statistics = pd.DataFrame(statistics.astype(object).where(pd.notna(statistics), None).to_dict(orient='records'))\n"
             "sequences = json.loads((RESOURCES / 'sequences.json').read_text(encoding='utf-8'))\n"
             "table = functions.format_table(statistics, sequences)\n"
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('KinaseLibrary_input.tsv', sep='\\t', index=False)\n"
             "from IPython.display import display\ndisplay(table)")
     return recipe

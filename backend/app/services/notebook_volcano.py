@@ -165,9 +165,9 @@ def render_volcano(payload, *, interactive=False, **options):
             "upstream collapse are already reflected in the selected matrix, not rerun from the original upload.",
         calculation="from IPython.display import display\n"
             "mask_path = RESOURCES / 'imputation_mask.parquet'\n"
-            "imputation_mask = pd.read_parquet(mask_path) if mask_path.exists() else None\n"
+            "imputation_mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
             "_, label_column, table, warnings = functions.calculate_table(data, metadata, imputation_mask, **settings['calculation'])\n"
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('reproduced_table.csv', index=False)\ndisplay(table)\n" + render_code,
     )
     try:

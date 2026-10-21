@@ -147,7 +147,7 @@ def test_imputed_export_requires_recipe_and_never_executes_it():
         notebook = json.loads(archive.read("Coverage_Plot.ipynb"))
     comments = ["".join(c["source"]) for c in notebook["cells"] if c["cell_type"] == "code"]
     assert any("# imputed_data = impute_values" in code for code in comments)
-    assert any("pd.read_parquet" in code and "input.parquet" in code for code in comments)
+    assert any("read_resource_table" in code and "input.parquet" in code for code in comments)
 
 
 def test_exported_notebook_runs_outside_repository_without_copylot(tmp_path):
@@ -209,3 +209,29 @@ def test_oversized_snapshot_is_rejected_without_evicting_existing_data():
     store = NotebookSnapshots(max_bytes=1)
     with pytest.raises(ValueError, match="memory"):
         store.capture("owner", recipe())
+
+
+def test_resource_reader_preserves_types_and_exits_cleanly_in_fresh_processes(tmp_path):
+    # Short-lived notebook runners used to abort after their last Parquet read.
+    frame = pd.DataFrame({
+        "number": [0.0, 1.0000000000000002, float("nan")],
+        "nullable": pd.array([1, None, 3], dtype="Int64"),
+        "category": pd.Categorical(["a", "b", "a"], ordered=True),
+        "time": pd.date_range("2026-01-01", periods=3, tz="UTC"),
+    }, index=pd.Index([5, 1, 8], name="feature"))
+    item = recipe()
+    _, content = build_notebook_archive(recipe(resources={
+        **item.resources, "input.parquet": dataframe_bytes(frame)}))
+    with ZipFile(io.BytesIO(content)) as archive:
+        archive.extractall(tmp_path)
+    notebook = json.loads((tmp_path / "Coverage_Plot.ipynb").read_text())
+    setup = "".join(notebook["cells"][1]["source"])
+    runner = ("import sys; sys.path.insert(0, '.');\n" + setup
+              + "".join(notebook["cells"][2]["source"])
+              + "data.to_parquet('roundtrip.parquet')\n")
+    for _ in range(5):
+        completed = subprocess.run([sys.executable, "-I", "-c", runner], cwd=tmp_path,
+                                   capture_output=True, text=True, timeout=60)
+        assert completed.returncode == 0, completed.stderr
+        pd.testing.assert_frame_equal(frame, pd.read_parquet(tmp_path / "roundtrip.parquet"),
+                                      check_exact=True)

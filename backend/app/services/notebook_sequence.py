@@ -103,7 +103,7 @@ def capture_sequence_coverage(*, species, protein, chunk_size=100):
             'matching, the covered-position union, unmapped-peptide reporting and the chunked text layout. '
             'Reference lookup used entry name before accession, with the first matching record. No internet '
             'lookup, normalization or imputation is used.',
-        calculation="reference = pd.read_parquet(RESOURCES / 'reference.parquet')\n"
+        calculation="reference = read_resource_table(RESOURCES / 'reference.parquet')\n"
             "result = functions.calculate(data, reference, **settings)\n"
             "assert result == json.loads((RESOURCES / 'result.json').read_text(encoding='utf-8'))\n"
             "Path('reproduced_coverage.txt').write_text(result['sequenceText'], encoding='utf-8', newline='')\n"

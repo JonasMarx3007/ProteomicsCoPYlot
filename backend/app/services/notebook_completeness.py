@@ -116,7 +116,7 @@ def render_completeness(kind, *, plot, table_include_id=True, outlier_threshold=
             "sample_summary = functions.completeness_sample_summary_table(data, metadata, include_id=settings['table_include_id'])\n"
             "feature_summary = functions.completeness_feature_summary_table(data, metadata, include_id=settings['table_include_id'])\n"
             "for name, table in [('sample', sample_summary), ('feature', feature_summary)]:\n"
-            "    pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / f'{name}_summary.parquet'), check_exact=True)\n"
+            "    pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / f'{name}_summary.parquet'), check_exact=True)\n"
             "    table.to_csv(f'reproduced_{name}_summary.csv', index=False)\n"
             "    display(table)\n"
             "outliers = sample_summary.loc[sample_summary['%_missing_values'] > settings['outlier_threshold'], ['Sample']]\n"

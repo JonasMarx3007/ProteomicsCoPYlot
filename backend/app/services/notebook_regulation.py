@@ -106,12 +106,12 @@ def render_regulation(*, interactive=False, **options):
             'site-level testing and significance classification, then sums significant site fold changes by protein. '
             'Imputed values are frozen; original-upload preprocessing is documented, not rerun.',
         calculation="mask_path = RESOURCES / 'imputation_mask.parquet'\n"
-            "mask = pd.read_parquet(mask_path) if mask_path.exists() else None\n"
+            "mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
             f"calculation = {{key: settings[key] for key in {tuple(k for k in calculation if k not in {'kind', 'identifier'})!r}}}\n"
             "_, _, statistics, _ = functions.calculate_table(data, metadata, mask, kind='phospho', identifier='workflow', **calculation)\n"
             f"preparation = {{key: settings[key] for key in {tuple(preparation)!r}}}\n"
             "table = functions.prepare_table(statistics, **preparation)\n"
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('phosphoprotein_regulation.csv', index=False)\n"
             "from IPython.display import display, HTML, Image\ndisplay(table)\n"
             "output = functions.render_plot(table, **settings)\n" +
