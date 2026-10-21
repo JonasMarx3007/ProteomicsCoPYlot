@@ -143,11 +143,11 @@ def render_anova(payload, *, selected_cluster=None, advanced=None):
             "not rerun from the original upload. Captured imputed values are never redrawn.",
         calculation="from IPython.display import display, Image\n"
             "mask_path = RESOURCES / 'imputation_mask.parquet'\n"
-            "imputation_mask = pd.read_parquet(mask_path) if mask_path.exists() else None\n"
+            "imputation_mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
             "results = functions.calculate_tables(data, metadata, settings['request'], imputation_mask)\n"
             "for key in ('rows', 'clusterRows', 'postHocRows'):\n"
             "    table = pd.DataFrame(results[key])\n"
-            "    pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / f'{key}.parquet'), check_exact=True)\n"
+            "    pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / f'{key}.parquet'), check_exact=True)\n"
             "    if not table.empty:\n"
             "        table.to_csv(f'reproduced_{key}.csv', index=False)\n"
             "        display(table)\n"

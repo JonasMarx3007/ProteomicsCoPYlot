@@ -109,9 +109,9 @@ def render_pathway(**options):
             'missing-row exclusions, sample labels and clustering. The captured GO record is the first matching '
             'description, exactly as in the app. Imputed values are never drawn again.',
         calculation="from IPython.display import display, Image\n"
-            "pathway = pd.read_parquet(RESOURCES / 'pathway.parquet')\n"
+            "pathway = read_resource_table(RESOURCES / 'pathway.parquet')\n"
             "matrix, total, color_label = functions.prepare_matrix(data, metadata, pathway, **settings['preparation'])\n"
-            "pd.testing.assert_frame_equal(matrix, pd.read_parquet(RESOURCES / 'matrix.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(matrix, read_resource_table(RESOURCES / 'matrix.parquet'), check_exact=True)\n"
             "matrix.to_csv('reproduced_heatmap_matrix.csv', index=True)\ndisplay(matrix)\n"
             "image = functions.render_plot(matrix, total, color_label, **settings['figure'])\n"
             "Path('reproduced.png').write_bytes(image)\ndisplay(Image(data=image))")

@@ -75,7 +75,7 @@ def bind_peptide_preprocessing(recipe):
         preparation = "from hashlib import sha256\n"
         preparation += "raw[processing['file_column']] = raw[processing['file_column']].map(\n"
         preparation += "    lambda name: processing['runs'].get(sha256(str(name).encode()).hexdigest(), sha256(str(name).encode()).hexdigest()))\n"
-        preparation += "processing_metadata = pd.read_parquet(RESOURCES / 'processing_metadata.parquet')\n"
+        preparation += "processing_metadata = read_resource_table(RESOURCES / 'processing_metadata.parquet')\n"
         preparation += ("data, sequence_column = functions.prepare_input(raw, processing_metadata)\n"
             if plot == 'missed_cleavages' else "data = functions.prepare_input(raw, processing_metadata)\n")
         roots = ('prepare_input',)
@@ -120,7 +120,7 @@ def bind_peptide_preprocessing(recipe):
                 'are repeated before calculating the plot/table. Run matching uses hashes so original filesystem '
                 'paths are not written into the ZIP. The captured matrix is checked, never substituted.',
             preparation=prefix + "processing = json.loads((RESOURCES / 'processing.json').read_text(encoding='utf-8'))\n"
-                + preparation + "reference = pd.read_parquet(RESOURCES / 'input.parquet')\n"
+                + preparation + "reference = read_resource_table(RESOURCES / 'input.parquet')\n"
                 "data = data.loc[reference.index, reference.columns]\n"
                 "pd.testing.assert_frame_equal(data, reference, check_exact=True)\n")
 

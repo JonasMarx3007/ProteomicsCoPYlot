@@ -201,8 +201,8 @@ def render_ora(payload, *, direction, advanced=None, width_cm=26, height_cm=12, 
             'recalculates ORA against the captured full database. Imputation is never redrawn.',
         calculation="from IPython.display import display, Image\n"
             "mask_path = RESOURCES / 'imputation_mask.parquet'\n"
-            "mask = pd.read_parquet(mask_path) if mask_path.exists() else None\n"
-            "database = pd.read_parquet(RESOURCES / 'database.parquet')\n"
+            "mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
+            "database = read_resource_table(RESOURCES / 'database.parquet')\n"
             "result = json.loads((RESOURCES / 'result.json').read_text())\n"
             "queries, tested = functions.select_queries(data, metadata, mask, settings)\n"
             "background = tested if settings['request']['backgroundMode'] == 'experiment' else None\n"

@@ -84,7 +84,7 @@ def render_missed_cleavage(**options):
         calculation="from IPython.display import Image, display\n"
             "samples = [s for s in metadata['new_sample'] if s in data.columns]\n"
             "summary = functions.peptide_missed_cleavage_summary(data, sequence_column=settings['seq_col'], sample_columns=samples, protease=settings['protease'])\n"
-            "pd.testing.assert_frame_equal(summary, pd.read_parquet(RESOURCES / 'summary.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(summary, read_resource_table(RESOURCES / 'summary.parquet'), check_exact=True)\n"
             "summary.to_csv('reproduced_missed_cleavages.csv', index=False)\ndisplay(summary)\n"
             "image = functions.render_plot(data, metadata, **settings)\n"
             "Path('reproduced.png').write_bytes(image)\ndisplay(Image(data=image))")
@@ -168,7 +168,7 @@ def render_modification(**options):
         calculation="from IPython.display import Image, display\n"
             "samples = [s for s in metadata['new_sample'] if s in data.columns]\n"
             "counts = functions.peptide_modification_counts(data, sequence_column='Modified.Sequence', sample_columns=samples)\n"
-            "pd.testing.assert_frame_equal(counts, pd.read_parquet(RESOURCES / 'counts.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(counts, read_resource_table(RESOURCES / 'counts.parquet'), check_exact=True)\n"
             "counts.to_csv('reproduced_modification_counts.csv', index=True)\ndisplay(counts)\n"
             "image = functions.render_plot(data, metadata, **settings)\n"
             "Path('reproduced.png').write_bytes(image)\ndisplay(Image(data=image))")
@@ -406,7 +406,7 @@ def render_coverage(**options):
             "table.parquet": dataframe_bytes(table), f"original.{fmt}": bytes(content)},
         calculation="from IPython.display import Image, display\n"
             "table, total, _ = functions.summarize_peptide_coverage(data, metadata)\n"
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('reproduced_table.csv', index=False)\ndisplay(table)\n"
             "figure = functions.plot_figure(data, metadata, **settings)\n"
             "image = functions.to_png_bytes(figure, functions.get_plt(), dpi=settings['dpi'])\n"

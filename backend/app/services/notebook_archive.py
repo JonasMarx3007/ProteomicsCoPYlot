@@ -113,7 +113,7 @@ class NotebookRecipe:
     resources: dict[str, bytes]
     uses_imputed_input: bool = False
     imputation_recipe: str = ""
-    preparation: str = "data = pd.read_parquet(RESOURCES / 'input.parquet')"
+    preparation: str = "data = read_resource_table(RESOURCES / 'input.parquet')"
     input_explanation: str = "The exact input matrix is included to preserve the displayed figure's inputs."
     calculation_sections: tuple[tuple[str, str], ...] = ()
 
@@ -173,7 +173,14 @@ def build_notebook_archive(recipe: NotebookRecipe) -> tuple[str, bytes]:
                   f"if sys.version_info < {tuple(int(part) for part in python_minimum.split('.'))!r}:\n"
                   f"    raise RuntimeError({python_note!r})\n"
                   "from pathlib import Path\nimport json\nimport hashlib\nimport pandas as pd\n"
-                  "import functions\n\nRESOURCES = Path('resources')\n"
+                  "import functions\n"
+                  "import pyarrow.parquet as pq\n\n"
+                  "def read_resource_table(path):\n"
+                  "    # Read synchronously: Arrow dataset workers can race interpreter shutdown.\n"
+                  "    # Each resource is one file; no dataset scanner or read-ahead is needed.\n"
+                  "    with pq.ParquetFile(path, pre_buffer=False) as parquet:\n"
+                  "        return parquet.read(use_threads=False).to_pandas(use_threads=False)\n\n"
+                  "RESOURCES = Path('resources')\n"
                   + (f"# Original filename: {json.dumps(filename, ensure_ascii=True)}\n" if filename else "")
                   + ("data_path = Path('YOUR_ORIGINAL_DATA_FILE')  # Required: select your original uploaded file.\n"
                      if recipe.provenance.get('inputReplay') == 'original-file' else
@@ -186,7 +193,7 @@ def build_notebook_archive(recipe: NotebookRecipe) -> tuple[str, bytes]:
                   "        if actual != expected:\n"
                   "            raise ValueError(f'Export file changed: {name}')\n"
                   "settings = json.loads((RESOURCES / 'settings.json').read_text(encoding='utf-8'))\n"
-                  "metadata = pd.read_parquet(RESOURCES / 'metadata.parquet')\n"),
+                  "metadata = read_resource_table(RESOURCES / 'metadata.parquet')\n"),
         ],
     }
     if recipe.uses_imputed_input:

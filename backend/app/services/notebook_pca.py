@@ -174,7 +174,7 @@ def render_pca(kind: str, *, interactive=False, **options) -> tuple[bytes | str,
             "# components = [f'{prefix}{i + 1}' for i in range(3 if settings['plot_dim'] == '3D' else 2)]\n"
             "# labels = functions._compute_cluster_labels(scores[components].to_numpy(dtype=float), **cluster_options)\n"
             "# Replay captured coordinates: SVD signs, stochastic embeddings and clustering can vary across platforms.\n"
-            "scores = pd.read_parquet(RESOURCES / 'scores.parquet')\n"
+            "scores = read_resource_table(RESOURCES / 'scores.parquet')\n"
             "projection = json.loads((RESOURCES / 'projection.json').read_text())\n"
             "figure = functions.plot_figure(scores, projection['explained'], projection['clusterLabels'], **settings)\n"
             + replay_output,

@@ -167,7 +167,7 @@ def render_qc(kind: str, *, plot: str = "coverage", **options) -> tuple[bytes, s
         table_calculation = (
             "\ntable_options = {key: settings[key] for key in ('summary', 'mode') if key in settings}\n"
             "table = functions.prepare_table(data, metadata, **table_options)\n"
-            "pd.testing.assert_frame_equal(table, pd.read_parquet(RESOURCES / 'table.parquet'), check_exact=True)\n"
+            "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('reproduced_table.csv', index=False)\ndisplay(table)")
     recipe = NotebookRecipe(
         plot_name=plot_name, source=qc_source(plot),
