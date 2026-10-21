@@ -227,8 +227,8 @@ def test_resource_reader_preserves_types_and_exits_cleanly_in_fresh_processes(tm
     notebook = json.loads((tmp_path / "Coverage_Plot.ipynb").read_text())
     setup = "".join(notebook["cells"][1]["source"])
     runner = ("import sys; sys.path.insert(0, '.');\n" + setup
-              + "restored = read_resource_table(RESOURCES / 'input.parquet')\n"
-              + "restored.to_parquet('roundtrip.parquet')\n")
+              + "".join(notebook["cells"][2]["source"])
+              + "data.to_parquet('roundtrip.parquet')\n")
     for _ in range(5):
         completed = subprocess.run([sys.executable, "-I", "-c", runner], cwd=tmp_path,
                                    capture_output=True, text=True, timeout=60)
