@@ -40,7 +40,7 @@ def test_application_version_is_consistent_across_release_metadata():
 def test_the_package_the_citation_and_the_license_name_the_same_author():
     """What PyPI shows, what a paper cites and who holds the copyright are one person, spelled once."""
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    # Read with a pattern rather than tomllib, which Python 3.10 lacks.
+    # Read the version declaration without importing the project.
     authors_block = re.search(r"^authors = \[(.*?)^\]", project, re.M | re.S).group(1)
     package_authors = re.findall(r'name = "([^"]+)"', authors_block)
     citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")

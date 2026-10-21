@@ -6,7 +6,7 @@ Run commands from the repository root unless a section says otherwise.
 
 ## Prerequisites
 
-- Python 3.10 or newer (an exported notebook requires the Python minor version it was exported with, or newer)
+- Python 3.11 or newer (an exported notebook requires the Python minor version it was exported with, or newer)
 - Node.js 24 LTS and npm
 - Optional: [Ollama](https://ollama.com) for AI mode
 - Optional: R with `Rscript` for the R notebook-compatible helpers
@@ -40,7 +40,7 @@ backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
 
 - `backend/requirements-runtime.lock` is the exact Python 3.13 production set used by the Docker image and audited by security CI.
 - `backend/requirements.lock` is the exact Python 3.13 development and reference-test set. It contains the runtime set plus test and packaging tools.
-- `backend/requirements.txt` and `backend/requirements-dev.txt` retain bounded ranges for supported-version compatibility testing, including Python 3.10–3.12.
+- `backend/requirements.txt` and `backend/requirements-dev.txt` retain bounded ranges for supported-version compatibility testing, including Python 3.11–3.12.
 
 Install an exact local reference environment with:
 
@@ -454,3 +454,5 @@ It cannot change filtering, normalization, imputation, transformation or the
 phosphosite localization cutoff. Changing a plot's data source requires your
 approval. Review scientific interpretations regardless of the selected level.
 
+
+Python 3.10 is no longer supported: Pillow 13 security fixes require Python 3.11 or newer. The locked deployment reference remains Python 3.13.
