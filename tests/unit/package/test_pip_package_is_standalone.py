@@ -66,7 +66,7 @@ def test_no_package_module_imports_the_backend_or_the_repository(tmp_path):
 
 def test_the_wheel_ships_only_the_package():
     """setuptools packages: proteomicscopylot only -- never backend/app."""
-    # tomllib is Python 3.11+; the package tests also run on 3.10.
+    # Parse the isolated package metadata without importing the project.
     tomllib = pytest.importorskip("tomllib")
 
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))

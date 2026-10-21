@@ -14,6 +14,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unsupported-python:
+    # Keep the existing required check context while testing the retired version's
+    # installation boundary. Supported runtimes run the full backend matrix below.
+    name: backend (py3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+      - name: Verify Python 3.10 installation is rejected
+        shell: bash
+        run: |
+          if python -m pip install --dry-run --no-deps . > install.log 2>&1; then
+            cat install.log
+            echo "Python 3.10 must not accept this package"
+            exit 1
+          fi
+          cat install.log
+          grep -F "requires a different Python" install.log
+          grep -F ">=3.11" install.log
+
   backend:
     name: backend (py${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -22,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -72,7 +95,7 @@ jobs:
         run: python tools/check_backend_rules.py
 
       # The package tests run on every supported Python, not only on the R
-      # runner: the package claims 3.10-3.13. Their R comparisons skip here (no
+      # runner: the package claims 3.11-3.13. Their R comparisons skip here (no
       # R on this runner) and run in the cross-implementation workflow.
       - name: Run the tests
         if: matrix.python != '3.13'

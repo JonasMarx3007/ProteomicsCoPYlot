@@ -7,7 +7,7 @@ name = "proteomicscopylot"
 version = "1.0.0b1"
 description = "Notebook-facing plotting and analysis helpers for ProteomicsCoPYlot."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "GPL-3.0-only AND CC-BY-4.0"
 license-files = ["LICENSE", "NOTICE", "data/db/PACKAGED_README.md", "proteomicscopylot/example_data/README.md"]
 authors = [
@@ -17,7 +17,6 @@ keywords = ["proteomics", "phosphoproteomics", "plotting", "notebooks"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -29,6 +28,7 @@ classifiers = [
 # change because a transitive resolve picked up a new one. The exact versions the
 # test suite is run against are recorded in backend/requirements.lock.
 dependencies = [
+  "Pillow>=13,<14",
   "numpy>=1.24,<3",
   "pandas>=2.0,<4",
   "matplotlib>=3.7,<4",
@@ -138,7 +138,7 @@ line-ending = "lf"
 # can be tightened one module at a time with a [[tool.mypy.overrides]] block.
 [tool.mypy]
 # Match the locked Python 3.13 CI environment and its dependency stubs.
-# Runtime compatibility remains tested separately on Python 3.10–3.13.
+# Runtime compatibility remains tested separately on Python 3.11–3.13.
 python_version = "3.13"
 files = ["backend/app", "proteomicscopylot"]
 ignore_missing_imports = true

@@ -6,7 +6,7 @@ to come with.
 
 ## Getting set up
 
-Backend and package (Python 3.10–3.13):
+Backend and package (Python 3.11–3.13):
 
 ```bash
 python -m venv backend/.venv
@@ -33,7 +33,7 @@ Everything below is what CI runs, so a green local run should mean a green pull
 request.
 
 ```bash
-# All Python tests (CI: every Python 3.10-3.13, plus Windows; the package
+# All Python tests (CI: every Python 3.11-3.13, plus Windows; the package
 # and parity tests also on macOS). See tests/README.md for the layout.
 # Runs in two workers (pytest-xdist); `pytest -q -n 0` for a serial run.
 pytest -q

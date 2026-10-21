@@ -13,7 +13,7 @@ umap-learn
 seaborn>=0.12,<1
 matplotlib-venn>=1.0,<2
 plotly>=5.15,<8
-Pillow
+Pillow>=13,<14
 # statsmodels is not a runtime dependency: the Benjamini-Hochberg correction has
 # one implementation (stats_core.bh_adjust; multipletests in the pip package),
 # compared with statsmodels by the reference tests (requirements-dev.txt).
