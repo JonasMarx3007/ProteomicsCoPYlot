@@ -55,6 +55,18 @@ def _metadata() -> pd.DataFrame:
     return pd.DataFrame({"sample": ["S1", "S2"], "condition": ["a", "b"]})
 
 
+def test_missing_numeric_values_remain_valid_json_after_restore_and_resave():
+    original = _source()
+    frame = original.copy(deep=True)
+    for _ in range(2):
+        payload = restore_state._frame_to_payload(frame)
+        assert payload["data"][1][2] is None
+        serialized = json.dumps(payload, allow_nan=False)
+        frame = restore_state._frame_from_payload(json.loads(serialized))
+        pd.testing.assert_frame_equal(frame, original)
+    pd.testing.assert_frame_equal(original, _source())
+
+
 @pytest.mark.parametrize('setting,limit', [
     ('COPYLOT_RESTORE_TABLE_MAX_ROWS', 2),
     ('COPYLOT_RESTORE_TABLE_MAX_COLUMNS', 3),

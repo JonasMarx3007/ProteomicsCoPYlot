@@ -1,7 +1,7 @@
 import { test, expect, webkit } from '@playwright/test';
 import { verifyAuthStartup, tabRequest } from './authStartup.mjs';
 import { readFile } from 'node:fs/promises';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 // Real UI and synthetic log2 data; assistant replies and selected failure cases are mocked.
 // Native-picker cancellation is simulated explicitly in its boundary test.
@@ -2980,18 +2980,36 @@ test('save download and UI restore preserve analysis and settings; invalid resto
   await expect(page.getByText('Save state written to the selected file.', { exact: true })).toBeVisible();
   expect(bytes.length).toBeGreaterThan(100);
 
+  // Uploaded originals are temporary and may be released on reload. Model a
+  // later restore with no saved source path so both platforms exercise the
+  // replacement flow, independently of garbage-collection timing.
+  const savedState = JSON.parse(gunzipSync(bytes).toString('utf8'));
+  for (const pkg of savedState.backend.packages) {
+    if (pkg.datasets.phospho) pkg.datasets.phospho.path = null;
+  }
+  const restoreBytes = gzipSync(Buffer.from(JSON.stringify(savedState)));
+
   // A fresh load must actually empty the backend before import is attempted.
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
   await expect(field(page, 'Dataset type')).toBeVisible();
   expect((await tabRequest(page).get('/api/annotations/current/phosprot')).status()).toBe(404);
   await tab(page, 'Restore').click();
-  await page.locator('input[type=file]').setInputFiles({ name: download.suggestedFilename(), mimeType: 'application/octet-stream', buffer: bytes });
+  await page.locator('input[type=file]').setInputFiles({ name: download.suggestedFilename(), mimeType: 'application/octet-stream', buffer: restoreBytes });
   const imported = page.waitForResponse(r => r.url().endsWith('/api/restore/import'));
   await tab(page, 'Restore').last().click();
-  const restore = await imported;
-  expect(restore.ok(), await restore.text()).toBeTruthy();
-  expect((await restore.json()).ok).toBe(true);
+  const missing = await imported;
+  expect(missing.status()).toBe(409);
+  const missingBody = await missing.json();
+  expect(missingBody.ok).toBe(false);
+  expect(missingBody.missingFiles).toHaveLength(1);
+  expect(missingBody.missingFiles[0]).toMatchObject({ kind: 'phospho', filename: 'synthetic-sites.csv' });
+  expect((await tabRequest(page).get('/api/annotations/current/phosprot')).status()).toBe(404);
+  await expect(tab(page, 'Restore').last()).toBeDisabled();
+  const replacements = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Missing Files' }) });
+  await replacements.locator('input[type=file]').setInputFiles({ name: 'synthetic-sites.csv', mimeType: 'text/csv', buffer: Buffer.from(sites) });
+  const restored = await actionResponse(page, '/api/restore/import', () => tab(page, 'Restore').last().click());
+  expect(restored.body.ok).toBe(true);
   await expect(page.getByText(/Restore complete\./)).toBeVisible();
   expectRoundTrip(await analysisSnapshot(page), expected);
 

@@ -219,7 +219,8 @@ class DeferredAutoMetadataRestore:
 
 def _frame_to_payload(frame: pd.DataFrame) -> dict[str, Any]:
     _validate_table_dimensions(*frame.shape)
-    safe = frame.copy().where(pd.notna(frame), None)
+    # Float columns otherwise coerce None back to NaN, which is not JSON.
+    safe = frame.astype(object).where(pd.notna(frame), None)
     return {
         "columns": [str(column) for column in safe.columns],
         "data": safe.values.tolist(),
