@@ -38,7 +38,19 @@ def test_the_manifest_records_provenance_for_every_source(manifest) -> None:
         for key in ("url", "release", "retrieved", "sha256", "licence", "licence_url", "citation", "bytes"):
             assert entry.get(key), f"{name} lacks {key}"
         assert entry["url"].startswith("https://")
-        assert (ROOT / "data" / "reference-sources" / entry["file"]).suffix == ".gz"
+        assert build_tool.source_path(name, entry["file"]).suffix == ".gz"
+
+
+def test_fasta_sources_are_stored_once_with_unchanged_provenance(manifest) -> None:
+    fasta_sources = {name for name, entry in manifest["sources"].items() if entry["file"].endswith(".fasta.gz")}
+    assert len(fasta_sources) == 4
+    for name in fasta_sources:
+        entry = manifest["sources"][name]
+        path = build_tool.source_path(name, entry["file"])
+        assert path == ROOT / "data" / "db" / entry["file"]
+        assert not (ROOT / "data" / "reference-sources" / entry["file"]).exists()
+        assert build_tool.sha256_of(path) == entry["sha256"] == manifest["outputs"][entry["file"]]["sha256"]
+        assert manifest["build"]["sources_sha256"][name] == entry["sha256"]
 
 
 def test_every_output_is_listed_and_documented(manifest) -> None:

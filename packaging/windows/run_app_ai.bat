@@ -39,9 +39,9 @@ if defined CHAT_MODEL (
 )
 
 if defined CHAT_MODEL (
-  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port %BACKEND_PORT%"
 ) else (
-  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
 set "BACKEND_READY=0"

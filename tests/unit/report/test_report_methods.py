@@ -87,5 +87,5 @@ def test_normalization_labels_distinguish_none_from_applied() -> None:
     for method in ("median", "quantile", "vsn"):
         label = _NORMALIZATION_REPORT_LABELS[method]
         assert not label.startswith("None")
-        assert "applied globally, before filtering" in label
+        assert "applied globally; fitted on the filtered rows" in label
         assert label.strip().endswith(".")

@@ -226,9 +226,11 @@ _HEAVY_PREFIXES = (
 )
 _HEAVY_EXACT = {
     "/api/annotations/generate",
+    "/api/annotations/normalize",
     "/api/annotations/log2-detect",
     "/api/annotations/metadata/upload",
     "/api/annotations/phosprot/aggregate",
+    "/api/annotations/phosprot/upload",
     "/api/datasets/upload",
     "/api/datasets/table-path",
     "/api/datasets/peptide-file",

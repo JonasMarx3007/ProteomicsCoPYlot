@@ -21,7 +21,7 @@ export const MANUAL_CHAPTERS: Record<string, { file: string; title: string }> = 
   "completeness.heatmap": { file: "comp-heatmap", title: "Missing Value Heatmap" },
   "completeness.tables": { file: "comp-tables", title: "Missing Value Tables" },
   "stats.volcano": { file: "stats-volcano", title: "Volcano Plot" },
-  "stats.anova": { file: "stats-anova", title: "ANOVA" },
+  "stats.anova": { file: "stats-anova", title: "One-way ANOVA" },
   "stats.ora": { file: "stats-ora", title: "GO Enrichment (ORA)" },
   "stats.pathwayHeatmap": { file: "stats-pathway-heatmap", title: "Pathway Heatmap" },
   "stats.simulation": { file: "stats-simulation", title: "Replicate & Variance Projection" },

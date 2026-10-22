@@ -77,11 +77,55 @@ def local_path_access_allowed(request: Request) -> bool:
     return not tool_access_enabled() or env_flag("COPYLOT_ALLOW_LOCAL_PATH_APIS")
 
 
+def local_runtime_diagnostics_allowed(request: Request) -> bool:
+    """Full diagnostics are for direct local desktop access, never a deployment.
+
+    A loopback proxy is not a local desktop user. Refuse configured proxies and
+    forwarded requests, including missing or malformed forwarding information.
+    """
+    if any(env_flag(name) for name in (
+        "COPYLOT_VIEWER_MODE", "COPYLOT_VIEWER_PORTAL_ENABLED", "COPYLOT_TOOL_ACCESS_ENABLED",
+    )):
+        return False
+    peer = request.client.host if request.client else ""
+    if peer_is_trusted_proxy(peer) or any(
+        name in request.headers for name in ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto")
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
 def _drop_expired(attempts: deque[float], cutoff: float) -> bool:
     """Forget attempts older than the window; report whether any are left."""
     while attempts and attempts[0] < cutoff:
         attempts.popleft()
     return bool(attempts)
+
+
+def rate_limit_key(address: str) -> str:
+    """The client identity a login limiter counts attempts for.
+
+    An IPv4 client is its address. An IPv6 client is its /64: a home or VPS
+    customer is routinely given a whole /64, so counting per address lets one
+    customer rotate through fresh addresses and never trip the limit (review
+    M11, 2026-10-21). Anything that is not an IP address is used unchanged.
+    """
+    try:
+        parsed = ipaddress.ip_address(str(address).strip())
+    except ValueError:
+        return str(address)
+    if parsed.version == 6:
+        mapped = parsed.ipv4_mapped
+        if mapped is not None:
+            return str(mapped)
+        return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+    return str(parsed)
 
 
 class LoginRateLimit:
@@ -90,8 +134,9 @@ class LoginRateLimit:
     The tool and the viewer each own an instance, so filling up the viewer
     portal's budget never locks the tool as well, and each realm reads its own
     `COPYLOT_<PREFIX>_LOGIN_RATE_LIMIT_*` settings. Within a realm the count is
-    per client address and per bucket -- the bucket being the way in (password,
-    link, qr), so a failing QR code does not spend the password budget.
+    per client (`rate_limit_key`: the IPv4 address or the IPv6 /64) and per
+    bucket -- the bucket being the way in (password, link, qr), so a failing
+    QR code does not spend the password budget.
     """
 
     def __init__(self, env_prefix: str) -> None:
@@ -110,7 +155,7 @@ class LoginRateLimit:
         """A successful login ends the count for that client: their own typos
         should not lock them out right after they got in."""
         with self._lock:
-            self.attempts.pop((client_address(request), bucket), None)
+            self.attempts.pop((rate_limit_key(client_address(request)), bucket), None)
 
     def enforce(self, request: Request, *, bucket: str) -> None:
         if not self.enabled():
@@ -119,7 +164,7 @@ class LoginRateLimit:
         window_seconds = max(1, self._env_int("WINDOW_SECONDS", 300))
         now = time.monotonic()
         cutoff = now - window_seconds
-        key = (client_address(request), bucket)
+        key = (rate_limit_key(client_address(request)), bucket)
         with self._lock:
             for stale in [k for k, seen in self.attempts.items() if not _drop_expired(seen, cutoff)]:
                 self.attempts.pop(stale, None)

@@ -7,7 +7,7 @@ set "FRONTEND_PORT=5173"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%check_launch_ports.ps1" -BackendPort %BACKEND_PORT% -FrontendPort %FRONTEND_PORT%
 if errorlevel 1 exit /b 1
 
-start "Backend" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=0 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+start "Backend" /D "%ROOT%backend" cmd /k "set COPYLOT_AI_MODE=0 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port %BACKEND_PORT%"
 
 set "BACKEND_READY=0"
 for /l %%i in (1,1,20) do (

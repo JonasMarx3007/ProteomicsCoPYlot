@@ -52,6 +52,20 @@ lists it where the middleware is registered, and
    data") reaches the browser in the `X-CoPYlot-Notice` header and is shown under
    the plot, never inside the figure or the report.
 
+## ORA gene mapping
+
+ORA expands every semicolon-separated gene annotation, trims whitespace, drops
+empty entries and deduplicates each gene list. This rule applies to Protein and
+Phosphoproteome inputs, ordinary/control volcano selections, one-way ANOVA
+clusters, explicit gene lists and their experiment-specific backgrounds, including
+the Python/R functions and exported notebooks. Original group annotations remain
+unchanged. Global background mode continues to use the annotation database.
+
+Results describe functions associated with genes mapped to the selected groups;
+membership in an ambiguous protein group does not establish that each gene was
+independently measured. Expanding both selection and background can change
+enrichment results compared with the previous first-gene-only Protein mapping.
+
 ## Assistant
 
 `backend/app/services/scientific_assistant.py` runs one step of a chat request; the
@@ -122,6 +136,7 @@ function, it has the same name, arguments and result; the tests under
 |---|---|---|---|
 | Reading, sample IDs, log2, zero rule (`raw_zero_to_nan`), filtering, median and quantile normalization | ✓ | ✓ | ✓ |
 | VSN normalization | ✓ (calls R `vsn`) | ✗ (raises; use R or the app) | ✓ |
+| Moderated t-tests (`moderated*` test types) | ✓ (calls R `limma`; offered only when R and limma are present) | ✗ (raises; use R or the app) | ✓ (needs `limma`) |
 | Imputation | ✓ | ✓ | ✓ (R's random-number generator, so draws differ from Python) |
 | Volcano (± control, paired, Welch), ANOVA with Tukey | ✓ | ✓ | ✓ |
 | PCA (`pca_scores`, `pca_plot`) | ✓ | ✓ | ✓ |
@@ -129,7 +144,7 @@ function, it has the same name, arguments and result; the tests under
 | Feature scaling choice for projections (`scaling=`) | ✓ (PCA, UMAP, t-SNE) | ✓ (PCA) | ✓ (PCA) |
 | QC plots: coverage, boxplot, CV, histogram, Q-Q, correlation (`sample_correlation_matrix`), completeness tables | ✓ | ✓ | ✓ |
 | ORA and pathway heatmap | ✓ | ✓ | ✓ |
-| Kinase Library ("KSEA") | ✓ | ✓ | ✓ |
+| Kinase Library | ✓ | ✓ | ✓ |
 | Kinase tree data | ✗ | ✓ | ✓ |
 | Phosphoprotein aggregation and regulation, site coverage, STY | ✓ | ✓ | ✓ |
 | Peptide: protease rules, missed cleavages, RT, sequence coverage | ✓ | ✓ | ✓ |

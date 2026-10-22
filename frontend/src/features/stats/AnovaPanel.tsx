@@ -1,4 +1,4 @@
-// ANOVA panel: omnibus test, Tukey follow-up and clustering of significant rows.
+// One-way ANOVA panel: omnibus test, Tukey follow-up and clustering of significant rows.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildPlotUrl, isAbortError, runAnovaAnalysis } from "../../lib/api";
@@ -231,7 +231,7 @@ export function AnovaPanel({
       .catch((err) => {
         if (isAbortError(err)) return;
         setResultState(null);
-        setError(err instanceof Error ? err.message : "Failed to run ANOVA analysis");
+        setError(err instanceof Error ? err.message : "Failed to run One-way ANOVA analysis");
       });
     return () => {
       controller.abort();
@@ -292,7 +292,7 @@ export function AnovaPanel({
 
   return (
     <div className="space-y-6">
-      <SectionCard title="ANOVA">
+      <SectionCard title="One-way ANOVA">
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={kindOptions} />
           <LocalizationCutoffField kind={kind} />
@@ -306,8 +306,8 @@ export function AnovaPanel({
             value={sourceMode}
             onChange={(value) => setSourceMode(value as AnovaSource)}
             options={[
-              { value: "anova", label: "ANOVA" },
-              { value: "anova_cluster", label: "ANOVA Cluster" },
+              { value: "anova", label: "One-way ANOVA" },
+              { value: "anova_cluster", label: "One-way ANOVA — clusters" },
             ]}
           />
           <SelectField
@@ -380,19 +380,19 @@ export function AnovaPanel({
               ) : null}
             </>
           ) : (
-            <InfoSection message="A post-hoc needs at least three conditions. With two, the ANOVA and the single pairwise comparison test the same hypothesis." />
+            <InfoSection message="A post-hoc needs at least three conditions. With two, the One-way ANOVA and the single pairwise comparison test the same hypothesis." />
           )}
         </SectionCard>
       ) : null}
 
       {advancedPlotOptions}
-      {!canRun && options ? <InfoSection message="At least two conditions with replicate samples are required to run ANOVA." /> : null}
+      {!canRun && options ? <InfoSection message="At least two conditions with replicate samples are required to run One-way ANOVA." /> : null}
       {running && !result ? (
         <InfoSection
           message={
             postHoc === "tukey"
-              ? "Running the ANOVA and the Tukey HSD post-hoc. The post-hoc evaluates one studentized-range probability per comparison, so on a large matrix it can take a minute; the plot and tables reappear when it finishes."
-              : "Running the ANOVA..."
+              ? "Running the One-way ANOVA and the Tukey HSD post-hoc. The post-hoc evaluates one studentized-range probability per comparison, so on a large matrix it can take a minute; the plot and tables reappear when it finishes."
+              : "Running the One-way ANOVA..."
           }
         />
       ) : null}
@@ -402,7 +402,7 @@ export function AnovaPanel({
             items={[
               { label: "Rows", value: String(result.totalRows) },
               { label: "Significant", value: String(result.significantCount) },
-              { label: "Source", value: result.source === "anova_cluster" ? "ANOVA Cluster" : "ANOVA" },
+              { label: "Source", value: result.source === "anova_cluster" ? "One-way ANOVA — clusters" : "One-way ANOVA" },
               { label: "Clusters", value: result.clusterCount == null ? "-" : String(result.clusterCount) },
               {
                 label: "Cluster sizes",

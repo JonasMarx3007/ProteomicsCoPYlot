@@ -72,6 +72,10 @@ def test_health_runtime_and_openapi_routes() -> None:
             "unpaired",
             "unpaired_welch",
             "paired",
+            "moderated",
+            "moderated_robust",
+            "moderated_paired",
+            "moderated_robust_paired",
         }
         assert simulation_parameters["testType"]["enum"] == [
             "unpaired",

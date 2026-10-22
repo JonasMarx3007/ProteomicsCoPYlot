@@ -45,6 +45,9 @@ import type {
   PhosprotAggregationMode,
   PhosprotAggregationSource,
   NormalizationCapabilityResponse,
+  NormalizationFit,
+  NormalizationMethod,
+  StatisticsCapabilityResponse,
   RRuntimeStatusResponse,
   SingleProteinOptionsResponse,
   SingleProteinTableResponse,
@@ -293,6 +296,21 @@ export async function getNormalizationCapability(
   };
 }
 
+export async function getStatisticsCapability(refresh = false): Promise<StatisticsCapabilityResponse> {
+  const suffix = refresh ? "?refresh=1" : "";
+  const data = await request(`/api/runtime/statistics${suffix}`, {
+    cache: refresh ? "no-store" : "default",
+    fallback: "Failed to detect statistics capabilities",
+  });
+  const payload = data as Partial<StatisticsCapabilityResponse>;
+  return {
+    testTypes: Array.isArray(payload.testTypes) ? (payload.testTypes as string[]) : ["unpaired", "unpaired_welch", "paired"],
+    moderatedAvailable: Boolean(payload.moderatedAvailable),
+    moderatedUnavailableReason: payload.moderatedUnavailableReason ?? null,
+    limmaPackageVersion: payload.limmaPackageVersion ?? null,
+  };
+}
+
 export async function loginViewerQr(token: string): Promise<ViewerAuthLoginResponse> {
   const data = await request(`/api/viewer/auth/qr-login`, {
     method: "POST",
@@ -345,17 +363,13 @@ export async function logoutTool(): Promise<void> {
 export async function uploadDataset(
   file: File,
   kind: Extract<DatasetKind, "protein" | "phospho" | "phosprot">,
-  packageName?: string,
-  sourcePath?: string
+  packageName?: string
 ): Promise<DatasetPreviewResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", kind);
   if (packageName && packageName.trim()) {
     form.append("packageName", packageName.trim());
-  }
-  if (sourcePath && sourcePath.trim()) {
-    form.append("sourcePath", sourcePath.trim());
   }
 
   const data = await request(`/api/datasets/upload`, { method: "POST", body: form, fallback: "Upload failed" });
@@ -689,6 +703,19 @@ export async function generateAnnotation(
   return data as AnnotationResultResponse;
 }
 
+/** The second annotation step: a normalization fitted on the rows the filter kept; "none" removes it. */
+export async function normalizeAnnotation(
+  payload: { kind: AnnotationKind; normalization: NormalizationMethod; normalizationFit: NormalizationFit }
+): Promise<AnnotationResultResponse> {
+  const data = await request(`/api/annotations/normalize`, {
+    method: "POST",
+    json: payload,
+    fallback: "Failed to apply normalization",
+  });
+  bumpDatasetScopeNonce();
+  return data as AnnotationResultResponse;
+}
+
 export async function generatePeptideMetadata(
   payload: PeptideMetadataGenerateRequest
 ): Promise<PeptideMetadataResponse> {
@@ -891,6 +918,26 @@ export async function downloadIdTranslation(
   return response.blob();
 }
 
+/** The alternative to collapsing: a phosphoprotein matrix made earlier becomes
+ *  the current phosphoprotein data on the phospho annotation's sample sheet.
+ *  `isLog2Transformed` null lets the server detect the scale. */
+export async function uploadPhosprotMatrix(
+  file: File,
+  isLog2Transformed: boolean | null = null
+): Promise<AnnotationResultResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("isLog2Transformed", isLog2Transformed === null ? "" : String(isLog2Transformed));
+  const data = await request(`/api/annotations/phosprot/upload`, {
+    method: "POST",
+    body: form,
+    fallback: "Failed to upload phosphoprotein dataset",
+  });
+  bumpDatasetScopeNonce();
+  emitDatasetStateChanged();
+  return data as AnnotationResultResponse;
+}
+
 export async function aggregatePhosprot(
   mode: PhosprotAggregationMode,
   source: PhosprotAggregationSource,
@@ -1086,6 +1133,12 @@ export async function getStatisticalOptions(
       ? payloadRaw.availableDataSources
       : (["data"] as DataSource[]),
     defaultDataSource: payloadRaw.defaultDataSource ?? "data",
+    proteinCorrection: {
+      available: Boolean(payloadRaw.proteinCorrection?.available),
+      dataSources: Array.isArray(payloadRaw.proteinCorrection?.dataSources)
+        ? payloadRaw.proteinCorrection.dataSources
+        : [],
+    },
     availableConditions: Array.isArray(payloadRaw.availableConditions)
       ? payloadRaw.availableConditions
       : [],
@@ -1454,6 +1507,12 @@ export async function getPhosphoOptions(
       ? payloadRaw.features.map((value) => String(value))
       : [],
     imputedAvailable: Boolean(payloadRaw.imputedAvailable),
+    proteinCorrection: {
+      available: Boolean((payloadRaw.proteinCorrection as { available?: unknown } | undefined)?.available),
+      dataSources: Array.isArray((payloadRaw.proteinCorrection as { dataSources?: unknown } | undefined)?.dataSources)
+        ? ((payloadRaw.proteinCorrection as { dataSources: DataSource[] }).dataSources)
+        : [],
+    },
   } as PhosphoOptionsResponse;
 }
 
@@ -1659,7 +1718,7 @@ export function buildPlotUrl(path: string, params?: Record<string, string | numb
   return suffix ? `${base}?${suffix}` : base;
 }
 
-export type PhosphoLocalizationCutoff = { cutoff: number; available: boolean };
+export type PhosphoLocalizationCutoff = { cutoff: number; available: boolean; belowClassOne?: number; sites?: number };
 
 // The session-wide phosphosite localization probability cutoff. Every
 // phosphosite module reads its matrix through the backend with this cutoff

@@ -27,6 +27,7 @@ id_translation.py
 annotation_processor.py
 phosprot_tools.py
 r_vsn.py
+r_limma.py
 notebook_preprocessing.py
 notebook_report.py
 notebook_peptide_preprocessing.py

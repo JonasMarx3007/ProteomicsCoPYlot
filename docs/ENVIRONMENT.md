@@ -19,6 +19,12 @@ Sizes in `..._MB` are MiB; `..._BYTES` are bytes.
 | `COPYLOT_VIEWER_PROJECT` | none | The viewer project to open. Set by `--project`. |
 | `COPYLOT_VIEWER_PORTAL_ENABLED` | off | Viewer portal: a password (or QR link) chooses the project. Needs `COPYLOT_VIEWER_MODE=1`. |
 | `COPYLOT_VIEWER_ACCESS_FILE` | `local/viewer_access.local.json`, then the same name in the root | Portal passwords per project. |
+| `COPYLOT_VIEWER_PASSWORD_MAX_CONCURRENCY` | `2` | Server-wide concurrent viewer password checks; excess attempts receive HTTP 429 immediately. Minimum 1. |
+| `COPYLOT_VIEWER_PASSWORD_MAX_ATTEMPTS` | `30` | Server-wide admitted viewer password attempts per rolling window, including successful logins. Minimum 1. |
+| `COPYLOT_VIEWER_PASSWORD_WINDOW_SECONDS` | `60` | Rolling window for the server-wide viewer password budget. Minimum 1 second. |
+| `COPYLOT_TOOL_PASSWORD_MAX_CONCURRENCY`, `COPYLOT_TOOL_PASSWORD_MAX_ATTEMPTS`, `COPYLOT_TOOL_PASSWORD_WINDOW_SECONDS` | `2`, `30`, `60` | The same server-wide budget for the tool password login (link-token logins are a cheap hash compare and are not budgeted). |
+| `COPYLOT_TOOL_LOGIN_RATE_LIMIT_ENABLED`, `COPYLOT_VIEWER_LOGIN_RATE_LIMIT_ENABLED` | on | Per-client failed-login limit for the tool and the viewer realm. A client is its IPv4 address or its IPv6 /64 (behind a trusted proxy, the forwarded one). |
+| `COPYLOT_<REALM>_LOGIN_RATE_LIMIT_MAX_ATTEMPTS`, `..._WINDOW_SECONDS` | `12`, `300` | Failed attempts one client may make per bucket (password, link, qr) within the window before HTTP 429. |
 | `COPYLOT_VIEWER_QR_ACCESS_FILE` | `local/viewer_qr_access.local.json`, then `viewer_qr_access.local.json` or `viewer_qr_access.json` in the root | Portal QR link tokens per project. |
 | `COPYLOT_ALLOWED_HOSTS` | loopback names | Extra `Host` header values the server answers to, comma separated. |
 | `COPYLOT_TRUSTED_PROXY_IPS` | `127.0.0.1` | Reverse proxies whose forwarded client address is trusted (addresses or CIDR ranges, comma separated). |
@@ -47,7 +53,7 @@ Sizes in `..._MB` are MiB; `..._BYTES` are bytes.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `COPYLOT_UPLOAD_MAX_BYTES` | 64 GiB | Upload size, checked as it arrives. |
+| `COPYLOT_UPLOAD_MAX_BYTES` | 64 GiB | Upload size, checked as it arrives; also the maximum source-file size for export/restore checksums. Oversized, linked, non-regular or changed files receive no file checksum. |
 | `COPYLOT_UPLOAD_MAX_CELLS` | 10,000,000,000 | Rows × columns of a parsed table. |
 | `COPYLOT_UPLOAD_MAX_FRAME_BYTES` | 25 % of RAM, at most 128 GiB | Memory of a parsed table. |
 | `COPYLOT_UPLOAD_MAX_COLUMNS` | 20,000 | Columns of a parsed table. |

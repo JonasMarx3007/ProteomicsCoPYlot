@@ -17,7 +17,7 @@ import pytest
 
 from app.schemas.summary import SummaryReportContext, SummaryReportRequest
 from app.services.annotation_processor import compute_annotation_from_metadata
-from app.services.functions import missingness_imbalance, missingness_imbalance_warning, normalize_data
+from app.services.functions import filter_data, missingness_imbalance, missingness_imbalance_warning, normalize_data
 
 report = importlib.import_module("app.services.report_function")
 
@@ -46,9 +46,10 @@ def _missingness_warnings(frame, meta, normalization):
 def test_annotation_warns_for_median_and_quantile(normalization):
     frame, meta = _simulated()
     found = _missingness_warnings(frame, meta, normalization)
-    expected = missingness_imbalance_warning(
-        missingness_imbalance(normalize_data(frame, meta, normalization), meta), normalization)
-    assert found == [expected]
+    # The warning describes what the fit saw: the rows the filter kept.
+    kept = filter_data(normalize_data(frame, meta, normalization), meta, 1, "in_at_least_one_group")
+    expected = missingness_imbalance_warning(missingness_imbalance(kept, meta), normalization)
+    assert found == [expected + ' To remove the shift, fit the normalization on the features observed in every sample (Normalization box, "Fit on").']
     assert "B1 (" in found[0] and "All of them are in condition B" in found[0]
 
 
@@ -98,7 +99,7 @@ def test_the_report_carries_no_missingness_warning(monkeypatch, normalization):
 
 def test_annotation_warns_for_vsn(monkeypatch):
     """VSN is fitted on each sample's observed values too, so the same imbalance concerns it."""
-    monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data: np.log2(data))
+    monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data, **kw: np.log2(data))
     frame, meta = _simulated()
     linear = frame.copy()
     linear[meta["sample"]] = np.power(2.0, linear[meta["sample"]])

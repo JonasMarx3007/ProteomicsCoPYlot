@@ -51,7 +51,7 @@ or set `COPYLOT_ACCESS_MODE=viewer` for QR login and two-project isolation.
 These access suites are also run in CI. Actual OS save/open dialogs and permissions,
 native Safari, live proxy deployment and exhaustive plot settings remain unverified.
 
-Security regression: synthetic KSEA uploads contain closing-script tags and image
+Security regression: synthetic Kinase Library uploads contain closing-script tags and image
 event handlers. The real plot must render with inert labels, preserve data markers,
 support hover/zoom/SVG download, and deny parent DOM/local-storage access. All
 generated-content feature frames and report-nested plots use an opaque-origin

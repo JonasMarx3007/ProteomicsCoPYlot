@@ -70,7 +70,7 @@ def test_vsn_boundary_preserves_observations_and_missingness(monkeypatch, is_log
     source = pd.DataFrame({"id": ["P1", "P2", "P3"], "A": [0., 1.23456789012345, np.nan]})
     before = source.copy()
 
-    def normalize(linear):
+    def normalize(linear, fit_rows=None):
         if is_log2:
             assert linear.loc[0, "A"] == 1.
         else:
@@ -82,7 +82,12 @@ def test_vsn_boundary_preserves_observations_and_missingness(monkeypatch, is_log
     monkeypatch.setattr(r_vsn, "vsn_normalize_linear", normalize)
     result = prepare_normalized_log2_data(source, ["A"], is_log2, "vsn")
     assert pd.isna(result.loc[0, "A"]) == (not is_log2)
-    assert result.loc[1, "A"] == 42.
+    # The fake vsn returns 42 everywhere; the anchor then pins the median of the
+    # output to the median of the log2 input, so the observed value comes back
+    # at the log2 level (the fake's constant carries, by construction, no spread).
+    log2_observed = source.loc[1, "A"] if is_log2 else np.log2(source.loc[1, "A"])
+    expected_median = np.nanmedian([source.loc[0, "A"], log2_observed]) if is_log2 else log2_observed
+    assert result.loc[1, "A"] == pytest.approx(42. - (42. - expected_median))
     assert pd.isna(result.loc[2, "A"])
     pd.testing.assert_frame_equal(source, before)
     pd.testing.assert_series_equal(source["id"], result["id"])
@@ -235,3 +240,54 @@ def test_linear_source_is_used_verbatim_when_supplied(vsn_default) -> None:
     without = vsn_default[SAMPLES]
     assert with_source.shape == without.shape
     assert list(with_source.columns) == SAMPLES
+
+
+@requires_vsn
+def test_vsn_output_is_anchored_to_the_log2_level_and_stable_under_epsilon_perturbation() -> None:
+    """vsn's flat likelihood let a machine-epsilon
+    change of the input move every value by one constant (1.22 log2 on HEK293).
+    The constant carries no information and is removed by `anchor_vsn_level`;
+    what is left is the genuine optimizer wobble, far below anything a result
+    could show, and the output sits at the level of the plain log2 data."""
+    from app.services.functions import anchor_vsn_level
+
+    frame = _log2_frame(300)
+    log2 = frame[SAMPLES]
+    linear = pd.DataFrame(np.power(2.0, log2.to_numpy()), columns=SAMPLES, index=frame.index)
+    as_linear_upload = normalize_data(frame, SAMPLES, "vsn", linear_source=linear)[SAMPLES]
+    as_log2_upload = normalize_data(frame, SAMPLES, "vsn")[SAMPLES]
+    rng = np.random.default_rng(4)
+    jittered = linear * (1 + rng.uniform(-1, 1, linear.shape) * 2 ** -52)
+    as_jittered = normalize_data(frame, SAMPLES, "vsn", linear_source=jittered)[SAMPLES]
+
+    # Level: the overall median is the log2 data's.
+    assert abs(np.nanmedian(as_linear_upload.to_numpy()) - np.nanmedian(log2.to_numpy())) < 1e-9
+    # Stability: the two upload paths and an epsilon jitter agree where it matters.
+    for other in (as_log2_upload, as_jittered):
+        assert np.nanmax(np.abs(as_linear_upload.to_numpy() - other.to_numpy())) < 1e-3
+        fc_a = as_linear_upload[SAMPLES[:3]].mean(axis=1) - as_linear_upload[SAMPLES[3:]].mean(axis=1)
+        fc_b = other[SAMPLES[:3]].mean(axis=1) - other[SAMPLES[3:]].mean(axis=1)
+        assert np.nanmax(np.abs(fc_a - fc_b)) < 1e-3
+    # The anchor is one global shift: it never changes a within-matrix difference.
+    shifted = anchor_vsn_level(as_linear_upload + 1.7, log2)
+    assert np.allclose(shifted.to_numpy(), as_linear_upload.to_numpy(), atol=1e-12, equal_nan=True)
+
+
+@requires_vsn
+def test_r_functions_anchor_vsn_the_same_way(tmp_path) -> None:
+    frame = _log2_frame(200)
+    linear = pd.DataFrame(np.power(2.0, frame[SAMPLES].to_numpy()), columns=SAMPLES)
+    frame.to_csv(tmp_path / "l.csv", index=False)
+    linear.to_csv(tmp_path / "lin.csv", index=False)
+    script = f'''
+      source("proteomicscopylot/notebook_functions.R")
+      l <- read.csv("{tmp_path.as_posix()}/l.csv", check.names = FALSE)
+      lin <- read.csv("{tmp_path.as_posix()}/lin.csv", check.names = FALSE)
+      out <- suppressWarnings(normalize_data(l, {list(SAMPLES)!r}, "vsn", linear_source = lin))
+      write.csv(out, "{tmp_path.as_posix()}/r.csv", row.names = FALSE)
+    '''.replace("[", "c(").replace("]", ")")
+    result = subprocess.run([detect_r_runtime()["executable"], "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    app = normalize_data(frame, SAMPLES, "vsn", linear_source=linear)[SAMPLES].to_numpy()
+    r = pd.read_csv(tmp_path / "r.csv")[SAMPLES].to_numpy()
+    assert np.nanmax(np.abs(app - r)) < 1e-3

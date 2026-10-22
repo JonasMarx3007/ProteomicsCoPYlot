@@ -2,6 +2,7 @@ import SummaryCard from "../../components/SummaryCard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   aggregatePhosprot,
+  uploadPhosprotMatrix,
   createMetadataProfile,
   deleteMetadataProfile,
   detectAnnotationLog2Scale,
@@ -10,6 +11,7 @@ import {
   downloadCurrentAnnotationSourceData,
   generatePeptideMetadata,
   generateAnnotation,
+  normalizeAnnotation,
   getCurrentAnnotation,
   getCurrentDatasets,
   getCurrentPeptideMetadata,
@@ -31,12 +33,14 @@ import type {
   MetadataUploadResponse,
   MetadataAnnotationKind,
   NormalizationCapabilityResponse,
+  NormalizationFit,
+  NormalizationMethod,
   PeptideMetadataResponse,
   PeptideOverviewResponse,
   PhosprotAggregationMode,
   PhosprotAggregationSource,
 } from "../../lib/types";
-import { NORMALIZATION_LABELS, normalizationOptions } from "../../lib/types";
+import { NORMALIZATION_FIT_LABELS, NORMALIZATION_LABELS, normalizationOptions } from "../../lib/types";
 import PreviewTable from "../../components/PreviewTable";
 import { usePhosphoLocalizationCutoff } from "../../lib/phosphoLocalization";
 
@@ -54,6 +58,7 @@ const DEFAULT_FILTER: AnnotationFilterConfig = {
   minPercentage: 70,
   mode: "per_group",
   normalization: "none",
+  normalizationFit: "filtered_rows",
 };
 
 const ANNOTATION_MANAGER_VISIBILITY_KEY = "data.annotationManager.visible.v1";
@@ -99,6 +104,13 @@ export default function AnnotationPage() {
     };
   }, []);
   const [result, setResult] = useState<AnnotationResultResponse | null>(null);
+  // The normalization box: what is selected, applied through its own button.
+  // The applied value is whatever the stored annotation carries.
+  const [selectedNormalization, setSelectedNormalization] = useState<NormalizationMethod>("none");
+  const [selectedFit, setSelectedFit] = useState<NormalizationFit>("filtered_rows");
+  const [normalizing, setNormalizing] = useState(false);
+  const appliedNormalization: NormalizationMethod = result?.filter?.normalization ?? "none";
+  const appliedFit: NormalizationFit = result?.filter?.normalizationFit ?? "filtered_rows";
   const visibleWarnings = (result?.warnings ?? []).filter((warning) =>
     !/^(No normalization was applied\.|Median centering was applied globally|Quantile normalization was applied globally|VSN was applied globally|No phosphoprotein-level normalization was applied\.|Phosphosite-level normalization was )/.test(warning),
   );
@@ -115,6 +127,8 @@ export default function AnnotationPage() {
   const [phosprotSource, setPhosprotSource] =
     useState<PhosprotAggregationSource>("non_imputed");
   const [phosprotBusy, setPhosprotBusy] = useState(false);
+  const [phosprotFile, setPhosprotFile] = useState<File | null>(null);
+  const [phosprotFileScale, setPhosprotFileScale] = useState<"auto" | "log2" | "linear">("auto");
   // Sites below this localization probability are left out of the collapse. It
   // starts at the session-wide cutoff and is recorded with the phosphoprotein table.
   const { cutoff: sharedLocalizationCutoff, available: localizationAvailable } = usePhosphoLocalizationCutoff();
@@ -280,6 +294,8 @@ export default function AnnotationPage() {
         if (stored.filter && !filterChosen.current) {
           setFilterConfig({ ...DEFAULT_FILTER, ...stored.filter });
         }
+        setSelectedNormalization(stored.filter?.normalization ?? "none");
+        setSelectedFit(stored.filter?.normalizationFit ?? "filtered_rows");
       })
       .catch(() => {
         if (cancelled) return;
@@ -405,21 +421,42 @@ export default function AnnotationPage() {
         return;
       }
 
+      // The filter step. Normalization is the next box: applying a new filter
+      // starts from no normalization, because the normalization is fitted on
+      // the rows the filter keeps.
       const generated = await generateAnnotation({
         kind,
         conditions: requestConditions,
         isLog2Transformed,
-        filter:
-          kind === "phosprot"
-            ? { ...filterConfig, normalization: "none" }
-            : filterConfig,
+        filter: { ...filterConfig, normalization: "none" },
       });
 
       setResult(generated);
+      setSelectedNormalization("none");
+      setSelectedFit("filtered_rows");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate annotation");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleNormalize() {
+    if (kind === "peptide" || !result) return;
+    try {
+      setNormalizing(true);
+      setError(null);
+      const normalized = await normalizeAnnotation({ kind, normalization: selectedNormalization, normalizationFit: selectedFit });
+      setResult(normalized);
+      setFilterConfig((prev) => ({
+        ...prev,
+        normalization: normalized.filter?.normalization ?? "none",
+        normalizationFit: normalized.filter?.normalizationFit ?? "filtered_rows",
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to apply normalization");
+    } finally {
+      setNormalizing(false);
     }
   }
 
@@ -468,6 +505,25 @@ export default function AnnotationPage() {
           ? err.message
           : "Failed to aggregate phosphoprotein data"
       );
+    } finally {
+      setPhosprotBusy(false);
+    }
+  }
+
+  async function handleUploadPhosprot() {
+    if (!phosprotFile) return;
+    try {
+      setPhosprotBusy(true);
+      setError(null);
+      const generated = await uploadPhosprotMatrix(
+        phosprotFile,
+        phosprotFileScale === "auto" ? null : phosprotFileScale === "log2"
+      );
+      setPhosprotResult(generated);
+      setPhosprotFile(null);
+      await refreshCurrent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to upload phosphoprotein data");
     } finally {
       setPhosprotBusy(false);
     }
@@ -881,10 +937,16 @@ export default function AnnotationPage() {
                   <input id={`condition-name-${condition.id}`}
                     type="text"
                     value={condition.name}
+                    aria-describedby={condition.name.includes("-") ? `condition-name-warning-${condition.id}` : undefined}
                     onChange={(e) => updateConditionName(condition.id, e.target.value)}
                     placeholder="Control"
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
                   />
+                  {condition.name.includes("-") ? (
+                    <p id={`condition-name-warning-${condition.id}`} role="status" className="mt-2 text-xs text-amber-700">
+                      Hyphens may cause ambiguous group names when combining profiles. Consider underscores instead.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div>
@@ -1038,27 +1100,6 @@ export default function AnnotationPage() {
               <option value="overall">Overall</option>
             </select>
           </div>
-          {kind === "phosprot" ? null : (
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-normalization">
-                Normalization
-              </label>
-              <select id="annotation-normalization"
-                value={filterConfig.normalization ?? "none"}
-                onChange={(e) =>
-                  editFilterConfig((prev) => ({
-                    ...prev,
-                    normalization: e.target.value as AnnotationFilterConfig["normalization"],
-                  }))
-                }
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-              >
-                {normalizationOptions(Boolean(normalizationCapability?.vsnAvailable)).map((method) => (
-                  <option key={method} value={method}>{NORMALIZATION_LABELS[method]}</option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
 
         <div className="mt-5">
@@ -1068,7 +1109,7 @@ export default function AnnotationPage() {
             disabled={!activeDataset || loading}
             className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading ? "Generating..." : "Generate Annotation"}
+            {loading ? "Applying..." : "Apply filter"}
           </button>
         </div>
 
@@ -1077,6 +1118,62 @@ export default function AnnotationPage() {
             {error}
           </div>
         )}
+        </section>
+      ) : null}
+
+      {kind !== "peptide" && kind !== "phosprot" && result ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-semibold text-slate-900">Normalization</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Learned from the chosen rows and applied to every row. Currently applied:{" "}
+            <span className="font-medium text-slate-900">{NORMALIZATION_LABELS[appliedNormalization]}</span>
+            {appliedNormalization !== "none" ? (
+              <>, fitted on <span className="font-medium text-slate-900">{NORMALIZATION_FIT_LABELS[appliedFit].toLowerCase()}</span></>
+            ) : null}.
+          </p>
+          <div className="mt-4 flex flex-wrap items-end gap-4">
+            <div className="min-w-64">
+              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-normalization">
+                Normalization method
+              </label>
+              <select id="annotation-normalization"
+                value={selectedNormalization}
+                onChange={(e) => setSelectedNormalization(e.target.value as NormalizationMethod)}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+              >
+                {normalizationOptions(Boolean(normalizationCapability?.vsnAvailable)).map((method) => (
+                  <option key={method} value={method}>{NORMALIZATION_LABELS[method]}</option>
+                ))}
+              </select>
+            </div>
+            {selectedNormalization !== "none" ? (
+              <div className="min-w-64">
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-normalization-fit">
+                  Fit on
+                </label>
+                <select id="annotation-normalization-fit"
+                  value={selectedFit}
+                  onChange={(e) => setSelectedFit(e.target.value as NormalizationFit)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+                >
+                  <option value="filtered_rows">{NORMALIZATION_FIT_LABELS.filtered_rows} ({result.filteredRows.toLocaleString()})</option>
+                  <option value="complete_features">{NORMALIZATION_FIT_LABELS.complete_features}</option>
+                </select>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={handleNormalize}
+              disabled={
+                normalizing || loading ||
+                (selectedNormalization === appliedNormalization &&
+                  (selectedNormalization === "none" || selectedFit === appliedFit))
+              }
+              className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {normalizing ? "Applying..." : "Apply normalization"}
+            </button>
+          </div>
         </section>
       ) : null}
 
@@ -1223,6 +1320,11 @@ export default function AnnotationPage() {
                         {phosprotCutoffValid ? null : (
                           <p className="mt-2 text-xs leading-5 text-red-700">Enter a value between 0.00 and 1.00.</p>
                         )}
+                        {phosprotCutoffValid && localizationAvailable && Number(phosprotCutoffText.replace(",", ".")) < 0.75 ? (
+                          <p className="mt-2 text-xs leading-5 text-amber-700">
+                            Non-class I sites may be included: the collapse localization cutoff is below 0.75.
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                     <button
@@ -1233,6 +1335,46 @@ export default function AnnotationPage() {
                     >
                       {phosprotBusy ? "Aggregating..." : "Aggregate to Phosphoprotein"}
                     </button>
+                  </div>
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-sm font-medium text-slate-700">Or use a phosphoprotein matrix collapsed earlier</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                      One row per protein with the same sample columns as the phospho data (for example this tool&apos;s
+                      phosphoprotein download). It replaces the collapse above and keeps the phospho sample sheet and filter.
+                    </p>
+                    <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-end">
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-phosprot-file">Phosphoprotein file</label>
+                        <input id="annotation-phosprot-file"
+                          key={`annotation-phosprot-file-${currentDatasets?.phosprot?.filename ?? ""}`}
+                          type="file"
+                          accept=".csv,.tsv,.txt,.xlsx,.parquet"
+                          onChange={(e) => setPhosprotFile(e.target.files?.[0] ?? null)}
+                          disabled={phosprotBusy}
+                          className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="annotation-phosprot-scale">Values are</label>
+                        <select id="annotation-phosprot-scale"
+                          value={phosprotFileScale}
+                          onChange={(e) => setPhosprotFileScale(e.target.value as "auto" | "log2" | "linear")}
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+                        >
+                          <option value="auto">Detect scale</option>
+                          <option value="log2">Log2</option>
+                          <option value="linear">Linear</option>
+                        </select>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleUploadPhosprot}
+                        disabled={!phosprotFile || phosprotBusy}
+                        className="rounded-xl border border-slate-900 bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {phosprotBusy ? "Working..." : "Use Uploaded Matrix"}
+                      </button>
+                    </div>
                   </div>
                 </>
               ) : (

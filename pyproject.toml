@@ -172,7 +172,6 @@ module = [
   "app.services.chat_tools",
   "app.services.data_tools",
   "app.services.functions",
-  "app.services.managed_temp",
   "app.services.metadata_upload_store",
   "app.services.notebook_archive",
   "app.services.notebook_interactive",

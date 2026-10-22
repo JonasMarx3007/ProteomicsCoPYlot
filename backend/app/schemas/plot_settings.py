@@ -134,6 +134,9 @@ class AdvancedPlotSettings(BaseModel):
     volcanoNsColor: str | None = None
     volcanoHighlightSize: float | None = None
     volcanoHighlightColor: str | None = None
+    # The highlight ring's own legend entry (default on) and its text.
+    volcanoHighlightLegend: bool | None = None
+    volcanoHighlightLegendLabel: str | None = None
     volcanoLabelSize: float | None = None
     # Colours that used to be pickers in a plot's own options row.
     barColor: str | None = None

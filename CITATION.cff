@@ -9,6 +9,21 @@ authors:
   - family-names: "Marx"
     given-names: "Jonas"
 references:
+  - type: software
+    title: "Perseus Plugin Peptide Collapse: RcodePeptideCollapse.R"
+    authors:
+      - family-names: "Hogrebe"
+        given-names: "Alexander"
+    version: "1.3"
+    year: 2019
+    repository-code: "https://github.com/AlexHgO/Perseus_Plugin_Peptide_Collapse"
+    url: "https://github.com/AlexHgO/Perseus_Plugin_Peptide_Collapse/blob/master/Visual_studio/PluginPeptideCollapse/RcodePeptideCollapse.R"
+    notes: >-
+      Original R implementation, dated 2019-04-03.
+      Proteomics CoPYlot incorporates a modified Python translation/rewrite,
+      with translation and subsequent modifications credited to Denys
+      Oliinyk and Yue Yang; see NOTICE.
+
   - type: "article"
     title: "A comparison of normalization methods for high density oligonucleotide array data based on variance and bias"
     journal: "Bioinformatics"
@@ -73,6 +88,50 @@ references:
         given-names: "Martin"
 
   - type: "article"
+    title: "limma powers differential expression analyses for RNA-sequencing and microarray studies"
+    journal: "Nucleic Acids Research"
+    year: 2015
+    volume: 43
+    issue: 7
+    doi: "10.1093/nar/gkv007"
+    notes: "Moderated t-tests, delegated to the Bioconductor limma package."
+    authors:
+      - family-names: "Ritchie"
+        given-names: "Matthew E."
+      - family-names: "Phipson"
+        given-names: "Belinda"
+      - family-names: "Wu"
+        given-names: "Di"
+      - family-names: "Hu"
+        given-names: "Yifang"
+      - family-names: "Law"
+        given-names: "Charity W."
+      - family-names: "Shi"
+        given-names: "Wei"
+      - family-names: "Smyth"
+        given-names: "Gordon K."
+
+  - type: "article"
+    title: "Robust hyperparameter estimation protects against hypervariable genes and improves power to detect differential expression"
+    journal: "Annals of Applied Statistics"
+    year: 2016
+    volume: 10
+    issue: 2
+    doi: "10.1214/16-AOAS920"
+    notes: "The robust empirical-Bayes prior behind the 'robust' moderated t-tests (limma, robust = TRUE)."
+    authors:
+      - family-names: "Phipson"
+        given-names: "Belinda"
+      - family-names: "Lee"
+        given-names: "Stanley"
+      - family-names: "Majewski"
+        given-names: "Ian J."
+      - family-names: "Alexander"
+        given-names: "Warren S."
+      - family-names: "Smyth"
+        given-names: "Gordon K."
+
+  - type: "article"
     title: "Controlling the false discovery rate: a practical and powerful approach to multiple testing"
     journal: "Journal of the Royal Statistical Society: Series B"
     year: 1995
@@ -93,7 +152,7 @@ references:
     volume: 613
     issue: 7945
     doi: "10.1038/s41586-022-05575-3"
-    notes: "Kinase-substrate specificity atlas underlying the serine/threonine KSEA input."
+    notes: "Kinase-substrate specificity atlas underlying the serine/threonine Kinase Library input."
     authors:
       - family-names: "Johnson"
         given-names: "Jared L."
@@ -103,7 +162,7 @@ references:
     journal: "Nature"
     year: 2024
     doi: "10.1038/s41586-024-07407-y"
-    notes: "Kinase-substrate specificity atlas underlying the tyrosine KSEA input."
+    notes: "Kinase-substrate specificity atlas underlying the tyrosine Kinase Library input."
     authors:
       - family-names: "Yaron-Barir"
         given-names: "Tomer M."

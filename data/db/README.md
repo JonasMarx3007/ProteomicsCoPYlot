@@ -4,8 +4,10 @@ These runtime resources contain third-party biological data. The project GPL-3.0
 replace the source licenses described below.
 
 CoPYlot uses these frozen reference tables without downloading or rebuilding them at runtime.
-The construction script is `tools/build_reference_databases.py`; its upstream snapshots and
-source URLs, releases, retrieval dates, licences and checksums are in `data/reference-sources/`.
+The construction script is `tools/build_reference_databases.py`. Upstream snapshots are in
+`data/reference-sources/`, except the four unchanged FASTAs, stored once in this folder as both
+frozen sources and runtime resources. Source URLs, releases, retrieval dates, licences and
+checksums remain in `data/reference-sources/manifest.json`.
 The manifest identifies the inputs and outputs of the current build; `BUILD.log` records past builds.
 
 ## Runtime files (this folder)
@@ -76,7 +78,8 @@ and the Docker image ship this folder, not `data/reference-sources/`.
   primary gene from `BioNamesDB.txt.gz` when it has one, and dropped otherwise (62 human, 129
   mouse annotation objects in the 2026-08-05 release), so the table contains symbols only.
 
-**FASTA files**: the reference proteome files as published by UniProt, copied unchanged (gzipped).
+**FASTA files**: the reference proteome files as published by UniProt, stored unchanged (gzipped)
+only in this folder. Offline rebuilds into a separate output folder copy them from here.
 The peptide-coverage page reads them directly.
 
 ## Sources, attribution and terms

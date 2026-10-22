@@ -267,35 +267,98 @@ def update_annotation_pairing(
         if pd.notna(pair_id) and str(pair_id).strip()
     }
     target_rows = metadata["condition"].astype(str).isin([left_condition, right_condition])
+    # A pair ID names one subject in every condition. An ID that a third
+    # condition also carries is a link this save must keep: rewriting it moved
+    # the subject under a later paired comparison without a word. Only the two conditions being edited are rewritten.
     reserved_pair_ids = {
         str(pair_id).strip()
         for pair_id in metadata.loc[~target_rows, "pair_id"].tolist()
         if pd.notna(pair_id) and str(pair_id).strip()
     }
-    metadata.loc[target_rows, "pair_id"] = ""
+    outside_conditions_by_id: dict[str, list[str]] = {}
+    for condition, pair_id in metadata.loc[~target_rows, ["condition", "pair_id"]].itertuples(
+        index=False, name=None
+    ):
+        if pd.notna(pair_id) and str(pair_id).strip():
+            holders = outside_conditions_by_id.setdefault(str(pair_id).strip(), [])
+            if str(condition) not in holders:
+                holders.append(str(condition))
+
+    def linked(sample: str) -> str:
+        """The sample's pair ID if a third condition also carries it, else ''."""
+        pair_id = existing_pair_ids.get(sample, "")
+        return pair_id if pair_id in reserved_pair_ids else ""
+
+    def describe(sample: str) -> str:
+        pair_id = linked(sample)
+        return f"{sample} (pair ID '{pair_id}', also in {', '.join(outside_conditions_by_id[pair_id])})"
+
+    paired_samples = set(left_samples) | set(right_samples)
+    new_pair_ids: dict[str, str] = {}
     assigned_pair_ids: set[str] = set()
-    for index, pair in enumerate(zip(left_samples, right_samples), start=1):
-        candidates = [
-            existing_pair_ids.get(pair[0], ""),
-            existing_pair_ids.get(pair[1], ""),
-        ]
-        pair_id = next(
-            (
-                candidate
-                for candidate in candidates
-                if candidate and candidate not in assigned_pair_ids
-            ),
-            "",
-        )
+    for index, (left, right) in enumerate(zip(left_samples, right_samples), start=1):
+        left_link, right_link = linked(left), linked(right)
+        if left_link and right_link and left_link != right_link:
+            raise ValueError(
+                f"Cannot pair {describe(left)} with {describe(right)}: they are two different "
+                "subjects elsewhere. Correct the pair IDs in the metadata if they are the same subject."
+            )
+        pair_id = right_link or left_link
+        if not pair_id:
+            candidates = [existing_pair_ids.get(left, ""), existing_pair_ids.get(right, "")]
+            pair_id = next(
+                (c for c in candidates if c and c not in assigned_pair_ids and c not in reserved_pair_ids),
+                "",
+            )
         if not pair_id:
             pair_id = f"ui-pair-{index}"
             suffix = index
             while pair_id in reserved_pair_ids or pair_id in assigned_pair_ids:
                 suffix += 1
                 pair_id = f"ui-pair-{suffix}"
+        if pair_id in assigned_pair_ids:
+            raise ValueError(
+                f"Cannot pair {left} with {right}: pair ID '{pair_id}' is already used by another "
+                "pair in this mapping."
+            )
         assigned_pair_ids.add(pair_id)
-        metadata.loc[metadata["sample"].astype(str) == pair[0], "pair_id"] = pair_id
-        metadata.loc[metadata["sample"].astype(str) == pair[1], "pair_id"] = pair_id
+        new_pair_ids[left] = pair_id
+        new_pair_ids[right] = pair_id
+
+    # A sample left unpaired keeps an ID a third condition still relies on. It
+    # loses it only when no other condition carries it.
+    for sample in [*left_available, *right_available]:
+        if sample in paired_samples:
+            continue
+        kept = linked(sample)
+        if not kept:
+            continue
+        if kept in assigned_pair_ids:
+            partner = next(s for s, pid in new_pair_ids.items() if pid == kept and s != sample)
+            raise ValueError(
+                f"Cannot leave {describe(sample)} unpaired while {partner} takes the same pair ID. "
+                "Pair them, or correct the pair IDs in the metadata."
+            )
+        new_pair_ids[sample] = kept
+
+    # Preserving links to other conditions must not recreate a pair the user
+    # explicitly omitted from this comparison.
+    right_by_id = {new_pair_ids[s]: s for s in right_available if new_pair_ids.get(s)}
+    requested_pairs = set(zip(left_samples, right_samples))
+    for left in left_available:
+        pair_id = new_pair_ids.get(left, "")
+        right = right_by_id.get(pair_id)
+        if right is not None and (left, right) not in requested_pairs:
+            others = ", ".join(outside_conditions_by_id.get(pair_id, []))
+            raise ValueError(
+                f"Cannot exclude {left} and {right} from this comparison: their shared pair ID "
+                f"also links them to {others}. Keeping those links would include this pair in the test. "
+                "Keep this pair selected. No pairings have been changed."
+            )
+
+    metadata.loc[target_rows, "pair_id"] = ""
+    for sample, pair_id in new_pair_ids.items():
+        metadata.loc[metadata["sample"].astype(str) == sample, "pair_id"] = pair_id
 
     paired_sample_columns(metadata, left_condition, right_condition)
     metadata_kind = "protein" if kind == "protein" else "phospho"

@@ -168,6 +168,7 @@ def phospho_ksea_table_route(
     testType: str = "unpaired",
     useUncorrected: bool = False,
     organism: str = "human",
+    proteinCorrection: bool = False,
 ) -> dict[str, object]:
     with plot_errors("Failed to load Kinase Library table"):
         from app.services.notebook_ksea import capture_table
@@ -184,6 +185,7 @@ def phospho_ksea_table_route(
                 log2fc_threshold=log2fcThreshold,
                 test_type=testType,
                 use_uncorrected=useUncorrected,
+                protein_correction=proteinCorrection,
         )
         try:
             table, token = capture_table(**options)
@@ -260,6 +262,7 @@ def phospho_phosprot_regulation_html_route(
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
     dataSource: DataSource = "data",
+    proteinCorrection: bool = False,
     header: bool = True,
     advanced: str = "",
 ) -> HTMLResponse:
@@ -274,6 +277,7 @@ def phospho_phosprot_regulation_html_route(
             max_hover_sites=maxHoverSites,
             show_phosphosites=showPhosphosites,
             data_source=dataSource,
+            protein_correction=proteinCorrection,
             header=header,
             advanced=parse_advanced_plot_settings(advanced),
         )
@@ -290,13 +294,15 @@ def phospho_phosprot_regulation_table_route(
     maxHoverSites: int = 20,
     showPhosphosites: bool = True,
     dataSource: DataSource = "data",
+    proteinCorrection: bool = False,
     snapshot: str = '',
 ) -> dict[str, list[dict[str, object]]]:
     if snapshot:
         return snapshot_table('phospho', 'phosprot_regulation', snapshot,
             condition1=condition1, condition2=condition2, p_value_threshold=pValueThreshold,
             log2fc_threshold=log2fcThreshold, test_type=testType, use_uncorrected=useUncorrected,
-            max_hover_sites=maxHoverSites, show_phosphosites=showPhosphosites, data_source=dataSource)
+            max_hover_sites=maxHoverSites, show_phosphosites=showPhosphosites, data_source=dataSource,
+            protein_correction=proteinCorrection)
     with plot_errors("Failed to load phosprot regulation table"):
         return table_rows(
             phosprot_regulation_table(
@@ -309,6 +315,7 @@ def phospho_phosprot_regulation_table_route(
                 max_hover_sites=maxHoverSites,
                 show_phosphosites=showPhosphosites,
                 data_source=dataSource,
+                protein_correction=proteinCorrection,
             )
         )
 

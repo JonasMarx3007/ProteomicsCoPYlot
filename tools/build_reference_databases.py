@@ -6,8 +6,9 @@ Three commands, run from the repository root:
     python tools/build_reference_databases.py build     # rebuild data/db/* from those sources, offline
     python tools/build_reference_databases.py verify    # check every source and output against the manifest
 
-`fetch` is the only step that uses the network. It stores each upstream file
-(gzipped) under `data/reference-sources/` and records in `data/reference-sources/manifest.json`
+`fetch` is the only step that uses the network. It stores upstream files
+(gzipped) under `data/reference-sources/`, except unchanged FASTAs stored once
+under `data/db/`, and records in `data/reference-sources/manifest.json`
 where it came from, which release it is, when it was retrieved, its SHA-256 and
 its licence. `build` reads only those files and is deterministic, so anyone
 with the repository can regenerate the runtime databases and get the same
@@ -118,10 +119,13 @@ OUTPUTS = ("BioNamesDB.txt.gz", "all_go_terms_genes.csv", "all_go_terms_genes_mo
            "UP000005640_9606.fasta.gz", "UP000000589_10090.fasta.gz",
            "UP000005640_9606_additional.fasta.gz", "UP000000589_10090_additional.fasta.gz")
 
-# Sources used unchanged at runtime and too large to keep twice: stored under
+# FASTA sources used unchanged at runtime: stored under
 # data/db/ only (fetched there, verified there); `build` copies them to its
 # output folder only when that is somewhere else (a rebuild in isolation).
-DB_ONLY_SOURCES = {"uniprot_human_proteome_fasta_additional", "uniprot_mouse_proteome_fasta_additional"}
+DB_ONLY_SOURCES = {
+    "uniprot_human_proteome_fasta", "uniprot_mouse_proteome_fasta",
+    "uniprot_human_proteome_fasta_additional", "uniprot_mouse_proteome_fasta_additional",
+}
 DB_SOURCES = ROOT / "data" / "db"
 
 
@@ -213,6 +217,7 @@ def fetch(names: list[str] | None = None) -> None:
         print(f"fetching {name} ...", flush=True)
         data, headers = _get(url)
         target = source_path(name, stored)
+        target.parent.mkdir(parents=True, exist_ok=True)
         if gzipped:
             target.write_bytes(data)
         else:
@@ -529,7 +534,7 @@ def build() -> None:
         (DB / name).write_text(go.to_csv(index=False, quoting=1, lineterminator="\n"), encoding="utf-8", newline="\n")
         print(f"GO {species}: {len(go):,} terms, {len(set(';'.join(go['genes']).split(';'))):,} genes")
 
-    for key in ("uniprot_human_proteome_fasta", "uniprot_mouse_proteome_fasta", *sorted(DB_ONLY_SOURCES)):
+    for key in sorted(DB_ONLY_SOURCES):
         source = source_path(key, manifest["sources"][key]["file"])
         if source.resolve() != (DB / source.name).resolve():
             shutil.copyfile(source, DB / source.name)
@@ -595,7 +600,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     f = sub.add_parser("fetch", help="download the upstream releases (network)")
     f.add_argument("names", nargs="*", help="only these sources (default: all)")
-    sub.add_parser("build", help="rebuild the runtime databases from data/reference-sources (offline)")
+    sub.add_parser("build", help="rebuild the runtime databases from the frozen sources (offline)")
     sub.add_parser("verify", help="check sources and outputs against the manifest")
     args = parser.parse_args()
     if args.command == "fetch":

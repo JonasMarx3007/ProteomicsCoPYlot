@@ -26,6 +26,7 @@ def test_every_filter_field_can_be_set_from_viewer_config() -> None:
         "filter_min_protein": 2,
         "filter_mode_protein": "overall",
         "normalization_protein": "vsn",
+        "normalization_fit_protein": "complete_features",
     }
     resolved = _filter_config(config, "protein")
     defaults = AnnotationFilterConfig().model_dump()

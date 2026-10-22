@@ -257,7 +257,7 @@ test_that("phosphoprotein genes, ANOVA and regulation summaries", {
     stopifnot(
       "Gene_group" %in% names(phosprot_anova),
       identical(
-        .different_gene_tokens(phosprot_anova$Gene_group, TRUE),
+        .different_gene_tokens(phosprot_anova$Gene_group),
         c("A", "B", "C", "D", "E")
       )
     )
@@ -616,7 +616,7 @@ test_that("sequence coverage cases", {
 
 test_that("volcano refuses two identical conditions", {
   expect_no_error({
-    for (method in c("unpaired", "unpaired_welch", "paired")) {
+    for (method in c("unpaired", "unpaired_welch", "paired", "moderated", "moderated_robust_paired")) {
       message <- tryCatch({
         volcano_data_f(data.frame(), data.frame(), "A", "A", test_type = method)
         ""
@@ -624,6 +624,26 @@ test_that("volcano refuses two identical conditions", {
       stopifnot(identical(message, "Please select two different conditions."))
     }
   })
+})
+
+test_that("moderated tests change only the p-value, and need limma", {
+  skip_if_not_installed("limma")
+  set.seed(5)
+  values <- matrix(rnorm(600, 20, 1), ncol = 6)
+  values[1:20, 1:3] <- values[1:20, 1:3] + 1.5
+  data <- data.frame(ProteinNames = paste0("P", seq_len(100)), values, check.names = FALSE)
+  names(data)[-1] <- c("C1", "C2", "C3", "T1", "T2", "T3")
+  meta <- data.frame(sample = names(data)[-1], condition = rep(c("Ctrl", "Treat"), each = 3),
+                     pair_id = rep(c("a", "b", "c"), 2), stringsAsFactors = FALSE)
+  for (design in list(c("unpaired", "moderated"), c("paired", "moderated_paired"))) {
+    plain <- volcano_data_f(data, meta, "Ctrl", "Treat", workflow = "Protein", test_type = design[1])
+    moderated <- volcano_data_f(data, meta, "Ctrl", "Treat", workflow = "Protein", test_type = design[2])
+    expect_equal(plain$log2FC, moderated$log2FC)
+    expect_false(isTRUE(all.equal(plain$pval, moderated$pval)))
+    expect_true(all(is.finite(moderated$pval)))
+  }
+  robust <- volcano_data_f(data, meta, "Ctrl", "Treat", workflow = "Protein", test_type = "moderated_robust")
+  expect_false(isTRUE(all.equal(robust$pval, volcano_data_f(data, meta, "Ctrl", "Treat", workflow = "Protein", test_type = "moderated")$pval)))
 })
 
 test_that("kinase motif windows match the backend", {

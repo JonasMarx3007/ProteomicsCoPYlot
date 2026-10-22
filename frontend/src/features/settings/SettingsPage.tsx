@@ -196,9 +196,9 @@ export default function SettingsPage() {
 
             <div className="mt-4 rounded-2xl bg-slate-50 px-4 dark:bg-slate-800/80">
               <RuntimeRow label="Version" value={rRuntime?.version || "Unknown"} />
-              <RuntimeRow label="Executable" value={rRuntime?.executable || "Not detected"} />
-              <RuntimeRow label="Detected from" value={rRuntime?.detectedFrom || "None"} />
-              <RuntimeRow label="Version output" value={rRuntime?.versionOutput || "Unavailable"} />
+              <RuntimeRow label="Executable" value={rRuntime?.diagnosticsHidden ? "Hidden on this deployment" : rRuntime?.executable || "Not detected"} />
+              <RuntimeRow label="Detected from" value={rRuntime?.diagnosticsHidden ? "Hidden on this deployment" : rRuntime?.detectedFrom || "None"} />
+              <RuntimeRow label="Version output" value={rRuntime?.diagnosticsHidden ? "Hidden on this deployment" : rRuntime?.versionOutput || "Unavailable"} />
             </div>
 
             {runtimeError || rRuntime?.error ? (

@@ -98,7 +98,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate Annotation */
+        /**
+         * Generate Annotation
+         * @description The filter step. A `filter.normalization` is honoured for saved sessions
+         *     and viewer configs, which carry the whole config; the page itself applies
+         *     the normalization afterwards through `/normalize`.
+         */
         post: operations["generate_annotation_api_annotations_generate_post"];
         delete?: never;
         options?: never;
@@ -158,6 +163,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/annotations/normalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Normalize Annotation
+         * @description The normalization step: recompute the stored annotation with another
+         *     normalization, fitted on the rows its filter kept. "none" removes it.
+         *     Imputed data, which were drawn from the previous values, are discarded.
+         */
+        post: operations["normalize_annotation_api_annotations_normalize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/annotations/pairing": {
         parameters: {
             query?: never;
@@ -186,6 +213,29 @@ export interface paths {
         put?: never;
         /** Aggregate Phosprot Annotation */
         post: operations["aggregate_phosprot_annotation_api_annotations_phosprot_aggregate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/annotations/phosprot/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Phosprot Annotation
+         * @description The alternative to collapsing: a phosphoprotein matrix made earlier (for
+         *     example this tool's own download, or another tool's collapse) becomes the
+         *     current phosphoprotein data, on the phospho annotation's sample sheet and
+         *     filter.
+         */
+        post: operations["upload_phosprot_annotation_api_annotations_phosprot_upload_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2057,6 +2107,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runtime/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Statistics Capability Route
+         * @description Which volcano test types this installation can actually run.
+         *
+         *     The moderated t-tests are delegated to Bioconductor `limma`, so they are
+         *     only offered when Rscript and the package are both present; the UI hides
+         *     them otherwise, as it hides VSN.
+         */
+        get: operations["statistics_capability_route_api_runtime_statistics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/stats/anova/run": {
         parameters: {
             query?: never;
@@ -2756,6 +2830,16 @@ export interface components {
              */
             volcanoHighlightColor?: string | null;
             /**
+             * Volcanohighlightlegend
+             * @default null
+             */
+            volcanoHighlightLegend?: boolean | null;
+            /**
+             * Volcanohighlightlegendlabel
+             * @default null
+             */
+            volcanoHighlightLegendLabel?: string | null;
+            /**
              * Volcanohighlightsize
              * @default null
              */
@@ -2945,6 +3029,11 @@ export interface components {
              */
             pValueThreshold?: number;
             /**
+             * Proteincorrection
+             * @default false
+             */
+            proteinCorrection?: boolean;
+            /**
              * Source
              * @default volcano
              * @enum {string}
@@ -2955,7 +3044,7 @@ export interface components {
              * @default unpaired
              * @enum {string}
              */
-            testType?: "unpaired" | "unpaired_welch" | "paired";
+            testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
             /**
              * Useuncorrected
              * @default false
@@ -3024,6 +3113,12 @@ export interface components {
              * @enum {string}
              */
             normalization?: "none" | "median" | "quantile" | "vsn";
+            /**
+             * Normalizationfit
+             * @default filtered_rows
+             * @enum {string}
+             */
+            normalizationFit?: "filtered_rows" | "complete_features";
         };
         /** AnnotationGenerateRequest */
         AnnotationGenerateRequest: {
@@ -3072,6 +3167,34 @@ export interface components {
             toolVersion?: string | null;
             /** Width */
             width?: number | null;
+        };
+        /**
+         * AnnotationNormalizeRequest
+         * @description The second step of the annotation: a normalization for an annotation that exists.
+         *
+         *     Filtering and normalization are two steps on the page since 2026-10-20: the
+         *     filter is applied first and decides the rows, then this applies (or removes,
+         *     with "none") a normalization fitted on those rows. The stored filter
+         *     settings, conditions and metadata are reused as they are.
+         */
+        AnnotationNormalizeRequest: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "protein" | "phospho" | "phosprot";
+            /**
+             * Normalization
+             * @default none
+             * @enum {string}
+             */
+            normalization?: "none" | "median" | "quantile" | "vsn";
+            /**
+             * Normalizationfit
+             * @default filtered_rows
+             * @enum {string}
+             */
+            normalizationFit?: "filtered_rows" | "complete_features";
         };
         /** AnnotationResultResponse */
         AnnotationResultResponse: {
@@ -3478,8 +3601,6 @@ export interface components {
             kind: "protein" | "phospho" | "phosprot";
             /** Packagename */
             packageName?: string | null;
-            /** Sourcepath */
-            sourcePath?: string | null;
         };
         /** Body_upload_peptide_file_api_datasets_peptide_file_post */
         Body_upload_peptide_file_api_datasets_peptide_file_post: {
@@ -3487,6 +3608,16 @@ export interface components {
             file: string;
             /** Packagename */
             packageName?: string | null;
+        };
+        /** Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post */
+        Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post: {
+            /** File */
+            file: string;
+            /**
+             * Islog2Transformed
+             * @default
+             */
+            isLog2Transformed?: string;
         };
         /** ChatMessage */
         ChatMessage: {
@@ -3794,7 +3925,7 @@ export interface components {
              * @default unpaired
              * @enum {string}
              */
-            testType?: "unpaired" | "unpaired_welch" | "paired";
+            testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
             /**
              * Topn
              * @default 10
@@ -4559,13 +4690,26 @@ export interface components {
          * @description The session-wide phosphosite localization probability cutoff.
          *
          *     `available` says whether the loaded phosphosite table has a
-         *     PTM_localization column the cutoff can act on.
+         *     PTM_localization column the cutoff can act on. `belowClassOne` counts the
+         *     sites whose probability is under 0.75 (the class I threshold), out of
+         *     `sites`, so a page can say how many non-class I sites a lower cutoff
+         *     admits.
          */
         PhosphoLocalizationCutoffResponse: {
             /** Available */
             available: boolean;
+            /**
+             * Belowclassone
+             * @default 0
+             */
+            belowClassOne?: number;
             /** Cutoff */
             cutoff: number;
+            /**
+             * Sites
+             * @default 0
+             */
+            sites?: number;
         };
         /** PhosprotAggregateRequest */
         PhosprotAggregateRequest: {
@@ -4586,6 +4730,21 @@ export interface components {
              * @enum {string}
              */
             source?: "non_imputed" | "imputed";
+        };
+        /**
+         * ProteinCorrectionOptions
+         * @description Whether phosphosite changes can be corrected for protein abundance here:
+         *     a protein dataset with an annotation sits in the same package, and these
+         *     are the data sources both datasets hold (the correction mirrors the source).
+         */
+        ProteinCorrectionOptions: {
+            /**
+             * Available
+             * @default false
+             */
+            available?: boolean;
+            /** Datasources */
+            dataSources?: ("data" | "filtered" | "imputed")[];
         };
         /** ProviderDefaultsResponse */
         ProviderDefaultsResponse: {
@@ -4615,6 +4774,11 @@ export interface components {
             candidates?: string[];
             /** Detectedfrom */
             detectedFrom?: ("env" | "path" | "common_path") | null;
+            /**
+             * Diagnosticshidden
+             * @default false
+             */
+            diagnosticsHidden?: boolean;
             /** Error */
             error?: string | null;
             /** Executable */
@@ -4709,6 +4873,11 @@ export interface components {
              * @default 0.05
              */
             pValueThreshold?: number;
+            /**
+             * Proteincorrection
+             * @default false
+             */
+            proteinCorrection?: boolean;
             /**
              * Samplesizeoverride
              * @default 0
@@ -4823,6 +4992,7 @@ export interface components {
             pairIdsBySample?: {
                 [key: string]: string;
             };
+            proteinCorrection?: components["schemas"]["ProteinCorrectionOptions"];
             /** Samplesbycondition */
             samplesByCondition?: {
                 [key: string]: string[];
@@ -4834,6 +5004,23 @@ export interface components {
             sourceUsed: "data" | "filtered" | "log2" | "raw" | "imputed";
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * StatisticsCapabilityResponse
+         * @description Statistical tests this installation can actually run.
+         *
+         *     `testTypes` includes the four moderated (limma) tests only when Rscript and
+         *     the Bioconductor package are both present, as `methods` does for VSN.
+         */
+        StatisticsCapabilityResponse: {
+            /** Limmapackageversion */
+            limmaPackageVersion?: string | null;
+            /** Moderatedavailable */
+            moderatedAvailable: boolean;
+            /** Moderatedunavailablereason */
+            moderatedUnavailableReason?: string | null;
+            /** Testtypes */
+            testTypes: string[];
         };
         /** SummaryMetadataTable */
         SummaryMetadataTable: {
@@ -4958,6 +5145,16 @@ export interface components {
              * @enum {string}
              */
             dataSource?: "data" | "filtered" | "imputed";
+            /**
+             * Highlightlabels
+             * @default false
+             */
+            highlightLabels?: boolean;
+            /**
+             * Highlightoutline
+             * @default true
+             */
+            highlightOutline?: boolean;
             /** Highlightterms */
             highlightTerms?: string[];
             /**
@@ -4992,6 +5189,11 @@ export interface components {
              */
             pValueThreshold?: number;
             /**
+             * Proteincorrection
+             * @default false
+             */
+            proteinCorrection?: boolean;
+            /**
              * Rendertype
              * @default Interactive
              * @enum {string}
@@ -5002,7 +5204,7 @@ export interface components {
              * @default unpaired
              * @enum {string}
              */
-            testType?: "unpaired" | "unpaired_welch" | "paired";
+            testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
             /**
              * Useuncorrected
              * @default false
@@ -5221,11 +5423,16 @@ export interface components {
              */
             pValueThreshold?: number;
             /**
+             * Proteincorrection
+             * @default false
+             */
+            proteinCorrection?: boolean;
+            /**
              * Testtype
              * @default unpaired
              * @enum {string}
              */
-            testType?: "unpaired" | "unpaired_welch" | "paired";
+            testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
             /**
              * Useuncorrected
              * @default false
@@ -5268,11 +5475,16 @@ export interface components {
              */
             pValueThreshold?: number;
             /**
+             * Proteincorrection
+             * @default false
+             */
+            proteinCorrection?: boolean;
+            /**
              * Testtype
              * @default unpaired
              * @enum {string}
              */
-            testType?: "unpaired" | "unpaired_welch" | "paired";
+            testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
             /**
              * Useuncorrected
              * @default false
@@ -5646,6 +5858,39 @@ export interface operations {
             };
         };
     };
+    normalize_annotation_api_annotations_normalize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnnotationNormalizeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnotationResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_pairing_api_annotations_pairing_put: {
         parameters: {
             query?: never;
@@ -5689,6 +5934,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["PhosprotAggregateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnotationResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_phosprot_annotation_api_annotations_phosprot_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post"];
             };
         };
         responses: {
@@ -7840,6 +8118,7 @@ export interface operations {
                 testType?: string;
                 useUncorrected?: boolean;
                 organism?: string;
+                proteinCorrection?: boolean;
             };
             header?: never;
             path?: never;
@@ -8006,6 +8285,7 @@ export interface operations {
                 maxHoverSites?: number;
                 showPhosphosites?: boolean;
                 dataSource?: "data" | "filtered" | "imputed";
+                proteinCorrection?: boolean;
                 snapshot?: string;
             };
             header?: never;
@@ -8050,6 +8330,7 @@ export interface operations {
                 maxHoverSites?: number;
                 showPhosphosites?: boolean;
                 dataSource?: "data" | "filtered" | "imputed";
+                proteinCorrection?: boolean;
                 header?: boolean;
                 advanced?: string;
             };
@@ -9165,7 +9446,7 @@ export interface operations {
                 condition2Control?: string | null;
                 pValueThreshold?: number;
                 log2fcThreshold?: number;
-                testType?: "unpaired" | "unpaired_welch" | "paired";
+                testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
                 useUncorrected?: boolean;
                 selectedCluster?: number | null;
                 nClusters?: number;
@@ -9305,6 +9586,7 @@ export interface operations {
                 useUncorrected?: boolean;
                 varianceMultiplier?: number;
                 sampleSizeOverride?: number;
+                proteinCorrection?: boolean;
                 advanced?: string;
             };
             header?: never;
@@ -9338,6 +9620,7 @@ export interface operations {
     stats_volcano_control_route_api_plots_stats__kind__volcano_control_html_get: {
         parameters: {
             query: {
+                highlightOutline?: boolean;
                 advanced?: string;
                 condition1Control: string;
                 condition2Control: string;
@@ -9347,9 +9630,10 @@ export interface operations {
                 identifier?: "workflow" | "genes";
                 pValueThreshold?: number;
                 log2fcThreshold?: number;
-                testType?: "unpaired" | "unpaired_welch" | "paired";
+                testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
                 useUncorrected?: boolean;
                 highlightTerms?: string;
+                proteinCorrection?: boolean;
             };
             header?: never;
             path: {
@@ -9384,6 +9668,8 @@ export interface operations {
             query: {
                 labelTopUp?: number;
                 labelTopDown?: number;
+                highlightOutline?: boolean;
+                highlightLabels?: boolean;
                 widthCm?: number;
                 heightCm?: number;
                 dpi?: number;
@@ -9396,9 +9682,10 @@ export interface operations {
                 identifier?: "workflow" | "genes";
                 pValueThreshold?: number;
                 log2fcThreshold?: number;
-                testType?: "unpaired" | "unpaired_welch" | "paired";
+                testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
                 useUncorrected?: boolean;
                 highlightTerms?: string;
+                proteinCorrection?: boolean;
             };
             header?: never;
             path: {
@@ -9464,6 +9751,7 @@ export interface operations {
     stats_volcano_route_api_plots_stats__kind__volcano_html_get: {
         parameters: {
             query: {
+                highlightOutline?: boolean;
                 advanced?: string;
                 condition1: string;
                 condition2: string;
@@ -9471,9 +9759,10 @@ export interface operations {
                 identifier?: "workflow" | "genes";
                 pValueThreshold?: number;
                 log2fcThreshold?: number;
-                testType?: "unpaired" | "unpaired_welch" | "paired";
+                testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
                 useUncorrected?: boolean;
                 highlightTerms?: string;
+                proteinCorrection?: boolean;
             };
             header?: never;
             path: {
@@ -9508,6 +9797,8 @@ export interface operations {
             query: {
                 labelTopUp?: number;
                 labelTopDown?: number;
+                highlightOutline?: boolean;
+                highlightLabels?: boolean;
                 widthCm?: number;
                 heightCm?: number;
                 dpi?: number;
@@ -9518,9 +9809,10 @@ export interface operations {
                 identifier?: "workflow" | "genes";
                 pValueThreshold?: number;
                 log2fcThreshold?: number;
-                testType?: "unpaired" | "unpaired_welch" | "paired";
+                testType?: "unpaired" | "unpaired_welch" | "paired" | "moderated" | "moderated_robust" | "moderated_paired" | "moderated_robust_paired";
                 useUncorrected?: boolean;
                 highlightTerms?: string;
+                proteinCorrection?: boolean;
             };
             header?: never;
             path: {
@@ -9718,6 +10010,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RRuntimeStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    statistics_capability_route_api_runtime_statistics_get: {
+        parameters: {
+            query?: {
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticsCapabilityResponse"];
                 };
             };
             /** @description Validation Error */

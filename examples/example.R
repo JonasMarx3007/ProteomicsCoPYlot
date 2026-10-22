@@ -33,12 +33,15 @@ fig <- missing_value_plot(data, meta, data_scale = "log2")
 fig <- missing_value_heatmap(data, meta, id = FALSE, data_scale = "log2")
 print(missing_sample_table(data, meta, id = FALSE, data_scale = "log2"))
 
-# Normalization and filtering ----------------------------------------------
-# As in the app: normalize the whole log2 matrix first, filter afterwards. Here
-# median centring, then at least 3 valid values in at least one condition. The
-# app's default is no filter; choose your own.
-normalized <- normalize_data(data, meta, "median")
-filtered <- filter_data(normalized, meta, 3, mode = "per_group")
+# Filtering and normalization ----------------------------------------------
+# As in the app: the valid-value filter decides the rows, then the normalization
+# is fitted on those rows and applied to every row, so rows with many missing
+# values (mostly low-abundance, missing unevenly between groups) never set the
+# reference. Here at least 3 valid values in each condition, then median
+# centring. The app's default is no filter; choose your own.
+kept <- filter_data(data, meta, 3, mode = "per_group")
+normalized <- normalize_data(data, meta, "median", fit_rows = rownames(kept))
+filtered <- normalized[rownames(kept), ]
 cat(nrow(data), "proteins,", nrow(filtered), "after filtering\n")
 
 # Imputation ---------------------------------------------------------------

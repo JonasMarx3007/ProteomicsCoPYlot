@@ -42,7 +42,7 @@ export const completenessTabs: { key: CompletenessTab; label: string }[] = [
 
 export const statsTabs: { key: StatsTab; label: string }[] = [
   { key: "volcano", label: "Volcano Plot" },
-  { key: "anova", label: "ANOVA" },
+  { key: "anova", label: "One-way ANOVA" },
   { key: "ora", label: "GO Enrichment (ORA)" },
   { key: "pathwayHeatmap", label: "Pathway Heatmap" },
   { key: "simulation", label: "Replicate & Variance Projection" },

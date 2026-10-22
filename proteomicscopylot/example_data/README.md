@@ -21,13 +21,17 @@ The CC BY 4.0 grant covers these data files only. The software is under the
 
 ## Contents
 
+SHA-256 checksums below refer to the files with LF line endings, enforced by
+`.gitattributes` on every platform. Line-ending conversion changes a checksum
+even when all table values remain identical.
+
 | File | Content | Dimensions | SHA-256 |
 | --- | --- | --- | --- |
-| `20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv` | Whole-proteome protein-group report | 7,490 × 18 | `89390021b2083e9d8b3ad49feb91a7c27bda36a00a466afa5a208ad0aedb1f77` |
-| `20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv` | Phosphoproteome report, collapsed to phosphosites | 11,916 × 15 | `fcb5817cd89b3a81f661d342b578503fde7f212c81d3b6c72877a6e42eeeb63b` |
+| `20260511_144120_20240822_JM_HEK293_WP_Report_PG.tsv` | Whole-proteome protein-group report | 7,490 × 18 | `2daf435ce6719388717adea0911f741a2bb0cb346a59f26df678f72193a47e1b` |
+| `20260511_144129_20240822_JM_HEK293_PP_Report_collapsed.tsv` | Phosphoproteome report, collapsed to phosphosites | 11,916 × 15 | `d308f81f768e8445f07532835435ed9dc7e26935c3872161e0998e3d7d55e91a` |
 | `phosprot_filtered_data_full.csv` | Phosphosites aggregated to phosphoproteins (`sum_ignore_na`: linear sum over the sites quantified in every sample; proteins without such a site are not listed) | 1,662 × 16 | `0d57b007347c6d324c7120197c7733cc00cfbda07dee17cb7d16975136495636` |
-| `protein_metadata_full.csv` | Sample-to-condition map for the protein report | 10 × 2 | `bc320470e654629cc5e9d6d39e3353a2ac5248fd3ed83c24f0376959e4ef9924` |
-| `phospho_metadata_full.csv` | Sample-to-condition map for the phospho reports | 10 × 2 | `5a5077e26e9226204866e4c0b318eb2a33f6ac87d41118dc94bee44f2e8ad64e` |
+| `protein_metadata_full.csv` | Sample-to-condition map for the protein report | 10 × 2 | `5013126232f2c74186deead21b0baaa2af32a1b1df0b31fbb8352bc63d32b6bf` |
+| `phospho_metadata_full.csv` | Sample-to-condition map for the phospho reports | 10 × 2 | `92e28c1d7b608423663be6c63b0a137bf96ffbc41046b0c01ed5f3897b7f0853` |
 
 ## Experimental design
 

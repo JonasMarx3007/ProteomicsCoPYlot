@@ -86,6 +86,10 @@ _STATS_TEST_DESCRIPTIONS: dict[StatsTestType, str] = {
     "unpaired": "unpaired_student_t_test_with_pooled_variance",
     "unpaired_welch": "unpaired_welch_t_test_with_unequal_variance",
     "paired": "paired_student_t_test_on_within_pair_differences",
+    "moderated": "unpaired_moderated_t_test_limma_empirical_bayes",
+    "moderated_robust": "unpaired_moderated_t_test_limma_robust_prior",
+    "moderated_paired": "paired_moderated_t_test_limma_on_within_pair_differences",
+    "moderated_robust_paired": "paired_moderated_t_test_limma_robust_prior_on_within_pair_differences",
 }
 
 
@@ -338,7 +342,8 @@ def _reference_direction(a_value: float, b_value: float, relation: str) -> str:
 def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versus: tuple[str, str], *, kind: str,
                                  identifier: str, p_value_threshold: float, log2fc_threshold: float, test_type: str,
                                  use_uncorrected: bool, data_source: str, a_pair: tuple[str, str],
-                                 lookup: list[str] | None = None, enrich: bool = False, organism: str = "") -> list[str]:
+                                 lookup: list[str] | None = None, enrich: bool = False, organism: str = "",
+                                 protein_correction: bool = False) -> list[str]:
     """Contrast A's significant rows seen in contrast B, computed with the same settings
     ("up after stimulation in parental cells but not in the knockout", GRK, 2026-10-14).
     Rows are matched by identifier; the set algebra is done here, not by the model.
@@ -348,7 +353,7 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
     a_label = f"{a_pair[0]}_vs_{a_pair[1]}"
     b_label = f"{versus[0]}_vs_{versus[1]}"
     relation = "shared_reference" if versus[1] == a_pair[1] else "chained" if versus[1] == a_pair[0] else ""
-    if test_type == "paired":
+    if resolve_test_type(test_type)[0]:
         # Complete pairs can differ between contrasts, so their estimates need
         # not share the same reference mean and cannot safely be added.
         relation = ""
@@ -358,7 +363,8 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
             kind=kind,  # type: ignore[arg-type]
             condition1=versus[0], condition2=versus[1], identifier=identifier,  # type: ignore[arg-type]
             p_value_threshold=p_value_threshold, log2fc_threshold=log2fc_threshold, test_type=test_type,
-            use_uncorrected=use_uncorrected, data_source=data_source, untested_out=untested_out)  # type: ignore[arg-type]
+            use_uncorrected=use_uncorrected, data_source=data_source, untested_out=untested_out,  # type: ignore[arg-type]
+            protein_correction=protein_correction)
     except Exception as exc:
         return [f"volcano_versus|b={_safe_context_text(b_label)}|status=error|detail={_safe_context_text(exc)}"]
     key_a = frame_a[label_column].astype(str) if label_column in frame_a.columns else frame_a.iloc[:, 0].astype(str)
@@ -386,7 +392,7 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
                    f"{_safe_context_text(versus[0])}_relative_to_the_reference")
     lines = [header, "volcano_versus_caution|message=Significant in A but not B does not establish a difference between contrasts. "
              "Direction describes point estimates only, not evidence of rescue, equivalence or an interaction."]
-    if test_type == "paired":
+    if resolve_test_type(test_type)[0]:
         lines.append("volcano_versus_caution|message=Paired contrasts can use different complete pairs; no common-reference direction was inferred.")
 
     def _p(value: object) -> str:
@@ -397,7 +403,6 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
 
     gene_sets: dict[str, list[str]] = {}
     gene_column = next((column for column in _stats_tools._gene_label_candidates(kind) if column in frame_a.columns), None)  # type: ignore[arg-type]
-    split_groups = kind == "phosprot" or gene_column == "Gene_group"
     for direction, group in (("Upregulated", "up"), ("Downregulated", "down")):
         rows = frame_a[frame_a["significance"].astype(str) == direction].copy()
         rows["_key"] = key_a[rows.index].values
@@ -423,8 +428,8 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
                          f"b_log2FC={_fmt_value(float(b_row['log2FC']))}|b_adj_p={_p(b_row['adj_pval'])}"
                          + _direction(float(row["log2FC"]), float(b_row["log2FC"])))
         if enrich and gene_column:
-            gene_sets[f"a_specific_{group}"] = _stats_tools._genes_from_values(specific[gene_column].tolist(), split_groups=split_groups)
-            gene_sets[f"shared_{group}"] = _stats_tools._genes_from_values(shared[gene_column].tolist(), split_groups=split_groups)
+            gene_sets[f"a_specific_{group}"] = _stats_tools._genes_from_values(specific[gene_column].tolist())
+            gene_sets[f"shared_{group}"] = _stats_tools._genes_from_values(shared[gene_column].tolist())
     if lookup:
         # The named rows in B as well, with the direction words (rescue / reversion questions).
         for name in lookup:
@@ -446,7 +451,7 @@ def _volcano_contrast_difference(frame_a: pd.DataFrame, label_column: str, versu
         usable = {"Upregulated", "Downregulated", "Not significant"}
         usable_b = set(b.index[b["significance"].isin(usable)])
         jointly_tested = frame_a[frame_a["significance"].isin(usable) & key_a.isin(usable_b)]
-        background = _stats_tools._genes_from_values(jointly_tested[gene_column].tolist(), split_groups=split_groups)
+        background = _stats_tools._genes_from_values(jointly_tested[gene_column].tolist())
         lines.append(f"volcano_versus_enrichment|method=over_representation_hypergeometric_BH|background=genes_with_usable_tests_in_both_contrasts|background_genes={len(background)}|"
                      f"organism={_safe_context_text(organism)}|term_size=20_to_300|adj_p_cutoff=0.05|top=6_per_set|note=gene_level_a_site_set_counts_each_gene_once")
         for set_name, genes in gene_sets.items():
@@ -2497,7 +2502,7 @@ def phospho_ksea_export(workflow: str = "phosphosite", mode: ContextMode | None 
     names = {"condition1": "condition1", "condition2": "condition2", "source": "source",
              "dataSource": "data_source", "condition1Control": "condition1_control", "condition2Control": "condition2_control",
              "pValueThreshold": "p_value_threshold", "log2fcThreshold": "log2fc_threshold", "testType": "test_type", "useUncorrected": "use_uncorrected",
-             "organism": "organism"}
+             "organism": "organism", "proteinCorrection": "protein_correction"}
     # Reuse the validated differential-analysis contract for shared settings.
     from app.schemas.stats import VolcanoRequest, VolcanoControlRequest
     source = pairs.get("source", "volcano")
@@ -2624,6 +2629,7 @@ def stats_volcano_plot(
     test_type = _normalize_stats_test_type(mode_pairs.get("testtype", "unpaired"))
     is_paired_test, _ = resolve_test_type(test_type)
     use_uncorrected = _bool_from_mode(mode_pairs, "useuncorrected", "use_uncorrected", default=False)
+    protein_correction = kind == "phospho" and _bool_from_mode(mode_pairs, "proteincorrection", "protein_correction", default=False)
     p_value_threshold = _float_from_mode(
         mode_pairs,
         "pvaluethreshold",
@@ -2701,7 +2707,7 @@ def stats_volcano_plot(
     )
 
     lines.append(
-        f"volcano_parameters|source={source}|identifier={identifier}|test_type={test_type}|data_source={data_source}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}"
+        f"volcano_parameters|source={source}|identifier={identifier}|test_type={test_type}|data_source={data_source}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|use_uncorrected={'true' if use_uncorrected else 'false'}|protein_correction={'true' if protein_correction else 'false'}"
     )
     lines.append(
         f"volcano_selected_p_metric|for_significance={'pval' if use_uncorrected else 'adj_pval'}|for_y_axis=neg_log10_selected_pval"
@@ -2737,10 +2743,19 @@ def stats_volcano_plot(
             condition1_control=condition1_control if source == "volcano_control" else None,
             condition2_control=condition2_control if source == "volcano_control" else None,
             untested_out=untested_out if lookup else None,
+            protein_correction=protein_correction,
         )
     except Exception as exc:
         lines.append(f"volcano_data|status=error|detail={_safe_context_text(exc)}")
         return _text_payload("stats_volcano_plot", "\n".join(lines))
+    if protein_correction:
+        matched = int(df["protein_matched"].sum()) if "protein_matched" in df.columns else 0
+        lines.append(
+            f"volcano_protein_correction|status=applied|sites_with_protein={matched}|sites_total={len(df)}|"
+            "method=site_log2FC_minus_protein_log2FC_of_the_same_comparison|se=combined_in_quadrature|df=satterthwaite|"
+            "unmatched_sites=keep_uncorrected_values|columns=site_log2FC_site_pval_protein_log2FC_protein_pval_protein_matched_protein_ambiguous|"
+            "interpretation=log2FC_and_pval_describe_the_change_in_site_occupancy_beyond_the_change_in_protein_abundance"
+        )
 
     frame = df.copy()
     frame["significance"] = frame["significance"].astype(str)
@@ -2838,7 +2853,8 @@ def stats_volcano_plot(
             log2fc_threshold=float(log2fc_threshold), test_type=test_type, use_uncorrected=bool(use_uncorrected),
             data_source=data_source, a_pair=(condition1, condition2), lookup=lookup or None,
             enrich=_bool_from_mode(mode_pairs, "enrich", default=False),
-            organism=str(mode_pairs.get("organism", "")).strip().lower()))
+            organism=str(mode_pairs.get("organism", "")).strip().lower(),
+            protein_correction=protein_correction))
     if has_significant:
         up_ranked, up_truncated = _volcano_ranked_rows(
             significant_frame[significant_frame["significance"] == "Upregulated"].copy(),
@@ -4093,6 +4109,7 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: Con
         )
     )
     show_phosphosites = _bool_from_mode(mode_pairs, "showphosphosites", "show_phosphosites", default=True)
+    protein_correction = _bool_from_mode(mode_pairs, "proteincorrection", "protein_correction", default=False)
     data_source = str(mode_pairs.get("datasource", "data")).strip().lower()
     if data_source not in {"data", "filtered", "imputed"}:
         data_source = "data"
@@ -4108,7 +4125,7 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: Con
         "phosprot_regulation_function|plot_function=phosprot_regulation"
     )
     lines.append(
-        f"phosprot_regulation_parameters|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|test_type={test_type}|use_uncorrected={'true' if use_uncorrected else 'false'}|max_hover_sites={max_hover_sites}|show_phosphosites={'true' if show_phosphosites else 'false'}|data_source={data_source}"
+        f"phosprot_regulation_parameters|condition1={_safe_context_text(condition1)}|condition2={_safe_context_text(condition2)}|p_value_threshold={_fmt_value(p_value_threshold)}|log2fc_threshold={_fmt_value(log2fc_threshold)}|test_type={test_type}|use_uncorrected={'true' if use_uncorrected else 'false'}|max_hover_sites={max_hover_sites}|show_phosphosites={'true' if show_phosphosites else 'false'}|data_source={data_source}|protein_correction={'true' if protein_correction else 'false'}"
     )
     lines.append(
         f"phosprot_regulation_testing|selected_test={test_type}|"
@@ -4130,7 +4147,9 @@ def phospho_phosprot_regulation_plot(workflow: str = "phosphoprotein", mode: Con
         "phosprot_regulation_parameter_note|only_sites_passing_both_the_selected_p_value_and_absolute_log2fc_thresholds_contribute|proteins_without_significant_sites_are_omitted"
     )
     lines.append(
-        "phosprot_regulation_interpretation_scope|supports_descriptive_comparison_of_cumulative_significant_up_and_down_site_effects|does_not_estimate_a_protein_level_fold_change_or_adjust_for_parent_protein_abundance"
+        "phosprot_regulation_interpretation_scope|supports_descriptive_comparison_of_cumulative_significant_up_and_down_site_effects|does_not_estimate_a_protein_level_fold_change"
+        + ("|site_changes_are_corrected_for_parent_protein_abundance_before_summing" if protein_correction
+           else "|does_not_adjust_for_parent_protein_abundance")
     )
 
     return _text_payload("phospho_phosprot_regulation_plot", "\n".join(lines))

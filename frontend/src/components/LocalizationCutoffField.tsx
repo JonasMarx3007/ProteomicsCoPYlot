@@ -20,7 +20,7 @@ function formatCutoff(value: number) {
  * field shows and changes the same number on every page.
  */
 export default function LocalizationCutoffField({ kind, className }: Props) {
-  const { cutoff, available, loaded, error, update } = usePhosphoLocalizationCutoff();
+  const { cutoff, available, loaded, belowClassOne, sites, error, update } = usePhosphoLocalizationCutoff();
   const [draft, setDraft] = useState<string>(formatCutoff(cutoff));
   const [invalid, setInvalid] = useState(false);
   const inputId = useId();
@@ -69,6 +69,11 @@ export default function LocalizationCutoffField({ kind, className }: Props) {
       {invalid || error ? (
         <span className="mt-1 block text-xs text-red-700">
           {invalid ? "Enter a value between 0.00 and 1.00." : error}
+        </span>
+      ) : null}
+      {available && cutoff < 0.75 && belowClassOne > 0 ? (
+        <span className="mt-1 block text-xs text-amber-700">
+          Non-class I sites included ({belowClassOne.toLocaleString()} of {sites.toLocaleString()} retained sites below 0.75 localization probability).
         </span>
       ) : null}
     </div>

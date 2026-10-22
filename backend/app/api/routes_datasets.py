@@ -26,6 +26,7 @@ from app.schemas.dataset import (
     TableDatasetPathRequest,
 )
 from app.services.managed_temp import open_private, private_temp_dir
+from app.services.temp_file_lifecycle import temporary_file_scope
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.dataset_reader import get_extension, read_dataframe
 from app.services.dataset_store import (
@@ -227,6 +228,7 @@ def _ensure_profile_annotation_for_kind(
         filter_method=filter_config.method,
         min_percentage=filter_config.minPercentage,
         normalization=filter_config.normalization,
+        normalization_fit=filter_config.normalizationFit,
     )
     save_annotation(
         kind=kind,
@@ -262,13 +264,18 @@ def _ensure_selected_profile_annotations(
 
 
 @router.post("/upload", response_model=DatasetPreviewResponse)
+@temporary_file_scope()
 def upload_dataset(
     file: UploadFile = File(...),
     # AnnotationKind is exactly this set; spelling it out again lets the two drift.
     kind: AnnotationKind = Form(...),
     package_name: str | None = Form(default=None, alias="packageName"),
-    source_path: str | None = Form(default=None, alias="sourcePath"),
 ) -> DatasetPreviewResponse:
+    # The uploaded bytes are always stored here and that copy becomes the source
+    # path. An upload used to accept a client-supplied `sourcePath` instead, which
+    # no page sent and which let a remote client name any server file for the
+    # export to fingerprint. Loading a file by
+    # its local path is `/table-path`, which keeps the local-path guard.
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
     try:
@@ -276,20 +283,16 @@ def upload_dataset(
     except ValueError as e:
         raise HTTPException(status_code=413, detail=str(e)) from e
 
-    normalized_source_path = str(source_path or "").strip() or None
     safe_name = Path(file.filename).name
 
     try:
         _ = get_extension(file.filename)
-        if normalized_source_path:
-            df = read_dataframe(file.filename, file.file)
-        else:
-            target = _table_upload_dir() / f"{uuid4().hex}_{safe_name}"
-            with open_private(target, "wb") as handle:
-                shutil.copyfileobj(file.file, handle)
-            with target.open("rb") as handle:
-                df = read_dataframe(safe_name, handle)
-            normalized_source_path = str(target.resolve())
+        target = _table_upload_dir() / f"{uuid4().hex}_{safe_name}"
+        with open_private(target, "wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        with target.open("rb") as handle:
+            df = read_dataframe(safe_name, handle)
+        stored_path = str(target.resolve())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OSError as e:
@@ -304,7 +307,7 @@ def upload_dataset(
     # Re-uploading a dataset invalidates existing annotation state for that level.
     clear_annotation(kind, clear_all_profiles=True)
 
-    stored = save_table_dataset(file.filename, kind, df, source_path=normalized_source_path)
+    stored = save_table_dataset(file.filename, kind, df, source_path=stored_path)
     if kind in ("protein", "phospho"):
         clear_uploaded_metadata(kind, clear_all_profiles=True)
     return _table_preview_response(stored)
@@ -353,6 +356,7 @@ def set_peptide_path(payload: PeptidePathRequest) -> PeptidePathResponse:
 
 
 @router.post("/peptide-file", response_model=PeptidePathResponse)
+@temporary_file_scope()
 def upload_peptide_file(
     file: UploadFile = File(...),
     package_name: str | None = Form(default=None, alias="packageName"),

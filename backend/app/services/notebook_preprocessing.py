@@ -16,9 +16,9 @@ from app.services.notebook_source import (
     extract_notebook_source, function_definition, merge_source, module_source, replace_once,
 )
 from app.services.dataset_reader import rename_cols, sanitize_dataframe
-from app.services.annotation_processor import prepare_normalized_log2_data
+from app.services.annotation_processor import filter_then_normalize
 from app.services.id_translation import replay_id_translations
-from app.services.functions import filter_data, filter_localization, inverse_log2_transform_data, raw_zero_to_nan
+from app.services.functions import filter_localization, inverse_log2_transform_data, raw_zero_to_nan
 from app.services.phosprot_tools import transform_phosprot
 
 
@@ -89,11 +89,14 @@ def replay_preprocessing(raw, metadata, config):
     elif config['source'] == 'source_data':
         data = raw.copy() if config['is_log2'] else raw_zero_to_nan(raw, samples)
     else:
-        data = prepare_normalized_log2_data(raw, samples, config['is_log2'], config['normalization'])
-        if config['source'] == 'filtered':
-            filtering = config['filter']
-            data = filter_data(data, metadata, min_present=filtering['minPresent'], mode=filtering['mode'],
-                method=filtering['method'], min_percentage=filtering['minPercentage'])
+        # The app's own order: the filter decides the rows, the normalization is
+        # fitted on them and applied to every row (filter_then_normalize).
+        filtering = config['filter']
+        log2_data, filtered_data = filter_then_normalize(raw, metadata, config['is_log2'], config['normalization'],
+            min_present=filtering['minPresent'], filter_mode=filtering['mode'],
+            filter_method=filtering['method'], min_percentage=filtering['minPercentage'],
+            normalization_fit=filtering.get('normalizationFit', 'filtered_rows'))
+        data = filtered_data if config['source'] == 'filtered' else log2_data
     if config['kind'] == 'phospho':
         data = filter_localization(data, config['localization_cutoff'])
     if config['linear_output']:
@@ -125,6 +128,23 @@ def vsn_runtime_version():
     return result.stdout.strip()
 
 
+def limma_runtime_version():
+    """'Rversion|limmaversion', recorded with a moderated export and checked on replay."""
+    import subprocess
+    from app.services.r_runtime import detect_r_runtime
+    executable = detect_r_runtime().get('executable')
+    if not executable:
+        raise ValueError('Install R and Bioconductor limma to replay this moderated test.')
+    try:
+        result = subprocess.run([str(executable), '-e',
+            'cat(paste(getRversion(), as.character(packageVersion("limma")), sep="|"))'],
+            capture_output=True, text=True, check=True, timeout=60,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError('R and Bioconductor limma must be available to replay this moderated test.') from exc
+    return result.stdout.strip()
+
+
 @lru_cache(maxsize=4)
 def preprocessing_source(collapse=False, vsn=False):
     functions = module_source('functions.py')
@@ -141,6 +161,7 @@ def preprocessing_source(collapse=False, vsn=False):
         functions,
         extract_notebook_source(module_source('dataset_reader.py'), ('rename_cols', 'sanitize_dataframe')).code,
         function_definition(module_source('annotation_processor.py'), 'prepare_normalized_log2_data'),
+        function_definition(module_source('annotation_processor.py'), 'filter_then_normalize'),
         function_definition(module_source('notebook_preprocessing.py'), 'read_original_table'),
         extract_notebook_source(module_source('id_translation.py'), ('replay_id_translations',)).code,
         replay)
@@ -259,9 +280,21 @@ def bind_original_preprocessing(recipe):
         if vsn:
             r_version, vsn_version = runtime.split('|')
             runtime_note = f' Install R {r_version} and Bioconductor vsn {vsn_version}, with Rscript on PATH; these versions are checked before normalization.'
+        if recipe.settings.get('limma_runtime'):
+            r_version, limma_version = recipe.settings['limma_runtime'].split('|')
+            runtime_note += (f' The moderated t-test runs in R {r_version} with Bioconductor limma {limma_version}, '
+                'with Rscript on PATH; these versions are checked before the test.')
         projection_note = (' The displayed projection coordinates and cluster labels are retained for exact '
             'orientation; the plotting code reuses them after verifying the rebuilt analysis matrix.'
             if recipe.provenance.get('plot') == 'pca' else '')
+        if 'protein_input.parquet' in recipe.resources:
+            # The protein side of a protein-corrected site table is a second
+            # dataset with its own preprocessing; it is carried as the frozen
+            # matrix the app tested, not rebuilt from the protein upload.
+            projection_note += (" Each site's change is corrected for its protein's change: the protein matrix "
+                'of the same package and data source (protein_input.parquet, protein_metadata.parquet) is tested '
+                'with the same comparison and subtracted with the standard errors combined. That matrix is '
+                'carried as exported, not rebuilt from the protein upload.')
         return replace(recipe, source=merged, resources=resources, original_filename=original_filename,
             provenance={**recipe.provenance, 'inputReplay': 'original-file', 'preprocessing': config},
             input_explanation='Set data_path to the original upload below. The notebook reads that file and repeats '

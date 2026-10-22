@@ -29,7 +29,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# VSN normalization is delegated to the reference Bioconductor implementation.
+# VSN normalization and the moderated t-tests are delegated to the reference
+# Bioconductor implementations (vsn, limma).
 # Debian bookworm ships R 4.2, which corresponds to Bioconductor 3.16. Install
 # the heavy dependencies from Debian binaries and compile only `vsn` itself.
 # The final probe makes the image build fail instead of silently hiding VSN in
@@ -42,9 +43,10 @@ RUN apt-get update \
         r-bioc-affy \
         r-bioc-biobase \
         r-bioc-limma \
+        r-cran-statmod \
         r-cran-ggplot2 \
     && Rscript -e 'BiocManager::install("vsn", version = "3.16", ask = FALSE, update = FALSE, dependencies = FALSE)' \
-    && Rscript -e 'stopifnot(requireNamespace("vsn", quietly = TRUE)); cat(as.character(packageVersion("vsn")))' \
+    && Rscript -e 'stopifnot(requireNamespace("vsn", quietly = TRUE), requireNamespace("limma", quietly = TRUE), requireNamespace("statmod", quietly = TRUE)); cat(as.character(packageVersion("vsn")), as.character(packageVersion("limma")))' \
     && apt-get purge -y --auto-remove r-base-dev \
     && rm -rf /var/lib/apt/lists/* /tmp/downloaded_packages
 
@@ -59,7 +61,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements-runtime.lock /app/backend/requirements-runtime.lock
-RUN pip install --upgrade pip && pip install -r /app/backend/requirements-runtime.lock
+COPY backend/requirements-runtime-hashed.lock /app/backend/requirements-runtime-hashed.lock
+RUN python -m pip install --require-hashes -r /app/backend/requirements-runtime-hashed.lock
 
 COPY backend /app/backend
 RUN test -f /app/backend/app/services/session_context.py

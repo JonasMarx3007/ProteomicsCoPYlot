@@ -8,7 +8,7 @@ import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { ContextMode, AnnotationKind, SimulationRequest, SimulationResultResponse, SimulationTestType, StatsIdentifier, DataSource, StatisticalOptionsResponse } from "../../lib/types";
-import { dataSourceOptions } from "../../lib/types";
+import { PROTEIN_CORRECTION_LABEL, useProteinCorrection } from "../../lib/proteinCorrection";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { SIMULATION_TEST_TYPE_OPTIONS } from "../../lib/statisticalTests";
 import SelectField from "../../components/SelectField";
@@ -98,13 +98,9 @@ export function SimulationPanel({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const kindAvailable = kindOptions.some((option) => option.value === kind);
-  const simulationDataSourceOptions = useMemo(
-    // `options`, not `options?.availableDataSources`: the React Compiler infers
-    // the whole object as the dependency and refuses to keep a narrower manual
-    // one, which fails the lint gate.
-    () => dataSourceOptions(options),
-    [options]
-  );
+  const proteinCorrection = useProteinCorrection(
+    kind, options, persisted.proteinCorrection, dataSource, chooseDataSource);
+  const simulationDataSourceOptions = proteinCorrection.dataSourceOptions;
 
   useStatisticalOptionsLoader(
     kind,
@@ -139,6 +135,7 @@ export function SimulationPanel({
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection: proteinCorrection.active,
       varianceMultiplier,
       sampleSizeOverride,
     };
@@ -153,6 +150,7 @@ export function SimulationPanel({
     log2fcThreshold,
     testType,
     useUncorrected,
+    proteinCorrection.active,
     varianceMultiplier,
     sampleSizeOverride,
   ]);
@@ -210,6 +208,7 @@ export function SimulationPanel({
       log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
       testType: debouncedRequestPayload.testType,
       useUncorrected: debouncedRequestPayload.useUncorrected,
+      proteinCorrection: Boolean(debouncedRequestPayload.proteinCorrection),
       varianceMultiplier: debouncedRequestPayload.varianceMultiplier,
       sampleSizeOverride: debouncedRequestPayload.sampleSizeOverride,
     });
@@ -226,6 +225,7 @@ export function SimulationPanel({
       pValueThreshold,
       log2fcThreshold,
       useUncorrected,
+      proteinCorrection: proteinCorrection.enabled,
       varianceMultiplier,
       sampleSizeOverride,
     });
@@ -239,6 +239,7 @@ export function SimulationPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    proteinCorrection.enabled,
     varianceMultiplier,
     sampleSizeOverride,
   ]);
@@ -281,6 +282,13 @@ export function SimulationPanel({
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
+          {proteinCorrection.offered ? (
+            <CheckboxField
+              label={PROTEIN_CORRECTION_LABEL}
+              checked={proteinCorrection.enabled}
+              onChange={proteinCorrection.setEnabled}
+            />
+          ) : null}
         </div>
 
         <div className="mt-6 border-t border-slate-200 pt-6">

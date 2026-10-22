@@ -12,12 +12,16 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isPairedTestType } from "../../src/features/stats/statsHelpers";
 import {
   CONTROL_TEST_TYPE_OPTIONS,
   controlTestType,
   restoreTestType,
   SIMULATION_TEST_TYPE_OPTIONS,
   TEST_TYPE_OPTIONS,
+  testTypeOptions,
+  availableTestType,
+  PAIRED_TEST_TYPES,
 } from "../../src/lib/statisticalTests";
 
 const openapi = JSON.parse(readFileSync(resolve(__dirname, "../../src/lib/generated/openapi.json"), "utf-8"));
@@ -57,6 +61,20 @@ describe("the statistical test choices", () => {
     expect(controlTestType("unpaired")).toBe("unpaired_welch");
     expect(controlTestType("unpaired_welch")).toBe("unpaired_welch");
     expect(controlTestType("paired")).toBe("paired");
-    expect(TEST_TYPE_OPTIONS.length).toBe(3);
+    expect(TEST_TYPE_OPTIONS.length).toBe(7);
+    // limma does not propagate four variances, so a moderated choice falls back to the propagated test of its design.
+    expect(controlTestType("moderated")).toBe("unpaired_welch");
+    expect(controlTestType("moderated_robust_paired")).toBe("paired");
+  });
+
+  it("offer the moderated tests only where R and limma can run them", () => {
+    const names = (ok: boolean) => testTypeOptions(ok).map(({ value }) => value);
+    expect(names(true)).toEqual(TEST_TYPE_OPTIONS.map(({ value }) => value));
+    expect(names(false)).toEqual(["unpaired", "unpaired_welch", "paired"]);
+    expect(availableTestType("moderated", false)).toBe("unpaired");
+    expect(availableTestType("moderated", true)).toBe("moderated");
+    expect(availableTestType("paired", false)).toBe("paired");
+    for (const value of PAIRED_TEST_TYPES) expect(isPairedTestType(value)).toBe(true);
+    expect(isPairedTestType("moderated")).toBe(false);
   });
 });

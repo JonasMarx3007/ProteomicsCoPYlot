@@ -20,7 +20,7 @@ export default function AnovaOutput({ result, plotUrl, selectedCluster }: {
     if (!noHeatmap) return;
     const controller = new AbortController();
     fetchPlot(plotUrl, controller.signal).then(async response => {
-      if (!response.ok) throw new Error("Could not prepare the ANOVA notebook.");
+      if (!response.ok) throw new Error("Could not prepare the One-way ANOVA notebook.");
       await response.arrayBuffer();
       const token = response.headers.get("X-CoPYlot-Notebook");
       if (!controller.signal.aborted) setRendered({ url: plotUrl, token: token && /^[A-Za-z0-9_-]{32}$/.test(token) ? token : null });
@@ -49,10 +49,10 @@ export default function AnovaOutput({ result, plotUrl, selectedCluster }: {
   const rows = selectedCluster === undefined ? data.rows
     : data.clusterRows.filter(row => String(row.cluster) === selectedCluster);
   const title = selectedCluster !== undefined ? `Cluster ${selectedCluster}`
-    : data.source === "anova_cluster" ? "ANOVA Cluster" : "ANOVA";
+    : data.source === "anova_cluster" ? "One-way ANOVA Cluster" : "One-way ANOVA";
   return <>
     <Notice error={error} />
-    {noHeatmap ? <InfoSection message="No rows passed the selected ANOVA threshold, so no significant-row heatmap or clusters were generated." />
+    {noHeatmap ? <InfoSection message="No rows passed the selected One-way ANOVA threshold, so no significant-row heatmap or clusters were generated." />
       : <ImageSection title={`${title} Heatmap`} url={plotUrl} notebook={rendered}
           onRendered={(url, token) => setRendered({ url, token })} />}
     {selectedCluster === undefined ? <Notice error={null} warnings={removeSourceUsageWarnings(data.warnings)} /> : null}
@@ -60,7 +60,7 @@ export default function AnovaOutput({ result, plotUrl, selectedCluster }: {
       rows={rows} filename={`${prefix}${selectedCluster === undefined ? "" : `_cluster_${selectedCluster}`}.csv`}
       plotUrl={plotUrl} notebook={notebook} />
     {selectedCluster === undefined && data.postHocRows.length > 0 ? <TableSection
-      title={`Post-hoc: ${data.postHocMethod ?? "Tukey HSD"}${data.postHocComparison ? ` — ${data.postHocComparison}` : ""} (${data.postHocSignificantCount} significant of ${data.postHocRows.length} comparisons, ANOVA-significant rows only)`}
+      title={`Post-hoc: ${data.postHocMethod ?? "Tukey HSD"}${data.postHocComparison ? ` — ${data.postHocComparison}` : ""} (${data.postHocSignificantCount} significant of ${data.postHocRows.length} comparisons, One-way ANOVA-significant rows only)`}
       rows={data.postHocRows} plotUrl={plotUrl} notebook={notebook}
       filename={`${prefix}_tukey${data.postHocComparison ? `_${sanitizeFilenamePart(data.postHocComparison.replace(/\s+vs\s+/, "_vs_"))}` : ""}.csv`} /> : null}
   </>;

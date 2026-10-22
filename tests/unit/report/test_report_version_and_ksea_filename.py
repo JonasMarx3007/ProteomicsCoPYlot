@@ -4,7 +4,7 @@
   builder, it printed whatever was typed there, which is only right until the
   application is released again -- and a report is the artefact a reader dates
   the analysis by.
-* The KSEA download's suggested file name spells out the contrast. Written by
+* The Kinase Library download's suggested file name spells out the contrast. Written by
   hand it said `(cond2 - ctrl2) - (cond1 - ctrl1)` while the exported log2FC is
   the other way round, so a saved file claimed the opposite sign to the numbers
   inside it.
@@ -64,7 +64,7 @@ def test_the_printed_report_carries_that_version(monkeypatch: pytest.MonkeyPatch
     assert f"Proteomics CoPYlot V{APP_VERSION}" in html
 
 
-# --- the KSEA file name matches the arithmetic in the file --------------------
+# --- the Kinase Library file name matches the arithmetic in the file --------------------
 
 
 CONTRAST_FIXTURE = ROOT / "tests" / "fixtures" / "comparison_contrast.json"
@@ -91,11 +91,11 @@ def test_the_contrast_is_the_one_the_ksea_file_name_is_held_to() -> None:
 def test_the_exported_log2fc_is_the_control_volcano_number_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Which is what fixes the orientation: KSEA re-exports, it does not re-sign.
+    """Which is what fixes the orientation: Kinase Library re-exports, it does not re-sign.
 
     `run_volcano_control` computes (condition1 - its control) - (condition2 -
     its control); that orientation is pinned by
-    test_contrast_label_matches_computation.py. This shows the KSEA table hands
+    test_contrast_label_matches_computation.py. This shows the Kinase Library table hands
     those numbers on untouched, so the file name has to say the same thing.
     """
     from app.services import phospho_tools, stats_tools
@@ -135,4 +135,4 @@ def test_the_exported_log2fc_is_the_control_volcano_number_unchanged(
         "condition1Control": "C",
         "condition2Control": "D",
     }
-    assert float(table["log2FC"].iloc[0]) == 4.0, "KSEA flipped the sign on the way out"
+    assert float(table["log2FC"].iloc[0]) == 4.0, "Kinase Library flipped the sign on the way out"

@@ -120,6 +120,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
                 log2fcThreshold=payload.log2fcThreshold,
                 testType=payload.testType,
                 useUncorrected=payload.useUncorrected,
+                proteinCorrection=payload.proteinCorrection,
                 highlightTerms=[],
             )
         )
@@ -135,6 +136,7 @@ def analysis_volcano_data(payload: AnalysisVolcanoRequest) -> AnalysisVolcanoRes
                 log2fcThreshold=payload.log2fcThreshold,
                 testType=payload.testType,
                 useUncorrected=payload.useUncorrected,
+                proteinCorrection=payload.proteinCorrection,
                 highlightTerms=[],
             )
         )

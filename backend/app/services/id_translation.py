@@ -212,20 +212,20 @@ def autodetect_input_db(ids: list[str], db_df: pd.DataFrame) -> str | None:
     return None
 
 
-def translate_cell(cell: object, index: dict[str, list[str]]) -> tuple[str, bool]:
+def translate_cell(cell: object, index: dict[str, list[str]]) -> tuple[str | None, bool]:
     tokens = split_cell_values(cell)
     if not tokens:
-        return "NA", False
+        return None, False
     out_values: set[str] = set()
     for token in tokens:
         out_values.update(index.get(token, []))
     if not out_values:
-        return "NA", False
+        return None, False
     return ";".join(sorted(out_values)), True
 
 
-def _translated_values(cells: list[object], index: dict[str, list[str]]) -> tuple[list[str], int]:
-    values: list[str] = []
+def _translated_values(cells: list[object], index: dict[str, list[str]]) -> tuple[list[str | None], int]:
+    values: list[str | None] = []
     translated_count = 0
     for cell in cells:
         value, ok = translate_cell(cell, index)
@@ -315,7 +315,8 @@ def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
     keys = current.frame[payload.column].map(translation_key).tolist()
     step = IdentifierTranslationStep(sourceColumn=payload.column, inputDb=input_db,
         outputDb=payload.outputDb, toolVersion=APP_VERSION,
-        outputs={column: dict(zip(keys, translated[column].tolist())) for column in columns})
+        outputs={column: dict(zip(keys, [None if pd.isna(value) else str(value)
+                                        for value in translated[column]])) for column in columns})
     save_table_dataset(filename=filename, kind=payload.kind, frame=translated,
         phosprot_aggregation=current.phosprot_aggregation, phosprot_lineage=current.phosprot_lineage,
         id_translations=[*current.id_translations, step])
@@ -330,7 +331,7 @@ def run_id_translation(payload: IdTranslationRequest) -> IdTranslationResponse:
         outputColumn=output_column,
         inputDb=input_db,
         outputDb=payload.outputDb,
-        translatedCount=int((translated[output_column] != "NA").sum()),
+        translatedCount=int(translated[output_column].notna().sum()),
         totalRows=int(len(translated)),
         preview=_preview(translated),
         availableColumns=[str(col) for col in translated.columns],

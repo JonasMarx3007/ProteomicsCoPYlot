@@ -10,7 +10,8 @@ import NumberField from "../../components/NumberField";
 import { collectColumns } from "../../lib/tableData";
 import { csvDataUrl, rowsToCsv } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { TEST_TYPE_VALUES, TEST_TYPE_LABELS } from "../../lib/statisticalTests";
+import { TEST_TYPE_LABELS, useTestTypeOptions, availableTestType, PAIRED_TEST_TYPES } from "../../lib/statisticalTests";
+import type { StatsTestType } from "../../lib/types";
 import { buildPlotUrl, getPhosphoOptions, getPhosphoTable, isAbortError, pairingIsReady } from "../../lib/api";
 import PairingEditor from "../../components/PairingEditor";
 import { useCurrentDatasetsSnapshot } from "../../lib/datasetAvailability";
@@ -24,7 +25,8 @@ import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
-import { dataSourceOptions, type DataSource, type PhosphoOptionsResponse, type PhosphoTab } from "../../lib/types";
+import { type DataSource, type PhosphoOptionsResponse, type PhosphoTab } from "../../lib/types";
+import { PROTEIN_CORRECTION_LABEL, useProteinCorrection } from "../../lib/proteinCorrection";
 import PreviewTable from "../../components/PaginatedTable";
 import SelectField from "../../components/SelectField";
 import type { ContextMode } from "../../lib/types";
@@ -70,7 +72,10 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     applyChoices: applyDataSourceChoices,
     chooseDataSource,
   } = useDataSourceChoice(persisted.dataSource);
-  const volcanoDataSourceOptions = useMemo(() => dataSourceOptions(options), [options]);
+  const proteinCorrection = useProteinCorrection(
+    "phospho", options, persistedPhosprotRegulation.proteinCorrection, dataSource, chooseDataSource,
+    activeTab === "phosprotRegulation");
+  const volcanoDataSourceOptions = proteinCorrection.dataSourceOptions;
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [tableRows, setTableRows] = useState<Record<string, unknown>[]>([]);
@@ -126,6 +131,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   });
 
 
+  const { options: testTypeOptions, moderatedAvailable } = useTestTypeOptions();
   const [phosprotRegulation, setPhosprotRegulation] = useState({
     condition1: String(persistedPhosprotRegulation.condition1 ?? ""),
     condition2: String(persistedPhosprotRegulation.condition2 ?? ""),
@@ -151,8 +157,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
   // needs no debounce.
   const debouncedDataSource = dataSourceReady ? dataSource : null;
   const debouncedPhosprotRegulation = useDebouncedValue(phosprotRegulation, 650);
+  const debouncedProteinCorrection = useDebouncedValue(proteinCorrection.active, 650);
   const phosprotPairingReady =
-    debouncedPhosprotRegulation.testType !== "paired" ||
+    !(PAIRED_TEST_TYPES as string[]).includes(debouncedPhosprotRegulation.testType) ||
     pairingIsReady(
       debouncedPhosprotRegulation.condition1,
       debouncedPhosprotRegulation.condition2,
@@ -168,9 +175,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       coverage,
       distribution,
       sty,
-      phosprotRegulation,
+      phosprotRegulation: { ...phosprotRegulation, proteinCorrection: proteinCorrection.enabled },
     });
-  }, [downloadFormat, dataSource, phosphositePlot, coverage, distribution, sty, phosprotRegulation]);
+  }, [downloadFormat, dataSource, phosphositePlot, coverage, distribution, sty, phosprotRegulation, proteinCorrection.enabled]);
 
   // The report redraws the coverage plots with the settings shown here
   // (report_function reads them as qcSettings.phospho.phosphoCoverage).
@@ -314,6 +321,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           log2fcThreshold: debouncedPhosprotRegulation.log2fcThreshold,
           testType: debouncedPhosprotRegulation.testType,
           useUncorrected: debouncedPhosprotRegulation.useUncorrected,
+          proteinCorrection: debouncedProteinCorrection,
           maxHoverSites: debouncedPhosprotRegulation.maxHoverSites,
           showPhosphosites: debouncedPhosprotRegulation.showPhosphosites,
           header: debouncedPhosprotRegulation.header,
@@ -336,6 +344,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
       }),
     };
   }, [
+    debouncedProteinCorrection,
     activeTab,
     debouncedPhosphositePlot,
     debouncedCoverage,
@@ -403,6 +412,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
         log2fcThreshold: debouncedPhosprotRegulation.log2fcThreshold,
         testType: debouncedPhosprotRegulation.testType,
         useUncorrected: debouncedPhosprotRegulation.useUncorrected,
+        proteinCorrection: debouncedProteinCorrection,
         maxHoverSites: debouncedPhosprotRegulation.maxHoverSites,
         showPhosphosites: debouncedPhosprotRegulation.showPhosphosites,
       };
@@ -414,6 +424,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
 
     return { tab: "sty", params: plotToken ? { snapshot: plotToken } : undefined };
   }, [
+    debouncedProteinCorrection,
     advancedPlotSignal,
     plotToken,
     activeTab,
@@ -501,6 +512,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             log2fcThreshold: debouncedPhosprotRegulation.log2fcThreshold,
             testType: debouncedPhosprotRegulation.testType,
             useUncorrected: debouncedPhosprotRegulation.useUncorrected,
+            proteinCorrection: debouncedProteinCorrection,
             maxHoverSites: debouncedPhosprotRegulation.maxHoverSites,
             showPhosphosites: debouncedPhosprotRegulation.showPhosphosites,
           }
@@ -524,6 +536,7 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
     debouncedPhosprotRegulation.log2fcThreshold,
     debouncedPhosprotRegulation.testType,
     debouncedPhosprotRegulation.useUncorrected,
+    debouncedProteinCorrection,
     debouncedPhosprotRegulation.maxHoverSites,
     debouncedPhosprotRegulation.showPhosphosites,
     coverage.mode,
@@ -801,12 +814,12 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
             <SelectField
               key="testType"
               label="Test Type"
-              value={phosprotRegulation.testType}
-              options={TEST_TYPE_VALUES}
+              value={availableTestType(phosprotRegulation.testType as StatsTestType, moderatedAvailable)}
+              options={testTypeOptions.map(({ value }) => value)}
               labels={TEST_TYPE_LABELS}
               onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, testType: value })}
             />,
-            ...(phosprotRegulation.testType === "paired"
+            ...((PAIRED_TEST_TYPES as string[]).includes(phosprotRegulation.testType)
               ? [
                   <div key="pairing" className="lg:col-span-2">
                     <PairingEditor
@@ -829,6 +842,9 @@ export default function PhosphoSpecificPage({ activeTab, onContextModeChange, ad
           ]}
           toggles={[
             <CheckboxField key="uncorrected" label="Use Uncorrected P-values" checked={phosprotRegulation.useUncorrected} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, useUncorrected: value })} />,
+            ...(proteinCorrection.offered ? [
+              <CheckboxField key="proteinCorrection" label={PROTEIN_CORRECTION_LABEL} checked={proteinCorrection.enabled} onChange={proteinCorrection.setEnabled} />,
+            ] : []),
             <CheckboxField key="showSites" label="Show Phosphosites in Table" checked={phosprotRegulation.showPhosphosites} onChange={(value) => setPhosprotRegulation({ ...phosprotRegulation, showPhosphosites: value })} />,
           ]}
           size={

@@ -40,6 +40,9 @@ try:
         resolve_feature_scaling,
         _auto_label_col,
         bh_adjust,
+        split_tokens,
+        match_sites_to_proteins,
+        protein_corrected_site_changes,
     )
 except ImportError:  # loaded from its file alone, outside the package
     import importlib.util as _importlib_util
@@ -58,6 +61,9 @@ except ImportError:  # loaded from its file alone, outside the package
     condition_mean = _core.condition_mean
     resolve_feature_scaling = _core.resolve_feature_scaling
     _auto_label_col = _core._auto_label_col
+    split_tokens = _core.split_tokens
+    match_sites_to_proteins = _core.match_sites_to_proteins
+    protein_corrected_site_changes = _core.protein_corrected_site_changes
     bh_adjust = _core.bh_adjust
 # </shared-core>
 
@@ -478,7 +484,19 @@ def _prepare_intensity_data(
 def log2_transform_data(data: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
     annotated_columns = meta['sample'].tolist()
     data_filtered = raw_zero_to_nan(data[annotated_columns], annotated_columns)
-    log2_data = np.log2(data_filtered)
+    numeric = data_filtered.apply(pd.to_numeric, errors="coerce")
+    negative = (numeric < 0) & np.isfinite(numeric)
+    if negative.to_numpy().any():
+        # As the web app warns on annotation: a negative intensity
+        # has no log2 and becomes missing, silently, unless said here.
+        warnings.warn(
+            f"{int(negative.to_numpy().sum()):,} negative values across {int(negative.any(axis=1).sum()):,} rows "
+            "cannot be log2-transformed. They become missing and may later be imputed. "
+            "Check the data scale or preprocessing.",
+            UserWarning, stacklevel=2,
+        )
+    with np.errstate(invalid="ignore"):
+        log2_data = np.log2(data_filtered)
 
     remaining_columns = [col for col in data.columns if col not in annotated_columns]
     combined_data = pd.concat([log2_data, data[remaining_columns]], axis=1)
@@ -713,9 +731,12 @@ def transform_phosprot(
     across-sample median and requires at least 50% of the fixed eligible sites.
     The other modes aggregate original-scale intensities and the result is log2
     transformed afterwards, so every mode returns log2 values and the fold
-    changes computed from them are comparable. ``mean`` averages only the sites
-    quantified in every sample, so all samples use the same sites; a protein
-    without such a site is missing. ``data_scale`` describes the
+    changes computed from them are comparable. ``mean`` averages, and
+    ``sum_ignore_na`` sums, only the sites quantified in every sample, so all
+    samples use the same sites and a site missing anywhere is left out
+    everywhere; a protein without such a site is missing. ``sum_propagate_na``
+    is the plain sum over all sites, missing wherever any site is missing.
+    ``data_scale`` describes the
     supplied sample columns and may be ``"linear"`` or ``"log2"``.
     Pass aligned pre-imputation ``coverage_data`` for observed-site diagnostics
     and eligibility. The 50% threshold counts finite supplied values, including
@@ -2342,8 +2363,15 @@ def _adjust_finite_pvalues(pvalues):
 
 def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
                    workflow="Protein", paired="Unpaired", uncorrected=False,
-                   test_type=None, label_column=None, observed=None):
+                   test_type=None, label_column=None, observed=None,
+                   protein_data=None, protein_meta=None):
     """Differential abundance between two conditions.
+
+    For the "Phosphosite" workflow, `protein_data` and `protein_meta` (the
+    protein-level matrix and metadata of the same experiment, with a
+    `ProteinAccessions` column) switch on the protein correction: the protein
+    comparison is run with the same settings and each site's log2 fold change
+    is corrected for its protein's (see :func:`protein_correct_site_results`).
 
     `test_type` selects the design and variance model together: "unpaired",
     "unpaired_welch" or "paired". When
@@ -2364,6 +2392,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         is_paired = paired_test_enabled(paired)
         variance = "pooled"
     else:
+        _refuse_moderated(test_type)
         is_paired, variance = resolve_test_type(test_type)
     label_col = _resolve_volcano_label_column(data, workflow, label_column)
 
@@ -2382,6 +2411,7 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         if "PTM_Collapse_keys" in data.columns:
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
+    cols_to_use += _accession_columns(data, cols_to_use)
 
     df = data[cols_to_use].copy()
     imputed_counts = _imputed_counts_for(
@@ -2427,6 +2457,8 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         diffs = diffs[valid_paired]
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
+        se = np.sqrt(np.nanvar(diffs, axis=1, ddof=1) / n_diff)
+        dfree = n_diff - 1.0
 
     no_variation = without_variation([np.round(diffs, 9)] if is_paired else [arr_x, arr_y])
     pvals = np.where(no_variation, np.nan, pvals)
@@ -2453,6 +2485,10 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
         # group is constant have no p-value at all.
         "zero_variance": (constant_differences(diffs) if is_paired
                           else constant_within_group(arr_x) | constant_within_group(arr_y)),
+        # The standard error and degrees of freedom behind `pval`, so a
+        # phosphosite result can be corrected for its protein's change.
+        "se": np.asarray(se, dtype=float),
+        "dof": np.asarray(dfree, dtype=float),
     }
 
     if workflow == "Phosphoprotein":
@@ -2460,6 +2496,8 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
             result["site_num"] = df["site_num"].values
         if "PTM_Collapse_keys" in df.columns:
             result["PTM_Collapse_keys"] = df["PTM_Collapse_keys"].values
+    for column in _accession_columns(df, [label_col]):
+        result[column] = df[column].values
     if is_paired:
         result["n_pairs"] = n_diff.astype(int)
 
@@ -2467,13 +2505,103 @@ def volcano_data_f(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1
     if imputed_counts is not None:
         for column in imputed_counts.columns:
             result[column] = imputed_counts.loc[df.index, column].to_numpy()
+    if protein_data is not None or protein_meta is not None:
+        protein_results = _protein_results_for_correction(
+            volcano_data_f, workflow, protein_data, protein_meta, condition1, condition2,
+            paired=paired, test_type=test_type)
+        result = protein_correct_site_results(result, protein_results, in_pval, in_log2fc, uncorrected)
+    return result
+
+
+def _accession_columns(data, taken):
+    """The accession columns a volcano result keeps for the protein correction:
+    `Protein_group` of a phosphosite table, `ProteinAccessions` of a protein table."""
+    return [c for c in ("Protein_group", "ProteinAccessions") if c in data.columns and c not in taken]
+
+
+def _protein_results_for_correction(volcano, workflow, protein_data, protein_meta, condition1, condition2,
+                                    **settings):
+    """The protein comparison a site correction subtracts, run with the site comparison's settings."""
+    if workflow != "Phosphosite":
+        raise ValueError("Protein correction applies to the 'Phosphosite' workflow only.")
+    if protein_data is None or protein_meta is None:
+        raise ValueError("Protein correction needs both protein_data and protein_meta.")
+    if "ProteinAccessions" not in protein_data.columns:
+        raise ValueError("A protein accession column is required for protein correction.")
+    return volcano(protein_data, protein_meta, condition1, condition2, workflow="Protein",
+                   uncorrected=True, **settings)
+
+
+def protein_correct_site_results(site_results, protein_results, in_pval=0.05, in_log2fc=1, uncorrected=False):
+    """Correct phosphosite changes for the change of their protein.
+
+    `site_results` is a "Phosphosite" :func:`volcano_data_f` table (with
+    `Protein_group`, `se`, `dof`); `protein_results` the "Protein" table of the
+    same comparison (with `ProteinAccessions`, `se`, `dof`). Each site is
+    matched to a unique protein group listing its accession; its log2 fold
+    change becomes site minus protein, the standard errors are combined and the
+    p-value recomputed with Satterthwaite degrees of freedom. Sites without a
+    quantified protein keep their own values (`protein_matched` False); sites
+    whose accession several protein groups list also keep their own values,
+    are flagged `protein_ambiguous`, and produce a warning.
+    The uncorrected values stay in `site_log2FC` and `site_pval`.
+    """
+    if "Protein_group" not in site_results.columns:
+        raise ValueError("A protein accession column (Protein_group) is required on the phosphosite results.")
+    if "ProteinAccessions" not in protein_results.columns:
+        raise ValueError("A protein accession column is required for protein correction.")
+    protein_tokens = [split_tokens(v) for v in protein_results["ProteinAccessions"].tolist()]
+    index, ambiguous = match_sites_to_proteins(site_results["Protein_group"].astype(str).tolist(), protein_tokens)
+    matched = index >= 0
+    safe = np.where(matched, index, 0)
+    take = lambda column: np.where(matched, protein_results[column].to_numpy(dtype=float)[safe], np.nan)
+    site_fc = site_results["log2FC"].to_numpy(dtype=float)
+    site_p = site_results["pval"].to_numpy(dtype=float)
+    fc_adj, se_adj, dof_adj, p_adj = protein_corrected_site_changes(
+        site_fc, site_results["se"].to_numpy(dtype=float), site_results["dof"].to_numpy(dtype=float),
+        take("log2FC"), take("se"), take("dof"))
+    result = site_results.copy()
+    result["se"] = np.where(matched, se_adj, site_results["se"])
+    result["dof"] = np.where(matched, dof_adj, site_results["dof"])
+    result["site_log2FC"] = site_fc
+    result["site_pval"] = site_p
+    result["site_se"] = site_results["se"]
+    result["site_dof"] = site_results["dof"]
+    result["protein_log2FC"] = take("log2FC")
+    result["protein_pval"] = take("pval")
+    result["protein_matched"] = matched
+    result["protein_ambiguous"] = ambiguous
+    if ambiguous.any():
+        warnings.warn(
+            f"Protein correction: {int(ambiguous.sum()):,} sites match more than one "
+            "protein group and keep their uncorrected change and p-value (protein_ambiguous).",
+            UserWarning, stacklevel=2,
+        )
+    log2fc = np.where(matched, fc_adj, site_fc)
+    pvals = np.where(matched, p_adj, site_p)
+    adj_pvals = _adjust_finite_pvalues(pvals)
+    selected_pvals = pvals if uncorrected else adj_pvals
+    significance = np.full(len(log2fc), "Not significant", dtype=object)
+    significance[~np.isfinite(pvals)] = "Unavailable"
+    significance[(selected_pvals < in_pval) & (log2fc > in_log2fc)] = "Upregulated"
+    significance[(selected_pvals < in_pval) & (log2fc < -in_log2fc)] = "Downregulated"
+    result["log2FC"] = log2fc
+    result["pval"] = pvals
+    result["adj_pval"] = adj_pvals
+    result["selected_pval"] = selected_pvals
+    result["significance"] = significance
+    result["neg_log10_selected_pval"] = negative_log10(selected_pvals)
     return result
 
 
 def volcano_data_f_control(data, meta, condition1, condition2, condition1_control, condition2_control,
     in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=False,
-    test_type=None, label_column=None, observed=None):
+    test_type=None, label_column=None, observed=None, protein_data=None, protein_meta=None):
     """Control-adjusted differential abundance using the web application's tests.
+
+    `protein_data` and `protein_meta` switch on the protein correction for the
+    "Phosphosite" workflow, as in :func:`volcano_data_f`; the protein contrast
+    uses the same four conditions.
 
     `test_type` accepts the same five modes as :func:`volcano_data_f`. When it
     is omitted, the legacy `paired` argument remains authoritative. `observed`
@@ -2496,6 +2624,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         is_paired = paired_test_enabled(paired)
         variance = "pooled"
     else:
+        _refuse_moderated(test_type)
         is_paired, variance = resolve_test_type(test_type)
     label_col = _resolve_volcano_label_column(data, workflow, label_column)
 
@@ -2526,6 +2655,7 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         if "PTM_Collapse_keys" in data.columns:
             extra_cols.append("PTM_Collapse_keys")
         cols_to_use += extra_cols
+    cols_to_use += _accession_columns(data, cols_to_use)
 
     df = data[cols_to_use].copy()
     imputed_counts = _imputed_counts_for(data, observed, {
@@ -2626,6 +2756,8 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
         "selected_pval": selected_pvals,
         "significance": significance,
         "neg_log10_selected_pval": negative_log10(selected_pvals),
+        "se": np.asarray(se, dtype=float),
+        "dof": np.asarray(dfree, dtype=float),
     }
 
     if workflow == "Phosphoprotein":
@@ -2633,6 +2765,8 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
             result["site_num"] = df["site_num"].values
         if "PTM_Collapse_keys" in df.columns:
             result["PTM_Collapse_keys"] = df["PTM_Collapse_keys"].values
+    for column in _accession_columns(df, [label_col]):
+        result[column] = df[column].values
     if is_paired:
         result["n_pairs"] = n_diff.astype(int)
 
@@ -2640,6 +2774,12 @@ def volcano_data_f_control(data, meta, condition1, condition2, condition1_contro
     if imputed_counts is not None:
         for column in imputed_counts.columns:
             result[column] = imputed_counts.loc[df.index, column].to_numpy()
+    if protein_data is not None or protein_meta is not None:
+        protein_results = _protein_results_for_correction(
+            lambda d, m, c1, c2, **kw: volcano_data_f_control(
+                d, m, c1, c2, condition1_control, condition2_control, **kw),
+            workflow, protein_data, protein_meta, condition1, condition2, paired=paired, test_type=test_type)
+        result = protein_correct_site_results(result, protein_results, in_pval, in_log2fc, uncorrected)
     return result
 
 
@@ -2741,6 +2881,26 @@ def volcano_plot_h(volcano_df, condition1, condition2,
                               highlight_terms=highlight_terms, max_chars=max_chars)
 
 
+def _warn_anova_ignores_pairing(meta, sample_columns):
+    """The one-way ANOVA is an independent-samples test; a `pair_id` that links
+    the analysed samples across conditions is ignored, and says so (as the web
+    app does)."""
+    if "pair_id" not in meta.columns:
+        return
+    frame = meta[meta["sample"].astype(str).isin([str(c) for c in sample_columns])].copy()
+    frame["pair_id"] = frame["pair_id"].map(lambda v: "" if v is None or pd.isna(v) else str(v).strip())
+    frame = frame[frame["pair_id"] != ""]
+    if frame.empty:
+        return
+    shared = int((frame.groupby("pair_id")["condition"].nunique() > 1).sum())
+    if shared:
+        warnings.warn(
+            f"Pairing IDs link samples across conditions ({shared} shared ID(s)); the ANOVA treats "
+            "every sample as independent and ignores these links.",
+            UserWarning, stacklevel=3,
+        )
+
+
 def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", uncorrected=False,
                  observed=None):
     """One-way ANOVA per row. `observed` adds imputed-value counts as in volcano_data_f."""
@@ -2769,6 +2929,7 @@ def anova_data_f(data, meta, conditions=None, in_pval=0.05, workflow="Protein", 
         raise ValueError("Each ANOVA condition needs at least two sample columns. Missing: " + ", ".join(map(str, too_few)))
 
     sample_cols = [col for cols in condition_cols.values() for col in cols]
+    _warn_anova_ignores_pairing(meta, sample_cols)
     cols_to_use = [label_col] + sample_cols
 
     if workflow == "Phosphoprotein":
@@ -2929,7 +3090,15 @@ _TEST_TYPES = {
     "unpaired": (False, "pooled"),
     "unpaired_welch": (False, "welch"),
     "paired": (True, "pooled"),
+    # The web app and the R functions also run limma's moderated t-tests. They
+    # are recognised here so a saved choice is named correctly, but, as with
+    # VSN, this package does not call R: see resolve_test_type.
+    "moderated": (False, "moderated"),
+    "moderated_robust": (False, "moderated_robust"),
+    "moderated_paired": (True, "moderated"),
+    "moderated_robust_paired": (True, "moderated_robust"),
 }
+_MODERATED_VARIANCE_MODELS = ("moderated", "moderated_robust")
 
 
 def resolve_test_type(value):
@@ -2940,26 +3109,40 @@ def resolve_test_type(value):
     return _TEST_TYPES[mode]
 
 
+def _refuse_moderated(test_type):
+    """The moderated tests run in R limma; this package does not call R (as with VSN)."""
+    if test_type is not None and resolve_test_type(test_type)[1] in _MODERATED_VARIANCE_MODELS:
+        raise ValueError(
+            "The moderated t-tests are not available in the notebook package because "
+            "they delegate to Bioconductor limma. Use the R functions or the web app, "
+            "or choose 'unpaired', 'unpaired_welch' or 'paired'."
+        )
+
+
 def variance_model(value):
     return resolve_test_type(value)[1]
 
 
 
 
-def median_center(values):
+def median_center(values, fit_rows=None):
     """Shift each sample so all samples share a common median.
 
     Operates on log2 values, where a multiplicative loading difference is an
     additive offset. Samples are re-centred on the grand median rather than on
     zero so the result stays on a recognisable intensity scale; that choice is a
     constant shift and does not affect any fold change.
+
+    With `fit_rows` (the rows the valid-value filter kept) the medians are taken
+    over those rows only and the shift is applied to every row.
     """
-    medians = values.median(axis=0, skipna=True)
+    reference = values if fit_rows is None else values.loc[fit_rows]
+    medians = reference.median(axis=0, skipna=True)
     grand_median = float(np.nanmedian(medians.to_numpy(dtype=float)))
     return values.sub(medians, axis=1).add(grand_median)
 
 
-def quantile_normalize(values):
+def quantile_normalize(values, fit_rows=None):
     """Force every sample onto a common intensity distribution.
 
     Missing values are neither imputed nor allowed to shift a sample's ranks:
@@ -2967,9 +3150,14 @@ def quantile_normalize(values):
     and the shared reference distribution is read off at those positions. This
     interpolates rather than dropping incomplete rows, so a feature missing in
     one sample still contributes everywhere it was measured.
+
+    With `fit_rows`, the reference distribution and each sample's mapping are
+    learned from those rows only; every other row is placed by interpolating its
+    value into its sample's learned mapping.
     """
     numeric = values.apply(pd.to_numeric, errors="coerce")
-    row_count = int(numeric.shape[0])
+    reference_frame = numeric if fit_rows is None else numeric.loc[fit_rows]
+    row_count = int(reference_frame.shape[0])
     if row_count == 0:
         return numeric
 
@@ -2978,7 +3166,7 @@ def quantile_normalize(values):
     grid = np.linspace(0.0, 1.0, row_count)
     curves = []
     for column in numeric.columns:
-        observed = np.sort(numeric[column].dropna().to_numpy(dtype=float))
+        observed = np.sort(reference_frame[column].dropna().to_numpy(dtype=float))
         if observed.size == 0:
             continue
         positions = np.linspace(0.0, 1.0, observed.size) if observed.size > 1 else np.zeros(1)
@@ -2989,13 +3177,21 @@ def quantile_normalize(values):
 
     out = numeric.copy()
     for column in numeric.columns:
-        mask = numeric[column].notna().to_numpy()
-        observed = numeric[column].to_numpy(dtype=float)[mask]
-        if observed.size == 0:
+        fit_values = reference_frame[column].dropna().to_numpy(dtype=float)
+        if fit_values.size == 0:
             continue
-        ranks = stats.rankdata(observed, method="average")
-        positions = (ranks - 1.0) / (observed.size - 1.0) if observed.size > 1 else np.zeros(1)
-        out.loc[mask, column] = np.interp(positions, grid, reference)
+        ranks = stats.rankdata(fit_values, method="average")
+        positions = (ranks - 1.0) / (fit_values.size - 1.0) if fit_values.size > 1 else np.zeros(1)
+        mapped = np.interp(positions, grid, reference)
+        if fit_rows is None:
+            mask = numeric[column].notna().to_numpy()
+            out.loc[mask, column] = mapped
+            continue
+        order = np.argsort(fit_values, kind="stable")
+        xs, ys = fit_values[order], mapped[order]
+        xs_unique, first = np.unique(xs, return_index=True)
+        mask = numeric[column].notna().to_numpy()
+        out.loc[mask, column] = np.interp(numeric[column].to_numpy(dtype=float)[mask], xs_unique, ys[first])
     return out
 
 
@@ -3117,11 +3313,28 @@ def missingness_imbalance_warning(table, method, min_gap=MISSINGNESS_GAP):
     return message + " Check these samples before interpreting fold changes."
 
 
-def normalize_data(data, meta, method="none", linear_source=None):
+def normalize_data(data, meta, method="none", linear_source=None, fit_rows=None):
     """Apply a global normalization to the sample columns of a log2 matrix.
 
     Always global. Normalising within conditions would remove exactly the
     differences the downstream tests are looking for.
+
+    `fit_rows` names the rows the normalization is learned from while the
+    learned transformation is applied to every row. The app (since 2026-10-20)
+    filters first and passes the kept rows here, so that rows with many missing
+    values -- mostly low-abundance, and missing unevenly between groups -- do not
+    set the reference; pass `filtered.index` to do the same:
+
+        filtered = filter_data(log2, meta, 3)
+        normalized = normalize_data(log2, meta, "median", fit_rows=filtered.index)
+        filtered = normalized.loc[filtered.index]
+
+    When missingness differs strongly between groups (the warning below says
+    so), fit on the features observed in every sample instead, as the app's
+    "Fit on: features observed in every sample" does:
+
+        complete = log2.index[log2[samples].notna().all(axis=1)]
+        normalized = normalize_data(log2, meta, "median", fit_rows=complete)
 
     VSN is delegated to Bioconductor rather than reimplemented: a Python port
     matched the reference on well-conditioned data but diverged by up to 2.2 log2
@@ -3144,10 +3357,14 @@ def normalize_data(data, meta, method="none", linear_source=None):
     present = _normalization_sample_columns(data, meta)
 
     numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    if fit_rows is not None:
+        fit_rows = numeric.index.intersection(pd.Index(fit_rows))
+        if len(fit_rows) == len(numeric.index):
+            fit_rows = None
     if resolved == "median":
-        normalized = median_center(numeric)
+        normalized = median_center(numeric, fit_rows)
     elif resolved == "quantile":
-        normalized = quantile_normalize(numeric)
+        normalized = quantile_normalize(numeric, fit_rows)
     elif resolved == "vsn":
         raise ValueError(
             "VSN is not available in the notebook package because it delegates to "
@@ -3159,7 +3376,8 @@ def normalize_data(data, meta, method="none", linear_source=None):
 
     out = data.copy()
     out[present] = normalized
-    message = missingness_imbalance_warning(missingness_imbalance(out, meta), resolved)
+    # The warning describes what the fit saw.
+    message = missingness_imbalance_warning(missingness_imbalance(out if fit_rows is None else out.loc[fit_rows], meta), resolved)
     if message:
         warnings.warn(message, UserWarning, stacklevel=2)
     return out
@@ -3693,24 +3911,27 @@ def _different_genes_column(data, workflow):
     candidates = ["Gene_group", "GeneNames"] if prefer_group else ["GeneNames"]
     for column in candidates:
         if column in data.columns:
-            return column, prefer_group
+            return column
     raise ValueError("different_genes requires GeneNames or Gene_group.")
 
 
-def _different_gene_tokens(values, split_groups):
+def _different_gene_tokens(values):
+    """Every member of every value, once, sorted: the shared `split_tokens`
+    rule (`;` or `,` separated), as in the web app and the R functions.
+
+    A protein group "A;B" used to contribute only "A" outside the phosphoprotein
+    workflow; every member counts now. The former
+    group-splitting switch, ignored since then, is gone (2026-10-22).
+    """
     genes = set()
     for value in values:
-        if value is None or pd.isna(value):
+        if value is None or (not isinstance(value, str) and pd.isna(value)):
             continue
-        if isinstance(value, (float, np.floating)) and not np.isfinite(value):
-            continue
-        text = str(value).strip()
-        tokens = text.split(";") if split_groups else text.split(";", 1)[:1]
-        genes.update(token.strip() for token in tokens if token.strip())
+        genes.update(split_tokens(value))
     return sorted(genes)
 
 
-def _different_genes_from_volcano(volcano_data, key_col, split_groups):
+def _different_genes_from_volcano(volcano_data, key_col):
     """Format the exact Volcano classifications for ORA input."""
     required = {key_col, "significance"}
     missing = required.difference(volcano_data.columns)
@@ -3720,14 +3941,12 @@ def _different_genes_from_volcano(volcano_data, key_col, split_groups):
         )
     return {
         "Upregulated": _different_gene_tokens(
-            volcano_data.loc[volcano_data["significance"] == "Upregulated", key_col],
-            split_groups,
+            volcano_data.loc[volcano_data["significance"] == "Upregulated", key_col]
         ),
         "Downregulated": _different_gene_tokens(
-            volcano_data.loc[volcano_data["significance"] == "Downregulated", key_col],
-            split_groups,
+            volcano_data.loc[volcano_data["significance"] == "Downregulated", key_col]
         ),
-        "Background": _different_gene_tokens(volcano_data[key_col], split_groups),
+        "Background": _different_gene_tokens(volcano_data[key_col]),
     }
 
 
@@ -3739,7 +3958,7 @@ def different_genes(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=
     :func:`volcano_data_f`. Omitting ``test_type`` preserves the legacy
     ``paired`` argument; otherwise all five public Volcano modes are supported.
     """
-    key_col, split_groups = _different_genes_column(data, workflow)
+    key_col = _different_genes_column(data, workflow)
     volcano_data = volcano_data_f(
         data,
         meta,
@@ -3753,7 +3972,7 @@ def different_genes(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=
         test_type=test_type,
         label_column=key_col,
     )
-    return _different_genes_from_volcano(volcano_data, key_col, split_groups)
+    return _different_genes_from_volcano(volcano_data, key_col)
 
 
 def different_genes_control(
@@ -3771,7 +3990,7 @@ def different_genes_control(
     test_type=None,
 ):
     """Select corrected Control-Volcano clusters and background for ORA."""
-    key_col, split_groups = _different_genes_column(data, workflow)
+    key_col = _different_genes_column(data, workflow)
     volcano_data = volcano_data_f_control(
         data,
         meta,
@@ -3787,7 +4006,7 @@ def different_genes_control(
         test_type=test_type,
         label_column=key_col,
     )
-    return _different_genes_from_volcano(volcano_data, key_col, split_groups)
+    return _different_genes_from_volcano(volcano_data, key_col)
 
 
 ENRICHMENT_COLUMNS = [
@@ -3828,8 +4047,7 @@ def enrichment_data(
     Returns an empty frame rather than None when nothing passes, so callers can
     treat the result as a table unconditionally.
     """
-    split_groups = _is_phosphoprotein_workflow(workflow)
-    genes = _different_gene_tokens(gene_list, split_groups)
+    genes = _different_gene_tokens(gene_list)
     if not genes:
         return _empty_enrichment_frame()
     if background_mode not in {"experiment", "global"}:
@@ -3847,7 +4065,7 @@ def enrichment_data(
             raise ValueError(
                 "Provide the tested-gene background, or set background_mode='global'."
             )
-        submitted_background = set(_different_gene_tokens(background, split_groups))
+        submitted_background = set(_different_gene_tokens(background))
         missing = sorted(set(genes).difference(submitted_background))
         if missing:
             raise ValueError(
@@ -4197,21 +4415,15 @@ def proteins_in_pathway(
     return fig
 
 
-def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
-                     workflow="Protein", mod_var=1, mod_n=0):
-    """A what-if projection of the volcano, not a power calculation.
-
-    The observed mean fold changes are held fixed and the pooled t-test is
-    recomputed with the variance multiplied by `mod_var` and, when `mod_n` > 1,
-    `mod_n` replicates per group. Nothing is drawn at random. The observed fold
-    changes include noise, so the projection is optimistic for effects that look
-    large, and it does not estimate the probability of detecting a true effect.
-    """
+def _volcano_sim_table(data, meta, condition1, condition2, workflow, mod_var, mod_n):
+    """The projected statistics behind `volcano_plot_sim`: one row per feature
+    with `log2FC`, `pval`, `se`, `dof` and the accession column, if any."""
     annotated_columns1 = meta.loc[meta['condition'] == condition1, 'sample'].tolist()
     annotated_columns2 = meta.loc[meta['condition'] == condition2, 'sample'].tolist()
     label_col = "ProteinNames" if workflow == "Protein" else "PTM_Collapse_key"
     cols_to_use = [label_col] + annotated_columns1 + annotated_columns2
-    data_filtered = data[cols_to_use].copy()
+    accession_columns = _accession_columns(data, cols_to_use)
+    data_filtered = data[cols_to_use + accession_columns].copy()
     threshold = len(annotated_columns1) + len(annotated_columns2) - 2
     mask = data_filtered.iloc[:, 1:].isna().sum(axis=1) < threshold
     data_filtered = data_filtered.loc[mask]
@@ -4241,13 +4453,46 @@ def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc
     # out of the BH family -- the volcano's rule, so the projection at the
     # observed n reproduces the volcano table.
     pvals = np.where(without_variation([x_data.to_numpy(dtype=float), y_data.to_numpy(dtype=float)]), np.nan, pvals)
+    table = pd.DataFrame({'Feature': data_filtered[label_col].to_numpy(), 'log2FC': (mean1 - mean2).to_numpy(),
+                          'pval': pvals, 'se': np.asarray(se, dtype=float), 'dof': np.asarray(df, dtype=float)})
+    for column in accession_columns:
+        table[column] = data_filtered[column].to_numpy()
+    return table
+
+
+def volcano_plot_sim(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1,
+                     workflow="Protein", mod_var=1, mod_n=0, protein_data=None, protein_meta=None):
+    """A what-if projection of the volcano, not a power calculation.
+
+    The observed mean fold changes are held fixed and the pooled t-test is
+    recomputed with the variance multiplied by `mod_var` and, when `mod_n` > 1,
+    `mod_n` replicates per group. Nothing is drawn at random. The observed fold
+    changes include noise, so the projection is optimistic for effects that look
+    large, and it does not estimate the probability of detecting a true effect.
+
+    `protein_data` and `protein_meta` switch on the protein correction for the
+    "Phosphosite" workflow: the protein comparison is projected with the same
+    `mod_var` and `mod_n`, and each site's change is corrected for its protein's
+    (:func:`protein_correct_site_results`).
+    """
+    table = _volcano_sim_table(data, meta, condition1, condition2, workflow, mod_var, mod_n)
+    log2fc, pvals = table['log2FC'].to_numpy(), table['pval'].to_numpy()
+    if protein_data is not None or protein_meta is not None:
+        if workflow != "Phosphosite":
+            raise ValueError("Protein correction applies to the 'Phosphosite' workflow only.")
+        if protein_data is None or protein_meta is None:
+            raise ValueError("Protein correction needs both protein_data and protein_meta.")
+        if "ProteinAccessions" not in protein_data.columns:
+            raise ValueError("A protein accession column is required for protein correction.")
+        protein_table = _volcano_sim_table(protein_data, protein_meta, condition1, condition2, "Protein", mod_var, mod_n)
+        corrected = protein_correct_site_results(table, protein_table, in_pval, in_log2fc, uncorrected=False)
+        log2fc, pvals = corrected['log2FC'].to_numpy(), corrected['pval'].to_numpy()
     adj_pvals = _adjust_finite_pvalues(pvals)
-    log2fc = mean1 - mean2
     significance = np.where((adj_pvals < in_pval) & (log2fc > in_log2fc), "Upregulated",
                             np.where((adj_pvals < in_pval) & (log2fc < -in_log2fc), "Downregulated",
                                      "Not significant"))
     volcano_data = pd.DataFrame({
-        'Feature': data_filtered[label_col],
+        'Feature': table['Feature'].to_numpy(),
         'log2FC': log2fc,
         'pval': pvals,
         'adj_pval': adj_pvals,
@@ -4450,12 +4695,13 @@ def _ksea_format_volcano(volcano_df, data, fasta):
 def kinase_library_data_f(data, meta, condition1, condition2,
                 in_pval=0.05, in_log2fc=1,
                 paired="Unpaired", uncorrected=False, test_type=None, fasta=None, observed=None,
-                localization_cutoff=0.0):
+                localization_cutoff=0.0, protein_data=None, protein_meta=None):
     """Prepare standard Volcano results for the Kinase Library, matching the web pipeline.
 
     ``fasta`` is a FASTA path (or an accession -> sequence dict) of the searched
     proteome; motif windows are then read from the protein sequence. ``observed``
-    adds imputed-value counts as in volcano_data_f.
+    adds imputed-value counts as in volcano_data_f; ``protein_data`` and
+    ``protein_meta`` switch on the protein correction as there.
     """
     data = filter_localization(data, localization_cutoff)
     working = _ksea_prepare(data, meta)
@@ -4463,6 +4709,7 @@ def kinase_library_data_f(data, meta, condition1, condition2,
         working, meta, condition1, condition2,
         in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
         paired=paired, uncorrected=uncorrected, test_type=test_type, observed=observed,
+        protein_data=protein_data, protein_meta=protein_meta,
     )
     return _ksea_format_volcano(volcano_df, data, fasta)
 
@@ -4471,7 +4718,7 @@ def kinase_library_data_f_control(data, meta, condition1, condition2,
                                   condition1_control, condition2_control,
                                   in_pval=0.05, in_log2fc=1,
                                   paired="Unpaired", uncorrected=False, test_type=None, fasta=None,
-                                  observed=None, localization_cutoff=0.0):
+                                  observed=None, localization_cutoff=0.0, protein_data=None, protein_meta=None):
     """Prepare corrected Control Volcano results for the Kinase Library (see ksea_data_f)."""
     data = filter_localization(data, localization_cutoff)
     working = _ksea_prepare(data, meta)
@@ -4480,6 +4727,7 @@ def kinase_library_data_f_control(data, meta, condition1, condition2,
         condition1_control, condition2_control,
         in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
         paired=paired, uncorrected=uncorrected, test_type=test_type, observed=observed,
+        protein_data=protein_data, protein_meta=protein_meta,
     )
     return _ksea_format_volcano(volcano_df, data, fasta)
 
@@ -4490,7 +4738,8 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
                         paired: str = "Unpaired", uncorrected: bool = False,
                         max_hover_sites: int = 20,
                         show_phosphosites: bool = True,
-                        test_type=None, localization_cutoff: float = 0.0):
+                        test_type=None, localization_cutoff: float = 0.0,
+                        protein_data=None, protein_meta=None):
     """The per-protein table behind `phosprot_regulation`.
 
     Split out so the numbers can be read, exported and compared across the
@@ -4514,7 +4763,6 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
     row_keys = pd.Series(np.arange(len(data)), index=data.index).astype(str)
     mapping = pd.DataFrame({
         "__copylot_row_key": row_keys.to_numpy(),
-        "Protein_group": data["Protein_group"].to_numpy(),
         "__copylot_site": data[label_col].to_numpy(),
     })
     working = data.copy()
@@ -4523,6 +4771,7 @@ def phosprot_regulation_data(data: pd.DataFrame, meta: pd.DataFrame,
         working, meta, condition1, condition2,
         in_pval=in_pval, in_log2fc=in_log2fc, workflow="Phosphosite",
         paired=paired, uncorrected=uncorrected, test_type=test_type,
+        protein_data=protein_data, protein_meta=protein_meta,
     ).rename(columns={label_col: "__copylot_row_key"})
     volcano_df = volcano_df.merge(mapping, on="__copylot_row_key", validate="one_to_one")
     volcano_df = volcano_df.rename(columns={"__copylot_site": label_col})
@@ -4591,7 +4840,8 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
                         paired: str = "Unpaired", uncorrected: bool = False,
                         max_hover_sites: int = 20,
                         show_phosphosites: bool = True,
-                        test_type=None, localization_cutoff: float = 0.0):
+                        test_type=None, localization_cutoff: float = 0.0,
+                        protein_data=None, protein_meta=None):
     """Scatter of the table returned by `phosprot_regulation_data`."""
     collapsed_df = phosprot_regulation_data(
         data, meta, condition1, condition2,
@@ -4599,6 +4849,7 @@ def phosprot_regulation(data: pd.DataFrame, meta: pd.DataFrame,
         uncorrected=uncorrected, max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites, test_type=test_type,
         localization_cutoff=localization_cutoff,
+        protein_data=protein_data, protein_meta=protein_meta,
     )
 
     fig = px.scatter(
@@ -4680,9 +4931,6 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
         data2 = sanitize_dataframe(read_data(data2_path)).copy()
 
     meta = meta.copy()
-    data2_names = data2['File.Name'].unique()
-    for name in data2_names:
-        meta['sample'] = np.where(meta['sample'] == name, name, meta['sample'])
 
     data2_wide = (
         data2.pivot_table(
@@ -4695,12 +4943,14 @@ def modification_plot(data2_path, meta, id=True, header=True, legend=True, width
         .rename(columns={"index": "Modified.Sequence"})
     )
 
-    data2_wide.columns = [extract_id_or_number(c) if c != "Modified.Sequence" else c for c in data2_wide.columns]
-
     meta["condition"] = meta["condition"].astype(str)
     meta = _sample_meta(meta, id=id, newline=True)
 
-    rename_dict = dict(zip(meta["id"], meta["new_sample"]))
+    # Preserve full names until matched; numeric suffixes are a fallback only
+    # when the remaining data and metadata names are unambiguous.
+    sample_map = _peptide_sample_map(data2_wide.columns.drop("Modified.Sequence"), meta["sample"])
+    labels = dict(zip(meta["sample"], meta["new_sample"]))
+    rename_dict = {column: labels[sample] for column, sample in sample_map.items()}
     data2_wide = data2_wide.rename(columns=rename_dict)
     ordered_new_samples = list(meta["new_sample"])
     annotated_cols = [c for c in ordered_new_samples if c in data2_wide.columns]
@@ -5173,7 +5423,13 @@ def phossite_on_prot_regulation(
         header=True, localization_cutoff=0.0
 ):
     data = filter_localization(data, localization_cutoff)
-    protein_data = data[data['Protein_group'].str.contains(protein, case=False, na=False)]
+    protein_query = "" if protein is None or pd.isna(protein) else str(protein).strip().lower()
+    # Protein groups list complete identifiers; never interpret an identifier
+    # as a substring or regular expression.
+    members = data['Protein_group'].fillna('').astype(str).str.split(';')
+    matches = members.map(lambda group: bool(protein_query) and
+                          any(member.strip().lower() == protein_query for member in group))
+    protein_data = data[matches]
     if protein_data.empty:
         raise ValueError(f"No data found for protein '{protein}'")
 

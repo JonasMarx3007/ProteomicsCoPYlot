@@ -190,6 +190,7 @@ def test_generate_endpoint_detects_after_condition_mapping() -> None:
         "minPercentage": 70.0,
         "mode": "per_group",
         "normalization": "none",
+        "normalizationFit": "filtered_rows",
     }
     assert any("selected sample column" in warning for warning in payload["warnings"])
 

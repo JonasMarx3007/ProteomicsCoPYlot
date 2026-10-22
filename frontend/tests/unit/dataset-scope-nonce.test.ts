@@ -24,7 +24,7 @@ const MUST_BUMP = [
   "uploadDataset", "saveTableDatasetPath", "importRestoreState", "savePeptidePath", "uploadPeptideFile",
   "createDatasetPackage", "renameDatasetPackage", "setActiveDatasetPackage", "createMetadataProfile",
   "deleteMetadataProfile", "renameMetadataProfile", "setActiveMetadataProfile", "updateAnnotationPairing",
-  "uploadAnnotationMetadata", "generateAnnotation", "runImputation", "aggregatePhosprot", "setConditionPalette",
+  "uploadAnnotationMetadata", "generateAnnotation", "runImputation", "aggregatePhosprot", "uploadPhosprotMatrix", "setConditionPalette",
   "generatePeptideMetadata",
 ] as const;
 

@@ -30,8 +30,9 @@ def pathway_source():
     prepare = prepare.replace('_extract_id_or_number(', 'extract_sample_id(')
     render = ('def render_plot(heatmap_data, total_genes, color_label, *, pathway, value_type, header, '
               'width_cm, height_cm, dpi, advanced=None):\n    plt = get_plt()\n' + function[boundary:])
-    helpers = '\n\n'.join(function_definition(original, name) for name in (
-        '_aggregate_pathway_gene_values', '_gene_tokens', '_wrapped_title'))
+    helpers = '\n\n'.join([function_definition(module_source('_core.py'), 'split_tokens'),
+        *(function_definition(original, name) for name in (
+        '_aggregate_pathway_gene_values', '_gene_tokens', '_wrapped_title'))])
     code = merge_source('import numpy as np\nimport pandas as pd\n'
         'from scipy.cluster.hierarchy import leaves_list, linkage\nfrom scipy.spatial.distance import pdist',
         extract_notebook_source(ora_source().code, ('get_plt', 'to_png_bytes', 'cm_to_inch',

@@ -148,12 +148,17 @@ function normalizeEntry(entry: SummaryVolcanoEntry): SummaryVolcanoEntry {
     highlightTerms: [...entry.highlightTerms].map((item) => item.trim()).filter(Boolean),
     condition1Control: entry.condition1Control ?? null,
     condition2Control: entry.condition2Control ?? null,
+    proteinCorrection: Boolean(entry.proteinCorrection),
     renderType,
     // The label counts only reach the static renderer, so an interactive entry
     // stores zeros and two entries that differ only in a setting neither of
     // them uses stay one entry.
     labelTopUp: renderType === "Normal" ? normalizeLabelCount(entry.labelTopUp) : 0,
     labelTopDown: renderType === "Normal" ? normalizeLabelCount(entry.labelTopDown) : 0,
+    // Without highlight terms neither switch draws anything, so two entries
+    // that differ only there stay one entry; labels are a static-only choice.
+    highlightOutline: entry.highlightTerms.length ? entry.highlightOutline !== false : true,
+    highlightLabels: entry.highlightTerms.length && renderType === "Normal" ? Boolean(entry.highlightLabels) : false,
   };
 }
 
@@ -170,6 +175,9 @@ function isSameVolcanoEntry(a: SummaryVolcanoEntry, b: SummaryVolcanoEntry): boo
   if (left.identifier !== right.identifier) return false;
   if (left.testType !== right.testType) return false;
   if (left.useUncorrected !== right.useUncorrected) return false;
+  if (Boolean(left.proteinCorrection) !== Boolean(right.proteinCorrection)) return false;
+  if (left.highlightOutline !== right.highlightOutline) return false;
+  if (left.highlightLabels !== right.highlightLabels) return false;
   if (left.pValueThreshold !== right.pValueThreshold) return false;
   if (left.log2fcThreshold !== right.log2fcThreshold) return false;
   if (left.renderType !== right.renderType) return false;

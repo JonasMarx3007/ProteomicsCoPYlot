@@ -1015,6 +1015,30 @@
             "default": null,
             "title": "Volcanohighlightcolor"
           },
+          "volcanoHighlightLegend": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Volcanohighlightlegend"
+          },
+          "volcanoHighlightLegendLabel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Volcanohighlightlegendlabel"
+          },
           "volcanoHighlightSize": {
             "anyOf": [
               {
@@ -1509,6 +1533,11 @@
             "title": "Pvaluethreshold",
             "type": "number"
           },
+          "proteinCorrection": {
+            "default": false,
+            "title": "Proteincorrection",
+            "type": "boolean"
+          },
           "source": {
             "default": "volcano",
             "enum": [
@@ -1523,7 +1552,11 @@
             "enum": [
               "unpaired",
               "unpaired_welch",
-              "paired"
+              "paired",
+              "moderated",
+              "moderated_robust",
+              "moderated_paired",
+              "moderated_robust_paired"
             ],
             "title": "Testtype",
             "type": "string"
@@ -1657,6 +1690,15 @@
               "vsn"
             ],
             "title": "Normalization",
+            "type": "string"
+          },
+          "normalizationFit": {
+            "default": "filtered_rows",
+            "enum": [
+              "filtered_rows",
+              "complete_features"
+            ],
+            "title": "Normalizationfit",
             "type": "string"
           }
         },
@@ -1846,6 +1888,45 @@
           }
         },
         "title": "AnnotationImputationInfo",
+        "type": "object"
+      },
+      "AnnotationNormalizeRequest": {
+        "description": "The second step of the annotation: a normalization for an annotation that exists.\n\nFiltering and normalization are two steps on the page since 2026-10-20: the\nfilter is applied first and decides the rows, then this applies (or removes,\nwith \"none\") a normalization fitted on those rows. The stored filter\nsettings, conditions and metadata are reused as they are.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "protein",
+              "phospho",
+              "phosprot"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "normalization": {
+            "default": "none",
+            "enum": [
+              "none",
+              "median",
+              "quantile",
+              "vsn"
+            ],
+            "title": "Normalization",
+            "type": "string"
+          },
+          "normalizationFit": {
+            "default": "filtered_rows",
+            "enum": [
+              "filtered_rows",
+              "complete_features"
+            ],
+            "title": "Normalizationfit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "AnnotationNormalizeRequest",
         "type": "object"
       },
       "AnnotationResultResponse": {
@@ -2713,17 +2794,6 @@
               }
             ],
             "title": "Packagename"
-          },
-          "sourcePath": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sourcepath"
           }
         },
         "required": [
@@ -2756,6 +2826,25 @@
           "file"
         ],
         "title": "Body_upload_peptide_file_api_datasets_peptide_file_post",
+        "type": "object"
+      },
+      "Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "isLog2Transformed": {
+            "default": "",
+            "title": "Islog2Transformed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post",
         "type": "object"
       },
       "ChatMessage": {
@@ -3516,7 +3605,11 @@
             "enum": [
               "unpaired",
               "unpaired_welch",
-              "paired"
+              "paired",
+              "moderated",
+              "moderated_robust",
+              "moderated_paired",
+              "moderated_robust_paired"
             ],
             "title": "Testtype",
             "type": "string"
@@ -5358,15 +5451,25 @@
         "type": "object"
       },
       "PhosphoLocalizationCutoffResponse": {
-        "description": "The session-wide phosphosite localization probability cutoff.\n\n`available` says whether the loaded phosphosite table has a\nPTM_localization column the cutoff can act on.",
+        "description": "The session-wide phosphosite localization probability cutoff.\n\n`available` says whether the loaded phosphosite table has a\nPTM_localization column the cutoff can act on. `belowClassOne` counts the\nsites whose probability is under 0.75 (the class I threshold), out of\n`sites`, so a page can say how many non-class I sites a lower cutoff\nadmits.",
         "properties": {
           "available": {
             "title": "Available",
             "type": "boolean"
           },
+          "belowClassOne": {
+            "default": 0,
+            "title": "Belowclassone",
+            "type": "integer"
+          },
           "cutoff": {
             "title": "Cutoff",
             "type": "number"
+          },
+          "sites": {
+            "default": 0,
+            "title": "Sites",
+            "type": "integer"
           }
         },
         "required": [
@@ -5407,6 +5510,30 @@
           }
         },
         "title": "PhosprotAggregateRequest",
+        "type": "object"
+      },
+      "ProteinCorrectionOptions": {
+        "description": "Whether phosphosite changes can be corrected for protein abundance here:\na protein dataset with an annotation sits in the same package, and these\nare the data sources both datasets hold (the correction mirrors the source).",
+        "properties": {
+          "available": {
+            "default": false,
+            "title": "Available",
+            "type": "boolean"
+          },
+          "dataSources": {
+            "items": {
+              "enum": [
+                "data",
+                "filtered",
+                "imputed"
+              ],
+              "type": "string"
+            },
+            "title": "Datasources",
+            "type": "array"
+          }
+        },
+        "title": "ProteinCorrectionOptions",
         "type": "object"
       },
       "ProviderDefaultsResponse": {
@@ -5480,6 +5607,11 @@
               }
             ],
             "title": "Detectedfrom"
+          },
+          "diagnosticsHidden": {
+            "default": false,
+            "title": "Diagnosticshidden",
+            "type": "boolean"
           },
           "error": {
             "anyOf": [
@@ -5734,6 +5866,11 @@
             "title": "Pvaluethreshold",
             "type": "number"
           },
+          "proteinCorrection": {
+            "default": false,
+            "title": "Proteincorrection",
+            "type": "boolean"
+          },
           "sampleSizeOverride": {
             "default": 0,
             "maximum": 100.0,
@@ -5964,6 +6101,9 @@
             "title": "Pairidsbysample",
             "type": "object"
           },
+          "proteinCorrection": {
+            "$ref": "#/components/schemas/ProteinCorrectionOptions"
+          },
           "samplesByCondition": {
             "additionalProperties": {
               "items": {
@@ -6000,6 +6140,50 @@
           "availableIdentifiers"
         ],
         "title": "StatisticalOptionsResponse",
+        "type": "object"
+      },
+      "StatisticsCapabilityResponse": {
+        "description": "Statistical tests this installation can actually run.\n\n`testTypes` includes the four moderated (limma) tests only when Rscript and\nthe Bioconductor package are both present, as `methods` does for VSN.",
+        "properties": {
+          "limmaPackageVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limmapackageversion"
+          },
+          "moderatedAvailable": {
+            "title": "Moderatedavailable",
+            "type": "boolean"
+          },
+          "moderatedUnavailableReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moderatedunavailablereason"
+          },
+          "testTypes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Testtypes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "testTypes",
+          "moderatedAvailable"
+        ],
+        "title": "StatisticsCapabilityResponse",
         "type": "object"
       },
       "SummaryMetadataTable": {
@@ -6255,6 +6439,16 @@
             "title": "Datasource",
             "type": "string"
           },
+          "highlightLabels": {
+            "default": false,
+            "title": "Highlightlabels",
+            "type": "boolean"
+          },
+          "highlightOutline": {
+            "default": true,
+            "title": "Highlightoutline",
+            "type": "boolean"
+          },
           "highlightTerms": {
             "items": {
               "type": "string"
@@ -6304,6 +6498,11 @@
             "title": "Pvaluethreshold",
             "type": "number"
           },
+          "proteinCorrection": {
+            "default": false,
+            "title": "Proteincorrection",
+            "type": "boolean"
+          },
           "renderType": {
             "default": "Interactive",
             "enum": [
@@ -6318,7 +6517,11 @@
             "enum": [
               "unpaired",
               "unpaired_welch",
-              "paired"
+              "paired",
+              "moderated",
+              "moderated_robust",
+              "moderated_paired",
+              "moderated_robust_paired"
             ],
             "title": "Testtype",
             "type": "string"
@@ -6907,12 +7110,21 @@
             "title": "Pvaluethreshold",
             "type": "number"
           },
+          "proteinCorrection": {
+            "default": false,
+            "title": "Proteincorrection",
+            "type": "boolean"
+          },
           "testType": {
             "default": "unpaired",
             "enum": [
               "unpaired",
               "unpaired_welch",
-              "paired"
+              "paired",
+              "moderated",
+              "moderated_robust",
+              "moderated_paired",
+              "moderated_robust_paired"
             ],
             "title": "Testtype",
             "type": "string"
@@ -6991,12 +7203,21 @@
             "title": "Pvaluethreshold",
             "type": "number"
           },
+          "proteinCorrection": {
+            "default": false,
+            "title": "Proteincorrection",
+            "type": "boolean"
+          },
           "testType": {
             "default": "unpaired",
             "enum": [
               "unpaired",
               "unpaired_welch",
-              "paired"
+              "paired",
+              "moderated",
+              "moderated_robust",
+              "moderated_paired",
+              "moderated_robust_paired"
             ],
             "title": "Testtype",
             "type": "string"
@@ -7332,6 +7553,7 @@
     },
     "/api/annotations/generate": {
       "post": {
+        "description": "The filter step. A `filter.normalization` is honoured for saved sessions\nand viewer configs, which carry the whole config; the page itself applies\nthe normalization afterwards through `/normalize`.",
         "operationId": "generate_annotation_api_annotations_generate_post",
         "requestBody": {
           "content": {
@@ -7545,6 +7767,48 @@
         ]
       }
     },
+    "/api/annotations/normalize": {
+      "post": {
+        "description": "The normalization step: recompute the stored annotation with another\nnormalization, fitted on the rows its filter kept. \"none\" removes it.\nImputed data, which were drawn from the previous values, are discarded.",
+        "operationId": "normalize_annotation_api_annotations_normalize_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnnotationNormalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Normalize Annotation",
+        "tags": [
+          "annotations"
+        ]
+      }
+    },
     "/api/annotations/pairing": {
       "put": {
         "operationId": "update_pairing_api_annotations_pairing_put",
@@ -7622,6 +7886,48 @@
           }
         },
         "summary": "Aggregate Phosprot Annotation",
+        "tags": [
+          "annotations"
+        ]
+      }
+    },
+    "/api/annotations/phosprot/upload": {
+      "post": {
+        "description": "The alternative to collapsing: a phosphoprotein matrix made earlier (for\nexample this tool's own download, or another tool's collapse) becomes the\ncurrent phosphoprotein data, on the phospho annotation's sample sheet and\nfilter.",
+        "operationId": "upload_phosprot_annotation_api_annotations_phosprot_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_phosprot_annotation_api_annotations_phosprot_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Phosprot Annotation",
         "tags": [
           "annotations"
         ]
@@ -12028,6 +12334,16 @@
               "title": "Organism",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -12355,6 +12671,16 @@
           },
           {
             "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "snapshot",
             "required": false,
             "schema": {
@@ -12495,6 +12821,16 @@
               ],
               "title": "Datasource",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
             }
           },
           {
@@ -16182,7 +16518,11 @@
               "enum": [
                 "unpaired",
                 "unpaired_welch",
-                "paired"
+                "paired",
+                "moderated",
+                "moderated_robust",
+                "moderated_paired",
+                "moderated_robust_paired"
               ],
               "title": "Testtype",
               "type": "string"
@@ -16776,6 +17116,16 @@
           },
           {
             "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "advanced",
             "required": false,
             "schema": {
@@ -16829,6 +17179,16 @@
               ],
               "title": "Kind",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "highlightOutline",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Highlightoutline",
+              "type": "boolean"
             }
           },
           {
@@ -16935,7 +17295,11 @@
               "enum": [
                 "unpaired",
                 "unpaired_welch",
-                "paired"
+                "paired",
+                "moderated",
+                "moderated_robust",
+                "moderated_paired",
+                "moderated_robust_paired"
               ],
               "title": "Testtype",
               "type": "string"
@@ -16959,6 +17323,16 @@
               "default": "",
               "title": "Highlightterms",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
             }
           }
         ],
@@ -17026,6 +17400,26 @@
               "default": 0,
               "title": "Labeltopdown",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "highlightOutline",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Highlightoutline",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "highlightLabels",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Highlightlabels",
+              "type": "boolean"
             }
           },
           {
@@ -17162,7 +17556,11 @@
               "enum": [
                 "unpaired",
                 "unpaired_welch",
-                "paired"
+                "paired",
+                "moderated",
+                "moderated_robust",
+                "moderated_paired",
+                "moderated_robust_paired"
               ],
               "title": "Testtype",
               "type": "string"
@@ -17186,6 +17584,16 @@
               "default": "",
               "title": "Highlightterms",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
             }
           }
         ],
@@ -17289,6 +17697,16 @@
           },
           {
             "in": "query",
+            "name": "highlightOutline",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Highlightoutline",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "advanced",
             "required": false,
             "schema": {
@@ -17373,7 +17791,11 @@
               "enum": [
                 "unpaired",
                 "unpaired_welch",
-                "paired"
+                "paired",
+                "moderated",
+                "moderated_robust",
+                "moderated_paired",
+                "moderated_robust_paired"
               ],
               "title": "Testtype",
               "type": "string"
@@ -17397,6 +17819,16 @@
               "default": "",
               "title": "Highlightterms",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
             }
           }
         ],
@@ -17465,6 +17897,26 @@
               "default": 0,
               "title": "Labeltopdown",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "highlightOutline",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Highlightoutline",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "highlightLabels",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Highlightlabels",
+              "type": "boolean"
             }
           },
           {
@@ -17583,7 +18035,11 @@
               "enum": [
                 "unpaired",
                 "unpaired_welch",
-                "paired"
+                "paired",
+                "moderated",
+                "moderated_robust",
+                "moderated_paired",
+                "moderated_robust_paired"
               ],
               "title": "Testtype",
               "type": "string"
@@ -17607,6 +18063,16 @@
               "default": "",
               "title": "Highlightterms",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proteinCorrection",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Proteincorrection",
+              "type": "boolean"
             }
           }
         ],
@@ -17864,6 +18330,50 @@
           }
         },
         "summary": "R Runtime Status Route",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime/statistics": {
+      "get": {
+        "description": "Which volcano test types this installation can actually run.\n\nThe moderated t-tests are delegated to Bioconductor `limma`, so they are\nonly offered when Rscript and the package are both present; the UI hides\nthem otherwise, as it hides VSN.",
+        "operationId": "statistics_capability_route_api_runtime_statistics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticsCapabilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Statistics Capability Route",
         "tags": [
           "runtime"
         ]

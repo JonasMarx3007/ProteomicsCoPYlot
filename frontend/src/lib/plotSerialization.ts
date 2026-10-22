@@ -205,6 +205,11 @@ export function compactAdvancedPlotSettings(
   // so `true` is the backend's own default and costs a key for nothing.
   if (settings.referenceLineVisible === false) next.referenceLineVisible = false;
   if (settings.referenceLineLegend === false) next.referenceLineLegend = false;
+  // The highlight ring's legend entry is drawn unless switched off; its label
+  // only matters when it differs from the default.
+  if (settings.volcanoHighlightLegend === false) next.volcanoHighlightLegend = false;
+  const highlightLegendLabel = trimmed(settings.volcanoHighlightLegendLabel);
+  if (highlightLegendLabel) next.volcanoHighlightLegendLabel = highlightLegendLabel;
   const referenceLineStyle = trimmed(settings.referenceLineStyle);
   if (referenceLineStyle) next.referenceLineStyle = referenceLineStyle;
   if (positive(settings.referenceLineWidth)) {

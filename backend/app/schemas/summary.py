@@ -35,6 +35,7 @@ class SummaryVolcanoEntry(BaseModel):
     log2fcThreshold: float = 1.0
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
+    proteinCorrection: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
     # Which renderer this comparison was added with. Per entry rather than per
     # report, because the choice is about what a particular figure is for: a
@@ -47,6 +48,10 @@ class SummaryVolcanoEntry(BaseModel):
     # Interactive, where hovering a point names it.
     labelTopUp: int = Field(default=0, ge=0, le=200)
     labelTopDown: int = Field(default=0, ge=0, le=200)
+    # What the highlight terms draw: a ring (both renderers) and/or a text
+    # label placed like the top hits (static renderer only).
+    highlightOutline: bool = True
+    highlightLabels: bool = False
 
 
 class SummaryReportContext(BaseModel):

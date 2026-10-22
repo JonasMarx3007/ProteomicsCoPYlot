@@ -97,6 +97,10 @@ jobs:
         working-directory: source
         shell: bash
         run: |
+          test -f backend/requirements-runtime-hashed.lock || {
+            echo 'Select a reviewed source_commit containing requirements-runtime-hashed.lock.'
+            exit 1
+          }
           if [[ "$ARCH" == x86_64 ]]; then
             # PyPI no longer provides Intel macOS wheels for these two packages.
             # Read their exact versions from the selected application's lock.
@@ -108,7 +112,9 @@ jobs:
           else
             python -m venv backend/.venv
           fi
-          backend/.venv/bin/python -m pip install --only-binary=numba,llvmlite -r backend/requirements-runtime.lock
+          # Conda packages already installed on Intel are not verified by pip hashes.
+          # Every package pip downloads must match the committed hash lock.
+          backend/.venv/bin/python -m pip install --require-hashes --only-binary=numba,llvmlite -r backend/requirements-runtime-hashed.lock
           backend/.venv/bin/python -m pip check
           npm ci --prefix frontend
 

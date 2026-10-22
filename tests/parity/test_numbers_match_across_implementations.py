@@ -1,7 +1,7 @@
 """The app, the pip package and the R functions compute the same numbers.
 
 `test_cross_implementation.py` covers the statistics (volcano, ANOVA, Tukey,
-KSEA, normalization, filtering). This file covers what it did not:
+Kinase Library, normalization, filtering). This file covers what it did not:
 
 - PCA scores and explained variance, centred and with unit-variance scaling;
 - the sample correlation matrix;

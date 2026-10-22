@@ -28,7 +28,7 @@ test('a late missing stored annotation does not reset a newer scale detection', 
   await expect(page.getByLabel('Dataset is already log2 transformed')).not.toBeChecked();
   for (const route of pending) await route.fulfill({ status: 404, json: { detail: 'No annotation' } });
   const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
-  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filter', exact: true }).click();
   expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
 });
 
@@ -49,7 +49,7 @@ test('manual scale survives mapping edits and an in-flight detection', async ({ 
   // process-global, and a generation still running when the next test
   // uploads its dataset races with that upload.
   const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
-  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filter', exact: true }).click();
   expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
 });
 
@@ -72,7 +72,7 @@ test('a superseded automatic detection cannot overwrite the latest selection', a
   // process-global, and a generation still running when the next test
   // uploads its dataset races with that upload.
   const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
-  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filter', exact: true }).click();
   expect((await generated).request().postDataJSON().isLog2Transformed).toBe(false);
 });
 
@@ -81,7 +81,7 @@ test('conflicting manual conditions show an error and preserve the previous anno
   await page.getByLabel('Sample columns', { exact: true }).selectOption(['A1', 'A2']);
   await page.getByLabel('Minimum valid values', { exact: true }).fill('1');
   const generated = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
-  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filter', exact: true }).click();
   expect((await generated).ok()).toBeTruthy();
   const request = tabRequest(page);
   const before = await (await request.get('/api/annotations/current/protein')).json();
@@ -89,7 +89,7 @@ test('conflicting manual conditions show an error and preserve the previous anno
   await page.getByLabel('Condition name', { exact: true }).last().fill('B');
   await page.getByLabel('Sample columns', { exact: true }).last().selectOption(['A1']);
   const rejected = page.waitForResponse(r => r.url().endsWith('/api/annotations/generate'));
-  await page.getByRole('button', { name: 'Generate Annotation', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filter', exact: true }).click();
   expect((await rejected).status()).toBe(400);
   await expect(page.getByText("Sample 'A1' is assigned more than once.", { exact: false })).toBeVisible();
   expect(await (await request.get('/api/annotations/current/protein')).json()).toEqual(before);

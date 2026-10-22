@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.services.runtime_cache import invalidate_runtime_cache
 from app.services.session_context import get_session_id
+from app.services.temp_file_lifecycle import retain_temp_file
 from app.schemas.annotation import PhosprotLineage, IdentifierTranslationStep
 
 DatasetKind = Literal["protein", "phospho", "phosprot", "peptide"]
@@ -25,12 +26,18 @@ class StoredTableDataset:
     phosprot_lineage: PhosprotLineage | None = None
     id_translations: list[IdentifierTranslationStep] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        retain_temp_file(self, self.source_path)
+
 
 @dataclass
 class StoredPeptideDataset:
     filename: str
     kind: Literal["peptide"]
     path: str
+
+    def __post_init__(self) -> None:
+        retain_temp_file(self, self.path)
 
 
 @dataclass

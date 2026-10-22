@@ -104,6 +104,9 @@ export type AdvancedPlotSettings = {
   volcanoNsColor?: string;
   volcanoHighlightSize?: number;
   volcanoHighlightColor?: string;
+  // The ring's own legend entry (default on) and its text (default "Highlighted").
+  volcanoHighlightLegend?: boolean;
+  volcanoHighlightLegendLabel?: string;
   volcanoLabelSize?: number;
   // Colours that used to be pickers in a plot's own options row.
   barColor?: string;
@@ -161,6 +164,16 @@ export type PairingUpdateRequest = {
 };
 
 export type NormalizationMethod = "none" | "median" | "quantile" | "vsn";
+/**
+ * Which rows a normalization is learned from (it is applied to every row).
+ * "filtered_rows" is the field's practice; "complete_features" (features
+ * observed in every sample) removes the shift uneven missingness leaves.
+ */
+export type NormalizationFit = "filtered_rows" | "complete_features";
+export const NORMALIZATION_FIT_LABELS: Record<NormalizationFit, string> = {
+  filtered_rows: "Filtered rows",
+  complete_features: "Features observed in every sample",
+};
 
 /**
  * Which normalization methods this installation can run. VSN is delegated to
@@ -168,14 +181,18 @@ export type NormalizationMethod = "none" | "median" | "quantile" | "vsn";
  * offered when R and the package are both present.
  */
 export type NormalizationCapabilityResponse = Served<Schemas["NormalizationCapabilityResponse"]>;
+/** Which volcano test types this installation can run; the moderated ones need R + limma. */
+export type StatisticsCapabilityResponse = Served<Schemas["StatisticsCapabilityResponse"]>;
 
 export type AnnotationFilterConfig = {
   method: FilterMethod;
   minPresent: number;
   minPercentage: number;
   mode: FilterMode;
-  /** Applied globally to the log2 values before filtering; never per condition. */
+  /** Applied globally to the log2 values; never per condition. Applied as its own step after the filter. */
   normalization: NormalizationMethod;
+  /** The rows the normalization is learned from. */
+  normalizationFit: NormalizationFit;
 };
 
 export type AnnotationGenerateRequest = {
@@ -410,11 +427,17 @@ export type StatsIdentifier = "workflow" | "genes";
 /**
  * Independent samples: pooled Student's t or unequal-variance Welch.
  * Paired samples: a t-test on matched within-pair differences.
+ * The four moderated types run in R limma and are offered only where
+ * GET /api/runtime/statistics says the installation can run them.
  */
 export type StatsTestType =
   | "unpaired"
   | "unpaired_welch"
-  | "paired";
+  | "paired"
+  | "moderated"
+  | "moderated_robust"
+  | "moderated_paired"
+  | "moderated_robust_paired";
 export type SimulationTestType = "unpaired" | "unpaired_welch";
 export type AnovaSource = "anova" | "anova_cluster";
 export type AnovaPostHoc = "none" | "tukey";
@@ -451,8 +474,15 @@ export type VolcanoRequest = {
   log2fcThreshold: number;
   testType: StatsTestType;
   useUncorrected: boolean;
+  // Phosphosites only: subtract the protein-level change of the same
+  // comparison (needs a protein dataset in the package with accessions).
+  proteinCorrection?: boolean;
   highlightTerms: string[];
 };
+
+/** The protein-correction choice a phosphosite panel offers: nothing unless a
+ * protein dataset is loaded, and then only the data sources both datasets hold. */
+export type ProteinCorrectionOptions = Served<Schemas["ProteinCorrectionOptions"]>;
 
 export type VolcanoControlRequest = VolcanoRequest & {
   condition1Control: string;
@@ -537,6 +567,7 @@ export type SimulationRequest = {
   log2fcThreshold: number;
   testType: SimulationTestType;
   useUncorrected: boolean;
+  proteinCorrection?: boolean;
   varianceMultiplier: number;
   sampleSizeOverride: number;
 };
@@ -558,6 +589,7 @@ export type AnalysisVolcanoRequest = {
   log2fcThreshold: number;
   testType: StatsTestType;
   useUncorrected: boolean;
+  proteinCorrection?: boolean;
 };
 
 export type AnalysisVolcanoPoint = {
@@ -606,6 +638,7 @@ export type PhosphoOptionsResponse = {
   imputedAvailable: boolean;
   availableDataSources: DataSource[];
   defaultDataSource: DataSource;
+  proteinCorrection?: ProteinCorrectionOptions;
 };
 
 export type PhosphoTableResponse = {
@@ -681,12 +714,17 @@ export type SummaryVolcanoEntry = {
   log2fcThreshold: number;
   testType: StatsTestType;
   useUncorrected: boolean;
+  proteinCorrection?: boolean;
   highlightTerms: string[];
   // Captured when the entry is added, so the report renders each comparison the
   // way it was being looked at.
   renderType?: VolcanoRenderType;
   labelTopUp?: number;
   labelTopDown?: number;
+  // What the highlight terms draw: a ring (both renderers) and/or text
+  // labels placed like the top hits (static renderer only).
+  highlightOutline?: boolean;
+  highlightLabels?: boolean;
 };
 
 export type SummaryReportContext = {

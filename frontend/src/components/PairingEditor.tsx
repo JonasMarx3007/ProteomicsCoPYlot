@@ -128,9 +128,17 @@ export default function PairingEditor({
   const excludedLeft = leftSamples.length - chosenCount;
   const excludedRight = rightSamples.length - chosenCount;
   const excludedCount = excludedLeft + excludedRight;
-  const conditionCount = Object.values(samplesByCondition).filter(
-    (samples) => samples.length > 0
-  ).length;
+  // Other conditions that share a pair ID with a sample here: those links are
+  // kept by a save, and an edit that would break one is refused by the backend.
+  const linkedConditions = useMemo(() => {
+    const here = new Set([...leftSamples, ...rightSamples]);
+    const ids = new Set([...here].map((sample) => pairIdsBySample[sample]).filter(Boolean));
+    return Object.entries(samplesByCondition)
+      .filter(([condition, samples]) =>
+        condition !== condition1 && condition !== condition2 &&
+        samples.some((sample) => ids.has(pairIdsBySample[sample])))
+      .map(([condition]) => condition);
+  }, [leftSamples, rightSamples, pairIdsBySample, samplesByCondition, condition1, condition2]);
 
   return (
     <div className="mt-4 overflow-hidden rounded-2xl border border-indigo-200 bg-indigo-50/60">
@@ -145,10 +153,10 @@ export default function PairingEditor({
           <p className="mt-1 text-xs text-slate-500">
             Saving updates the active metadata pairing used by every paired analysis module.
           </p>
-          {conditionCount > 2 ? (
+          {linkedConditions.length > 0 ? (
             <p className="mt-1 text-xs text-amber-700">
-              Pair IDs are shared across conditions. Saving this mapping also updates later paired
-              comparisons that use these samples.
+              Some samples here share pair IDs with {linkedConditions.join(", ")}. Those links are
+              kept; a change that would break one is refused.
             </p>
           ) : null}
         </div>
