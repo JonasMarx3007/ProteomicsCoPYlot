@@ -114,8 +114,9 @@ def peptide_modification_counts(
 
 
 
-def _peptide_dataset_path() -> Path:
-    stored = get_current_dataset("peptide")
+def _peptide_dataset_path(stored=None) -> Path:
+    if stored is None:
+        stored = get_current_dataset("peptide")
     if stored is None or not hasattr(stored, "path"):
         raise ValueError("No peptide dataset path is currently loaded. Upload a peptide dataset path first.")
     path = Path(str(stored.path)).expanduser()
@@ -136,7 +137,10 @@ def _load_peptide_frame_cached(path_str: str, modified_ns: int) -> pd.DataFrame:
 
 
 def get_peptide_frame() -> pd.DataFrame:
-    path = _peptide_dataset_path()
+    # Retain the dataset while reading: session expiry must not release its file
+    # between resolving the path and opening it.
+    stored = get_current_dataset("peptide")
+    path = _peptide_dataset_path(stored)
     stat = path.stat()
     return _load_peptide_frame_cached(str(path), stat.st_mtime_ns).copy()
 

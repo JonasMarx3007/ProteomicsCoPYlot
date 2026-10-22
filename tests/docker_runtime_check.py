@@ -135,6 +135,12 @@ def main(image):
                 params = {"kind": "protein", "condition1": "A", "condition2": "B", "testType": "unpaired_welch"}
                 before = check(a, "POST", "/api/stats/volcano/run", json=params).json()
                 assert before["totalRows"] == 100
+                assert check(a, "GET", "/api/runtime/statistics").json()["moderatedAvailable"]
+                for test_type in ("moderated", "moderated_robust", "moderated_paired", "moderated_robust_paired"):
+                    moderated = check(a, "POST", "/api/stats/volcano/run", json={**params, "testType": test_type}).json()
+                    assert moderated["totalRows"] == 100
+                    assert all(row["pval"] is not None for row in moderated["rows"])
+
                 assert a.post("/api/datasets/table-path", json={"kind": "protein", "path": "/etc/passwd"}, headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
                 check(b, "POST", "/api/tool/auth/logout")
                 assert b.get("/api/datasets/current").status_code == 401

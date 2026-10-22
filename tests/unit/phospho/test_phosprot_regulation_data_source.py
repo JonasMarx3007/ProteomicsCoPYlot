@@ -4,7 +4,7 @@ It sums significant phosphosite log2 fold changes from a volcano it computes
 itself. That volcano was hard-wired to the unfiltered, non-imputed matrix while
 the Statistics volcano offers data / filtered / imputed, so the two could
 disagree on which sites are significant. The regulation routes (HTML, table;
-the unused PNG route was removed on 2026-10-02) and KSEA now take `dataSource`, the page sends one shared choice
+the unused PNG route was removed on 2026-10-02) and Kinase Library now take `dataSource`, the page sends one shared choice
 for both, and `_volcano_dataframe` reports the source it was given instead of
 stamping every override frame "filtered". The page half is
 frontend/tests/unit/phosprot-regulation-data-source.test.tsx.

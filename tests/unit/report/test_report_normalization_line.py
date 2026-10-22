@@ -4,7 +4,7 @@ The normalization sentence used to be the tail of the filtering description, so
 a plot on the unfiltered "Data" source -- every QC plot -- was headed
 "Filtering: Not applied to this plot. ... Samples were median-centred ...",
 which reads as though the centring was skipped too. It never is: normalization
-runs on the whole log2 matrix before any row filter.
+is fitted on the filtered rows and applied to the whole log2 matrix.
 """
 
 from __future__ import annotations

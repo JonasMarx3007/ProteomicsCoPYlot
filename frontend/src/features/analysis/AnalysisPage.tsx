@@ -5,7 +5,7 @@ import { linkedConditionsParam } from "./linkedConditions";
 import { resizeHandleClass, useResizablePanel } from "../../lib/useResizablePanel";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AssistantSelect, AssistantTextarea, AssistantCanvasButton } from "../../components/AssistantFields";
-import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
+import { restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType, useTestTypeOptions, PAIRED_TEST_TYPES } from "../../lib/statisticalTests";
 import PairingEditor from "../../components/PairingEditor";
 import AdvancedPlotOptions from "../../components/plots/AdvancedPlotOptions";
 import { PLOT_DOWNLOAD_FORMAT_OPTIONS, withPlotDownloadFormat, type PlotDownloadFormat } from "../../lib/plotDownload";
@@ -28,6 +28,8 @@ import { readPersistedUiState, writePersistedUiState } from "../../lib/persisted
 import { useCanvasFocus } from "../../lib/canvasFocus";
 import SelectField from "../../components/SelectField";
 import NumberField from "../../components/NumberField";
+import CheckboxField from "../../components/CheckboxField";
+import { PROTEIN_CORRECTION_LABEL } from "../../lib/proteinCorrection";
 import TextField from "../../components/TextField";
 import type { ContextMode, EnrichmentOrganism } from "../../lib/types";
 import LocalizationCutoffField from "../../components/LocalizationCutoffField";
@@ -49,6 +51,9 @@ type VolcanoSettings = {
   pValueThreshold: number;
   log2fcThreshold: number;
   pValueMode: PValueMode;
+  // Phosphosites with a protein dataset in the package: subtract the protein
+  // change of the same comparison. Sent only when the page can honour it.
+  proteinCorrection: boolean;
 };
 
 type VolcanoControlSettings = VolcanoSettings & {
@@ -144,6 +149,7 @@ function restoredVolcanoSettings(value: unknown, control: boolean): VolcanoContr
     pValueThreshold: asNumber(saved.pValueThreshold, 0.05),
     log2fcThreshold: asNumber(saved.log2fcThreshold, 1),
     pValueMode: saved.pValueMode === "uncorrected" ? "uncorrected" : "corrected",
+    proteinCorrection: saved.proteinCorrection === true,
   };
 }
 
@@ -394,7 +400,9 @@ export default function AnalysisPage({
     key: string; data: AnalysisVolcanoResponse | null; error?: string;
   }>>({});
   const requestKey = (tile: Extract<AnalysisTile, { settings: VolcanoControlSettings }>) =>
-    JSON.stringify({ revision, kind, identifier, ...tile.settings, source: tile.type });
+    JSON.stringify({ revision, kind, identifier, ...tile.settings,
+      proteinCorrection: kind === "phospho" && Boolean(options?.proteinCorrection?.available) && tile.settings.proteinCorrection,
+      source: tile.type });
   const visibleResult = (tile: Extract<AnalysisTile, { settings: VolcanoControlSettings }>) =>
     tileResults[tile.id]?.key === requestKey(tile) ? tileResults[tile.id] : undefined;
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -452,15 +460,21 @@ export default function AnalysisPage({
   const listPanel = useResizablePanel("layout.listWidth.v1", 320, "protein list panel");
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
+  // The correction is a phosphosite setting; a tile restored on another level
+  // keeps the flag but does not send it.
+  const proteinCorrectionOffered = kind === "phospho" && Boolean(options?.proteinCorrection?.available);
+  const proteinCorrectionActive = (settings: VolcanoSettings) => proteinCorrectionOffered && settings.proteinCorrection;
   function conditionsValid(settings: VolcanoControlSettings, control: boolean) {
     const conditions = control
       ? [settings.condition1, settings.condition2, settings.condition1Control, settings.condition2Control]
       : [settings.condition1, settings.condition2];
-    const offered = options?.availableDataSources ?? ["data"];
+    const offered = proteinCorrectionActive(settings)
+      ? options?.proteinCorrection?.dataSources ?? []
+      : options?.availableDataSources ?? ["data"];
     return offered.includes(settings.dataSource) &&
       conditions.every(value => options?.availableConditions.includes(value)) &&
       new Set(conditions).size === conditions.length &&
-      (settings.testType !== "paired" || pairingIsReady(settings.condition1, settings.condition2,
+      (!PAIRED_TEST_TYPES.includes(settings.testType) || pairingIsReady(settings.condition1, settings.condition2,
         options?.samplesByCondition ?? {}, options?.pairIdsBySample ?? {}));
   }
 
@@ -491,7 +505,8 @@ export default function AnalysisPage({
   }, [kind, kindAvailable, revision]);
 
   const volcanoRequests = JSON.stringify(tiles.filter(tile => "settings" in tile)
-    .map(tile => ({ id: tile.id, type: tile.type, settings: tile.settings,
+    .map(tile => ({ id: tile.id, type: tile.type,
+      settings: { ...tile.settings, proteinCorrection: proteinCorrectionActive(tile.settings) },
       valid: conditionsValid(tile.settings, tile.type === "volcanoControl"), key: requestKey(tile) })));
   const tileRequests = useRef(new Map<string, { key: string; controller: AbortController }>());
   useEffect(() => {
@@ -516,11 +531,12 @@ export default function AnalysisPage({
       if (!tile.valid || tileRequests.current.get(tile.id)?.key === tile.key) continue;
       const controller = new AbortController();
       tileRequests.current.set(tile.id, { key: tile.key, controller });
-      const { pValueMode, ...settings } = tile.settings;
+      const { pValueMode, proteinCorrection, ...settings } = tile.settings;
       runAnalysisVolcanoData({
         kind, identifier, ...settings,
         source: tile.type === "volcano" ? "volcano" : "volcano_control",
         useUncorrected: pValueMode === "uncorrected",
+        proteinCorrection: kind === "phospho" && proteinCorrection,
       }, { signal: controller.signal }).then(data => {
         if (!controller.signal.aborted) setTileResults(current => ({ ...current,
           [tile.id]: { key: tile.key, data } }));
@@ -759,6 +775,7 @@ export default function AnalysisPage({
         highlightFeatures: tile.highlightFeatures ?? [],
         settings: { kind, identifier, ...tile.settings,
           useUncorrected: tile.settings.pValueMode === "uncorrected",
+          proteinCorrection: proteinCorrectionOffered && tile.settings.proteinCorrection,
           source: tile.type === "volcano" ? "volcano" : "volcano_control" } };
       if (tile.type === "oraList") return { id: tile.id, type: tile.type, token: tile.state.completed?.result.evidenceToken ?? "" };
       if (tile.type !== "proteinBoxplot" && tile.type !== "proteinLineplot") return { id: tile.id, type: tile.type };
@@ -769,7 +786,7 @@ export default function AnalysisPage({
         : { id: tile.id, type: tile.type, settings: { ...settings, proteins: resolveLineplotProteins(tile, activeBoxplotTarget.protein || activeProtein, selectedProteins, lists) } };
     });
     onContextModeChange?.({ kind, identifier, linkedVolcanoId: sourceTile?.id ?? "", tiles: tiles.map(tile => tile.type), tileEvidence });
-  }, [onContextModeChange, kind, identifier, tiles, sourceTile?.id,
+  }, [onContextModeChange, kind, identifier, tiles, sourceTile?.id, proteinCorrectionOffered,
     activeBoxplotTarget, activeProtein, linkedConditionsJson, selectedProteins, lists]);
 
   return (
@@ -1664,19 +1681,41 @@ function VolcanoBundleControls({
   onChange: (patch: Partial<VolcanoControlSettings>) => void;
 }) {
   const isControl = showControlConditions === true;
+  const { options: testTypeOptions } = useTestTypeOptions();
+  const proteinCorrectionOffered = kind === "phospho" && Boolean(options?.proteinCorrection?.available);
+  const proteinCorrectionOn = proteinCorrectionOffered && settings.proteinCorrection;
+  // With the correction on, only the matrices both datasets hold are offered,
+  // because the protein side mirrors the site comparison's data source.
+  const sourceOptions = proteinCorrectionOn
+    ? dataSourceOptions({ availableDataSources: options?.proteinCorrection?.dataSources ?? [] })
+    : dataSourceOptions(options);
 
   return (
     <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3">
       <SelectField emptyLabel="No options" label="Data source" value={settings.dataSource}
         options={
-          dataSourceOptions(options).some(option => option.value === settings.dataSource)
-            ? dataSourceOptions(options)
-            : [...dataSourceOptions(options), {
+          sourceOptions.some(option => option.value === settings.dataSource)
+            ? sourceOptions
+            : [...sourceOptions, {
                 value: settings.dataSource,
                 label: `${DATA_SOURCE_LABELS[settings.dataSource]} (unavailable)`,
               }]
         }
         onChange={value => onChange({ dataSource: value as DataSource })} />
+      {proteinCorrectionOffered ? (
+        <div className="mt-3">
+          <CheckboxField
+            label={PROTEIN_CORRECTION_LABEL}
+            checked={settings.proteinCorrection}
+            onChange={(value) => {
+              const shared = options?.proteinCorrection?.dataSources ?? [];
+              onChange(value && shared.length && !shared.includes(settings.dataSource)
+                ? { proteinCorrection: true, dataSource: shared[0] }
+                : { proteinCorrection: value });
+            }}
+          />
+        </div>
+      ) : null}
       {isControl ? (
         <div className="grid gap-3 lg:grid-cols-4">
           <SelectField
@@ -1732,7 +1771,7 @@ function VolcanoBundleControls({
           emptyLabel="No options"
           label="Test type"
           value={settings.testType}
-          options={isControl ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS}
+          options={isControl ? CONTROL_TEST_TYPE_OPTIONS : testTypeOptions}
           onChange={(value) => onChange({ testType: value as StatsTestType })}
         />
         <SelectField
@@ -1759,7 +1798,7 @@ function VolcanoBundleControls({
           onChange={(value) => onChange({ log2fcThreshold: value })}
         />
       </div>
-      {settings.testType === "paired" ? (
+      {PAIRED_TEST_TYPES.includes(settings.testType) ? (
         <PairingEditor
           kind={kind}
           condition1={settings.condition1}

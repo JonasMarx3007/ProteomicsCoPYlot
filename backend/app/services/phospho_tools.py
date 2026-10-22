@@ -118,6 +118,8 @@ def _filter_meta_conditions(meta: pd.DataFrame, conditions: list[str] | None) ->
 
 
 def phospho_options() -> dict[str, object]:
+    from app.services.stats_tools import protein_correction_options
+
     frame, meta, _ = _phospho_context()
     imputed_available = imputed_data_available("phospho")
     conditions = (
@@ -157,6 +159,7 @@ def phospho_options() -> dict[str, object]:
         ],
         "imputedAvailable": imputed_available,
         **data_source_options("phospho"),
+        "proteinCorrection": protein_correction_options("phospho").model_dump(),
     }
 
 
@@ -678,6 +681,7 @@ def _ksea_control_table(
     log2fc_threshold: float,
     test_type: str,
     use_uncorrected: bool,
+    protein_correction: bool = False,
 ) -> pd.DataFrame:
     """Format the exact corrected Control Volcano result for Kinase Library upload."""
     from app.schemas.stats import VolcanoControlRequest
@@ -696,6 +700,7 @@ def _ksea_control_table(
             log2fcThreshold=log2fc_threshold,
             testType=test_type,
             useUncorrected=use_uncorrected,
+            proteinCorrection=protein_correction,
         )
     )
     frame = pd.DataFrame(volcano.rows)
@@ -719,6 +724,7 @@ def _ksea_standard_table(
     log2fc_threshold: float,
     test_type: str,
     use_uncorrected: bool,
+    protein_correction: bool = False,
 ) -> pd.DataFrame:
     """Format the exact standard Volcano result for Kinase Library upload."""
     from app.services.stats_tools import _volcano_dataframe
@@ -736,6 +742,7 @@ def _ksea_standard_table(
         use_uncorrected=use_uncorrected,
         frame_override=source_frame,
         metadata_override=source_metadata,
+        protein_correction=protein_correction,
     )
     required = {"UPD_seq", "log2FC", "pval", "adj_pval", "selected_pval", "significance"}
     missing = sorted(required.difference(frame.columns))
@@ -758,6 +765,7 @@ def ksea_table(
     test_type: str = "unpaired",
     use_uncorrected: bool = False,
     organism: str = "human",
+    protein_correction: bool = False,
 ) -> pd.DataFrame:
     organism = _resolve_ksea_organism(organism)
     source_mode = str(source).strip().lower()
@@ -789,6 +797,7 @@ def ksea_table(
             log2fc_threshold=log2fc_threshold,
             test_type=test_type,
             use_uncorrected=use_uncorrected,
+            protein_correction=protein_correction,
         )
 
     return _ksea_standard_table(
@@ -800,6 +809,7 @@ def ksea_table(
         log2fc_threshold=log2fc_threshold,
         test_type=test_type,
         use_uncorrected=use_uncorrected,
+        protein_correction=protein_correction,
     )
 
 
@@ -1005,6 +1015,7 @@ def phosprot_regulation_table(
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
     data_source: str = "data",
+    protein_correction: bool = False,
 ) -> pd.DataFrame:
     if str(condition1).strip() == str(condition2).strip():
         raise ValueError("Select two different conditions to plot.")
@@ -1026,6 +1037,7 @@ def phosprot_regulation_table(
         use_uncorrected=use_uncorrected,
         frame_override=source_frame,
         metadata_override=source_metadata,
+        protein_correction=protein_correction,
     )
     required = {label_col, group_col, "log2FC", "pval", "adj_pval", "significance"}
     missing = sorted(required.difference(volcano_df.columns))
@@ -1194,6 +1206,7 @@ def phosprot_regulation_png(
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
     data_source: str = "data",
+    protein_correction: bool = False,
     header: bool = True,
     width_cm: float = 20,
     height_cm: float = 12,
@@ -1211,6 +1224,7 @@ def phosprot_regulation_png(
         max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites,
         data_source=data_source,
+        protein_correction=protein_correction,
     )
     fig, ax = plt.subplots(figsize=(_cm_to_inch(width_cm), _cm_to_inch(height_cm)))
     if table.empty:
@@ -1256,6 +1270,7 @@ def phosprot_regulation_html(
     max_hover_sites: int = 20,
     show_phosphosites: bool = True,
     data_source: str = "data",
+    protein_correction: bool = False,
     header: bool = True,
     advanced: dict | None = None,
 ) -> str:
@@ -1269,6 +1284,7 @@ def phosprot_regulation_html(
         max_hover_sites=max_hover_sites,
         show_phosphosites=show_phosphosites,
         data_source=data_source,
+        protein_correction=protein_correction,
     )
     if table.empty:
         # The same empty result the PNG draws an explanation for. It used to

@@ -1,7 +1,7 @@
 import { test, expect, webkit } from '@playwright/test';
 import { verifyAuthStartup, tabRequest } from './authStartup.mjs';
 import { readFile } from 'node:fs/promises';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 // Real UI and synthetic log2 data; assistant replies and selected failure cases are mocked.
 // Native-picker cancellation is simulated explicitly in its boundary test.
@@ -507,7 +507,7 @@ test('ANOVA plots and their result tables share frozen notebooks', async ({ page
   const threeGroups = 'sample,condition\n' + samples.map((s, i) => `${s},${i < 3 ? 'A' : i < 6 ? 'B' : 'C'}`).join('\n');
   await annotated(page, '2', { meta: threeGroups, expectedRows: 24 });
   await tab(page, 'Statistical Analysis').click();
-  await tab(page, 'ANOVA').click();
+  await tab(page, 'One-way ANOVA').click();
   await field(page, 'P-value threshold', 'input').fill('1');
   await field(page, 'P-value threshold', 'input').press('Enter');
   await field(page, 'Post-hoc test').selectOption('tukey');
@@ -537,7 +537,7 @@ test('ANOVA plots and their result tables share frozen notebooks', async ({ page
   expect((await download(buttons.nth(0))).equals(cluster)).toBe(false);
   await field(page, 'P-value threshold', 'input').fill('0.000000000001');
   await field(page, 'P-value threshold', 'input').press('Enter');
-  await expect(page.getByText('No rows passed the selected ANOVA threshold, so no significant-row heatmap or clusters were generated.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No rows passed the selected One-way ANOVA threshold, so no significant-row heatmap or clusters were generated.', { exact: true })).toBeVisible();
   await expect(buttons).toHaveCount(1);
   const noHits = await download(buttons);
   expect(noHits.subarray(0, 2).toString()).toBe('PK');
@@ -629,14 +629,21 @@ test('committed number fields show the accepted rounded or clamped value', async
   for (const [draft, accepted, key] of [
     ['0.4', '0', 'Enter'], ['1.6', '2', 'Tab'], ['2.4', '2', 'Enter'],
     ['-3', '0', 'Tab'], ['-1', '0', 'Enter'], ['1,0', '1', 'Tab'],
-    ['invalid', '1', 'Enter'],
   ]) {
     await labels.fill(draft);
-    await expect(labels).toHaveValue(draft.replace(',', '.'));
+    await expect(labels).toHaveValue(draft);
     await labels.press(key);
     await expect(labels).toHaveValue(accepted);
     await expect(download).toHaveAttribute('href', new RegExp(`labelTopUp=${accepted}(?:&|$)`));
   }
+  await labels.fill('invalid');
+  await labels.press('Enter');
+  await expect(labels).toHaveValue('invalid');
+  await expect(labels).toHaveAttribute('aria-invalid', 'true');
+  await expect(download).toHaveAttribute('href', /labelTopUp=1(?:&|$)/);
+  await labels.fill('1');
+  await labels.press('Enter');
+  await expect(labels).not.toHaveAttribute('aria-invalid');
   const threshold = page.getByLabel('P-value threshold', { exact: true });
   await threshold.fill('0.01');
   await threshold.press('Enter');
@@ -651,11 +658,11 @@ for (const heatmap of [false, true]) {
     page.on('pageerror', error => crashes.push(error.message));
     if (heatmap) {
       await tab(page, 'Statistical Analysis').click();
-      await tab(page, 'ANOVA').click();
+      await tab(page, 'One-way ANOVA').click();
     } else {
       await tab(page, 'Single Protein').click();
     }
-    const image = page.getByRole('img', { name: heatmap ? 'ANOVA Heatmap' : 'Protein Boxplot', exact: true });
+    const image = page.getByRole('img', { name: heatmap ? 'One-way ANOVA Heatmap' : 'Protein Boxplot', exact: true });
     await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
     const pattern = heatmap ? '**/api/plots/stats/*/anova.png*' : '**/api/plots/single-protein/*/boxplot.png*';
     const control = heatmap ? field(page, 'P-value threshold', 'input') : page.getByLabel('Width (cm)', { exact: true });
@@ -737,7 +744,7 @@ test('heatmap notice follows the rendered result and disappears on replacement f
   await annotated(page);
   await tab(page, 'Statistical Analysis').click();
   const responsePromise = page.waitForResponse(response => response.url().includes('/anova.png') && response.ok());
-  await tab(page, 'ANOVA').click();
+  await tab(page, 'One-way ANOVA').click();
   const response = await responsePromise;
   const notice = decodeURIComponent(response.headers()['x-copylot-notice']);
   expect(notice).toMatch(/^Heatmap-usable features: \d/);
@@ -1049,7 +1056,7 @@ async function askForRealEvidence(page) {
   return { request: response.request().postDataJSON(), ...payload };
 }
 
-test('end-to-end evidence reads uploaded KSEA values and preserves rendered settings', { tag: '@ai' }, async ({ page }) => {
+test('end-to-end evidence reads uploaded Kinase Library values and preserves rendered settings', { tag: '@ai' }, async ({ page }) => {
   test.skip(process.env.COPYLOT_BROWSER_ASSISTANT_STUB !== '1', 'Requires the isolated scripted provider.');
   const annotation = await annotated(page);
   await tab(page, 'Phospho-specific').click();
@@ -1687,7 +1694,7 @@ for (const remove of [false, true]) {
     });
     await page.route('**/api/chat/assistant', async route => {
       const { view } = route.request().postDataJSON();
-      expect(view.controls.some(c => /Run ORA|Upload|Generate Annotation/.test(c.label))).toBe(false);
+      expect(view.controls.some(c => /Run ORA|Upload|Apply filter|Apply normalization/.test(c.label))).toBe(false);
       const find = label => {
         const control = view.controls.find(c => c.label.endsWith(label));
         expect(control, view.controls.map(c => c.label).join('; ')).toBeTruthy();
@@ -2107,6 +2114,11 @@ for (const section of ['QC Pipeline', 'Completeness']) {
     await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /widthCm=14\.5(?:&|$)/);
     await width.fill('invalid');
     await width.press('Enter');
+    await expect(width).toHaveValue('invalid');
+    await expect(width).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /widthCm=14\.5(?:&|$)/);
+    await width.fill('14.5');
+    await width.press('Enter');
     await expect(width).toHaveValue('14.5');
     const dpi = page.getByLabel('DPI', { exact: true });
     await dpi.fill('10');
@@ -2198,6 +2210,11 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
   await plotReady();
   await width.fill('invalid');
   await width.press('Tab');
+  await expect(width).toHaveValue('invalid');
+  await expect(width).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('link', { name: 'Download Plot', exact: true })).toHaveAttribute('href', /widthCm=12\.5(?:&|$)/);
+  await width.fill('12.5');
+  await width.press('Tab');
   await expect(width).toHaveValue('12.5');
   const dpi = page.getByLabel('DPI', { exact: true });
   await dpi.fill('10');
@@ -2241,7 +2258,7 @@ test('shared plot controls preserve numeric editing, bounds, toggles and multipl
 });
 
 for (const [panel, endpoint, setting, value, parameter] of [
-  ['ANOVA', 'anova', 'P-value threshold', '0.01', 'pValueThreshold'],
+  ['One-way ANOVA', 'anova', 'P-value threshold', '0.01', 'pValueThreshold'],
   ['Replicate & Variance Projection', 'simulation', 'Variance × factor', '2', 'varianceMultiplier'],
   ['Replicate & Variance Projection', 'simulation', 'Replicates per group (0 = observed, 2-100 fixed)', '8', 'sampleSizeOverride'],
 ]) {
@@ -2355,7 +2372,7 @@ for (const consumer of ['volcano', 'ksea', 'ora', 'analysis']) {
   });
 }
 
-test('KSEA Data produces a real export with full sequence context', async ({ page }, testInfo) => {
+test('Kinase Library Data produces a real export with full sequence context', async ({ page }, testInfo) => {
   const validSites = sites.replace(/SEQ\d+S/g, 'AAAAAAAs*AAAAAAA');
   await annotated(page, '3', { table: validSites });
   await tab(page, 'Phospho-specific').click();
@@ -2396,7 +2413,7 @@ test('KSEA Data produces a real export with full sequence context', async ({ pag
   await expect(download).toBeVisible();
 });
 
-test('KSEA refuses incomplete data-source options instead of selecting unfiltered data', async ({ page }) => {
+test('Kinase Library refuses incomplete data-source options instead of selecting unfiltered data', async ({ page }) => {
   await annotated(page);
   await page.route('**/api/plots/phospho/options', async route => {
     const response = await route.fetch();
@@ -2411,7 +2428,7 @@ test('KSEA refuses incomplete data-source options instead of selecting unfiltere
   await expect(page.getByRole('link', { name: 'Download Kinase Library Table (TSV)' })).toHaveCount(0);
 });
 
-test('KSEA export stays bound to the completed selection during debounce and loading', async ({ page }) => {
+test('Kinase Library export stays bound to the completed selection during debounce and loading', async ({ page }) => {
   await annotated(page);
   let pending;
   await page.route('**/api/plots/phospho/ksea-table?*', async route => {
@@ -2629,8 +2646,8 @@ async function annotated(page, minimum = '3', { fresh = true, table = sites, met
   expect((await metadataResponse).ok()).toBeTruthy();
   await page.getByLabel('Dataset is already log2 transformed').check();
   await field(page, 'Minimum valid values', 'input').fill(minimum);
-  await field(page, 'Normalization').selectOption('none');
-  const result = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Generate Annotation').click());
+  const result = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Apply filter').click());
+  await expect(field(page, 'Normalization method')).toHaveValue('none');
   expect(result.sent.kind).toBe(kind);
   expect(result.sent.filter.minPresent).toBe(Number(minimum));
   expect(result.sent.isLog2Transformed).toBe(true);
@@ -2699,7 +2716,7 @@ test('empty filtering preserves a selected source and requires an explicit unfil
   await page.waitForLoadState('networkidle');
   await expect(field(page, 'Minimum valid values', 'input')).toHaveValue('3');
   await field(page, 'Minimum valid values', 'input').fill('5');
-  const annotation = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Generate Annotation').click());
+  const annotation = await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Apply filter').click());
   expect(annotation.sent.filter.minPresent).toBe(5);
   expect(annotation.body.filteredRows).toBe(0);
   const requests = [];
@@ -2733,7 +2750,7 @@ test('cancelled leave preserves analysis; confirmed reload starts a new one', as
   expect(dialog.type()).toBe('beforeunload');
   await dialog.dismiss();
   expect(page.isClosed()).toBe(false);
-  await expect(tab(page, 'Generate Annotation')).toBeVisible();
+  await expect(tab(page, 'Apply filter')).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
   await expect(field(page, 'Dataset type')).toBeVisible();
@@ -2894,7 +2911,7 @@ test('metadata switching ignores a delayed previous-profile annotation', async (
   await tab(page, 'Upload Metadata').click();
   expect((await uploaded).ok()).toBeTruthy();
   await field(page, 'Minimum valid values', 'input').fill('4');
-  await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Generate Annotation').click());
+  await actionResponse(page, '/api/annotations/generate', () => tab(page, 'Apply filter').click());
   const alternativeProfile = await field(page, 'Selected metadata').inputValue();
   expect(alternativeProfile).not.toBe(originalProfile);
   await verifyScopeStatistics(page, 'X', 'Y', 22);
@@ -2963,18 +2980,36 @@ test('save download and UI restore preserve analysis and settings; invalid resto
   await expect(page.getByText('Save state written to the selected file.', { exact: true })).toBeVisible();
   expect(bytes.length).toBeGreaterThan(100);
 
+  // Uploaded originals are temporary and may be released on reload. Model a
+  // later restore with no saved source path so both platforms exercise the
+  // replacement flow, independently of garbage-collection timing.
+  const savedState = JSON.parse(gunzipSync(bytes).toString('utf8'));
+  for (const pkg of savedState.backend.packages) {
+    if (pkg.datasets.phospho) pkg.datasets.phospho.path = null;
+  }
+  const restoreBytes = gzipSync(Buffer.from(JSON.stringify(savedState)));
+
   // A fresh load must actually empty the backend before import is attempted.
   page.once('dialog', dialog => dialog.accept());
   await page.reload();
   await expect(field(page, 'Dataset type')).toBeVisible();
   expect((await tabRequest(page).get('/api/annotations/current/phosprot')).status()).toBe(404);
   await tab(page, 'Restore').click();
-  await page.locator('input[type=file]').setInputFiles({ name: download.suggestedFilename(), mimeType: 'application/octet-stream', buffer: bytes });
+  await page.locator('input[type=file]').setInputFiles({ name: download.suggestedFilename(), mimeType: 'application/octet-stream', buffer: restoreBytes });
   const imported = page.waitForResponse(r => r.url().endsWith('/api/restore/import'));
   await tab(page, 'Restore').last().click();
-  const restore = await imported;
-  expect(restore.ok(), await restore.text()).toBeTruthy();
-  expect((await restore.json()).ok).toBe(true);
+  const missing = await imported;
+  expect(missing.status()).toBe(409);
+  const missingBody = await missing.json();
+  expect(missingBody.ok).toBe(false);
+  expect(missingBody.missingFiles).toHaveLength(1);
+  expect(missingBody.missingFiles[0]).toMatchObject({ kind: 'phospho', filename: 'synthetic-sites.csv' });
+  expect((await tabRequest(page).get('/api/annotations/current/phosprot')).status()).toBe(404);
+  await expect(tab(page, 'Restore').last()).toBeDisabled();
+  const replacements = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Missing Files' }) });
+  await replacements.locator('input[type=file]').setInputFiles({ name: 'synthetic-sites.csv', mimeType: 'text/csv', buffer: Buffer.from(sites) });
+  const restored = await actionResponse(page, '/api/restore/import', () => tab(page, 'Restore').last().click());
+  expect(restored.body.ok).toBe(true);
   await expect(page.getByText(/Restore complete\./)).toBeVisible();
   expectRoundTrip(await analysisSnapshot(page), expected);
 
@@ -2989,7 +3024,7 @@ test('save download and UI restore preserve analysis and settings; invalid resto
   await tab(page, 'Annotation').click();
   await field(page, 'Dataset level').selectOption('phospho');
   await expect(field(page, 'Minimum valid values', 'input')).toHaveValue('3');
-  await expect(field(page, 'Normalization')).toHaveValue('none');
+  await expect(field(page, 'Normalization method')).toHaveValue('none');
   await expect(field(page, 'Source data').locator('option[value=imputed]')).toHaveCount(1);
 
   await tab(page, 'Restore').click();
@@ -3059,4 +3094,22 @@ test('one localization probability cutoff narrows every phosphosite view and the
   await expect(page.getByLabel('Site localization probability cutoff', { exact: true })).toHaveValue('0.50');
   const aggregate = await actionResponse(page, '/api/annotations/phosprot/aggregate', () => tab(page, 'Aggregate to Phosphoprotein').click());
   expect(aggregate.sent.localizationCutoff).toBe(0.5);
+});
+
+
+test('canvas restored protein correction is inactive without a protein dataset', async ({ page }) => {
+  await annotated(page);
+  await page.evaluate(() => sessionStorage.setItem('pcopylot.ui.analysis.v1', JSON.stringify({
+    kind: 'phospho', identifier: 'workflow', tiles: [{ id: 'restored', type: 'volcano', settings: {
+      condition1: 'A', condition2: 'B', dataSource: 'data', testType: 'unpaired',
+      pValueMode: 'corrected', proteinCorrection: true,
+    } }],
+  })));
+  const responsePromise = page.waitForResponse(response =>
+    response.url().endsWith('/api/analysis/volcano/data') && response.request().method() === 'POST');
+  await tab(page, 'Analysis').click();
+  const response = await responsePromise;
+  expect(response.request().postDataJSON().proteinCorrection).toBe(false);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  await expect(page.getByRole('checkbox', { name: 'Correct site changes for protein abundance' })).toHaveCount(0);
 });

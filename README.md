@@ -1,4 +1,7 @@
-# Proteomics CoPYlot
+<h1>
+  <img src="docs/assets/copylot-logo.png" alt="" width="48" height="48" align="absmiddle">
+  Proteomics CoPYlot
+</h1>
 
 [![tests](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/tests.yml/badge.svg)](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/tests.yml)
 [![cross-implementation](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml/badge.svg)](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml)
@@ -16,6 +19,10 @@ Proteomics CoPYlot is a React and FastAPI application for proteomics and phospho
 - Publish configured datasets through read-only viewer and password-gated viewer-portal modes.
 - Use optional AI features, backed by a local Ollama instance, a local server with the OpenAI-compatible API (llama.cpp, vLLM, LM Studio), or a cloud provider.
 - Reuse analysis helpers from Python or R notebooks.
+
+### Statistical scope
+
+The tests are two-group comparisons (pooled or Welch t, paired t on matched samples, and the limma moderated variants where R is available), control-corrected two-group contrasts, and a one-way ANOVA with Tukey HSD. Pairing is the only blocking the tool models: there is no linear model with covariates, batch terms, nested or repeated-measures factors, and no interaction tests. A design that needs them (several batches, paired time courses, a covariate such as age) is better analysed by exporting the processed matrix and metadata to limma or MSstats; CoPYlot does not pretend to adjust for what it did not model.
 
 ## Download and run
 
@@ -151,8 +158,8 @@ Install the optional R packages the R functions use:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
-# VSN normalization (optional) comes from Bioconductor:
-install.packages("BiocManager"); BiocManager::install("vsn")
+# VSN normalization and the moderated t-tests (optional) come from Bioconductor:
+install.packages("BiocManager"); BiocManager::install(c("vsn", "limma"))
 ```
 
 Examples:
@@ -182,7 +189,23 @@ The installable package includes:
 - `proteomicscopylot/example_data/`
 - the human and mouse Gene Ontology reference tables
 
-The Settings page reports whether `Rscript` is available. Detection checks explicit CoPYlot/R environment variables, `PATH`, and common platform installation locations.
+### Optional R features
+
+R is not required. Two features are delegated to their reference Bioconductor
+implementations rather than reimplemented, so that "VSN" and "limma" in a Methods
+section mean exactly those packages: VSN normalization (`vsn`, Huber et al. 2002)
+and the moderated t-tests (`limma`, Ritchie et al. 2015). The app runs them as a
+separate `Rscript` process and offers them only when R and the package are present;
+without R the corresponding options are hidden. Install once:
+
+```r
+install.packages("BiocManager"); BiocManager::install(c("vsn", "limma"))
+```
+
+The Settings page reports whether `Rscript` is available. Detection checks explicit CoPYlot/R environment variables, `PATH`, and common platform installation locations. The desktop
+bundles and the pip package do not include R; the Docker image does (R 4.2, Bioconductor 3.16).
+These R packages keep their own licences (R: GPL-2; limma: GPL ≥ 2; vsn: Artistic-2.0);
+CoPYlot calls them and does not copy or link their code.
 
 ## Architecture
 
@@ -262,6 +285,8 @@ please cite the original work alongside this software. This table is generated f
 | Downshifted-normal imputation | Missing-value imputation, 'numerical' method (Perseus defaults) | Tyanova et al. (2016), [10.1038/nmeth.3901](https://doi.org/10.1038/nmeth.3901) |
 | Student's t-test | Pooled-variance and paired volcano tests | Student (1908), [10.1093/biomet/6.1.1](https://doi.org/10.1093/biomet/6.1.1) |
 | Welch's t-test | Unequal-variance volcano test | Welch (1947), [10.1093/biomet/34.1-2.28](https://doi.org/10.1093/biomet/34.1-2.28) |
+| Moderated t-test (limma) | Empirical-Bayes moderated volcano tests, delegated to Bioconductor limma | Ritchie et al. (2015), [10.1093/nar/gkv007](https://doi.org/10.1093/nar/gkv007) |
+| Robust empirical-Bayes prior (limma) | The 'robust' variant of the moderated t-test | Phipson et al. (2016), [10.1214/16-AOAS920](https://doi.org/10.1214/16-AOAS920) |
 | Benjamini-Hochberg false discovery rate | Multiple-testing correction | Benjamini & Hochberg (1995), [10.1111/j.2517-6161.1995.tb02031.x](https://doi.org/10.1111/j.2517-6161.1995.tb02031.x) |
 | Tukey HSD post-hoc test (Tukey-Kramer for unequal group sizes) | Pairwise comparisons after ANOVA | Tukey (1949); Kramer (1956), Biometrics 5:99-114; Biometrics 12:307-310 |
 | Hypergeometric over-representation test | GO over-representation analysis | Rivals et al. (2007), [10.1093/bioinformatics/btl633](https://doi.org/10.1093/bioinformatics/btl633) |

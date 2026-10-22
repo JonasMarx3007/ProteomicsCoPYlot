@@ -13,11 +13,15 @@
 }
 rm(.copylot_source_file)
 
-.require_pkg <- function(package) {
+.require_pkg <- function(package, bioconductor = FALSE) {
   if (!requireNamespace(package, quietly = TRUE)) {
+    how <- if (bioconductor) {
+      paste0("BiocManager::install('", package, "')")
+    } else {
+      paste0("install.packages('", package, "')")
+    }
     stop(
-      "Package '", package, "' is required for this function. Install it with ",
-      "install.packages('", package, "').",
+      "Package '", package, "' is required for this function. Install it with ", how, ".",
       call. = FALSE
     )
   }
@@ -578,8 +582,36 @@ log2_transform_data <- function(data, meta) {
   output <- data
   values <- .numeric_matrix(data, samples)
   values[values == 0] <- NA_real_
+  negative <- is.finite(values) & values < 0
+  if (any(negative)) {
+    # As the web app warns on annotation: a negative intensity has
+    # no log2 and becomes missing, silently, unless said here.
+    warning(sprintf(
+      "%s negative values across %s rows cannot be log2-transformed. They become missing and may later be imputed. Check the data scale or preprocessing.",
+      format(sum(negative), big.mark = ","), format(sum(rowSums(negative) > 0), big.mark = ",")
+    ), call. = FALSE)
+    values[negative] <- NA_real_
+  }
   output[samples] <- log2(values)
   output
+}
+
+# The one-way ANOVA is an independent-samples test; a pair_id that links the
+# analysed samples across conditions is ignored, and says so (as the web app
+# does).
+.warn_anova_ignores_pairing <- function(meta, sample_columns) {
+  if (!"pair_id" %in% names(meta)) return(invisible(NULL))
+  rows <- meta[as.character(meta$sample) %in% as.character(sample_columns), , drop = FALSE]
+  ids <- trimws(as.character(rows$pair_id))
+  ids[is.na(ids)] <- ""
+  rows <- rows[nzchar(ids), , drop = FALSE]
+  ids <- ids[nzchar(ids)]
+  if (!nrow(rows)) return(invisible(NULL))
+  shared <- sum(tapply(as.character(rows$condition), ids, function(x) length(unique(x))) > 1)
+  if (shared > 0) {
+    warning(sprintf("Pairing IDs link samples across conditions (%d shared ID(s)); the ANOVA treats every sample as independent and ignores these links.", shared), call. = FALSE)
+  }
+  invisible(NULL)
 }
 
 inverse_log2_transform_data <- function(data, meta) {
@@ -762,8 +794,10 @@ filter_localization <- function(data, cutoff = 0, column = "PTM_localization") {
   data[.localization_keep(data, cutoff, column), , drop = FALSE]
 }
 
-# Modes as in the pip package; "mean" averages only the sites quantified in
-# every sample, so all samples use the same sites.
+# Modes as in the pip package. "mean" averages and "sum_ignore_na" sums only
+# the sites quantified in every sample, so all samples use the same sites and a
+# site missing anywhere is left out everywhere (a protein without such a site is
+# missing). "sum_propagate_na" is the plain sum, missing wherever any site is.
 transform_phosprot <- function(
     data,
     meta,
@@ -2630,8 +2664,32 @@ imputed_value_counts <- function(mask, groups) {
     control_components[[length(control_components) + 1]] <- .variance_and_count(values)
   }
 
+  moderated <- variance %in% .MODERATED_MODELS
+  if (moderated && length(control_components)) {
+    stop("Moderated t-tests are not available for control-corrected comparisons.", call. = FALSE)
+  }
   vectorised <- variance == "welch" || length(control_components)
-  if (vectorised) {
+  if (moderated) {
+    # limma over the whole matrix: each row's variance is shrunk towards one
+    # prior fitted to all rows, so it cannot be computed row by row. Fold
+    # changes, BH and every other column stay the tool's own; only p changes.
+    .require_pkg("limma", bioconductor = TRUE)
+    robust <- variance == "moderated_robust"
+    if (is_paired) {
+      fit <- limma::lmFit(differences, matrix(1, nrow = ncol(differences), ncol = 1, dimnames = list(NULL, "diff")))
+      coef <- "diff"
+    } else {
+      group <- factor(c(rep("g1", ncol(x_data)), rep("g2", ncol(y_data))), levels = c("g2", "g1"))
+      fit <- limma::lmFit(cbind(x_data, y_data), stats::model.matrix(~ group))
+      coef <- "groupg1"
+    }
+    fit <- limma::eBayes(fit, robust = robust)
+    pvalues <- as.numeric(fit$p.value[, coef])
+    # The moderated standard error (stdev.unscaled * sqrt(s2.post)) and df, so
+    # a site's change can be corrected for its protein's.
+    standard_error <- as.numeric(fit$stdev.unscaled[, coef] * sqrt(fit$s2.post))
+    degrees <- as.numeric(fit$df.total)
+  } else if (vectorised) {
     counts1 <- rowSums(!is.na(x_data))
     counts2 <- rowSums(!is.na(y_data))
     if (!is_paired) {
@@ -2703,6 +2761,21 @@ imputed_value_counts <- function(mask, groups) {
              length(pair_differences) - 1, lower.tail = FALSE)
     }
   }, numeric(1))
+  # The same standard error and degrees of freedom the row-wise p-values use,
+  # kept for the protein correction.
+  if (!is_paired) {
+    counts1 <- rowSums(!is.na(x_data))
+    counts2 <- rowSums(!is.na(y_data))
+    variances1 <- apply(x_data, 1, stats::var, na.rm = TRUE)
+    variances2 <- apply(y_data, 1, stats::var, na.rm = TRUE)
+    pooled <- ((counts1 - 1) * variances1 + (counts2 - 1) * variances2) / (counts1 + counts2 - 2)
+    standard_error <- sqrt(pooled * (1 / counts1 + 1 / counts2))
+    degrees <- counts1 + counts2 - 2
+  } else {
+    counts <- rowSums(pair_mask)
+    standard_error <- sqrt(apply(differences, 1, stats::var, na.rm = TRUE) / counts)
+    degrees <- counts - 1
+  }
   }
 
   # Every variance component constant: the standard error is zero and the test
@@ -2726,6 +2799,8 @@ imputed_value_counts <- function(mask, groups) {
   output$pval <- pvalues
   output$adj_pval <- adjusted_pvalues
   output$selected_pval <- if (uncorrected) pvalues else adjusted_pvalues
+  output$se <- as.numeric(standard_error)
+  output$dof <- as.numeric(degrees)
   # A variance warning is independent of whether the test has a finite p-value.
   # Paired tests: the variation that matters is that of the differences.
   output$zero_variance <- if (is_paired) {
@@ -2765,9 +2840,13 @@ volcano_data_f <- function(
     test_type = NULL,
     label_column = NULL,
     observed = NULL,
-    # These follow `label_column` and `observed` so the first twelve positional
-    # slots match the pip package, which reaches the same analysis through
-    # `volcano_data_f_control`.
+    # `protein_data` and `protein_meta` (the protein-level matrix and metadata
+    # with a `ProteinAccessions` column) switch on the protein correction for
+    # the "Phosphosite" workflow; see protein_correct_site_results.
+    protein_data = NULL,
+    protein_meta = NULL,
+    # These follow the pip package's fourteen positional slots; pip reaches the
+    # same analysis through `volcano_data_f_control`.
     control1_columns = NULL,
     control2_columns = NULL,
     control_names = NULL
@@ -2783,6 +2862,7 @@ volcano_data_f <- function(
   } else {
     character()
   }
+  extra_columns <- c(extra_columns, .accession_columns(data, c(label_col, extra_columns)))
 
   output <- .volcano_stats(
     data,
@@ -2815,10 +2895,94 @@ volcano_data_f <- function(
   if (!is.null(imputed_counts)) {
     for (column in names(imputed_counts)) output[[column]] <- imputed_counts[[column]]
   }
+  if (!is.null(protein_data) || !is.null(protein_meta)) {
+    if (!identical(workflow, "Phosphosite")) {
+      stop("Protein correction applies to the 'Phosphosite' workflow only.", call. = FALSE)
+    }
+    if (is.null(protein_data) || is.null(protein_meta)) {
+      stop("Protein correction needs both protein_data and protein_meta.", call. = FALSE)
+    }
+    if (!"ProteinAccessions" %in% names(protein_data)) {
+      stop("A protein accession column is required for protein correction.", call. = FALSE)
+    }
+    protein_control1 <- if (is.null(control_names)) NULL else protein_meta$sample[protein_meta$condition == control_names[1]]
+    protein_control2 <- if (is.null(control_names)) NULL else protein_meta$sample[protein_meta$condition == control_names[2]]
+    protein_results <- if (is.null(control_names)) {
+      volcano_data_f(protein_data, protein_meta, condition1, condition2, workflow = "Protein",
+                     paired = paired, uncorrected = TRUE, test_type = test_type)
+    } else {
+      volcano_data_f_control(protein_data, protein_meta, condition1, condition2, control_names[1], control_names[2],
+                             workflow = "Protein", paired = paired, uncorrected = TRUE, test_type = test_type)
+    }
+    output <- protein_correct_site_results(output, protein_results, in_pval, in_log2fc, uncorrected)
+  }
   output
 }
 
-volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL, observed=NULL) {
+.accession_columns <- function(data, taken) {
+  # The accession columns a volcano result keeps for the protein correction:
+  # `Protein_group` of a phosphosite table, `ProteinAccessions` of a protein table.
+  setdiff(intersect(c("Protein_group", "ProteinAccessions"), names(data)), taken)
+}
+
+protein_correct_site_results <- function(site_results, protein_results, in_pval = 0.05, in_log2fc = 1, uncorrected = FALSE) {
+  # Correct phosphosite changes for the change of their protein: each site is
+  # matched to a unique protein group listing its accession; its log2 fold
+  # change becomes site minus protein, the standard errors are combined and the
+  # p-value recomputed with Satterthwaite degrees of freedom. Unmatched sites
+  # keep their own values (protein_matched FALSE); sites listed by several
+  # protein groups also keep their own values, are flagged protein_ambiguous,
+  # and produce a warning. The uncorrected values stay
+  # in site_log2FC and site_pval.
+  if (!"Protein_group" %in% names(site_results)) {
+    stop("A protein accession column (Protein_group) is required on the phosphosite results.", call. = FALSE)
+  }
+  if (!"ProteinAccessions" %in% names(protein_results)) {
+    stop("A protein accession column is required for protein correction.", call. = FALSE)
+  }
+  protein_tokens <- lapply(protein_results$ProteinAccessions, split_tokens)
+  matched_rows <- match_sites_to_proteins(as.character(site_results$Protein_group), protein_tokens)
+  index <- matched_rows$index
+  matched <- index > 0
+  safe <- ifelse(matched, index, 1L)
+  take <- function(column) ifelse(matched, as.numeric(protein_results[[column]])[safe], NA_real_)
+  site_fc <- as.numeric(site_results$log2FC)
+  site_p <- as.numeric(site_results$pval)
+  corrected <- protein_corrected_site_changes(site_fc, as.numeric(site_results$se), as.numeric(site_results$dof),
+                                              take("log2FC"), take("se"), take("dof"))
+  result <- site_results
+  result$se <- ifelse(matched, corrected$se, site_results$se)
+  result$dof <- ifelse(matched, corrected$dof, site_results$dof)
+  result$site_log2FC <- site_fc
+  result$site_pval <- site_p
+  result$site_se <- site_results$se
+  result$site_dof <- site_results$dof
+  result$protein_log2FC <- take("log2FC")
+  result$protein_pval <- take("pval")
+  result$protein_matched <- matched
+  result$protein_ambiguous <- matched_rows$ambiguous
+  if (any(matched_rows$ambiguous)) {
+    warning(sprintf("Protein correction: %s sites match more than one protein group and keep their uncorrected change and p-value (protein_ambiguous).",
+                    sum(matched_rows$ambiguous)), call. = FALSE)
+  }
+  log2fc <- ifelse(matched, corrected$log2fc, site_fc)
+  pvalues <- ifelse(matched, corrected$pval, site_p)
+  adjusted <- pvalues
+  finite <- is.finite(pvalues)
+  adjusted[finite] <- p.adjust(pvalues[finite], "BH")
+  selected <- if (uncorrected) pvalues else adjusted
+  result$log2FC <- log2fc
+  result$pval <- pvalues
+  result$adj_pval <- adjusted
+  result$selected_pval <- selected
+  result$significance <- ifelse(selected < in_pval & log2fc > in_log2fc, "Upregulated",
+                         ifelse(selected < in_pval & log2fc < -in_log2fc, "Downregulated", "Not significant"))
+  result$significance[!is.finite(pvalues)] <- "Unavailable"
+  result$neg_log10_selected_pval <- -log10(pmax(selected, 1e-300))
+  result
+}
+
+volcano_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, workflow="Protein", paired="Unpaired", uncorrected=FALSE, test_type=NULL, label_column=NULL, observed=NULL, protein_data=NULL, protein_meta=NULL) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
   # The four conditions must be distinct, as in the web app: a control shared by
@@ -2867,6 +3031,8 @@ volcano_data_f_control <- function(data, meta, condition1, condition2, condition
     control2_columns = control2_columns,
     label_column = label_column,
     observed = observed,
+    protein_data = protein_data,
+    protein_meta = protein_meta,
     control_names = c(condition1_control, condition2_control)
   )
   output
@@ -3095,6 +3261,7 @@ anova_data_f <- function(
   }
 
   sample_columns <- unlist(condition_columns, use.names = FALSE)
+  .warn_anova_ignores_pairing(meta, sample_columns)
   valid <- Reduce(`&`, lapply(condition_columns, function(columns) {
     rowSums(!is.na(data[, columns, drop = FALSE])) >= 2
   }))
@@ -3297,8 +3464,15 @@ anova_cluster_data <- function(
 .TEST_TYPES <- list(
   unpaired = list(paired = FALSE, model = "pooled"),
   unpaired_welch = list(paired = FALSE, model = "welch"),
-  paired = list(paired = TRUE, model = "pooled")
+  paired = list(paired = TRUE, model = "pooled"),
+  # limma empirical-Bayes moderation (Smyth 2004); "robust" fits the variance
+  # prior robustly (Phipson et al. 2016). Needs the Bioconductor limma package.
+  moderated = list(paired = FALSE, model = "moderated"),
+  moderated_robust = list(paired = FALSE, model = "moderated_robust"),
+  moderated_paired = list(paired = TRUE, model = "moderated"),
+  moderated_robust_paired = list(paired = TRUE, model = "moderated_robust")
 )
+.MODERATED_MODELS <- c("moderated", "moderated_robust")
 
 # Return list(paired = , model = ) for a test_type string.
 resolve_test_type <- function(value) {
@@ -3338,16 +3512,63 @@ variance_model <- function(value) {
   list(se = sqrt(se_squared), dof = degrees)
 }
 
+# Protein-corrected phosphosite changes (shared with the pip package's _core.py
+# and the web app): a site's log2 fold change minus its protein's, the standard
+# errors combined in quadrature, Satterthwaite degrees of freedom, two-sided t.
+
+# The `;`-separated members of a protein-group or gene-group cell.
+split_tokens <- function(value) {
+  text <- trimws(as.character(if (is.null(value) || length(value) == 0) "" else value[1]))
+  if (is.na(text) || !nzchar(text) || tolower(text) == "nan") return(character())
+  tokens <- trimws(strsplit(gsub(",", ";", text, fixed = TRUE), ";", fixed = TRUE)[[1]])
+  tokens[nzchar(tokens)]
+}
+
+# For every site accession: the (1-based) protein row that lists it, 0 when
+# none or several do, and whether several do. Only unique matches are accepted.
+match_sites_to_proteins <- function(site_keys, protein_rows) {
+  first <- list()
+  count <- list()
+  for (index in seq_along(protein_rows)) {
+    for (token in unique(protein_rows[[index]])) {
+      if (is.null(first[[token]])) first[[token]] <- index
+      count[[token]] <- if (is.null(count[[token]])) 1L else count[[token]] + 1L
+    }
+  }
+  keys <- trimws(as.character(site_keys))
+  index <- vapply(keys, function(key) if (is.null(first[[key]])) 0L else as.integer(first[[key]]), integer(1), USE.NAMES = FALSE)
+  ambiguous <- vapply(keys, function(key) !is.null(count[[key]]) && count[[key]] > 1L, logical(1), USE.NAMES = FALSE)
+  index[ambiguous] <- 0L
+  list(index = index, ambiguous = ambiguous)
+}
+
+# (log2fc, se, dof, pval) per site; NA protein values leave a site NA.
+protein_corrected_site_changes <- function(site_log2fc, site_se, site_dof, protein_log2fc, protein_se, protein_dof) {
+  log2fc <- as.numeric(site_log2fc) - as.numeric(protein_log2fc)
+  se_s <- as.numeric(site_se); se_p <- as.numeric(protein_se)
+  df_s <- as.numeric(site_dof); df_p <- as.numeric(protein_dof)
+  se_squared <- se_s^2 + se_p^2
+  dof <- se_squared^2 / (se_s^4 / pmax(df_s, 1e-12) + se_p^4 / pmax(df_p, 1e-12))
+  se <- sqrt(se_squared)
+  statistic <- log2fc / se
+  pval <- 2 * stats::pt(abs(statistic), dof, lower.tail = FALSE)
+  list(log2fc = log2fc, se = se, dof = dof, pval = pval)
+}
+
 # Shift each sample so all samples share a common median.
 #
 # Operates on log2 values, where a multiplicative loading difference is an
 # additive offset. Samples are re-centred on the grand median rather than on zero
 # so the result stays on a recognisable intensity scale; that choice is a constant
 # shift and does not affect any fold change.
-median_center <- function(values) {
+# With `fit_rows` (a logical vector over the rows, or row names: the rows the
+# valid-value filter kept) the medians are taken over those rows only and the
+# shift is applied to every row.
+median_center <- function(values, fit_rows = NULL) {
   matrix_values <- as.matrix(values)
   storage.mode(matrix_values) <- "numeric"
-  medians <- apply(matrix_values, 2, stats::median, na.rm = TRUE)
+  reference <- if (is.null(fit_rows)) matrix_values else matrix_values[.fit_row_mask(matrix_values, fit_rows), , drop = FALSE]
+  medians <- apply(reference, 2, stats::median, na.rm = TRUE)
   grand_median <- stats::median(medians, na.rm = TRUE)
   for (index in seq_along(medians)) {
     matrix_values[, index] <- matrix_values[, index] - medians[[index]] + grand_median
@@ -3362,10 +3583,14 @@ median_center <- function(values) {
 # shared reference distribution is read off at those positions. This matches
 # interpolates rather than dropping incomplete
 # rows.
-quantile_normalize <- function(values) {
+# With `fit_rows`, the reference distribution and each sample's mapping are
+# learned from those rows only; every other row is placed by interpolating its
+# value into its sample's learned mapping.
+quantile_normalize <- function(values, fit_rows = NULL) {
   matrix_values <- as.matrix(values)
   storage.mode(matrix_values) <- "numeric"
-  row_count <- nrow(matrix_values)
+  reference_frame <- if (is.null(fit_rows)) matrix_values else matrix_values[.fit_row_mask(matrix_values, fit_rows), , drop = FALSE]
+  row_count <- nrow(reference_frame)
   if (!row_count) {
     return(as.data.frame(matrix_values, check.names = FALSE))
   }
@@ -3375,7 +3600,7 @@ quantile_normalize <- function(values) {
   grid <- seq(0, 1, length.out = row_count)
   curves <- list()
   for (index in seq_len(ncol(matrix_values))) {
-    observed <- sort(matrix_values[, index][!is.na(matrix_values[, index])])
+    observed <- sort(reference_frame[, index][!is.na(reference_frame[, index])])
     if (!length(observed)) next
     positions <- if (length(observed) > 1) seq(0, 1, length.out = length(observed)) else 0
     curves[[length(curves) + 1]] <- if (length(observed) == 1) rep(observed, length(grid)) else stats::approx(
@@ -3388,17 +3613,51 @@ quantile_normalize <- function(values) {
   reference <- colMeans(do.call(rbind, curves))
 
   for (index in seq_len(ncol(matrix_values))) {
+    fit_values <- reference_frame[, index][!is.na(reference_frame[, index])]
+    if (!length(fit_values)) next
+    ranks <- rank(fit_values, ties.method = "average")
+    positions <- if (length(fit_values) > 1) (ranks - 1) / (length(fit_values) - 1) else 0
+    mapped <- if (length(reference) == 1) rep(reference, length(positions)) else stats::approx(
+      grid, reference, xout = positions, rule = 2
+    )$y
     column <- matrix_values[, index]
     mask <- !is.na(column)
-    observed <- column[mask]
-    if (!length(observed)) next
-    ranks <- rank(observed, ties.method = "average")
-    positions <- if (length(observed) > 1) (ranks - 1) / (length(observed) - 1) else 0
-    matrix_values[mask, index] <- if (length(reference) == 1) rep(reference, length(positions)) else stats::approx(
-      grid, reference, xout = positions, rule = 2
+    if (is.null(fit_rows)) {
+      matrix_values[mask, index] <- mapped
+      next
+    }
+    ordering <- order(fit_values, method = "radix")
+    xs <- fit_values[ordering]; ys <- mapped[ordering]
+    keep <- !duplicated(xs)
+    matrix_values[mask, index] <- if (sum(keep) == 1) rep(ys[keep], sum(mask)) else stats::approx(
+      xs[keep], ys[keep], xout = column[mask], rule = 2
     )$y
   }
   as.data.frame(matrix_values, check.names = FALSE)
+}
+
+# Pin VSN's output to the level of the plain log2 data. vsn's flat likelihood
+# lets two fits of nearly identical input differ by a constant added to every
+# value; the constant carries no information (every fold change, variance and
+# p-value is the same under it), so it is removed: one global shift, never per
+# sample, so the between-sample calibration vsn fitted is untouched.
+anchor_vsn_level <- function(glog_values, log2_values) {
+  glog <- as.matrix(glog_values); storage.mode(glog) <- "numeric"
+  plain <- as.matrix(log2_values); storage.mode(plain) <- "numeric"
+  both <- is.finite(glog) & is.finite(plain)
+  if (!any(both)) return(glog_values)
+  offset <- stats::median(glog[both]) - stats::median(plain[both])
+  out <- glog_values
+  for (column in seq_len(ncol(out))) out[[column]] <- as.numeric(glog_values[[column]]) - offset
+  out
+}
+
+.fit_row_mask <- function(matrix_values, fit_rows) {
+  if (is.logical(fit_rows)) {
+    if (length(fit_rows) != nrow(matrix_values)) stop("fit_rows must have one entry per row.", call. = FALSE)
+    return(fit_rows)
+  }
+  rownames(matrix_values) %in% as.character(fit_rows)
 }
 
 # Apply a global normalization to the sample columns of a log2 matrix.
@@ -3538,7 +3797,23 @@ missingness_imbalance_warning <- function(table, method, min_gap = MISSINGNESS_G
 # never the collapsed phosphoprotein matrix. The collapse carries the site-level
 # normalization forward, and a second pass would normalize the same values twice;
 # the app applies none at that level.
-normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
+# `fit_rows` names the rows the normalization is learned from (a logical vector
+# over the rows, or row names) while the result is applied to every row. The app
+# (since 2026-10-20) filters first and fits on the kept rows, so rows with many
+# missing values -- mostly low-abundance, and missing unevenly between groups --
+# do not set the reference. The same in R:
+#
+#     filtered <- filter_data(log2, meta, 3)
+#     normalized <- normalize_data(log2, meta, "median", fit_rows = rownames(filtered))
+#     filtered <- normalized[rownames(filtered), ]
+#
+# When missingness differs strongly between groups (the warning says so), fit
+# on the features observed in every sample instead, as the app's "Fit on:
+# features observed in every sample" does:
+#
+#     complete <- complete.cases(log2[, samples])
+#     normalized <- normalize_data(log2, meta, "median", fit_rows = complete)
+normalize_data <- function(data, meta, method = "none", linear_source = NULL, fit_rows = NULL) {
   resolved <- tolower(trimws(as.character(method %||% "none")))
   if (resolved %in% c("", "none")) {
     return(data)
@@ -3546,12 +3821,17 @@ normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
   present <- .normalization_sample_columns(data, meta)
 
   numeric_values <- .numeric_matrix(data, present)
+  rownames(numeric_values) <- rownames(data)
+  if (!is.null(fit_rows)) {
+    mask <- .fit_row_mask(as.matrix(numeric_values), fit_rows)
+    if (all(mask)) fit_rows <- NULL else fit_rows <- mask
+  }
   normalized <- if (resolved == "median") {
-    median_center(numeric_values)
+    median_center(numeric_values, fit_rows)
   } else if (resolved == "quantile") {
-    quantile_normalize(numeric_values)
+    quantile_normalize(numeric_values, fit_rows)
   } else if (resolved == "vsn") {
-    .require_pkg("vsn")
+    .require_pkg("vsn", bioconductor = TRUE)
     linear <- if (is.null(linear_source)) {
       2^numeric_values
     } else {
@@ -3559,10 +3839,14 @@ normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
       raw[!is.na(raw) & raw == 0] <- NA_real_
       raw
     }
-    fit <- vsn::vsn2(as.matrix(linear), verbose = FALSE)
+    fit <- if (is.null(fit_rows)) {
+      vsn::vsn2(as.matrix(linear), verbose = FALSE)
+    } else {
+      vsn::vsn2(as.matrix(linear)[fit_rows, , drop = FALSE], verbose = FALSE)
+    }
     predicted <- vsn::predict(fit, newdata = as.matrix(linear))
     predicted[is.na(linear)] <- NA_real_
-    as.data.frame(predicted, check.names = FALSE)
+    anchor_vsn_level(as.data.frame(predicted, check.names = FALSE), numeric_values)
   } else {
     stop("method must be one of: none, median, quantile, vsn.", call. = FALSE)
   }
@@ -3571,7 +3855,8 @@ normalize_data <- function(data, meta, method = "none", linear_source = NULL) {
   for (column in present) {
     output[[column]] <- as.numeric(normalized[[column]])
   }
-  message <- missingness_imbalance_warning(missingness_imbalance(output, meta), resolved)
+  seen <- if (is.null(fit_rows)) output else output[fit_rows, , drop = FALSE]
+  message <- missingness_imbalance_warning(missingness_imbalance(seen, meta), resolved)
   if (!is.null(message)) warning(message, call. = FALSE)
   output
 }
@@ -4186,21 +4471,19 @@ anova_plot_cluster <- function(
   workflow_key %in% c("phosprot", "phosphoprotein", "phosphoproteome")
 }
 
-.different_gene_tokens <- function(values, split_groups) {
-  keep <- !is.na(values)
-  if (is.numeric(values)) keep <- keep & is.finite(values)
-  values <- trimws(as.character(values[keep]))
-  values <- values[nzchar(values)]
+# Every member of every value, once, sorted: the shared `split_tokens` rule
+# (`;` or `,` separated), as in the web app and the pip package. A protein
+# group "A;B" used to contribute only "A" outside the phosphoprotein workflow
+#; every member counts now. The former group-splitting
+# switch, ignored since then, is gone (2026-10-22).
+.different_gene_tokens <- function(values) {
+  values <- values[!is.na(values)]
   if (!length(values)) return(character())
-  tokens <- if (split_groups) {
-    unlist(strsplit(values, ";", fixed = TRUE), use.names = FALSE)
-  } else {
-    sub(";.*$", "", values)
-  }
-  sort(unique(trimws(tokens[nzchar(trimws(tokens))])))
+  tokens <- unlist(lapply(as.character(values), split_tokens), use.names = FALSE)
+  sort(unique(tokens))
 }
 
-.different_genes_from_volcano <- function(volcano_data, key_col, split_groups) {
+.different_genes_from_volcano <- function(volcano_data, key_col) {
   required <- c(key_col, "significance")
   missing <- setdiff(required, names(volcano_data))
   if (length(missing)) {
@@ -4215,14 +4498,12 @@ anova_plot_cluster <- function(
 
   list(
     Upregulated = .different_gene_tokens(
-      volcano_data[[key_col]][volcano_data$significance == "Upregulated"],
-      split_groups
+      volcano_data[[key_col]][volcano_data$significance == "Upregulated"]
     ),
     Downregulated = .different_gene_tokens(
-      volcano_data[[key_col]][volcano_data$significance == "Downregulated"],
-      split_groups
+      volcano_data[[key_col]][volcano_data$significance == "Downregulated"]
     ),
-    Background = .different_gene_tokens(volcano_data[[key_col]], split_groups)
+    Background = .different_gene_tokens(volcano_data[[key_col]])
   )
 }
 
@@ -4233,7 +4514,6 @@ different_genes <- function(data, meta, condition1, condition2, in_pval=0.05, in
   if (is.na(key_col)) {
     stop("different_genes requires GeneNames or Gene_group.", call. = FALSE)
   }
-  split_groups <- prefer_group
 
   output <- volcano_data_f(
     data,
@@ -4248,7 +4528,7 @@ different_genes <- function(data, meta, condition1, condition2, in_pval=0.05, in
     test_type = test_type,
     label_column = key_col
   )
-  .different_genes_from_volcano(output, key_col, split_groups)
+  .different_genes_from_volcano(output, key_col)
 }
 
 different_genes_control <- function(
@@ -4286,7 +4566,7 @@ different_genes_control <- function(
     test_type = test_type,
     label_column = key_col
   )
-  .different_genes_from_volcano(output, key_col, prefer_group)
+  .different_genes_from_volcano(output, key_col)
 }
 
 .empty_enrichment_frame <- function() {
@@ -4315,8 +4595,7 @@ enrichment_data <- function(
   # cannot drift apart. Returns a zero-row frame rather than NULL when nothing
   # passes, so callers can treat the result as a table unconditionally.
   background_mode <- match.arg(background_mode, c("experiment", "global"))
-  split_groups <- .is_phosphoprotein_workflow(workflow)
-  genes <- .different_gene_tokens(gene_list, split_groups)
+  genes <- .different_gene_tokens(gene_list)
   if (!length(genes)) return(.empty_enrichment_frame())
   if (min_num > max_num) {
     stop("min_num cannot be larger than max_num.", call. = FALSE)
@@ -4335,7 +4614,7 @@ enrichment_data <- function(
         call. = FALSE
       )
     }
-    submitted_background <- .different_gene_tokens(background, split_groups)
+    submitted_background <- .different_gene_tokens(background)
     missing <- setdiff(genes, submitted_background)
     if (length(missing)) {
       stop(
@@ -4675,18 +4954,22 @@ proteins_in_pathway <- function(data, meta, db, pathway, conditions=NULL, figsiz
 # group. Nothing is drawn at random. The observed fold changes include noise, so
 # the projection is optimistic for effects that look large, and it does not
 # estimate the probability of detecting a true effect.
-volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, workflow="Protein", mod_var=1, mod_n=0) {
+# The projected statistics behind `volcano_plot_sim`: one row per feature with
+# log2FC, pval, se, dof and the accession column, if any.
+.volcano_sim_table <- function(data, meta, condition1, condition2, workflow, mod_var, mod_n) {
   condition1_columns <- meta$sample[meta$condition == condition1]
   condition2_columns <- meta$sample[meta$condition == condition2]
   label_col <- if (workflow == "Protein") "ProteinNames" else "PTM_Collapse_key"
+  accession_columns <- .accession_columns(data, c(label_col, condition1_columns, condition2_columns))
 
   filtered_data <- data[
     ,
-    c(label_col, condition1_columns, condition2_columns),
+    c(label_col, condition1_columns, condition2_columns, accession_columns),
     drop = FALSE
   ]
+  sample_columns <- c(condition1_columns, condition2_columns)
   threshold <- length(condition1_columns) + length(condition2_columns) - 2
-  keep <- rowSums(is.na(filtered_data[, -1, drop = FALSE])) < threshold
+  keep <- rowSums(is.na(filtered_data[, sample_columns, drop = FALSE])) < threshold
   filtered_data <- filtered_data[keep, , drop = FALSE]
 
   x_data <- .numeric_matrix(filtered_data, condition1_columns)
@@ -4725,6 +5008,29 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
   # out of the BH family -- the volcano's rule, so the projection at the
   # observed n reproduces the volcano table.
   pvals[without_variation(list(x_data, y_data))] <- NA_real_
+  table <- data.frame(Feature = filtered_data[[label_col]], log2FC = as.numeric(log2fc), pval = as.numeric(pvals),
+                      se = as.numeric(standard_error), dof = as.numeric(degrees_freedom), stringsAsFactors = FALSE)
+  for (column in accession_columns) table[[column]] <- filtered_data[[column]]
+  table
+}
+
+# A what-if projection of the volcano, not a power calculation. `protein_data`
+# and `protein_meta` switch on the protein correction for the "Phosphosite"
+# workflow: the protein comparison is projected with the same mod_var and mod_n.
+volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, workflow="Protein", mod_var=1, mod_n=0, protein_data=NULL, protein_meta=NULL) {
+  table <- .volcano_sim_table(data, meta, condition1, condition2, workflow, mod_var, mod_n)
+  label_col <- if (workflow == "Protein") "ProteinNames" else "PTM_Collapse_key"
+  log2fc <- table$log2FC
+  pvals <- table$pval
+  if (!is.null(protein_data) || !is.null(protein_meta)) {
+    if (!identical(workflow, "Phosphosite")) stop("Protein correction applies to the 'Phosphosite' workflow only.", call. = FALSE)
+    if (is.null(protein_data) || is.null(protein_meta)) stop("Protein correction needs both protein_data and protein_meta.", call. = FALSE)
+    if (!"ProteinAccessions" %in% names(protein_data)) stop("A protein accession column is required for protein correction.", call. = FALSE)
+    protein_table <- .volcano_sim_table(protein_data, protein_meta, condition1, condition2, "Protein", mod_var, mod_n)
+    corrected <- protein_correct_site_results(table, protein_table, in_pval, in_log2fc, FALSE)
+    log2fc <- corrected$log2FC
+    pvals <- corrected$pval
+  }
   adjusted_pvals <- pvals
   finite <- is.finite(pvals)
   adjusted_pvals[finite] <- p.adjust(pvals[finite], method = "BH")
@@ -4741,7 +5047,7 @@ volcano_plot_sim <- function(data, meta, condition1, condition2, in_pval=0.05, i
 
   significance[!is.finite(pvals)] <- "Unavailable"
   volcano_data <- data.frame(
-    Feature = filtered_data[[label_col]],
+    Feature = table$Feature,
     log2FC = log2fc,
     pval = pvals,
     adj_pval = adjusted_pvals,
@@ -4920,7 +5226,7 @@ site_motif_window <- function(key, peptide_sequence, sequences = NULL) {
   result
 }
 
-kinase_library_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0) {
+kinase_library_data_f <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0, protein_data=NULL, protein_meta=NULL) {
   keep <- .localization_keep(data, localization_cutoff)
   data <- data[keep, , drop = FALSE]
   if (!is.null(observed)) observed <- observed[keep, , drop = FALSE]
@@ -4928,12 +5234,12 @@ kinase_library_data_f <- function(data, meta, condition1, condition2, in_pval=0.
   output <- volcano_data_f(
     working, meta, condition1, condition2,
     in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type,
-    observed = observed
+    observed = observed, protein_data = protein_data, protein_meta = protein_meta
   )
   .ksea_format_volcano(output, data, fasta)
 }
 
-kinase_library_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0) {
+kinase_library_data_f_control <- function(data, meta, condition1, condition2, condition1_control, condition2_control, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, test_type=NULL, fasta=NULL, observed=NULL, localization_cutoff=0, protein_data=NULL, protein_meta=NULL) {
   keep <- .localization_keep(data, localization_cutoff)
   data <- data[keep, , drop = FALSE]
   if (!is.null(observed)) observed <- observed[keep, , drop = FALSE]
@@ -4942,7 +5248,7 @@ kinase_library_data_f_control <- function(data, meta, condition1, condition2, co
     working, meta, condition1, condition2,
     condition1_control, condition2_control,
     in_pval, in_log2fc, "Phosphosite", paired, uncorrected, test_type,
-    observed = observed
+    observed = observed, protein_data = protein_data, protein_meta = protein_meta
   )
   .ksea_format_volcano(output, data, fasta)
 }
@@ -5034,7 +5340,7 @@ kinase_library_data_f_control <- function(data, meta, condition1, condition2, co
   collapsed
 }
 
-phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0) {
+phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0, protein_data=NULL, protein_meta=NULL) {
   .validate_meta_samples(meta)
   .validate_sample_values(data, meta)
   data <- filter_localization(data, localization_cutoff)
@@ -5048,18 +5354,26 @@ phosprot_regulation_data <- function(data, meta, condition1, condition2, in_pval
     data, meta, condition1, condition2, "PTM_Collapse_key",
     paired, uncorrected, "Protein_group", test_type
   )
+  attr(site_results, "imputed_counts") <- NULL
+  if (!is.null(protein_data) || !is.null(protein_meta)) {
+    if (is.null(protein_data) || is.null(protein_meta)) stop("Protein correction needs both protein_data and protein_meta.", call. = FALSE)
+    if (!"ProteinAccessions" %in% names(protein_data)) stop("A protein accession column is required for protein correction.", call. = FALSE)
+    protein_results <- volcano_data_f(protein_data, protein_meta, condition1, condition2, workflow = "Protein",
+                                      paired = paired, uncorrected = TRUE, test_type = test_type)
+    site_results <- protein_correct_site_results(site_results, protein_results, in_pval, in_log2fc, uncorrected)
+  }
   collapsed <- .phosprot_regulation_data(
     site_results, in_pval, in_log2fc, max_hover_sites, show_phosphosites
   )
   collapsed
 }
 
-phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0) {
+phosprot_regulation <- function(data, meta, condition1, condition2, in_pval=0.05, in_log2fc=1, paired="Unpaired", uncorrected=FALSE, max_hover_sites=20, show_phosphosites=TRUE, test_type=NULL, localization_cutoff=0, protein_data=NULL, protein_meta=NULL) {
   .require_pkg("plotly")
   collapsed <- phosprot_regulation_data(
     data, meta, condition1, condition2, in_pval, in_log2fc,
     paired, uncorrected, max_hover_sites, show_phosphosites, test_type,
-    localization_cutoff = localization_cutoff
+    localization_cutoff = localization_cutoff, protein_data = protein_data, protein_meta = protein_meta
   )
 
   hover_text <- paste0(
@@ -5190,11 +5504,12 @@ modification_plot <- function(data2_path, meta, id=TRUE, header=TRUE, legend=TRU
     "Precursor.Quantity",
     max
   )
-  names(wide_data) <- vapply(names(wide_data), extract_id_or_number, character(1))
-  id_map <- setNames(meta$new_sample, meta$id)
+  # Match full names first; numeric fallback must be unambiguous on both sides.
+  sample_map <- .peptide_sample_map(names(wide_data), meta$sample)
+  labels <- setNames(meta$new_sample, meta$sample)
   names(wide_data) <- ifelse(
-    names(wide_data) %in% names(id_map),
-    id_map[names(wide_data)],
+    names(wide_data) %in% names(sample_map),
+    labels[sample_map[names(wide_data)]],
     names(wide_data)
   )
 
@@ -5694,8 +6009,15 @@ boxplot_int_single_prot <- function(data, meta, protein, outliers=FALSE, dots=FA
 
 phossite_on_prot_regulation <- function(data, meta, protein, conditions=NULL, id=TRUE, figsize=c(12,8), cmap_name="plasma", filter_M2=FALSE, cluster_rows=FALSE, cluster_cols=FALSE, value_type="log2", header=TRUE, localization_cutoff=0) {
   data <- filter_localization(data, localization_cutoff)
+  protein_query <- if (length(protein) == 1L && !is.na(protein)) tolower(trimws(as.character(protein))) else ""
+  # Match complete group members literally, ignoring case and outer whitespace.
+  groups <- as.character(data$Protein_group)
+  groups[is.na(groups)] <- ""
+  matches <- vapply(strsplit(groups, ";", fixed=TRUE), function(members) {
+    nzchar(protein_query) && protein_query %in% tolower(trimws(members))
+  }, logical(1))
   protein_data <- data[
-    grepl(protein, data$Protein_group, ignore.case = TRUE),
+    matches,
     ,
     drop = FALSE
   ]

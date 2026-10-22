@@ -17,8 +17,9 @@ write_result <- function(name, frame) {
 for (kind in c("protein", "phospho")) {
   raw <- read.csv(file.path(directory, paste0(kind, ".csv")), check.names = FALSE)
   logged <- log2_transform_data(raw, meta)
-  normalized <- normalize_data(logged, as.character(meta$sample), method)
-  filtered <- filter_data(normalized, meta, 3, "per_group", "at_least_n", 70)
+  kept <- filter_data(logged, meta, 3, "per_group", "at_least_n", 70)
+  normalized <- normalize_data(logged, as.character(meta$sample), method, fit_rows = rownames(kept))
+  filtered <- normalized[rownames(kept), , drop = FALSE]
   write_result(paste0(kind, "_normalized"), normalized)
   write_result(paste0(kind, "_filtered"), filtered)
   for (input in c("observed", "fixed")) {

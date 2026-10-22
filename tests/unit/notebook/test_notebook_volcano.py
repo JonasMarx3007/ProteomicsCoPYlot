@@ -17,11 +17,17 @@ from app.services.notebook_snapshots import snapshots
 from app.services.session_context import get_session_id
 
 
-@pytest.mark.parametrize('test_type', ['unpaired', 'unpaired_welch', 'paired'])
+MODERATED = [pytest.param(name, marks=pytest.mark.requires_r('limma'))
+             for name in ('moderated', 'moderated_robust', 'moderated_paired', 'moderated_robust_paired')]
+
+
+@pytest.mark.parametrize('test_type', ['unpaired', 'unpaired_welch', 'paired', *MODERATED])
 @pytest.mark.parametrize('control,source', [(False, 'data'), (False, 'imputed'), (True, 'filtered')])
 def test_volcano_statistics_and_standalone_plot_match_app(inputs, tmp_path, test_type, control, source):
     cls = VolcanoControlRequest if control else VolcanoRequest
     extra = dict(condition1Control='C', condition2Control='D') if control else {}
+    if control and test_type.startswith('moderated'):
+        pytest.skip('moderated tests are not offered with controls')
     payload = cls(kind='protein', condition1='A', condition2='B', dataSource=source,
                   testType=test_type, identifier='genes', highlightTerms=['G3'],
                   useUncorrected=test_type == 'unpaired_welch', **extra)
@@ -47,6 +53,25 @@ def test_volcano_statistics_and_standalone_plot_match_app(inputs, tmp_path, test
                             cwd=tmp_path, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'reproduced.png').read_bytes() == actual
+    if test_type.startswith('moderated'):
+        assert '|' in recipe.settings['limma_runtime'], 'the R and limma versions are recorded'
+        assert 'limma' in recipe.input_explanation
+        # A replay under other R/limma versions must refuse rather than report a near-match.
+        altered = cells.replace("functions.calculate_table(",
+                                "(setattr(functions, 'limma_runtime_version', lambda: '0.0.0|0.0.0'), None)[1] or functions.calculate_table(", 1)
+        altered = altered.replace("assert functions.limma_runtime_version()",
+                                  "functions.limma_runtime_version = lambda: '0.0.0|0.0.0'\nassert functions.limma_runtime_version()", 1)
+        result = subprocess.run([sys.executable, '-I', '-c', "import sys;sys.path.insert(0,'.');\n" + altered],
+                                cwd=tmp_path, capture_output=True, text=True, timeout=90)
+        assert result.returncode != 0 and 'recorded R and Bioconductor limma' in result.stderr
+
+
+def test_a_moderated_test_without_r_is_refused_with_the_reason(inputs, monkeypatch):
+    from app.services import r_limma
+    monkeypatch.setattr(r_limma, 'limma_availability', lambda: {'available': False, 'reason': 'Rscript was not found. x'})
+    payload = VolcanoRequest(kind='protein', condition1='A', condition2='B', testType='moderated')
+    with pytest.raises(ValueError, match='Rscript was not found'):
+        stats_tools.volcano_png(payload, dpi=80)
 
 
 def test_volcano_snapshot_route_is_frozen_and_owned(inputs, monkeypatch):

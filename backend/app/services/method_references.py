@@ -48,6 +48,12 @@ REFERENCES: dict[str, Reference] = {
     "welch_t": Reference(
         "Welch's t-test", "Unequal-variance volcano test",
         "Welch (1947)", "10.1093/biomet/34.1-2.28"),
+    "limma": Reference(
+        "Moderated t-test (limma)", "Empirical-Bayes moderated volcano tests, delegated to Bioconductor limma",
+        "Ritchie et al. (2015)", "10.1093/nar/gkv007"),
+    "limma_robust": Reference(
+        "Robust empirical-Bayes prior (limma)", "The 'robust' variant of the moderated t-test",
+        "Phipson et al. (2016)", "10.1214/16-AOAS920"),
     "benjamini_hochberg": Reference(
         "Benjamini-Hochberg false discovery rate", "Multiple-testing correction",
         "Benjamini & Hochberg (1995)", "10.1111/j.2517-6161.1995.tb02031.x"),

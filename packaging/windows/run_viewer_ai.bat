@@ -123,10 +123,10 @@ if defined CHAT_MODEL (
 
 if defined CHAT_MODEL (
   echo Starting viewer AI backend on port %BACKEND_PORT%...
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && set COPYLOT_OLLAMA_MODEL=!CHAT_MODEL! && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port %BACKEND_PORT%"
 ) else (
   echo Starting viewer AI backend on port %BACKEND_PORT%...
-  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+  start "Backend (Viewer AI)" /D "%ROOT%backend" cmd /k "set COPYLOT_VIEWER_MODE=1 && set COPYLOT_VIEWER_PORTAL_ENABLED=0 && set COPYLOT_SESSION_ISOLATION=1 && set COPYLOT_RESET_ON_BROWSER_LOAD=0 && set COPYLOT_VIEWER_PROJECT=%VIEWER_PROJECT% && set COPYLOT_VIEWER_CONFIG=%VIEWER_CONFIG% && set COPYLOT_AI_MODE=1 && ""%ROOT%backend\.venv\Scripts\python.exe"" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port %BACKEND_PORT%"
 )
 
 set "BACKEND_READY=1"

@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import logging
+import os
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ from threading import RLock
 from typing import Any, Iterable, Literal, Mapping, get_args
 from uuid import uuid4
 
+import numpy as np
 import pandas as pd
 from fastapi import UploadFile
 
@@ -23,6 +26,7 @@ from app.schemas.annotation import (
     phosprot_filter_config,
 )
 from app.services.managed_temp import open_private, private_temp_dir, write_private_bytes
+from app.services.temp_file_lifecycle import retain_temp_file, temporary_file_scope
 from app.services.annotation_processor import compute_annotation_from_metadata
 from app.services.annotation_store import (
     get_annotation,
@@ -215,7 +219,8 @@ class DeferredAutoMetadataRestore:
 
 def _frame_to_payload(frame: pd.DataFrame) -> dict[str, Any]:
     _validate_table_dimensions(*frame.shape)
-    safe = frame.copy().where(pd.notna(frame), None)
+    # Float columns otherwise coerce None back to NaN, which is not JSON.
+    safe = frame.astype(object).where(pd.notna(frame), None)
     return {
         "columns": [str(column) for column in safe.columns],
         "data": safe.values.tolist(),
@@ -339,12 +344,18 @@ def _coerce_filter_config(
                 "as 'none', so the analysis was re-run without normalization."
             )
         normalization_raw = "none"
+    fit_raw = str(payload.get("normalizationFit", "filtered_rows")).strip().lower()
+    if fit_raw not in {"filtered_rows", "complete_features"}:
+        if "normalizationFit" in payload:
+            report(f"Saved normalization fit {fit_raw!r} is not recognised; restored as 'filtered_rows'.")
+        fit_raw = "filtered_rows"
     return AnnotationFilterConfig(
         method=method_raw,
         minPresent=min_present,
         minPercentage=min_percentage,
         mode=mode_raw,
         normalization=normalization_raw,
+        normalizationFit=fit_raw,
     )  # type: ignore[arg-type]
 
 
@@ -381,6 +392,20 @@ def _imputed_rows_mismatch(imputed: pd.DataFrame, filtered: pd.DataFrame | None,
         current = basis[label].astype(str).tolist()
         if saved != current:
             return f"its {label} rows are not the recomputed matrix's rows"
+    # The observed values must be the recomputed ones as well: a normalization
+    # fitted differently (since 2026-10-20 on the filtered rows, not on every
+    # row) moves every observed value, and an imputed matrix drawn around the
+    # old values would silently mix two scales.
+    shared = [c for c in basis.columns if c in imputed.columns and c != label]
+    if shared:
+        observed = basis[shared].apply(pd.to_numeric, errors="coerce")
+        saved_values = imputed[shared].apply(pd.to_numeric, errors="coerce")
+        mask = observed.notna().to_numpy()
+        if mask.any() and not np.allclose(
+            observed.to_numpy(dtype=float)[mask], saved_values.to_numpy(dtype=float)[mask],
+            rtol=0, atol=1e-9, equal_nan=True,
+        ):
+            return "its observed values are not the recomputed matrix's values (the normalization is fitted on the filtered rows since 2026-10-20)"
     return None
 
 
@@ -422,14 +447,51 @@ def _table_fingerprint(frame: pd.DataFrame) -> str:
 
 
 def _file_fingerprint(path: Path) -> dict[str, Any] | None:
-    """Size and SHA-256 of a dataset file, so a restore can tell it was replaced."""
+    """Size and SHA-256 of a dataset file, so a restore can tell it was replaced.
+
+    Hash only a stable regular file, within the configured upload size limit.
+    Reject links/reparse points and verify the opened descriptor and final path.
+    Read at most the initial size, so a growing file cannot extend the operation.
+    Unsafe, oversized or changed files get no fingerprint, like missing files.
+    """
     try:
+        before = path.lstat()
+        def regular(info):
+            return stat.S_ISREG(info.st_mode) and not (
+                getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+        def signature(info):
+            # Windows lstat and fstat can expose different ctime semantics;
+            # compare ctime only within the same access method below.
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        if not regular(before) or before.st_size > upload_max_bytes():
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
         digest = hashlib.sha256()
         size = 0
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
+        try:
+            opened = os.fstat(fd)
+            if not regular(opened) or signature(opened) != signature(before):
+                return None
+            while size < before.st_size:
+                chunk = os.read(fd, min(1 << 20, before.st_size - size))
+                if not chunk:
+                    return None
                 digest.update(chunk)
                 size += len(chunk)
+            after = os.fstat(fd)
+            current = path.lstat()
+            if (
+                not regular(current)
+                or signature(after) != signature(before)
+                or signature(current) != signature(before)
+                or after.st_ctime_ns != opened.st_ctime_ns
+                or current.st_ctime_ns != before.st_ctime_ns
+            ):
+                return None
+        finally:
+            os.close(fd)
     except OSError:
         return None
     return {"sizeBytes": size, "sha256": digest.hexdigest()}
@@ -516,6 +578,7 @@ def _ensure_exportable_table_path(stored: Any) -> str | None:
     resolved = str(target.resolve())
     try:
         setattr(stored, "source_path", resolved)
+        retain_temp_file(stored, resolved)
     except Exception:
         pass
     return resolved
@@ -607,6 +670,7 @@ def _export_profile_names(package_name: str) -> list[str]:
     return ordered
 
 
+@temporary_file_scope()
 def export_state_blob(
     *,
     ui_state: dict[str, Any] | None = None,
@@ -713,6 +777,7 @@ def export_state_blob(
                             "minPercentage": float(stored_annotation.filter_config.minPercentage),
                             "mode": str(stored_annotation.filter_config.mode),
                             "normalization": str(stored_annotation.filter_config.normalization),
+                            "normalizationFit": str(stored_annotation.filter_config.normalizationFit),
                         },
                         "imputation": (
                             stored_annotation.imputation.model_dump()
@@ -1414,6 +1479,7 @@ def _apply_prepared_restore_state(
                         filter_method=filter_config.method,
                         min_percentage=filter_config.minPercentage,
                         normalization=filter_config.normalization,
+                        normalization_fit=filter_config.normalizationFit,
                     )
                     if not imputed_data.empty:
                         mismatch = _imputed_rows_mismatch(imputed_data, computed.filtered_data, computed.log2_data)
@@ -1501,6 +1567,7 @@ def _apply_prepared_restore_state(
     )
 
 
+@temporary_file_scope()
 def apply_restore_state(
     state: dict[str, Any],
     replacements: dict[tuple[str, DatasetKind], ReplacementInput],

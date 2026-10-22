@@ -67,3 +67,29 @@ describe("the Aggregate to Phosphoprotein card", () => {
     expect([mode, source]).toEqual([REQUEST.mode.default, REQUEST.source.default]);
   });
 });
+
+describe("the alternative to collapsing: an uploaded phosphoprotein matrix (D17, 2026-10-22)", () => {
+  it("is disabled until a file is chosen, then sends the file and the chosen scale", async () => {
+    const button = screen.getByText("Use Uploaded Matrix", { selector: "button" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    vi.mocked(api.uploadPhosprotMatrix).mockResolvedValue({} as never);
+    const file = new File(["Protein_group,A,B\nP1,1,2\n"], "collapsed.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByLabelText("Phosphoprotein file"), { target: { files: [file] } });
+    fireEvent.change(select("Values are"), { target: { value: "log2" } });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(api.uploadPhosprotMatrix).toHaveBeenCalled());
+    const [sent, scale] = vi.mocked(api.uploadPhosprotMatrix).mock.calls[0];
+    expect(sent.name).toBe("collapsed.csv");
+    expect(scale).toBe(true);
+  });
+
+  it("lets the server detect the scale by default", async () => {
+    vi.mocked(api.uploadPhosprotMatrix).mockResolvedValue({} as never);
+    const file = new File(["x"], "m.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByLabelText("Phosphoprotein file"), { target: { files: [file] } });
+    fireEvent.click(screen.getByText("Use Uploaded Matrix", { selector: "button" }));
+    await waitFor(() => expect(api.uploadPhosprotMatrix).toHaveBeenCalled());
+    expect(vi.mocked(api.uploadPhosprotMatrix).mock.calls[0][1]).toBeNull();
+  });
+});

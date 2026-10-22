@@ -96,9 +96,14 @@ class PhosphoLocalizationCutoffResponse(BaseModel):
     """The session-wide phosphosite localization probability cutoff.
 
     `available` says whether the loaded phosphosite table has a
-    PTM_localization column the cutoff can act on.
+    PTM_localization column the cutoff can act on. `belowClassOne` counts the
+    sites whose probability is under 0.75 (the class I threshold), out of
+    `sites`, so a page can say how many non-class I sites a lower cutoff
+    admits.
     """
     cutoff: float
+    belowClassOne: int = 0
+    sites: int = 0
     available: bool
 
 

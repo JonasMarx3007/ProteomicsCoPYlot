@@ -15,9 +15,10 @@ import { useAdvancedPlotSignal } from "../../lib/useAdvancedPlotSignal";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { readPersistedUiState, writePersistedUiState } from "../../lib/persistedUiState";
 import type { ContextMode, AnnotationKind, StatsIdentifier, StatsTestType, VolcanoResultResponse, SummaryVolcanoEntry, DataSource, VolcanoRenderType, StatisticalOptionsResponse } from "../../lib/types";
-import { dataSourceOptions, VOLCANO_RENDER_TYPE_OPTIONS } from "../../lib/types";
+import { VOLCANO_RENDER_TYPE_OPTIONS } from "../../lib/types";
+import { PROTEIN_CORRECTION_LABEL, useProteinCorrection } from "../../lib/proteinCorrection";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
-import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
+import { restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType, useTestTypeOptions, availableTestType } from "../../lib/statisticalTests";
 import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
@@ -128,13 +129,20 @@ export function VolcanoPanel({
   const [selectedTestType, setTestType] = useState<StatsTestType>(() => {
     return restoreTestType(persisted.testType);
   });
-  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
+  const { options: testTypeOptions, moderatedAvailable } = useTestTypeOptions();
+  const testType = sourceMode === "volcano_control"
+    ? controlTestType(selectedTestType)
+    : availableTestType(selectedTestType, moderatedAvailable);
   const [pValueThreshold, setPValueThreshold] = useState(() =>
     restorePValueThreshold(persisted.pValueThreshold)
   );
   const [log2fcThreshold, setLog2fcThreshold] = useState(() => Number(persisted.log2fcThreshold ?? 1));
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
   const [highlightText, setHighlightText] = useState(() => String(persisted.highlightText ?? ""));
+  // What the highlight terms draw: a ring (default) and/or, on the static
+  // figure, a text label placed like the top hits.
+  const [highlightOutline, setHighlightOutline] = useState(() => persisted.highlightOutline !== false);
+  const [highlightLabels, setHighlightLabels] = useState(() => Boolean(persisted.highlightLabels ?? false));
   // Interactive by default, because this panel is for exploring and the hover
   // text is how you find out which point you are looking at. Normal is the
   // figure you take away.
@@ -163,13 +171,9 @@ export function VolcanoPanel({
   const [reportLogVersion, setReportLogVersion] = useState(0);
 
   const kindAvailable = kindOptions.some((option) => option.value === kind);
-  const volcanoDataSourceOptions = useMemo(
-    // `options`, not `options?.availableDataSources`: the React Compiler infers
-    // the whole object as the dependency and refuses to keep a narrower manual
-    // one, which fails the lint gate.
-    () => dataSourceOptions(options),
-    [options]
-  );
+  const proteinCorrection = useProteinCorrection(
+    kind, options, persisted.proteinCorrection, dataSource, chooseDataSource);
+  const volcanoDataSourceOptions = proteinCorrection.dataSourceOptions;
 
   useStatisticalOptionsLoader(
     kind,
@@ -220,6 +224,7 @@ export function VolcanoPanel({
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection: proteinCorrection.active,
       highlightTerms,
     };
   }, [
@@ -236,6 +241,7 @@ export function VolcanoPanel({
     log2fcThreshold,
     testType,
     useUncorrected,
+    proteinCorrection.active,
     highlightTerms,
   ]);
 
@@ -254,6 +260,7 @@ export function VolcanoPanel({
       pValueThreshold: pValueThreshold,
       log2fcThreshold: log2fcThreshold,
       useUncorrected: useUncorrected,
+      proteinCorrection: proteinCorrection.active,
       type: renderType,
     };
     onContextModeChange(mode);
@@ -271,6 +278,7 @@ export function VolcanoPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    proteinCorrection.active,
     renderType,
   ]);
   const debouncedRequestPayload = useDebouncedValue(requestPayload, 650);
@@ -291,17 +299,22 @@ export function VolcanoPanel({
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection: proteinCorrection.active,
       highlightTerms,
       // Captured at the moment it is added, so two comparisons in one report
       // can render differently -- the panel's current state is the intent.
       renderType,
       labelTopUp,
       labelTopDown,
+      highlightOutline,
+      highlightLabels,
     }),
     [
       renderType,
       labelTopUp,
       labelTopDown,
+      highlightOutline,
+      highlightLabels,
       kind,
       sourceMode,
       dataSource,
@@ -314,6 +327,7 @@ export function VolcanoPanel({
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection.active,
       highlightTerms,
     ]
   );
@@ -355,7 +369,10 @@ export function VolcanoPanel({
       pValueThreshold,
       log2fcThreshold,
       useUncorrected,
+      proteinCorrection: proteinCorrection.enabled,
       highlightText,
+      highlightOutline,
+      highlightLabels,
       renderType,
       labelTopUp,
       labelTopDown,
@@ -377,7 +394,10 @@ export function VolcanoPanel({
     pValueThreshold,
     log2fcThreshold,
     useUncorrected,
+    proteinCorrection.enabled,
     highlightText,
+    highlightOutline,
+    highlightLabels,
     renderType,
     labelTopUp,
     labelTopDown,
@@ -419,6 +439,7 @@ export function VolcanoPanel({
               log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
               testType: debouncedRequestPayload.testType,
               useUncorrected: debouncedRequestPayload.useUncorrected,
+              proteinCorrection: debouncedRequestPayload.proteinCorrection,
               highlightTerms: debouncedRequestPayload.highlightTerms,
             }, { signal: controller.signal })
           : await runVolcanoAnalysis({
@@ -431,6 +452,7 @@ export function VolcanoPanel({
               log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
               testType: debouncedRequestPayload.testType,
               useUncorrected: debouncedRequestPayload.useUncorrected,
+              proteinCorrection: debouncedRequestPayload.proteinCorrection,
               highlightTerms: debouncedRequestPayload.highlightTerms,
             }, { signal: controller.signal });
         if (controller.signal.aborted) return;
@@ -472,8 +494,10 @@ export function VolcanoPanel({
       log2fcThreshold: debouncedRequestPayload.log2fcThreshold,
       testType: debouncedRequestPayload.testType,
       useUncorrected: debouncedRequestPayload.useUncorrected,
+      proteinCorrection: debouncedRequestPayload.proteinCorrection,
       highlightTerms: debouncedRequestPayload.highlightTerms.join(","),
-      ...(isStatic ? { labelTopUp, labelTopDown, widthCm, heightCm, dpi } : {}),
+      highlightOutline,
+      ...(isStatic ? { labelTopUp, labelTopDown, highlightLabels, widthCm, heightCm, dpi } : {}),
     };
     if (debouncedRequestPayload.source === "volcano_control") {
       return buildPlotUrl(
@@ -496,6 +520,8 @@ export function VolcanoPanel({
     renderType,
     labelTopUp,
     labelTopDown,
+    highlightOutline,
+    highlightLabels,
     widthCm,
     heightCm,
     dpi,
@@ -565,7 +591,7 @@ export function VolcanoPanel({
           <SelectField label="Label column" value={identifier} onChange={(value) => setIdentifier(value as StatsIdentifier)} options={(options?.availableIdentifiers ?? []).map((item) => ({ value: item.key, label: item.label }))} />
         </div>
         <div className="mt-4 grid gap-4 sm:grid-cols-3">
-          <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
+          <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : testTypeOptions} />
           <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
           <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
         </div>
@@ -583,6 +609,13 @@ export function VolcanoPanel({
         <div className="mt-4">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <CheckboxField label="Use uncorrected p-values" checked={useUncorrected} onChange={setUseUncorrected} />
+            {proteinCorrection.offered ? (
+              <CheckboxField
+                label={PROTEIN_CORRECTION_LABEL}
+                checked={proteinCorrection.enabled}
+                onChange={proteinCorrection.setEnabled}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -611,6 +644,14 @@ export function VolcanoPanel({
 
         <div className="mt-4 max-w-3xl" data-assistant-appearance="true">
           <TextareaField label="Highlight terms" value={highlightText} onChange={setHighlightText} rows={3} placeholder="Space-separated labels to highlight" />
+          {highlightTerms.length ? (
+            <div className="mt-2 grid gap-4 sm:grid-cols-2">
+              <CheckboxField label="Outline highlighted points" checked={highlightOutline} onChange={setHighlightOutline} />
+              {renderType === "Normal" ? (
+                <CheckboxField label="Label highlighted points (static plot)" checked={highlightLabels} onChange={setHighlightLabels} />
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {renderType === "Normal" ? (
           <div className="mt-4 max-w-3xl">

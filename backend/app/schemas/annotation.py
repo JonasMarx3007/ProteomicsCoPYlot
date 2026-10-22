@@ -17,6 +17,13 @@ DataSource = Literal["data", "filtered", "imputed"]
 ResolvedSource = Literal["data", "filtered", "log2", "raw", "imputed"]
 FilterMode = Literal["per_group", "in_at_least_one_group", "overall"]
 NormalizationMethod = Literal["none", "median", "quantile", "vsn"]
+# Which rows a normalization is learned from (it is applied to every row):
+# "filtered" -- the rows the valid-value filter kept (the field's practice:
+# DEP, FragPipe-Analyst, AlphaPeptStats, Prostar); "complete" -- only features
+# observed in every sample, which removes the shift that uneven missingness
+# between groups leaves in a fit on all observed values (pmartR's
+# subset_fn="complete"; the search engines rank by completeness the same way).
+NormalizationFit = Literal["filtered_rows", "complete_features"]
 MetadataSource = Literal["manual", "auto", "uploaded", "shared_phospho"]
 PhosprotAggregationMode = Literal[
     "robust_site_median",
@@ -49,7 +56,7 @@ class IdentifierTranslationStep(BaseModel):
     inputDb: str
     outputDb: str
     toolVersion: str
-    outputs: dict[str, dict[str, str]]
+    outputs: dict[str, dict[str, str | None]]
 
 
 class AnnotationFilterConfig(BaseModel):
@@ -57,10 +64,14 @@ class AnnotationFilterConfig(BaseModel):
     minPresent: int = Field(default=0, ge=0)
     minPercentage: float = Field(default=70.0, ge=0.0, le=100.0)
     mode: FilterMode = "per_group"
-    # Applied to protein/phosphosite log2 matrices before filtering. Always
-    # global, never per condition. Phosphoprotein annotations are forced to
-    # "none" because their upstream phosphosite matrix was already normalized.
+    # Applied to protein/phosphosite log2 matrices: fitted on the rows the
+    # filter kept, applied to every row. Always global, never per condition.
+    # Phosphoprotein annotations are forced to "none" because their upstream
+    # phosphosite matrix was already normalized. Kept inside the filter config
+    # so saved sessions, viewer configs and the report read one object; the
+    # page applies it as a separate step (AnnotationNormalizeRequest).
     normalization: NormalizationMethod = "none"
+    normalizationFit: NormalizationFit = "filtered_rows"
 
 
 def phosprot_filter_config(config: AnnotationFilterConfig) -> AnnotationFilterConfig:
@@ -73,6 +84,20 @@ class AnnotationGenerateRequest(BaseModel):
     conditions: list[ConditionAssignment] = Field(default_factory=list)
     isLog2Transformed: bool | None = None
     filter: AnnotationFilterConfig | None = None
+
+
+class AnnotationNormalizeRequest(BaseModel):
+    """The second step of the annotation: a normalization for an annotation that exists.
+
+    Filtering and normalization are two steps on the page since 2026-10-20: the
+    filter is applied first and decides the rows, then this applies (or removes,
+    with "none") a normalization fitted on those rows. The stored filter
+    settings, conditions and metadata are reused as they are.
+    """
+
+    kind: AnnotationKind
+    normalization: NormalizationMethod = "none"
+    normalizationFit: NormalizationFit = "filtered_rows"
 
 
 class Log2DetectionRequest(BaseModel):

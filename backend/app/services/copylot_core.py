@@ -49,3 +49,6 @@ bh_adjust = _core.bh_adjust
 satterthwaite = _core.satterthwaite
 pooled_se_df = _core.pooled_se_df
 two_sided_t_pvalues = _core.two_sided_t_pvalues
+split_tokens = _core.split_tokens
+match_sites_to_proteins = _core.match_sites_to_proteins
+protein_corrected_site_changes = _core.protein_corrected_site_changes

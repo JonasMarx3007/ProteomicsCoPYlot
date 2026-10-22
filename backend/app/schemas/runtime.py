@@ -19,8 +19,22 @@ class NormalizationCapabilityResponse(BaseModel):
     vsnPackageVersion: str | None = None
 
 
+class StatisticsCapabilityResponse(BaseModel):
+    """Statistical tests this installation can actually run.
+
+    `testTypes` includes the four moderated (limma) tests only when Rscript and
+    the Bioconductor package are both present, as `methods` does for VSN.
+    """
+
+    testTypes: list[str]
+    moderatedAvailable: bool
+    moderatedUnavailableReason: str | None = None
+    limmaPackageVersion: str | None = None
+
+
 class RRuntimeStatusResponse(BaseModel):
     available: bool
+    diagnosticsHidden: bool = False
     executable: str | None = None
     version: str | None = None
     versionOutput: str | None = None

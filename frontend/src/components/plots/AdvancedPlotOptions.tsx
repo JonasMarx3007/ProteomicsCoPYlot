@@ -257,6 +257,8 @@ export default function AdvancedPlotOptions({
         cleared.volcanoUpSize = undefined;
         cleared.volcanoDownSize = undefined;
         cleared.volcanoNsSize = undefined;
+        // The highlight ring follows the general size until set on its own.
+        cleared.volcanoHighlightSize = undefined;
       }
       if ("markerAlpha" in next) {
         cleared.volcanoUpAlpha = undefined;
@@ -1075,17 +1077,17 @@ export default function AdvancedPlotOptions({
           ))}
           <div className="grid gap-4 lg:grid-cols-4">
             <label className="block">
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Highlight size</span>
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Highlight ring size</span>
               <NumberInput
                 min="0.5"
                 step="0.5"
-                value={value.volcanoHighlightSize ?? 10}
-                fallback={10}
+                value={value.volcanoHighlightSize ?? (value.markerSize !== undefined ? value.markerSize + 4 : 10)}
+                fallback={value.markerSize !== undefined ? value.markerSize + 4 : 10}
                 onValidChange={(next) => patch({ volcanoHighlightSize: next })}
               />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Highlight outline</span>
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Highlight ring color</span>
               <AssistantInput data-assistant-permission="view"
                 type="color"
                 value={value.volcanoHighlightColor || "#22c55e"}
@@ -1093,6 +1095,27 @@ export default function AdvancedPlotOptions({
                 className="mt-1 h-10 w-full rounded-xl border border-slate-300 bg-white px-2 py-1 dark:border-slate-600 dark:bg-slate-900"
               />
             </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Highlight legend text</span>
+              <AssistantInput data-assistant-permission="view"
+                type="text"
+                value={value.volcanoHighlightLegendLabel ?? ""}
+                placeholder="Highlighted"
+                onChange={(event) => patch({ volcanoHighlightLegendLabel: event.target.value })}
+                className="mt-1 h-10 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-900"
+              />
+            </label>
+            <label className="mt-6 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+              <AssistantInput data-assistant-permission="view"
+                type="checkbox"
+                checked={value.volcanoHighlightLegend !== false}
+                onChange={(event) => patch({ volcanoHighlightLegend: event.target.checked })}
+                className="h-4 w-4 accent-sky-600"
+              />
+              Highlight legend entry
+            </label>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-4">
             <label className="block">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Hit label size (static plot)</span>
               <NumberInput

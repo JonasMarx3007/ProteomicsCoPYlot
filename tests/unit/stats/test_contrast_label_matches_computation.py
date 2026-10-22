@@ -5,7 +5,7 @@ The tool's convention is that the first selected condition is the minuend:
 `(condition1 - c1control) - (condition2 - c2control)`. `comparison_contrast()`
 is the single place that spells this out.
 
-Two places had written it by hand and got the control form backwards -- the KSEA
+Two places had written it by hand and got the control form backwards -- the Kinase Library
 control volcano's x-axis, and the assistant's own description of the volcano --
 so a reader was told the opposite of what was plotted. A label is not cosmetic
 here: the sign is the finding.

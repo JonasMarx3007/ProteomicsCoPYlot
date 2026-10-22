@@ -60,6 +60,8 @@ def test_unauthenticated_requests_never_reach_the_heavy_queue(client, monkeypatc
 @pytest.mark.parametrize("method,path,mode", [
     ("POST", "/api/datasets/upload", "exclusive"),
     ("POST", "/api/annotations/generate", "exclusive"),
+    ("POST", "/api/annotations/normalize", "exclusive"),
+    ("POST", "/api/annotations/phosprot/upload", "exclusive"),
     ("POST", "/api/data-tools/imputation/run", "exclusive"),
     ("POST", "/api/data-tools/condition-colors/protein", "exclusive"),
     ("PUT", "/api/annotations/pairing", "exclusive"),

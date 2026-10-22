@@ -2,9 +2,10 @@
 // the restore rules for values read back from a saved session.
 
 import type { AnovaClusterMethod, StatsTestType, StatisticalOptionsResponse } from "../../lib/types";
+import { PAIRED_TEST_TYPES } from "../../lib/statisticalTests";
 
 export function isPairedTestType(value: StatsTestType): boolean {
-  return value === "paired";
+  return PAIRED_TEST_TYPES.includes(value);
 }
 
 export function conditionOptions(options: StatisticalOptionsResponse | null) {

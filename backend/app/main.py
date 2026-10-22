@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from app.app_version import APP_VERSION
+from app.services.viewer_policy import auth_route, viewer_request_allowed
 from app.services.html_security import GENERATED_HTML_CSP
 from app.services.shared_plotly import PLOTLY_ASSET_HEADER, SHARED_PLOTLY_HEADER, plotly_asset_path, share_plotly
 from app.services.plot_export import notebook_capture_allowed, notebook_unavailable, plot_notices, plot_output_format
@@ -128,55 +129,6 @@ async def safe_chat_validation(request: Request, exc: RequestValidationError):
 # afterwards -- which is the only way to keep a vector export vector.
 _NATIVE_DOWNLOAD_FORMATS = {"pdf", "svg"}
 _SUPPORTED_DOWNLOAD_FORMATS = {"png", "jpg", "jpeg", "webp", "pdf", "svg"}
-_VIEWER_DENIED_EXACT: set[tuple[str, str]] = {
-    ("POST", "/api/datasets/upload"),
-    ("POST", "/api/datasets/table-path"),
-    ("POST", "/api/datasets/peptide-path"),
-    ("POST", "/api/datasets/peptide-file"),
-    ("POST", "/api/datasets/packages/create"),
-    ("POST", "/api/datasets/packages/rename"),
-    ("POST", "/api/datasets/metadata/profiles/create"),
-    ("POST", "/api/datasets/metadata/profiles/rename"),
-    ("DELETE", "/api/datasets/metadata/profiles/delete"),
-    ("POST", "/api/annotations/metadata/upload"),
-    ("POST", "/api/annotations/generate"),
-    ("PUT", "/api/annotations/pairing"),
-    ("POST", "/api/annotations/phosprot/aggregate"),
-    ("POST", "/api/peptide/metadata/generate"),
-    ("POST", "/api/data-tools/imputation/run"),
-    # `/imputation/download` runs the same imputation as `/run` and hands back
-    # the whole filled matrix as CSV. Denying one and not the other left the
-    # computation reachable by the endpoint that also exports the result.
-    ("POST", "/api/data-tools/imputation/download"),
-    # ID translation writes the translated table into the session as a dataset
-    # of its own, and the page that offers it is not in a viewer's tab list.
-    ("POST", "/api/data-tools/id-translation/run"),
-    ("POST", "/api/data-tools/id-translation/download"),
-    ("POST", "/api/restore/import"),
-    # What a viewer may take away is decided (local/DESIGN_DECISIONS.md, D11):
-    # the data tables -- source, filtered and imputed matrices, metadata,
-    # per-sample values -- are downloadable, because a viewer project is shared
-    # with trusted collaborators or holds published data. Two things stay
-    # closed: the whole-session save blob and the notebook ZIPs (below). The
-    # blob is the editing state of the project, not a table, and the only
-    # caller in viewer mode was the Ctrl+S save -- which a viewer does not need.
-    ("POST", "/api/restore/export"),
-    ("POST", "/api/chat/models/install"),
-    ("POST", "/api/chat/models/remove"),
-}
-_VIEWER_DENIED_PREFIXES: tuple[tuple[str, str], ...] = (
-    # Notebook exports stay closed to viewers (D11): a ZIP is reproducible
-    # analysis code bound to this project's state, not one of the tables a
-    # viewer may download. The table downloads themselves remain open.
-    ("GET", "/api/plots/notebooks/"),
-    ("DELETE", "/api/annotations/"),
-    ("DELETE", "/api/peptide/metadata/"),
-    ("POST", "/api/external/"),
-    # Writing the palette is a state change, and the page that offers it (Data >
-    # Colors) is not in the viewer's tab list. The GET stays open: the viewer has
-    # to read the colours the published project was saved with.
-    ("POST", "/api/data-tools/condition-colors/"),
-)
 _REMOTE_LOCAL_PATH_EXACT: set[tuple[str, str]] = {
     ("POST", "/api/datasets/table-path"),
     ("POST", "/api/datasets/peptide-path"),
@@ -210,23 +162,11 @@ def _authentication_configuration_error(*, validate_credentials: bool = True) ->
 
 
 def _auth_route(path: str) -> bool:
-    return (
-        path == "/api/tool/auth"
-        or path.startswith("/api/tool/auth/")
-        or path == "/api/viewer/auth"
-        or path.startswith("/api/viewer/auth/")
-    )
+    return auth_route(path)
 
 
 def _viewer_request_denied(request: Request) -> bool:
-    method = request.method.upper()
-    path = request.url.path
-    if (method, path) in _VIEWER_DENIED_EXACT:
-        return True
-    return any(
-        method == denied_method and path.startswith(prefix)
-        for denied_method, prefix in _VIEWER_DENIED_PREFIXES
-    )
+    return not viewer_request_allowed(request.method, request.url.path)
 
 
 def _remote_local_path_request_denied(request: Request) -> bool:
@@ -236,11 +176,7 @@ def _remote_local_path_request_denied(request: Request) -> bool:
 
 def _request_policy_response(request: Request) -> JSONResponse | None:
     path = request.url.path
-    if (
-        not path.startswith("/api/")
-        or path == "/api/health"
-        or _auth_route(path)
-    ):
+    if not path.startswith("/api/"):
         return None
     if viewer_mode_enabled() and _viewer_request_denied(request):
         return JSONResponse(
@@ -429,8 +365,10 @@ def _sets_session_cookie(response, cookie_name: str) -> bool:
 # sees a half-made change. Every PUT, PATCH and DELETE counts as well.
 _SESSION_WRITE_POSTS = frozenset({
     "/api/annotations/generate",
+    "/api/annotations/normalize",
     "/api/annotations/metadata/upload",
     "/api/annotations/phosprot/aggregate",
+    "/api/annotations/phosprot/upload",
     "/api/data-tools/imputation/run",
     "/api/data-tools/id-translation/run",
     "/api/data-tools/phospho-localization-cutoff",

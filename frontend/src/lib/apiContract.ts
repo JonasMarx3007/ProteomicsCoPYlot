@@ -22,6 +22,7 @@ import type {
   IdTranslationRequest,
   ImputationRunRequest,
   ListEnrichmentRequest,
+  NormalizationFit,
   NormalizationMethod,
   PairingUpdateRequest,
   PeptideMetadataGenerateRequest,
@@ -45,6 +46,7 @@ export type ValueUnionsMatchTheBackend = [
   Assert<Same<StatsTestType, NonNullable<Schemas["VolcanoRequest"]["testType"]>>>,
   Assert<Same<AnovaClusterMethod, NonNullable<Schemas["AnovaRequest"]["clusterMethod"]>>>,
   Assert<Same<NormalizationMethod, NonNullable<Schemas["AnnotationFilterConfig"]["normalization"]>>>,
+  Assert<Same<NormalizationFit, NonNullable<Schemas["AnnotationFilterConfig"]["normalizationFit"]>>>,
   Assert<Same<DataSource, NonNullable<Schemas["VolcanoRequest"]["dataSource"]>>>,
 ];
 

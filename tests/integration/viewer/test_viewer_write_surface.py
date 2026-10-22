@@ -1,19 +1,4 @@
-"""Every write the API exposes is either denied to a viewer or listed here.
-
-Viewer mode is enforced by two deny lists in `app.main`. A deny list is only as
-good as the last person who remembered to add to it, and the failure is silent:
-the endpoint keeps working, the UI still hides the page, and nothing says the
-gate is not covering it. That is how `POST /api/data-tools/imputation/download`
-came to run the same imputation as `/run` -- which *is* denied -- and hand back
-the whole filled matrix, from a deployment whose Imputation tab is not there.
-
-So this test inverts the question. It enumerates every mutating method the
-application actually serves, and requires each one to be either denied or named
-below with a reason. A new write route fails this test until someone decides
-which it is. That decision is cheap to make and expensive to forget.
-
-The read side is deliberately not covered: a viewer is allowed to read.
-"""
+"""Viewer analyses and session choices remain available; processing stays blocked."""
 
 from __future__ import annotations
 
@@ -23,12 +8,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 
-from app.main import (
-    _VIEWER_DENIED_EXACT,
-    _VIEWER_DENIED_PREFIXES,
-    _auth_route,
-    app,
-)
+from app.main import app
+from app.services.viewer_policy import VIEWER_ALLOWED_OPERATIONS, auth_route as _auth_route, viewer_request_allowed
 
 WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
@@ -45,7 +26,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("POST", "/api/stats/ora/list/run"): "computes an enrichment, stores nothing",
     ("POST", "/api/stats/simulation/run"): "computes a hypothetical, stores nothing",
     ("POST", "/api/summary/report"): "renders the report a viewer is here to read",
-    ("POST", "/api/plots/phospho/ksea-volcano.html"): "renders an uploaded KSEA result",
+    ("POST", "/api/plots/phospho/ksea-volcano.html"): "renders an uploaded Kinase Library result",
     ("POST", "/api/annotations/log2-detect"): "inspects a frame's scale, stores nothing",
     # Choosing which published dataset to look at. A viewer project may hold
     # several; picking one is what the selector is for.
@@ -76,12 +57,7 @@ def _served_writes() -> set[tuple[str, str]]:
 
 
 def _denied(method: str, path: str) -> bool:
-    if (method, path) in _VIEWER_DENIED_EXACT:
-        return True
-    return any(
-        method == denied_method and path.startswith(prefix)
-        for denied_method, prefix in _VIEWER_DENIED_PREFIXES
-    )
+    return not viewer_request_allowed(method, path)
 
 
 def test_every_write_is_denied_or_deliberately_allowed() -> None:
@@ -94,8 +70,8 @@ def test_every_write_is_denied_or_deliberately_allowed() -> None:
     )
     assert not unclassified, (
         "these writes are reachable in viewer mode and nobody has said whether "
-        "they should be. Add each to the deny list in app.main, or to ALLOWED "
-        "here with the reason:\n  "
+        "they should be. Remove their viewer permission or add them to ALLOWED "
+        "here with the reviewed reason:\n  "
         + "\n  ".join(f"{method} {path}" for method, path in unclassified)
     )
 
@@ -107,7 +83,33 @@ def test_the_allow_list_has_not_outlived_its_routes() -> None:
     assert not stale, f"ALLOWED names routes the app no longer serves: {stale}"
 
 
-def test_the_allow_list_does_not_contradict_the_deny_list() -> None:
+def test_permission_inventory_matches_live_schema() -> None:
+    served = {(method.upper(), path) for path, operations in app.openapi()["paths"].items()
+              for method in operations if method in {"get", "post", "put", "patch", "delete"}}
+    assert VIEWER_ALLOWED_OPERATIONS <= served
+    assert {operation for operation in served if viewer_request_allowed(*operation)} == VIEWER_ALLOWED_OPERATIONS
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_unreviewed_live_route_never_executes(client, monkeypatch, method) -> None:
+    monkeypatch.setenv("COPYLOT_VIEWER_MODE", "1")
+    called = []
+
+    def unreviewed():
+        called.append(True)
+        return {"unexpected": True}
+
+    original_routes = list(app.router.routes)
+    try:
+        app.add_api_route("/api/viewer/auth/unreviewed", unreviewed, methods=[method])
+        response = client.request(method, "/api/viewer/auth/unreviewed")
+        assert response.status_code == 403
+        assert not called
+    finally:
+        app.router.routes[:] = original_routes
+
+
+def test_reviewed_viewer_writes_remain_allowed() -> None:
     both = sorted(operation for operation in ALLOWED if _denied(*operation))
     assert not both, f"listed as allowed and denied at once: {both}"
 

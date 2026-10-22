@@ -260,7 +260,7 @@ def results(tmp_path_factory, require_r) -> dict[str, pd.DataFrame]:
                 ksea_input, meta, "Ctrl", "Treat", test_type=test_type
             )[["UPD_seq", "log2FC", "pval", "adj_pval"]]
         except Exception as exc:
-            raise AssertionError(f"public Python KSEA failed for {test_type}") from exc
+            raise AssertionError(f"public Python Kinase Library failed for {test_type}") from exc
     posthoc = notebook.anova_posthoc_data(
         notebook.anova_data_f(
             frame, meta, conditions=list(CONDITIONS), workflow="Protein"

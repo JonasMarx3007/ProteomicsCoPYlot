@@ -40,7 +40,7 @@ def _fragpipe() -> pd.DataFrame:
 def test_fragpipe_protein_and_gene_columns_are_aliased() -> None:
     renamed = rename_cols(_fragpipe())
     assert "ProteinNames" in renamed.columns and "GeneNames" in renamed.columns
-    assert "Protein ID" in renamed.columns  # the bare accession keeps its name
+    assert "ProteinAccessions" in renamed.columns  # the bare accession, for the protein correction
     assert _resolve_label_column("protein", "workflow", renamed) == "ProteinNames"
     assert _resolve_label_column("protein", "genes", renamed) == "GeneNames"
 

@@ -251,7 +251,7 @@ def test_python_phosphoproteome_different_genes_uses_all_group_tokens() -> None:
         uncorrected=True,
     )
     assert "Gene_group" in anova_result.columns
-    assert notebook_functions._different_gene_tokens(anova_result["Gene_group"], True) == [
+    assert notebook_functions._different_gene_tokens(anova_result["Gene_group"]) == [
         "A",
         "B",
         "C",

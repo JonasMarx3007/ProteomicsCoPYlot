@@ -56,7 +56,7 @@ COLUMN_LABELS: dict[str, str] = {
     "n_group2": "n (group 2)",
     "q_statistic": "Tukey q",
     "tukey_pval": "Tukey p-value",
-    "anova_adj_pval": "ANOVA adjusted p-value",
+    "anova_adj_pval": "One-way ANOVA adjusted p-value",
     # Identifiers
     "ProteinNames": "Protein",
     "GeneNames": "Gene",

@@ -570,7 +570,7 @@ def upload_phosprot(
     session's phosphosite data, a user brings back a phosphoprotein matrix they
     collapsed before (for example in an earlier session or another tool), so an
     analysis can be reproduced on exactly that matrix. Deliberately kept
-    (design decision D17). It needs the phospho annotation, whose sample sheet
+   . It needs the phospho annotation, whose sample sheet
     the phosphoprotein level shares; the matrix is recorded with aggregation
     "uploaded" and no collapse lineage. `is_log2_transformed=None` detects the
     scale from the values.

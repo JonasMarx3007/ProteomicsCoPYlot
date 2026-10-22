@@ -1,5 +1,9 @@
 * text=auto eol=lf
 
+# Example-data checksums describe these exact LF-terminated bytes on every OS.
+proteomicscopylot/example_data/*.csv text eol=lf
+proteomicscopylot/example_data/*.tsv text eol=lf
+
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf

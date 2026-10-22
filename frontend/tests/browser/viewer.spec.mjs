@@ -100,6 +100,27 @@ test('authenticated viewer is read-only', async ({ page, browser }) => {
   } });
   expect(upload.status()).toBe(403);
   expect(await (await tabRequest(page).get('/api/annotations/current/protein')).json()).toEqual(annotation);
+  const current = await (await tabRequest(page).get('/api/datasets/current')).json();
+  const runtimeResponse = await tabRequest(page).get('/api/runtime/r');
+  expect(runtimeResponse.ok()).toBeTruthy();
+  const runtime = await runtimeResponse.json();
+  expect(runtime.diagnosticsHidden).toBe(true);
+  expect(runtime.executable).toBeNull();
+  expect(runtime.versionOutput).toBeNull();
+  expect(runtime.candidates).toEqual([]);
+  for (const [path, data] of [
+    ['/api/datasets/active', { packageName: current.activePackage }],
+    ['/api/datasets/metadata/profiles/active', { profileName: current.activeMetadataProfile }],
+    ['/api/data-tools/phospho-localization-cutoff', { cutoff: 0.75 }],
+  ]) {
+    const response = await tabRequest(page).post(path, { data });
+    expect(response.ok(), `${path}: ${await response.text()}`).toBeTruthy();
+  }
+  expect((await (await tabRequest(page).get('/api/data-tools/phospho-localization-cutoff')).json()).cutoff).toBe(0.75);
+  for (const path of ['/api/new-route', '/api/plots/new-plot.png', '/api/viewer/auth/new-action']) {
+    expect((await tabRequest(page).get(path)).status()).toBe(403);
+  }
+  expect((await tabRequest(page).get('/api/plots/notebooks/abcdefghijklmnopqrstuvwxyz012345.zip')).status()).toBe(403);
   await page.getByRole('button', { name: 'Statistical Analysis', exact: true }).click();
   await page.locator('label').filter({ hasText: /^Condition 2$/ }).locator('..').locator('select').selectOption('B');
   await expect(page.getByText('Result Table', { exact: true })).toBeVisible();

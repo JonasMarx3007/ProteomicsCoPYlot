@@ -216,3 +216,62 @@ def two_sided_t_pvalues(estimate, se, dof) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         t_stat = np.asarray(estimate, dtype=float) / np.asarray(se, dtype=float)
     return np.asarray(2.0 * _student_t.sf(np.abs(t_stat), dof), dtype=float)
+
+
+# --- protein-corrected phosphosite changes ------------------------------------
+#
+# A phosphosite that rises because its whole protein rose is not a signalling
+# event. When the protein is quantified in the same comparison, the site's
+# change is corrected for it as MSstatsPTM does ("adjustProteinLevel"):
+#
+#     log2FC_adj = log2FC_site - log2FC_protein
+#     SE_adj^2   = SE_site^2 + SE_protein^2        (independent estimates)
+#     df_adj     by Welch-Satterthwaite on the two components
+#     p_adj      two-sided t on df_adj
+#
+# Sites with no quantified protein keep their uncorrected values and are
+# flagged, so the correction never silently drops a site.
+
+def split_tokens(value) -> list[str]:
+    """The `;`-separated members of a protein-group or gene-group cell."""
+    text = str(value if value is not None else "").strip()
+    if not text or text.lower() == "nan":
+        return []
+    return [token.strip() for token in text.replace(",", ";").split(";") if token.strip()]
+
+
+def match_sites_to_proteins(site_keys, protein_rows) -> tuple[np.ndarray, np.ndarray]:
+    """For every site accession: the protein row that lists it (else -1), and whether several do.
+
+    `site_keys`: one accession per site (the phosphosite `Protein_group`).
+    `protein_rows`: one list of accessions per protein row (`split_tokens` of
+    its `ProteinAccessions` cell). Only a unique protein row is accepted;
+    overlapping groups return -1 and are flagged ambiguous.
+    """
+    first: dict[str, int] = {}
+    count: dict[str, int] = {}
+    for row_index, tokens in enumerate(protein_rows):
+        for token in set(tokens):
+            first.setdefault(token, row_index)
+            count[token] = count.get(token, 0) + 1
+    keys = [str(key).strip() for key in site_keys]
+    index = np.asarray([first.get(key, -1) for key in keys], dtype=int)
+    ambiguous = np.asarray([count.get(key, 0) > 1 for key in keys], dtype=bool)
+    index[ambiguous] = -1
+    return index, ambiguous
+
+
+def protein_corrected_site_changes(
+    site_log2fc, site_se, site_dof, protein_log2fc, protein_se, protein_dof,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(log2FC_adj, SE_adj, df_adj, p_adj) per site; NaN protein values leave a site NaN."""
+    fc = np.asarray(site_log2fc, dtype=float) - np.asarray(protein_log2fc, dtype=float)
+    se_s = np.asarray(site_se, dtype=float)
+    se_p = np.asarray(protein_se, dtype=float)
+    df_s = np.asarray(site_dof, dtype=float)
+    df_p = np.asarray(protein_dof, dtype=float)
+    se_squared = se_s**2 + se_p**2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dof = se_squared**2 / (se_s**4 / np.maximum(df_s, 1e-12) + se_p**4 / np.maximum(df_p, 1e-12))
+    se = np.sqrt(se_squared)
+    return fc, se, dof, two_sided_t_pvalues(fc, se, dof)

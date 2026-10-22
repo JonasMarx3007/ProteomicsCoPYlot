@@ -57,6 +57,17 @@ def rename_cols(df: pd.DataFrame) -> pd.DataFrame:
     alias_targets = {
         "run": "File.Name",
         "rfilename": "File.Name",
+        # The accession column, kept apart from ProteinNames: Spectronaut's
+        # PG.ProteinNames holds entry names (TMA7_HUMAN) and the accessions sit
+        # in PG.ProteinAccessions; DIA-NN's Protein.Group, FragPipe's "Protein
+        # ID" and MaxQuant's "Majority protein IDs" are accessions. Phosphosite
+        # rows name their protein by accession (Protein_group), so this is the
+        # column a site is matched to its protein by.
+        "pgproteinaccessions": "ProteinAccessions",
+        "proteingroup": "ProteinAccessions",
+        "proteinid": "ProteinAccessions",
+        "majorityproteinids": "ProteinAccessions",
+        "proteinaccessions": "ProteinAccessions",
         "pgproteinnames": "ProteinNames",
         "pgproteingroups": "ProteinNames",
         "proteinids": "ProteinNames",
@@ -79,6 +90,11 @@ def rename_cols(df: pd.DataFrame) -> pd.DataFrame:
     occupied = set(current_columns)
     rename_map: dict[str, str] = {}
     for column in current_columns:
+        # `Protein_group` is CoPYlot's own phosphosite column (the site's
+        # protein accession, from the collapse); it normalises like DIA-NN's
+        # "Protein.Group" but must keep its name.
+        if column == "Protein_group":
+            continue
         target = alias_targets.get(_normalize_colname(column))
         if not target or target == column:
             continue
@@ -87,7 +103,16 @@ def rename_cols(df: pd.DataFrame) -> pd.DataFrame:
             continue
         rename_map[column] = target
         occupied.add(target)
-    return renamed.rename(columns=rename_map)
+    renamed = renamed.rename(columns=rename_map)
+    # DIA-NN's Protein.Ids is both the label column (it keeps feeding
+    # ProteinNames, as it always has) and an accession list; when the file has
+    # no separate accession column, it serves as ProteinAccessions too.
+    if "ProteinAccessions" not in renamed.columns:
+        for column in current_columns:
+            if _normalize_colname(column) == "proteinids" and column in rename_map:
+                renamed["ProteinAccessions"] = renamed[rename_map[column]]
+                break
+    return renamed
 
 
 def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:

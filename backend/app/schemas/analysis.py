@@ -23,6 +23,7 @@ class AnalysisVolcanoRequest(BaseModel):
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
+    proteinCorrection: bool = False
 
 
 class AnalysisVolcanoPoint(BaseModel):

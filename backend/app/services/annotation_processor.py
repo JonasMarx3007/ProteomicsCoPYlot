@@ -11,7 +11,7 @@ from app.schemas.annotation import ConditionAssignment, FilterMode
 from app.services.metadata_upload_store import MAX_MANUAL_METADATA_PROFILES, _resolve_sample_column
 from app.services.functions import (
     build_metadata_from_conditions,
-    filter_data,
+    filter_mask,
     log2_transform_data,
     missingness_imbalance,
     missingness_imbalance_warning,
@@ -214,12 +214,14 @@ def _value_scale_detection(
 _NORMALIZATION_LABELS = {
     "none": "No normalization was applied.",
     "median": (
-        "Median centering was applied globally to the log2 values before filtering: each "
-        "sample was shifted onto a common median."
+        "Median centering was applied globally to the log2 values: each sample was shifted "
+        "onto a common median, fitted on the rows the valid-value filter kept and applied "
+        "to every row."
     ),
     "quantile": (
-        "Quantile normalization was applied globally to the log2 values before filtering: "
-        "every sample was mapped onto a common intensity distribution."
+        "Quantile normalization was applied globally to the log2 values: every sample was "
+        "mapped onto a common intensity distribution, fitted on the rows the valid-value "
+        "filter kept and applied to every row."
     ),
 }
 
@@ -234,21 +236,28 @@ def _vsn_label() -> str:
         version = None
     suffix = f" version {version}" if version else ""
     return (
-        "VSN was applied globally, replacing the plain log2 transform. It is computed by the "
-        f"Bioconductor 'vsn' package{suffix} rather than a reimplementation. Note that the vsn "
-        "fit can be sensitive to tiny changes in the input on some datasets, so re-running it "
-        "on data exported and re-imported through a text format may not reproduce it exactly. "
+        "VSN was applied globally, replacing the plain log2 transform; the model was fitted "
+        "on the rows the valid-value filter kept and applied to every row. It is computed by the "
+        f"Bioconductor 'vsn' package{suffix} rather than a reimplementation, and the result "
+        "is shifted by one global constant so that its overall median equals that of the "
+        "plain log2 data (vsn's fit is otherwise determined only up to such a constant). "
         "The CV and abundance plots use the unnormalized data, because VSN output is not on a "
         "linear intensity scale."
     )
 
 
-def _normalization_warning(normalization: str) -> str:
+def _normalization_warning(normalization: str, normalization_fit: str = "filtered_rows") -> str:
     """State the normalization in the annotation output so the report records it."""
     key = str(normalization or "none").strip().lower()
     if key == "vsn":
-        return _vsn_label()
-    message = _NORMALIZATION_LABELS.get(key, f"Normalization '{key}' was applied.")
+        message = _vsn_label()
+    else:
+        message = _NORMALIZATION_LABELS.get(key, f"Normalization '{key}' was applied.")
+    if key != "none" and str(normalization_fit or "filtered_rows") == "complete_features":
+        message = message.replace(
+            "fitted on the rows the valid-value filter kept",
+            "fitted on the features observed in every sample",
+        )
     if key == "none":
         message += (
             " Sample loading and instrument drift are therefore uncorrected unless the upload "
@@ -257,15 +266,43 @@ def _normalization_warning(normalization: str) -> str:
     return message
 
 
-def _missingness_warning(log2_data: pd.DataFrame, metadata: pd.DataFrame, normalization: str) -> str | None:
-    """Warn when median, quantile or VSN normalization met very uneven missingness."""
+def _missingness_warning(
+    log2_data: pd.DataFrame, metadata: pd.DataFrame, normalization: str, normalization_fit: str = "filtered_rows",
+) -> str | None:
+    """Warn when median, quantile or VSN normalization met very uneven missingness.
+
+    The sentence is the one the pip and R packages print. The app adds where the
+    remedy is, when the fit was not already on the complete features.
+    """
     if str(normalization or "none").strip().lower() not in {"median", "quantile", "vsn"}:
         return None
-    return missingness_imbalance_warning(missingness_imbalance(log2_data, metadata), normalization)
+    message = missingness_imbalance_warning(missingness_imbalance(log2_data, metadata), normalization)
+    if message and str(normalization_fit or "filtered_rows") != "complete_features":
+        message += (
+            " To remove the shift, fit the normalization on the features observed in every sample "
+            "(Normalization box, \"Fit on\")."
+        )
+    return message
 
 
 ZERO_SHARE_LIMIT = 0.005
 ZERO_GAP_LOG2 = 5.0
+
+
+def _negative_linear_warning(data: pd.DataFrame, sample_columns: list[str], is_log2_transformed: bool) -> str | None:
+    """Report finite negative measurements that cannot enter a linear-to-log2 conversion."""
+    if is_log2_transformed or not sample_columns:
+        return None
+    values = data[sample_columns].apply(pd.to_numeric, errors="coerce")
+    negative = (values < 0) & np.isfinite(values)
+    count = int(negative.to_numpy().sum())
+    if not count:
+        return None
+    rows = int(negative.any(axis=1).sum())
+    return (
+        f"{count:,} negative values across {rows:,} rows cannot be log2-transformed. "
+        "They become missing and may later be imputed. Check the data scale or preprocessing."
+    )
 
 
 def _log2_zero_warning(data: pd.DataFrame, sample_columns: list[str], is_log2_transformed: bool) -> str | None:
@@ -307,6 +344,7 @@ def prepare_normalized_log2_data(
     sample_columns: list[str],
     is_log2_transformed: bool,
     normalization: str,
+    fit_rows=None,
 ) -> pd.DataFrame:
     """Create the one canonical analysis matrix used by every annotation path.
 
@@ -314,6 +352,9 @@ def prepare_normalized_log2_data(
     its input, so observed linear intensities are preserved exactly as its source.
     Raw-zero non-detections are masked by the normalization boundary.
     For already-log2 uploads there is no original linear matrix to preserve.
+
+    `fit_rows` are the rows the valid-value filter kept: the normalization is
+    learned from them and applied to every row (see `normalize_data`).
     """
     if is_log2_transformed:
         log2_data = use_existing_log2_data(data, sample_columns)
@@ -325,7 +366,65 @@ def prepare_normalized_log2_data(
         sample_columns,
         normalization,
         linear_source=None if is_log2_transformed else data,
+        fit_rows=fit_rows,
     )
+
+
+def filter_then_normalize(
+    data: pd.DataFrame,
+    metadata: pd.DataFrame,
+    is_log2_transformed: bool,
+    normalization: str,
+    *,
+    min_present: int,
+    filter_mode,
+    filter_method="at_least_n",
+    min_percentage=70.0,
+    normalization_fit: str = "filtered_rows",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The annotation's two matrices, in the order the pipeline runs.
+
+    1. log2 (or the uploaded log2 values as they are);
+    2. the valid-value filter decides which rows are kept -- it counts missing
+       values, which no normalization changes, so the decision is the same
+       whichever order is used;
+    3. the normalization is fitted on the kept rows (`normalization_fit`
+       "filtered_rows") or on the features observed in every sample
+       ("complete_features")
+       and applied to every row.
+
+    Returns (log2_data, filtered_data). Both carry the same normalization, so
+    the modules that read the unfiltered matrix (QC, comparison, single
+    protein) and the ones that read the filtered one (statistics, imputation)
+    stay on one scale; the filtered matrix is exactly what a normalization of
+    the kept rows alone gives. Until 2026-10-20 the normalization was fitted
+    on every row first, which let the low-abundance rows a filter removes --
+    missing more in one group than another -- shift unchanged proteins by up
+    to 0.5 log2 units.
+    """
+    sample_columns = metadata["sample"].tolist()
+    plain = prepare_normalized_log2_data(data, sample_columns, is_log2_transformed, "none")
+    keep = filter_mask(
+        plain, metadata, min_present=min_present, mode=filter_mode,
+        method=filter_method, min_percentage=min_percentage,
+    )
+    # A filter that keeps nothing leaves nothing to fit on; the unfiltered
+    # matrix is then normalized on every row, as it was before, so the "data"
+    # source stays usable while the filtered one is empty.
+    fit_rows = plain.index[keep] if bool(keep.any()) else None
+    if normalization != "none" and str(normalization_fit or "filtered_rows") == "complete_features":
+        complete = plain[sample_columns].notna().all(axis=1)
+        if not bool(complete.any()):
+            raise ValueError(
+                "Cannot normalize using complete features: no feature is observed in every sample. "
+                "Choose 'Filtered rows' under 'Fit on', or leave normalization off."
+            )
+        fit_rows = plain.index[complete]
+    log2_data = prepare_normalized_log2_data(
+        data, sample_columns, is_log2_transformed, normalization, fit_rows=fit_rows,
+    )
+    filtered_data = log2_data.loc[keep].reset_index(drop=True)
+    return log2_data, filtered_data
 
 
 def resolve_log2_state(
@@ -739,6 +838,7 @@ def compute_annotation(
     filter_method="at_least_n",
     min_percentage=70.0,
     normalization: str = "none",
+    normalization_fit: str = "filtered_rows",
 ) -> AnnotationComputationResult:
     metadata_result = build_metadata_from_conditions(
         data,
@@ -764,24 +864,11 @@ def compute_annotation(
         is_log2_transformed,
     )
 
-    # Normalize before filtering so the log2 frame and the filtered frame that
-    # derives from it both carry it. Modules differ in which one they read
-    # (statistics uses filtered, comparison and single-protein use log2), so
-    # normalizing only one would leave the app internally inconsistent.
-    log2_data = prepare_normalized_log2_data(
-        data,
-        sample_columns,
-        resolved_log2,
-        normalization,
-    )
-
-    filtered_data = filter_data(
-        log2_data,
-        metadata,
-        min_present=min_present,
-        mode=filter_mode,
-        method=filter_method,
-        min_percentage=min_percentage,
+    log2_data, filtered_data = filter_then_normalize(
+        data, metadata, resolved_log2, normalization,
+        min_present=min_present, filter_mode=filter_mode,
+        filter_method=filter_method, min_percentage=min_percentage,
+        normalization_fit=normalization_fit,
     )
 
     annotated = {str(sample) for sample in sample_columns}
@@ -810,13 +897,16 @@ def compute_annotation(
         )
     if log2_warning:
         warnings.append(log2_warning)
+    negative_warning = _negative_linear_warning(data, sample_columns, resolved_log2)
+    if negative_warning:
+        warnings.append(negative_warning)
     zero_warning = _log2_zero_warning(data, sample_columns, resolved_log2)
     if zero_warning:
         warnings.append(zero_warning)
     if auto_detected:
         warnings.append("Metadata was auto-generated from date-like column names.")
-    warnings.append(_normalization_warning(normalization))
-    missingness_warning = _missingness_warning(log2_data, metadata, normalization)
+    warnings.append(_normalization_warning(normalization, normalization_fit))
+    missingness_warning = _missingness_warning(filtered_data, metadata, normalization, normalization_fit)
     if missingness_warning:
         warnings.append(missingness_warning)
 
@@ -840,6 +930,7 @@ def compute_annotation_from_metadata(
     filter_method="at_least_n",
     min_percentage=70.0,
     normalization: str = "none",
+    normalization_fit: str = "filtered_rows",
 ) -> AnnotationComputationResult:
     normalized_metadata = normalize_uploaded_metadata(data=data, metadata=metadata)
     sample_columns = normalized_metadata["sample"].tolist()
@@ -860,20 +951,11 @@ def compute_annotation_from_metadata(
         is_log2_transformed,
     )
 
-    log2_data = prepare_normalized_log2_data(
-        data,
-        sample_columns,
-        resolved_log2,
-        normalization,
-    )
-
-    filtered_data = filter_data(
-        log2_data,
-        normalized_metadata,
-        min_present=min_present,
-        mode=filter_mode,
-        method=filter_method,
-        min_percentage=min_percentage,
+    log2_data, filtered_data = filter_then_normalize(
+        data, normalized_metadata, resolved_log2, normalization,
+        min_present=min_present, filter_mode=filter_mode,
+        filter_method=filter_method, min_percentage=min_percentage,
+        normalization_fit=normalization_fit,
     )
 
     warnings = ["Using uploaded metadata table for annotation."]
@@ -893,11 +975,14 @@ def compute_annotation_from_metadata(
         )
     if log2_warning:
         warnings.append(log2_warning)
+    negative_warning = _negative_linear_warning(data, sample_columns, resolved_log2)
+    if negative_warning:
+        warnings.append(negative_warning)
     zero_warning = _log2_zero_warning(data, sample_columns, resolved_log2)
     if zero_warning:
         warnings.append(zero_warning)
-    warnings.append(_normalization_warning(normalization))
-    missingness_warning = _missingness_warning(log2_data, normalized_metadata, normalization)
+    warnings.append(_normalization_warning(normalization, normalization_fit))
+    missingness_warning = _missingness_warning(filtered_data, normalized_metadata, normalization, normalization_fit)
     if missingness_warning:
         warnings.append(missingness_warning)
 

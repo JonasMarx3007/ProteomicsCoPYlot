@@ -16,7 +16,7 @@ import { readPersistedUiState, writePersistedUiState } from "../../lib/persisted
 import type { ContextMode, AnnotationKind, AnovaRequest, AnovaResultResponse, AnovaClusterMethod, EnrichmentOrganism, EnrichmentRequest, EnrichmentResultResponse, StatsTestType, DataSource, StatisticalOptionsResponse } from "../../lib/types";
 import { dataSourceOptions, ENRICHMENT_ORGANISM_OPTIONS } from "../../lib/types";
 import { useDataSourceChoice } from "../../lib/useDataSourceChoice";
-import { TEST_TYPE_OPTIONS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
+import { restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType, useTestTypeOptions, availableTestType } from "../../lib/statisticalTests";
 import SelectField from "../../components/SelectField";
 import SectionCard from "../../components/SectionCard";
 import CheckboxField from "../../components/CheckboxField";
@@ -127,7 +127,10 @@ export function OraPanel({
   const [selectedTestType, setTestType] = useState<StatsTestType>(() => {
     return restoreTestType(persisted.testType);
   });
-  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
+  const { options: testTypeOptions, moderatedAvailable } = useTestTypeOptions();
+  const testType = sourceMode === "volcano_control"
+    ? controlTestType(selectedTestType)
+    : availableTestType(selectedTestType, moderatedAvailable);
   const [pValueThreshold, setPValueThreshold] = useState(() =>
     restorePValueThreshold(persisted.pValueThreshold)
   );
@@ -247,7 +250,7 @@ export function OraPanel({
       showDendrograms: true,
       showLegend: true,
       nClusters: roundedClusterCount,
-      // Must match what the ANOVA page clustered with, or the cluster
+      // Must match what the One-way ANOVA page clustered with, or the cluster
       // numbers the user picks between refer to a different partition.
       clusterMethod,
       // ORA runs off the cluster assignments; pairwise post-hoc is not involved.
@@ -263,7 +266,7 @@ export function OraPanel({
     pValueThreshold,
     useUncorrected,
     roundedClusterCount,
-    // ORA must run against the partition the ANOVA page drew.
+    // ORA must run against the partition the One-way ANOVA page drew.
     clusterMethod,
   ]);
   const debouncedAnovaRequest = useDebouncedValue(anovaRequest, 650);
@@ -297,7 +300,7 @@ export function OraPanel({
       .catch((err) => {
         if (isAbortError(err)) return;
         setAnovaState(null);
-        setError(err instanceof Error ? err.message : "Failed to generate ANOVA clusters");
+        setError(err instanceof Error ? err.message : "Failed to generate One-way ANOVA clusters");
       });
     return () => {
       controller.abort();
@@ -364,7 +367,7 @@ export function OraPanel({
     useUncorrected,
     selectedCluster,
     roundedClusterCount,
-    // ORA must run against the partition the ANOVA page drew.
+    // ORA must run against the partition the One-way ANOVA page drew.
     clusterMethod,
     adjPValueCutoff,
     topN,
@@ -510,6 +513,11 @@ export function OraPanel({
   return (
     <div className="space-y-6">
       <SectionCard title="GO Enrichment (ORA)">
+        <p className="mb-3 text-sm text-slate-600">
+          All semicolon-listed genes are included and counted once per gene list. The same mapping
+          applies to selected genes and the tested-gene background. Genes mapped from a protein group
+          are not necessarily independently measured.
+        </p>
         <div className="max-w-xs">
           <SelectField label="Dataset level" value={kind} onChange={(value) => setKind(value as AnnotationKind)} options={oraKindOptions} />
           <LocalizationCutoffField kind={kind} />
@@ -525,20 +533,20 @@ export function OraPanel({
               onChange={(value) => setSourceMode(value === "anova" ? "anova" : "volcano")}
               options={[
                 { value: "volcano", label: "Volcano" },
-                { value: "anova", label: "ANOVA" },
+                { value: "anova", label: "One-way ANOVA" },
               ]}
             />
           </div>
 
           {sourceMode === "anova" ? (
             <div className="mt-6 border-t border-slate-200 pt-6">
-              <h4 className="text-sm font-semibold text-slate-900">ANOVA Options</h4>
+              <h4 className="text-sm font-semibold text-slate-900">One-way ANOVA Options</h4>
               <div className="mt-3 grid gap-4 lg:grid-cols-2">
                 <SelectField
                   label="Source"
                   value="anova"
                   onChange={() => undefined}
-                  options={[{ value: "anova", label: "ANOVA Cluster" }]}
+                  options={[{ value: "anova", label: "One-way ANOVA Cluster" }]}
                   disabled
                 />
                 <SelectField
@@ -593,7 +601,7 @@ export function OraPanel({
                 } : undefined}
               />
               <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-                <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : TEST_TYPE_OPTIONS} />
+                <SelectField label="Test type" value={testType} onChange={(value) => setTestType(value as StatsTestType)} options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS : testTypeOptions} />
                 <NumberField label="P-value threshold" value={pValueThreshold} onChange={setPValueThreshold} step={0.001} />
                 <NumberField label="log2 FC threshold" value={log2fcThreshold} onChange={setLog2fcThreshold} step={0.1} />
               </div>
@@ -676,10 +684,10 @@ export function OraPanel({
           message={
             sourceMode === "anova"
               ? anovaResult?.significantCount === 0
-                ? "No rows passed the selected ANOVA threshold, so no clusters are available for ORA."
+                ? "No rows passed the selected One-way ANOVA threshold, so no clusters are available for ORA."
                 : availableAnovaClusters.length
                 ? "Select a protein cluster to run ORA."
-                : "ANOVA clusters are being generated from conditions with replicate samples."
+                : "One-way ANOVA clusters are being generated from conditions with replicate samples."
               : sourceMode === "volcano_control"
               ? "Please select four different conditions and controls to generate the plot."
               : "Please select two different conditions to generate the plot."
@@ -704,7 +712,7 @@ export function OraPanel({
             />
             {result.clusterGenes.length > 0 && result.clusterTerms.length > 0 && clusterPlotUrl ? (
               <ImageSection
-                title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
+                title={`One-way ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
                 url={clusterPlotUrl}
                 notebook={clusterNotebook.rendered}
                 onRendered={clusterNotebook.onRendered}
@@ -718,13 +726,13 @@ export function OraPanel({
               <InfoSection
                 message={
                   result.clusterGenes.length === 0
-                    ? `ANOVA cluster ${result.selectedCluster ?? selectedCluster} does not contain genes that can be used for ORA.`
-                    : "No enrichment terms were found for the selected ANOVA cluster and parameters."
+                    ? `One-way ANOVA cluster ${result.selectedCluster ?? selectedCluster} does not contain genes that can be used for ORA.`
+                    : "No enrichment terms were found for the selected One-way ANOVA cluster and parameters."
                 }
               />
             )}
             <GeneListSection
-              title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Genes`}
+              title={`One-way ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Genes`}
               genes={clusterResult?.clusterGenes ?? result.clusterGenes}
               plotUrl={clusterPlotUrl ?? undefined} notebook={clusterNotebook.notebook}
               filename={`ora_anova_cluster_${result.selectedCluster ?? selectedCluster}_${kind}.txt`}
@@ -738,7 +746,7 @@ export function OraPanel({
               />
             ) : null}
             <TableSection
-              title={`ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
+              title={`One-way ANOVA Cluster ${result.selectedCluster ?? selectedCluster} Terms`}
               plotUrl={clusterPlotUrl ?? undefined} notebook={clusterNotebook.notebook}
               rows={oraExportRows(clusterResult?.clusterTerms ?? result.clusterTerms, clusterResult ?? result, {
                 analysisSource: sourceMode,

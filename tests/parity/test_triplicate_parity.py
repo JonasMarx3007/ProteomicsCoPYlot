@@ -130,10 +130,15 @@ BACKEND_ONLY_ANALYSIS_NAMES = (
     "normal_fit_curve",
     "qqnorm_plot_data",
     "condition_cvs",  # the CV plot and table share it; the packages compute CVs inside cov_plot.
+    "filter_mask",  # the filter's row decision on the original index, for the normalization fit; the packages pass `filtered.index` / `rownames(filtered)`.
+    "unpaired_samples_note",  # the GUI line naming samples a paired test left out; the packages have no warning list.
+    "is_moderated_test_type",  # gates the R-only moderated tests in routes and exports; the packages resolve the type directly.
 )
 
 PIP_ONLY_NAMES = (
     "adjust_finite_pvalues",  # R adjusts finite p-values inline in volcano calculations.
+    "refuse_moderated",  # the moderated tests run in R limma; R runs them, this package refuses them (as it does VSN).
+    "protein_results_for_correction",  # runs the protein comparison a site correction subtracts; R inlines the two calls in volcano_data_f.
     "correlation_matrix_mesh",  # matplotlib needs a mesh for vector cells; R's image() draws rectangles itself.
     "different_genes_column",
     "guarded_t_statistic",
@@ -146,6 +151,8 @@ PIP_ONLY_NAMES = (
 R_ONLY_NAMES = (
     "%||%",  # R's null-default operator; Python spells it `x if x is not None else y`.
     "localization_keep",  # row mask behind filter_localization, so R can narrow an aligned matrix by position.
+    "fit_row_mask",  # turns `fit_rows` (row names or a logical) into a mask; Python indexes with `.loc` directly.
+    "anchor_vsn_level",  # pins vsn's arbitrary global offset to the log2 level; VSN runs in R only (the pip package refuses it).
     "numeric_matrix",
     "pivot_wide",
     "plot_colors",

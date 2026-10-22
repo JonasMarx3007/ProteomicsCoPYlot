@@ -7,7 +7,8 @@ from types import ModuleType
 from app.services.notebook_archive import NotebookRecipe, dataframe_bytes
 from app.services.notebook_preprocessing import capture_notebook
 from app.services.notebook_source import extract_notebook_source, function_definition, merge_source, module_source
-from app.services.notebook_volcano import volcano_source
+from app.services.notebook_volcano import (
+    PROTEIN_CORRECTION_EXPLANATION, frozen_protein_comparison, protein_stats_code, volcano_source)
 
 
 @lru_cache(maxsize=2)
@@ -77,11 +78,14 @@ def render_regulation(*, interactive=False, **options):
         raise NotebookProvenanceError('Generate annotations before exporting a regulation notebook.')
     _, imputation, uses_imputed, documentation = input_history('phospho', annotation, dataset, source)
     calculation = {k: settings[k] for k in ('condition1', 'condition2', 'p_value_threshold',
-        'log2fc_threshold', 'test_type', 'use_uncorrected', 'data_source')}
+        'log2fc_threshold', 'test_type', 'use_uncorrected', 'data_source', 'protein_correction')}
     calculation.update(kind='phospho', identifier='workflow')
-    preparation = {k: settings[k] for k in inspect.signature(phospho_tools.phosprot_regulation_table).parameters}
+    preparation = {k: settings[k] for k in inspect.signature(phospho_tools.phosprot_regulation_table).parameters
+                   if k != 'protein_correction'}
     module = regulation_module(interactive)
-    _, _, statistics, _ = module.calculate_table(data, metadata, mask, **calculation)
+    protein_resources, protein_calculation, protein_stats = frozen_protein_comparison(
+        'phospho', settings.get('protein_correction'), calculation, source, module, identifiers)
+    _, _, statistics, _ = module.calculate_table(data, metadata, mask, protein_stats=protein_stats, **calculation)
     table = module.prepare_table(statistics, **preparation)
     fmt = 'html' if interactive else plot_output_format.get()
     if interactive:
@@ -93,28 +97,32 @@ def render_regulation(*, interactive=False, **options):
         finally:
             module.plot_output_format.reset(context)
     resources = {'input.parquet': dataframe_bytes(data), 'metadata.parquet': dataframe_bytes(metadata),
-        'table.parquet': dataframe_bytes(table), f'original.{fmt}': content.encode() if interactive else bytes(content)}
+        'table.parquet': dataframe_bytes(table), f'original.{fmt}': content.encode() if interactive else bytes(content),
+        **protein_resources}
     if mask is not None:
         resources['imputation_mask.parquet'] = dataframe_bytes(mask)
     recipe = NotebookRecipe(plot_name='Phosphoprotein Regulation', source=regulation_source(interactive),
-        settings=settings, original_filename=dataset.filename, resources=resources,
+        settings={**settings, **({'protein_calculation': protein_calculation} if protein_stats is not None else {})},
+        original_filename=dataset.filename, resources=resources,
         uses_imputed_input=uses_imputed, imputation_recipe=documentation,
         provenance={'kind': 'phospho', 'plot': 'phosprot_regulation', 'sourceUsed': source,
             'localizationCutoff': get_localization_cutoff(), 'filter': annotation.filter_config.model_dump(),
             'imputation': imputation.model_dump() if imputation else None},
         input_explanation='Captured processed phosphosite intensities and pairing metadata. The notebook repeats '
             'site-level testing and significance classification, then sums significant site fold changes by protein. '
-            'Imputed values are frozen; original-upload preprocessing is documented, not rerun.',
+            'Imputed values are frozen; original-upload preprocessing is documented, not rerun.'
+            + (PROTEIN_CORRECTION_EXPLANATION if protein_stats is not None else ''),
         calculation="mask_path = RESOURCES / 'imputation_mask.parquet'\n"
             "mask = read_resource_table(mask_path) if mask_path.exists() else None\n"
             f"calculation = {{key: settings[key] for key in {tuple(k for k in calculation if k not in {'kind', 'identifier'})!r}}}\n"
-            "_, _, statistics, _ = functions.calculate_table(data, metadata, mask, kind='phospho', identifier='workflow', **calculation)\n"
+            + protein_stats_code("settings.get('protein_correction')") +
+            "_, _, statistics, _ = functions.calculate_table(data, metadata, mask, kind='phospho', identifier='workflow', protein_stats=protein_stats, **calculation)\n"
             f"preparation = {{key: settings[key] for key in {tuple(preparation)!r}}}\n"
             "table = functions.prepare_table(statistics, **preparation)\n"
             "pd.testing.assert_frame_equal(table, read_resource_table(RESOURCES / 'table.parquet'), check_exact=True)\n"
             "table.to_csv('phosphoprotein_regulation.csv', index=False)\n"
             "from IPython.display import display, HTML, Image\ndisplay(table)\n"
-            "output = functions.render_plot(table, **settings)\n" +
+            "output = functions.render_plot(table, **{k: v for k, v in settings.items() if k != 'protein_calculation'})\n" +
             ("Path('reproduced.html').write_bytes(output.encode('utf-8'))\ndisplay(HTML(output))" if interactive else
              "Path('reproduced.png').write_bytes(output)\ndisplay(Image(data=output))"))
     try:

@@ -41,7 +41,7 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$BACKEND_DIR"
-  COPYLOT_AI_MODE=0 "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+  COPYLOT_AI_MODE=0 "$PYTHON_BIN" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
 ) &
 BACKEND_PID=$!
 

@@ -68,6 +68,21 @@ def test_report_sentence():
     assert "without a localization probability are excluded" in localization_cutoff_description(0.75)
 
 
+@pytest.mark.parametrize("cutoff,sites,below", [(0, 8, 3), (0.5, 4, 2), (0.75, 2, 0), (1, 0, 0)])
+def test_localization_warning_counts_only_retained_sites(monkeypatch, cutoff, sites, below):
+    from types import SimpleNamespace
+    from app.api.routes_data_tools import _localization_cutoff_response
+
+    frame = pd.DataFrame({"PTM_localization": [0.2, 0.5, 0.6, 0.75, 0.9, None, -1, 1.2]})
+    original = frame.copy(deep=True)
+    monkeypatch.setattr("app.services.annotation_store.get_annotation", lambda kind: SimpleNamespace(source_data=frame))
+    monkeypatch.setattr("app.services.phospho_localization.get_localization_cutoff", lambda: cutoff)
+    response = _localization_cutoff_response()
+    assert response.sites == sites
+    assert response.belowClassOne == below
+    pd.testing.assert_frame_equal(frame, original)
+
+
 @pytest.fixture
 def example():
     load_viewer_state(ROOT / "tests" / "fixtures" / "viewer_config.json")
@@ -120,7 +135,10 @@ def test_a_cutoff_nothing_passes_is_an_explained_error(example, monkeypatch):
 
 def test_api_round_trip_and_validation(example):
     with TestClient(app) as client:
-        assert client.get("/api/data-tools/phospho-localization-cutoff").json() == {"cutoff": 0.0, "available": True}
+        payload = client.get("/api/data-tools/phospho-localization-cutoff").json()
+        assert payload["cutoff"] == 0.0 and payload["available"] is True
+        # The page's non-class I line: sites under 0.75 out of the localized sites.
+        assert payload["sites"] > 0 and 0 <= payload["belowClassOne"] <= payload["sites"]
         assert client.post("/api/data-tools/phospho-localization-cutoff", json={"cutoff": 0.5}).json()["cutoff"] == 0.5
         assert client.post("/api/data-tools/phospho-localization-cutoff", json={"cutoff": 1.5}).status_code == 422
         assert client.get("/api/data-tools/phospho-localization-cutoff").json()["cutoff"] == 0.5

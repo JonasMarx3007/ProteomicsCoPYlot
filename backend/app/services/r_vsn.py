@@ -52,9 +52,25 @@ x <- matrix(v, nrow = nr, ncol = nc, byrow = TRUE)
 # a specific payload); IEEE NaN arriving over the wire must be converted, or
 # vsn2() aborts with "must be finite numeric or NA; please no NaN".
 x[is.nan(x)] <- NA_real_
-fit <- suppressWarnings(vsn2(x, verbose = FALSE))
+# args[5]: a file of 0/1 flags, one per row, naming the rows the model is fitted
+# on (the rows the valid-value filter kept); absent or all ones means every row.
+# The fitted transformation is then applied to every row with predict(), which
+# is vsn's own reference-subset use (vsn2 on a subset, predict on the rest).
+fit_rows <- rep(TRUE, nr)
+if (length(args) >= 5 && nzchar(args[5])) {
+  con <- file(args[5], "rb")
+  fit_rows <- readBin(con, what = "integer", n = nr, size = 1, signed = FALSE, endian = "little") == 1L
+  close(con)
+}
+if (all(fit_rows)) {
+  fit <- suppressWarnings(vsn2(x, verbose = FALSE))
+  result <- exprs(fit)
+} else {
+  fit <- suppressWarnings(vsn2(x[fit_rows, , drop = FALSE], verbose = FALSE))
+  result <- suppressWarnings(predict(fit, newdata = x))
+}
 out <- file(args[2], "wb")
-writeBin(as.vector(t(exprs(fit))), out, size = 8, endian = "little")
+writeBin(as.vector(t(result)), out, size = 8, endian = "little")
 close(out)
 """
 
@@ -113,14 +129,21 @@ def clear_vsn_availability_cache() -> None:
     vsn_availability.cache_clear()
 
 
-def vsn_normalize_linear(values: pd.DataFrame) -> pd.DataFrame:
+def vsn_normalize_linear(values: pd.DataFrame, fit_rows: "pd.Index | None" = None) -> pd.DataFrame:
     """Run Bioconductor vsn over **linear** intensities, returning glog2 values.
+
+    With `fit_rows`, `vsn2()` is fitted on those rows only and the fitted
+    transformation is applied to every row with `predict()`.
 
     Takes linear input deliberately. vsn's fit is numerically unstable on real
     data: perturbing the input at machine epsilon -- which is all that
-    reconstructing intensities as 2**log2 does -- moves the output by ~0.34 log2
-    units, and R reproduces that same disagreement with itself. Handing over the
-    untransformed values is what makes the result match a direct vsn2() call.
+    reconstructing intensities as 2**log2 does -- moves the output by a constant
+    (1.22 log2 on the HEK293 example), and R reproduces that same disagreement
+    with itself. The constant is a global offset in glog space with no effect on
+    any difference; `functions.anchor_vsn_level` removes it after this call, so
+    the two upload paths agree to ~1e-4.
+    Handing over the untransformed values keeps the result comparable to a
+    direct vsn2() call up to that anchoring.
     """
     availability = vsn_availability()
     if not availability.get("available"):
@@ -140,6 +163,12 @@ def vsn_normalize_linear(values: pd.DataFrame) -> pd.DataFrame:
         )
         script_path.write_text(_VSN_SCRIPT, encoding="utf-8")
         input_path.write_bytes(np.ascontiguousarray(linear, dtype="<f8").tobytes())
+        fit_path = ""
+        if fit_rows is not None:
+            flags = values.index.isin(pd.Index(fit_rows)).astype(np.uint8)
+            if not flags.all():
+                fit_path = str(root / "fit.bin")
+                Path(fit_path).write_bytes(flags.tobytes())
         try:
             completed = subprocess.run(
                 [
@@ -149,6 +178,7 @@ def vsn_normalize_linear(values: pd.DataFrame) -> pd.DataFrame:
                     str(output_path),
                     str(rows),
                     str(columns),
+                    fit_path,
                 ],
                 capture_output=True,
                 check=False,

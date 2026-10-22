@@ -407,6 +407,8 @@ def main() -> None:
     # uvicorn's dynamic string import resolution at runtime.
     uvicorn.run(
         fastapi_app,
+        # Session and analysis stores are process-local; ignore WEB_CONCURRENCY.
+        workers=1,
         host=args.host,
         port=args.port,
         log_level="info",

@@ -66,10 +66,10 @@ trap cleanup EXIT INT TERM
   cd "$BACKEND_DIR"
   if [ -n "$CHAT_MODEL" ]; then
     COPYLOT_AI_MODE=1 COPYLOT_OLLAMA_MODEL="$CHAT_MODEL" \
-      "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+      "$PYTHON_BIN" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
   else
     COPYLOT_AI_MODE=1 \
-      "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+      "$PYTHON_BIN" -m uvicorn app.main:app --workers 1 --host 127.0.0.1 --port 8000
   fi
 ) &
 BACKEND_PID=$!

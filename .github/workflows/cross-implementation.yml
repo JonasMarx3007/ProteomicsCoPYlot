@@ -103,12 +103,14 @@ jobs:
         env:
           COPYLOT_REQUIRE_R: "1"
           COPYLOT_REQUIRE_VSN: "1"
+          COPYLOT_REQUIRE_LIMMA: "1"
         run: pytest tests/parity tests/unit/package -q -rs
 
       # The main test job has no R, so these skip there.
       - name: Run the other tests that call R
         env:
           COPYLOT_REQUIRE_VSN: "1"
+          COPYLOT_REQUIRE_LIMMA: "1"
           COPYLOT_REQUIRE_R: "1"
         run: |
           pytest tests/unit tests/integration tests/reference -q -rs -m requires_r --ignore=tests/unit/package

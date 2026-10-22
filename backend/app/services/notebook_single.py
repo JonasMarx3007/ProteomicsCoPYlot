@@ -31,8 +31,10 @@ def box_source():
     # are replaced by their pure dependency closures below.
     names = ('_normalize_identifier', '_line_box_key_column_for_identifier', '_build_sample_labels',
              '_feature_label', '_feature_match_mask', '_select_conditions', 'prepare_table', 'render_plot')
-    # One `_gene_tokens` for the app, kept in stats_tools.py (2026-10-02).
-    local = '\n\n'.join([function_definition(module_source('stats_tools.py'), '_gene_tokens'),
+    # One `_gene_tokens` for the app, kept in stats_tools.py (2026-10-02); it
+    # cuts cells with the shared `split_tokens` (2026-10-22).
+    local = '\n\n'.join([function_definition(module_source('_core.py'), 'split_tokens'),
+                         function_definition(module_source('stats_tools.py'), '_gene_tokens'),
                          *(function_definition(code, name) for name in names)])
     local = local.replace('SingleProteinIdentifier', 'str')
     styling = '\n'.join(line for line in module_source('plot_styling.py').splitlines() if not line.startswith('from app.'))

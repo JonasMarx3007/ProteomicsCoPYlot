@@ -168,10 +168,16 @@ def set_condition_colors_route(
         raise HTTPException(status_code=500, detail="Failed to save condition colors.") from e
 
 
+# Olsen et al. 2006: a site is "class I" at a localization probability of at
+# least 0.75. The cutoff default stays 0; the page says
+# how many sites below this line a lower cutoff admits.
+CLASS_ONE_LOCALIZATION = 0.75
+
+
 def _localization_cutoff_response() -> PhosphoLocalizationCutoffResponse:
     from app.services.annotation_store import get_annotation
     from app.services.dataset_store import get_current_dataset
-    from app.services.functions import LOCALIZATION_COLUMN
+    from app.services.functions import LOCALIZATION_COLUMN, filter_localization
     from app.services.phospho_localization import get_localization_cutoff
 
     annotation = get_annotation("phospho")
@@ -180,7 +186,19 @@ def _localization_cutoff_response() -> PhosphoLocalizationCutoffResponse:
         dataset = get_current_dataset("phospho")
         frame = getattr(dataset, "frame", None)
     available = frame is not None and LOCALIZATION_COLUMN in frame.columns
-    return PhosphoLocalizationCutoffResponse(cutoff=get_localization_cutoff(), available=bool(available))
+    cutoff = get_localization_cutoff()
+    below, sites = 0, 0
+    if available and frame is not None:
+        import pandas as pd
+
+        retained = filter_localization(frame, cutoff)
+        probability = pd.to_numeric(retained[LOCALIZATION_COLUMN], errors="coerce")
+        probability = probability.where(probability.between(0.0, 1.0))
+        sites = len(retained)
+        below = int((probability < CLASS_ONE_LOCALIZATION).sum())
+    return PhosphoLocalizationCutoffResponse(
+        cutoff=cutoff, available=bool(available), belowClassOne=below, sites=sites,
+    )
 
 
 @router.get("/phospho-localization-cutoff", response_model=PhosphoLocalizationCutoffResponse)

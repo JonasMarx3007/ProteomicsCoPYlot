@@ -264,6 +264,32 @@ def paired_sample_columns(
     return [left[key] for key in pair_ids], [right[key] for key in pair_ids]
 
 
+def unpaired_samples_note(metadata: pd.DataFrame, condition1: str, condition2: str) -> str | None:
+    """One sentence naming the samples a paired test leaves out, or None.
+
+    `paired_sample_columns` keeps only the pair IDs both conditions share and
+    says nothing about the rest, so a sample whose partner is missing -- a gap in
+    the uploaded metadata, or a pair ID changed for another comparison -- was
+    dropped silently. Call after
+    `paired_sample_columns` has accepted the metadata.
+    """
+    if "pair_id" not in metadata.columns:
+        return None
+    left_samples, right_samples = paired_sample_columns(metadata, condition1, condition2)
+    used = set(left_samples) | set(right_samples)
+    left_out: list[str] = []
+    for condition in (condition1, condition2):
+        rows = metadata.loc[metadata["condition"].astype(str) == str(condition), "sample"].astype(str)
+        left_out.extend(sample for sample in rows if sample not in used)
+    if not left_out:
+        return None
+    return (
+        f"Paired test: {len(left_out)} sample(s) without a partner left out: "
+        + ", ".join(left_out)
+        + "."
+    )
+
+
 # Design (paired or not) and variance model are separate choices, but the API has
 # always carried a single `testType` string, so they are encoded as a flat enum.
 # "unpaired" and "paired" keep their original meaning, so stored requests and
@@ -272,7 +298,22 @@ _TEST_TYPES: dict[str, tuple[bool, str]] = {
     "unpaired": (False, "pooled"),
     "unpaired_welch": (False, "welch"),
     "paired": (True, "pooled"),
+    # limma empirical-Bayes moderation (R only; see r_limma.py). "robust"
+    # fits the variance prior robustly, so outlying rows do not set it.
+    "moderated": (False, "moderated"),
+    "moderated_robust": (False, "moderated_robust"),
+    "moderated_paired": (True, "moderated"),
+    "moderated_robust_paired": (True, "moderated_robust"),
 }
+MODERATED_VARIANCE_MODELS = ("moderated", "moderated_robust")
+
+
+def is_moderated_test_type(value) -> bool:
+    """Whether a testType runs in R limma rather than in the tool's own arithmetic."""
+    try:
+        return resolve_test_type(value)[1] in MODERATED_VARIANCE_MODELS
+    except ValueError:
+        return False
 
 
 def resolve_test_type(value) -> tuple[bool, str]:
@@ -442,20 +483,25 @@ def inverse_log2_transform_data(data: pd.DataFrame, sample_columns: list[str]) -
     return pd.concat([original, data[remaining]], axis=1)
 
 
-def _median_center(values: pd.DataFrame) -> pd.DataFrame:
+def _median_center(values: pd.DataFrame, fit_rows: pd.Index | None = None) -> pd.DataFrame:
     """Shift each sample so all samples share a common median.
 
     Operates on log2 values, where a multiplicative loading difference is an
     additive offset. Samples are re-centred on the grand median rather than on
     zero so the result stays on a recognisable intensity scale; that choice is a
     constant shift and does not affect any fold change.
+
+    The medians are taken over `fit_rows` (the filtered rows) when given and the
+    shift is applied to every row, so rows the filter removed never set the
+    reference but still land on the same scale.
     """
-    medians = values.median(axis=0, skipna=True)
+    reference = values if fit_rows is None else values.loc[fit_rows]
+    medians = reference.median(axis=0, skipna=True)
     grand_median = float(np.nanmedian(medians.to_numpy(dtype=float)))
     return values.sub(medians, axis=1).add(grand_median)
 
 
-def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
+def _quantile_normalize(values: pd.DataFrame, fit_rows: pd.Index | None = None) -> pd.DataFrame:
     """Force every sample onto a common intensity distribution.
 
     Missing values are neither imputed nor allowed to shift a sample's ranks:
@@ -463,11 +509,17 @@ def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
     and the shared reference distribution is read off at those positions. This
     interpolates rather than dropping incomplete rows, so a feature missing in
     one sample still contributes everywhere it was measured.
+
+    With `fit_rows`, the reference distribution and each sample's quantile
+    mapping are learned from those rows only; every other row is then placed by
+    interpolating its value into its sample's learned mapping, so the filtered
+    rows decide the transformation and the rest follow it.
     """
     from scipy.stats import rankdata
 
     numeric = values.apply(pd.to_numeric, errors="coerce")
-    row_count = int(numeric.shape[0])
+    reference_frame = numeric if fit_rows is None else numeric.loc[fit_rows]
+    row_count = int(reference_frame.shape[0])
     if row_count == 0:
         return numeric
 
@@ -476,7 +528,7 @@ def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
     grid = np.linspace(0.0, 1.0, row_count)
     curves = []
     for column in numeric.columns:
-        observed = np.sort(numeric[column].dropna().to_numpy(dtype=float))
+        observed = np.sort(reference_frame[column].dropna().to_numpy(dtype=float))
         if observed.size == 0:
             continue
         positions = np.linspace(0.0, 1.0, observed.size) if observed.size > 1 else np.zeros(1)
@@ -487,14 +539,27 @@ def _quantile_normalize(values: pd.DataFrame) -> pd.DataFrame:
 
     out = numeric.copy()
     for column in numeric.columns:
-        mask = numeric[column].notna().to_numpy()
-        observed = numeric[column].to_numpy(dtype=float)[mask]
-        if observed.size == 0:
+        fit_values = reference_frame[column].dropna().to_numpy(dtype=float)
+        if fit_values.size == 0:
             continue
         # Average ranks, matching R's rank(), so ties map to one reference value.
-        ranks = rankdata(observed, method="average")
-        positions = (ranks - 1.0) / max(observed.size - 1, 1)
-        out.loc[mask, column] = np.interp(positions, grid, reference)
+        ranks = rankdata(fit_values, method="average")
+        positions = (ranks - 1.0) / max(fit_values.size - 1, 1)
+        mapped = np.interp(positions, grid, reference)
+        if fit_rows is None:
+            mask = numeric[column].notna().to_numpy()
+            out.loc[mask, column] = mapped
+            continue
+        # The learned monotone mapping value -> normalized value for this sample,
+        # applied to every observed value in the column (the fit rows reproduce
+        # their own mapping exactly; other rows interpolate into it).
+        order = np.argsort(fit_values, kind="stable")
+        xs, ys = fit_values[order], mapped[order]
+        xs_unique, first = np.unique(xs, return_index=True)
+        ys_unique = ys[first]
+        mask = numeric[column].notna().to_numpy()
+        column_values = numeric[column].to_numpy(dtype=float)[mask]
+        out.loc[mask, column] = np.interp(column_values, xs_unique, ys_unique)
     return out
 
 
@@ -537,16 +602,47 @@ def _normalization_sample_columns(
     return present
 
 
+def anchor_vsn_level(glog_values: pd.DataFrame, log2_values: pd.DataFrame) -> pd.DataFrame:
+    """Pin VSN's output to the level of the plain log2 data.
+
+    vsn's model is glog(a*x + b) and its profile likelihood is flat on real
+    data, so two fits of nearly identical input -- the same file with one
+    rounding digit changed, or 2**log2 of a log2 upload -- reach solutions that
+    differ by a constant added to every value (1.22 log2 on the HEK293 example,
+    with a residual of 3e-4 once that constant is removed). The constant carries
+    no information: every fold change, variance, correlation and p-value is the
+    same under it. Subtracting it makes the output reproducible and leaves it on
+    a log2-like scale a reader recognises. One global shift, never per sample,
+    so the between-sample calibration vsn fitted is untouched.
+    """
+    glog = glog_values.to_numpy(dtype=float)
+    plain = log2_values.to_numpy(dtype=float)
+    both = np.isfinite(glog) & np.isfinite(plain)
+    if not both.any():
+        return glog_values
+    offset = float(np.nanmedian(glog[both]) - np.nanmedian(plain[both]))
+    return glog_values - offset
+
+
 def normalize_data(
     data: pd.DataFrame,
     meta: "pd.DataFrame | pd.Series | list[str]",
     method: str = "none",
     linear_source: pd.DataFrame | None = None,
+    fit_rows: "pd.Index | None" = None,
 ) -> pd.DataFrame:
     """Apply a global normalization to the sample columns of a log2 matrix.
 
     Always global. Normalising within conditions would remove exactly the
     differences the downstream tests are looking for.
+
+    `fit_rows` names the rows the normalization is learned from -- the rows the
+    valid-value filter kept -- while the learned transformation is applied to
+    every row. Rows with many missing values are mostly low-abundance features
+    that are missing more in one group than the other; letting them set the
+    reference pulled unchanged proteins apart by up to 0.5 log2 units. Fitting on the filtered rows removes that, and
+    applying to all rows keeps the unfiltered "data" matrix on the same scale
+    as the filtered one. Without `fit_rows` every row is used, as before.
 
     `linear_source` matters only for VSN, which models linear intensities.
     Reconstructing them as 2**log2 perturbs the input at machine epsilon
@@ -565,10 +661,14 @@ def normalize_data(
     present = _normalization_sample_columns(data, meta)
 
     numeric = data[present].apply(pd.to_numeric, errors="coerce")
+    if fit_rows is not None:
+        fit_rows = numeric.index.intersection(pd.Index(fit_rows))
+        if len(fit_rows) == len(numeric.index):
+            fit_rows = None  # every row kept: identical to the plain fit
     if resolved == "median":
-        normalized = _median_center(numeric)
+        normalized = _median_center(numeric, fit_rows)
     elif resolved == "quantile":
-        normalized = _quantile_normalize(numeric)
+        normalized = _quantile_normalize(numeric, fit_rows)
     elif resolved == "vsn":
         # Delegated to Bioconductor vsn rather than reimplemented; see r_vsn.py
         # for why. Only reachable when Rscript and the package are present.
@@ -583,7 +683,8 @@ def normalize_data(
                 index=numeric.index,
                 columns=numeric.columns,
             )
-        normalized = vsn_normalize_linear(linear).where(linear.notna())
+        normalized = vsn_normalize_linear(linear, fit_rows=fit_rows).where(linear.notna())
+        normalized = anchor_vsn_level(normalized, numeric)
     else:
         raise ValueError("Normalization must be 'none', 'median', 'quantile', or 'vsn'.")
 
@@ -747,6 +848,23 @@ def filter_data(
     method="at_least_n",
     min_percentage=70.0,
 ) -> pd.DataFrame:
+    rows_to_keep = filter_mask(data, metadata, min_present, mode, method, min_percentage)
+    return data.loc[rows_to_keep].reset_index(drop=True)
+
+
+def filter_mask(
+    data: pd.DataFrame,
+    metadata: pd.DataFrame,
+    min_present: int,
+    mode: FilterMode,
+    method="at_least_n",
+    min_percentage=70.0,
+) -> pd.Series:
+    """Which rows of `data` the valid-value filter keeps, on `data`'s own index.
+
+    `filter_data` returns the kept rows re-indexed from 0; the normalization fit
+    needs them by their original labels, so the decision lives here.
+    """
     _validate_meta_samples(metadata)
     sample_columns = metadata["sample"].tolist()
     data_selected = data[sample_columns].copy()
@@ -778,7 +896,7 @@ def filter_data(
             else:
                 mask[condition] = valid >= min_present
         rows_to_keep = mask.all(axis=1) if mode == "per_group" else mask.any(axis=1)
-    return data.loc[rows_to_keep].reset_index(drop=True)
+    return rows_to_keep
 
 
 def choose_best_source(

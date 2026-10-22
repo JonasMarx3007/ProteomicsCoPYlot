@@ -47,7 +47,7 @@ export const COLUMN_LABELS: Record<string, string> = {
   "n_group2": "n (group 2)",
   "q_statistic": "Tukey q",
   "tukey_pval": "Tukey p-value",
-  "anova_adj_pval": "ANOVA adjusted p-value",
+  "anova_adj_pval": "One-way ANOVA adjusted p-value",
   "ProteinNames": "Protein",
   "GeneNames": "Gene",
   "Protein_group": "Protein group",

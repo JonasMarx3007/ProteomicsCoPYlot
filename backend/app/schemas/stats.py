@@ -25,10 +25,17 @@ AnovaClusterMethod = Literal["average", "ward", "complete", "weighted", "single"
 # Design and variance model in one field, for backwards compatibility: "unpaired"
 # and "paired" keep their original meaning (pooled Student's t), so stored
 # requests and saved reports resolve to exactly the test they always did.
+# The four "moderated*" members run in R limma and are offered by the UI only
+# when GET /api/runtime/statistics says so; without R they are refused with the
+# reason, like VSN.
 StatsTestType = Literal[
     "unpaired",
     "unpaired_welch",
     "paired",
+    "moderated",
+    "moderated_robust",
+    "moderated_paired",
+    "moderated_robust_paired",
 ]
 StatsIdentifier = Literal["workflow", "genes"]
 # Which renderer draws a volcano. The same two words the QC plots have always
@@ -54,6 +61,15 @@ class IdentifierOption(BaseModel):
     label: str
 
 
+class ProteinCorrectionOptions(BaseModel):
+    """Whether phosphosite changes can be corrected for protein abundance here:
+    a protein dataset with an annotation sits in the same package, and these
+    are the data sources both datasets hold (the correction mirrors the source)."""
+
+    available: bool = False
+    dataSources: list[DataSource] = Field(default_factory=list)
+
+
 class StatisticalOptionsResponse(BaseModel):
     kind: AnnotationKind
     sourceUsed: ResolvedSource
@@ -61,6 +77,7 @@ class StatisticalOptionsResponse(BaseModel):
     # What the selector may offer, and what a fresh panel opens on.
     availableDataSources: list[DataSource] = Field(default_factory=list)
     defaultDataSource: DataSource = "data"
+    proteinCorrection: ProteinCorrectionOptions = Field(default_factory=ProteinCorrectionOptions)
     availableConditions: list[str]
     samplesByCondition: dict[str, list[str]] = Field(default_factory=dict)
     pairIdsBySample: dict[str, str] = Field(default_factory=dict)
@@ -79,6 +96,10 @@ class VolcanoRequest(BaseModel):
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
+    # Phosphosites only: subtract each site's protein-level change (the protein
+    # dataset of the same package, same conditions, test and source). Refused
+    # for other kinds and without a protein dataset.
+    proteinCorrection: bool = False
 
     @model_validator(mode="after")
     def validate_distinct_conditions(self) -> "VolcanoRequest":
@@ -104,6 +125,7 @@ class VolcanoControlRequest(BaseModel):
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
+    proteinCorrection: bool = False
     highlightTerms: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -329,6 +351,7 @@ class SimulationRequest(BaseModel):
     log2fcThreshold: float = Field(default=1.0, ge=0.0)
     testType: SimulationTestType = "unpaired"
     useUncorrected: bool = False
+    proteinCorrection: bool = False
     varianceMultiplier: float = Field(default=1.0, gt=0.0)
     sampleSizeOverride: int = Field(default=0, ge=0, le=100)
 

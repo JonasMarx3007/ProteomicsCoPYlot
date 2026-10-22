@@ -56,7 +56,7 @@ def test_cv_and_abundance_use_the_normalized_qc_matrix(monkeypatch, method, log2
         uploaded[columns] = np.log2(uploaded[columns])
     meta = pd.DataFrame({"sample": columns, "condition": "A"})
     if method == "vsn":
-        monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data: data * 0 + 99)
+        monkeypatch.setattr("app.services.r_vsn.vsn_normalize_linear", lambda data, **kw: data * 0 + 99)
     normalized = prepare_normalized_log2_data(uploaded, columns, log2_upload, method)
     annotation = SimpleNamespace(source_data=uploaded, metadata=meta,
         is_log2_transformed=log2_upload, log2_data=normalized,

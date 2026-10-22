@@ -645,14 +645,15 @@ _NORMALIZATION_REPORT_LABELS = {
         "None; sample loading and instrument drift are uncorrected unless the upload "
         "was already normalized upstream."
     ),
-    "median": "Samples were median-centred on the log2 values (applied globally, before filtering).",
+    "median": "Samples were median-centred on the log2 values (applied globally; fitted on the filtered rows, applied to every row).",
     "quantile": (
-        "Samples were quantile-normalized on the log2 values (applied globally, before "
-        f"filtering; {cite('quantile_normalization')})."
+        "Samples were quantile-normalized on the log2 values (applied globally; fitted on the "
+        f"filtered rows, applied to every row; {cite('quantile_normalization')})."
     ),
     "vsn": (
         f"Variance-stabilizing normalization (VSN, Bioconductor vsn; {cite('vsn')}) replaced "
-        "the plain log2 transform (applied globally, before filtering). The CV and abundance "
+        "the plain log2 transform (applied globally; fitted on the filtered rows, applied to every "
+        "row). The CV and abundance "
         "plots use the unnormalized data, because VSN output is not on a linear intensity scale."
     ),
 }
@@ -664,14 +665,19 @@ _TEST_TYPE_REPORT_LABELS = {
     "unpaired": "unpaired two-sample t-test (pooled variance)",
     "unpaired_welch": f"unpaired two-sample t-test (Welch, unequal variance; {cite('welch_t')})",
     "paired": "paired t-test (on within-pair differences)",
+    "moderated": f"unpaired moderated t-test (limma empirical Bayes; {cite('limma')})",
+    "moderated_robust": f"unpaired moderated t-test (limma empirical Bayes, robust prior; {cite('limma')}; {cite('limma_robust')})",
+    "moderated_paired": f"paired moderated t-test (limma empirical Bayes on within-pair differences; {cite('limma')})",
+    "moderated_robust_paired": f"paired moderated t-test (limma empirical Bayes on within-pair differences, robust prior; {cite('limma')}; {cite('limma_robust')})",
 }
 
 
 def _normalization_description(annotation) -> str | None:
     """What was done to every sample's values, on its own line.
 
-    Normalization is applied to the whole log2 matrix before any row filter, so
-    it holds for every data source -- including plots that skip the filter.
+    Normalization is fitted on the rows the filter kept and applied to the whole
+    log2 matrix, so it holds for every data source -- including plots that skip
+    the filter.
     It used to be the last sentence of the filtering description, where a
     "Not applied to this plot" prefix made it read as not applied either.
     """
@@ -685,7 +691,10 @@ def _normalization_description(annotation) -> str | None:
         # Nothing to describe: "none" usually means the upload was normalized
         # upstream, and a line saying so reads as though a step was skipped.
         return None
-    return _NORMALIZATION_REPORT_LABELS.get(normalization, f"{normalization}.")
+    label = _NORMALIZATION_REPORT_LABELS.get(normalization, f"{normalization}.")
+    if str(getattr(filter_config, "normalizationFit", "filtered_rows")).strip().lower() == "complete_features":
+        label = label.replace("fitted on the filtered rows", "fitted on the features observed in every sample")
+    return label
 
 
 def _filter_is_applied(filter_config) -> bool:
@@ -972,6 +981,7 @@ def _volcano_counts_html(
                 log2fcThreshold=entry.log2fcThreshold,
                 testType=entry.testType,
                 useUncorrected=entry.useUncorrected,
+                proteinCorrection=entry.proteinCorrection,
                 highlightTerms=entry.highlightTerms,
             )
         )
@@ -1024,6 +1034,13 @@ def _volcano_statistics_html(entry: SummaryVolcanoEntry) -> str:
         f"{entry.pValueThreshold:g} and |log2 fold change| > {entry.log2fcThreshold:g}; "
         f"{correction}."
     )
+    if bool(getattr(entry, "proteinCorrection", False)):
+        description += (
+            " Site changes are corrected for protein abundance: the protein-level log2 fold change of the "
+            "same comparison is subtracted from each site's, with the standard errors combined "
+            "(Satterthwaite degrees of freedom); sites without a quantified protein or matching multiple "
+            "protein groups keep their uncorrected change and p-value."
+        )
     return f"<p><strong>Statistics:</strong> {html.escape(description)}</p>"
 
 
@@ -1063,6 +1080,7 @@ def _volcano_block_html(
             log2fcThreshold=entry.log2fcThreshold,
             testType=entry.testType,
             useUncorrected=entry.useUncorrected,
+            proteinCorrection=entry.proteinCorrection,
             highlightTerms=entry.highlightTerms,
         )
         # Each entry renders the way it was added. The PCA blocks make the same
@@ -1076,6 +1094,8 @@ def _volcano_block_html(
                         advanced=advanced,
                         label_top_up=entry.labelTopUp,
                         label_top_down=entry.labelTopDown,
+                        highlight_outline=entry.highlightOutline,
+                        highlight_labels=entry.highlightLabels,
                     ),
                     fallback_title=title,
                     warnings=warnings,
@@ -1084,7 +1104,8 @@ def _volcano_block_html(
         else:
             parts.append(
                 _safe_plotly(
-                    renderer=lambda request=request: report_plot(volcano_html, request, advanced=advanced),
+                    renderer=lambda request=request, entry=entry: report_plot(
+                        volcano_html, request, advanced=advanced, highlight_outline=entry.highlightOutline),
                     fallback_title=title,
                     warnings=warnings,
                     height_px=920,

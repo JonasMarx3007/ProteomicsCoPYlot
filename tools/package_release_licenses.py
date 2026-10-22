@@ -177,7 +177,8 @@ def prepare(root: Path, output: Path) -> None:
         "pins the actual build environment, including deviations from the repository lock.\n"
         "Third-party components retain their own terms. Exact dependency source locations\n"
         "are listed in THIRD_PARTY_NOTICES.txt and release-manifest.json.\n"
-        "This bundle does not include R. Install R/Bioconductor separately if using VSN.\n",
+        "This bundle does not include R. Install R with Bioconductor vsn and limma separately\n"
+        "to use VSN normalization or the moderated t-tests.\n",
         encoding="utf-8")
 
 

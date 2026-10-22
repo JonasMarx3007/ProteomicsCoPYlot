@@ -18,7 +18,7 @@ The Python implementation is a modified version, not the upstream R program.
 Upstream plugin copyright notice (retained verbatim from AssemblyInfo.cs):
 Copyright © Max-Plank Institute of Biochemistry and Novo-Nordisk Foundation Center of Protein Research 2018
 
-Reference data (data/db, built from data/reference-sources)
+Reference data (data/db; provenance in data/reference-sources/manifest.json)
 -----------------------------------------------------------
 UniProt reference proteomes UP000005640 (human) and UP000000589 (mouse),
 UniProtKB entries and secondary accessions, release 2026_03: copyright The

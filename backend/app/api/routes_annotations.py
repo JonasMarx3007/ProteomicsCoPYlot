@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import io
+from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -12,7 +13,9 @@ from app.schemas.annotation import (
     AnnotationFilterConfig,
     AnnotationGenerateRequest,
     AnnotationKind,
+    AnnotationNormalizeRequest,
     AnnotationResultResponse,
+    ConditionAssignment,
     Log2DetectionRequest,
     Log2DetectionResponse,
     MetadataAnnotationKind,
@@ -45,7 +48,7 @@ from app.services.metadata_upload_store import (
     list_auto_generated_profiles,
     save_uploaded_metadata_profiles,
 )
-from app.services.phosprot_tools import aggregate_from_phospho
+from app.services.phosprot_tools import aggregate_from_phospho, upload_phosprot
 from app.services.upload_limits import ensure_upload_size
 from app.api.download_headers import attachment_disposition
 from app.services.json_records import json_records
@@ -191,25 +194,30 @@ def clear_current_uploaded_metadata(kind: MetadataAnnotationKind) -> dict[str, o
     return {"kind": kind, "cleared": True}
 
 
-@router.post("/generate", response_model=AnnotationResultResponse)
-def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultResponse:
-    current_dataset = get_current_dataset(payload.kind)
-    if current_dataset is None or not hasattr(current_dataset, "frame"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"No {payload.kind} dataset is currently loaded. Upload data first.",
-        )
+def _compute_and_store(
+    kind: AnnotationKind,
+    *,
+    conditions,
+    is_log2_transformed: bool | None,
+    filter_config: AnnotationFilterConfig,
+    current_dataset,
+    pair_ids_from: pd.DataFrame | None = None,
+) -> AnnotationResultResponse:
+    """Run the annotation pipeline for `kind` with `filter_config` and store it.
 
-    filter_config = payload.filter or AnnotationFilterConfig()
-    if payload.kind == "phosprot":
+    Shared by `/generate` (the filter step; conditions come from the request)
+    and `/normalize` (the normalization step; conditions and filter come from
+    the stored annotation).
+    """
+    if kind == "phosprot":
         # Phosphoprotein data already carry any phosphosite-level
         # normalization performed before collapse.
         filter_config = phosprot_filter_config(filter_config)
 
     metadata_kind: MetadataAnnotationKind | None
-    if payload.kind == "protein":
+    if kind == "protein":
         metadata_kind = "protein"
-    elif payload.kind in {"phospho", "phosprot"}:
+    elif kind in {"phospho", "phosprot"}:
         metadata_kind = "phospho"
     else:
         metadata_kind = None
@@ -225,29 +233,33 @@ def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultR
             computed = compute_annotation_from_metadata(
                 data=current_dataset.frame,
                 metadata=uploaded_metadata.frame,
-                is_log2_transformed=payload.isLog2Transformed,
+                is_log2_transformed=is_log2_transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
                 normalization=filter_config.normalization,
+                normalization_fit=filter_config.normalizationFit,
             )
-            metadata_source = "shared_phospho" if payload.kind == "phosprot" else "uploaded"
+            metadata_source = "shared_phospho" if kind == "phosprot" else "uploaded"
         else:
             computed = compute_annotation(
                 data=current_dataset.frame,
-                conditions=payload.conditions,
-                is_log2_transformed=payload.isLog2Transformed,
+                conditions=conditions,
+                is_log2_transformed=is_log2_transformed,
                 min_present=filter_config.minPresent,
                 filter_mode=filter_config.mode,
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
                 normalization=filter_config.normalization,
+                normalization_fit=filter_config.normalizationFit,
             )
-            computed.metadata = preserve_annotation_pair_ids(
-                payload.kind,
-                computed.metadata,
-            )
+            computed.metadata = preserve_annotation_pair_ids(kind, computed.metadata)
+            if pair_ids_from is not None and "pair_id" in pair_ids_from.columns:
+                # The normalization step must not lose a pairing saved after the filter step.
+                ids = dict(zip(pair_ids_from["sample"].astype(str), pair_ids_from["pair_id"]))
+                computed.metadata["pair_id"] = computed.metadata["sample"].astype(str).map(ids).fillna(
+                    computed.metadata["pair_id"] if "pair_id" in computed.metadata.columns else "")
             metadata_source = "auto" if computed.auto_detected else "manual"
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -256,7 +268,7 @@ def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultR
         raise HTTPException(status_code=500, detail="Failed to generate annotation.") from e
 
     stored = save_annotation(
-        kind=payload.kind,
+        kind=kind,
         source_data=current_dataset.frame,
         metadata=computed.metadata,
         log2_data=computed.log2_data,
@@ -267,11 +279,61 @@ def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultR
         auto_detected=computed.auto_detected,
         warnings=computed.warnings,
         log2_auto_detected=computed.log2_auto_detected,
-        phosprot_aggregation=current_dataset.phosprot_aggregation if payload.kind == "phosprot" else None,
-        phosprot_lineage=current_dataset.phosprot_lineage if payload.kind == "phosprot" else None,
+        phosprot_aggregation=current_dataset.phosprot_aggregation if kind == "phosprot" else None,
+        phosprot_lineage=current_dataset.phosprot_lineage if kind == "phosprot" else None,
+    )
+    return _response_from_stored(stored)
+
+
+@router.post("/generate", response_model=AnnotationResultResponse)
+def generate_annotation(payload: AnnotationGenerateRequest) -> AnnotationResultResponse:
+    """The filter step. A `filter.normalization` is honoured for saved sessions
+    and viewer configs, which carry the whole config; the page itself applies
+    the normalization afterwards through `/normalize`."""
+    current_dataset = get_current_dataset(payload.kind)
+    if current_dataset is None or not hasattr(current_dataset, "frame"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {payload.kind} dataset is currently loaded. Upload data first.",
+        )
+    return _compute_and_store(
+        payload.kind,
+        conditions=payload.conditions,
+        is_log2_transformed=payload.isLog2Transformed,
+        filter_config=payload.filter or AnnotationFilterConfig(),
+        current_dataset=current_dataset,
     )
 
-    return _response_from_stored(stored)
+
+@router.post("/normalize", response_model=AnnotationResultResponse)
+def normalize_annotation(payload: AnnotationNormalizeRequest) -> AnnotationResultResponse:
+    """The normalization step: recompute the stored annotation with another
+    normalization, fitted on the rows its filter kept. "none" removes it.
+    Imputed data, which were drawn from the previous values, are discarded."""
+    stored = get_annotation(payload.kind)
+    if stored is None:
+        raise HTTPException(status_code=400, detail=f"Apply the {payload.kind} filter first.")
+    if payload.kind == "phosprot" and payload.normalization != "none":
+        raise HTTPException(
+            status_code=400,
+            detail="Phosphoprotein data are not normalized again; the phosphosite matrix already was.",
+        )
+    current_dataset = get_current_dataset(payload.kind)
+    if current_dataset is None or not hasattr(current_dataset, "frame"):
+        raise HTTPException(status_code=400, detail=f"No {payload.kind} dataset is currently loaded.")
+    conditions = [
+        ConditionAssignment(name=str(condition), columns=[str(s) for s in group["sample"].tolist()])
+        for condition, group in stored.metadata.groupby("condition", sort=False)
+    ]
+    return _compute_and_store(
+        payload.kind,
+        conditions=conditions,
+        is_log2_transformed=stored.is_log2_transformed,
+        filter_config=stored.filter_config.model_copy(
+            update={"normalization": payload.normalization, "normalizationFit": payload.normalizationFit}),
+        current_dataset=current_dataset,
+        pair_ids_from=stored.metadata,
+    )
 
 
 @router.put("/pairing", response_model=AnnotationResultResponse)
@@ -387,4 +449,41 @@ def aggregate_phosprot_annotation(
     except Exception as e:
         LOGGER.exception("Failed to aggregate phosphoprotein dataset")
         raise HTTPException(status_code=500, detail="Failed to aggregate phosphoprotein dataset.") from e
+    return _response_from_stored(stored)
+
+
+@router.post("/phosprot/upload", response_model=AnnotationResultResponse)
+def upload_phosprot_annotation(
+    file: UploadFile = File(...),
+    # "true" / "false"; absent or empty means: detect the scale from the values.
+    is_log2_transformed: str = Form(default="", alias="isLog2Transformed"),
+) -> AnnotationResultResponse:
+    """The alternative to collapsing: a phosphoprotein matrix made earlier (for
+    example this tool's own download, or another tool's collapse) becomes the
+    current phosphoprotein data, on the phospho annotation's sample sheet and
+    filter."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    try:
+        ensure_upload_size(file, label="Phosphoprotein file")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
+    try:
+        _ = get_extension(file.filename)
+        frame = read_dataframe(file.filename, file.file)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        LOGGER.exception("Failed to parse phosphoprotein upload")
+        raise HTTPException(status_code=400, detail="Failed to parse phosphoprotein file.") from e
+    try:
+        scale = is_log2_transformed.strip().lower()
+        if scale not in {"", "true", "false"}:
+            raise ValueError("isLog2Transformed must be 'true', 'false' or empty.")
+        stored = upload_phosprot(frame, Path(file.filename).name, None if not scale else scale == "true")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        LOGGER.exception("Failed to store uploaded phosphoprotein dataset")
+        raise HTTPException(status_code=500, detail="Failed to store uploaded phosphoprotein dataset.") from e
     return _response_from_stored(stored)

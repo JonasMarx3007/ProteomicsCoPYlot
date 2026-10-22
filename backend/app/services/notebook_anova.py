@@ -65,6 +65,7 @@ def anova_source():
         extract_notebook_source(module_source("clustering_tools.py"), (
             "CompletenessReport", "drop_incomplete_features", "row_zscore", "heatmap_notice", "completeness_message")).code,
         extract_notebook_source(module_source("functions.py"), ("anova_posthoc_data", "entity_labels_for_kind")).code,
+        function_definition(original, "_anova_pairing_warning"),
         calculation, tables, prepare, helpers, figure, rendering)
     for before, after in (("AnovaRequest", "SimpleNamespace"), ("ResolvedSource", "str"),
                           ("_get_plt()", "get_plt()"), ("_to_png_bytes(", "to_png_bytes(")):
@@ -96,7 +97,7 @@ def render_anova(payload, *, selected_cluster=None, advanced=None):
     source, data, metadata, warnings = stats_tools._stats_source(kind, data_source=payload.dataSource)
     annotation, dataset = get_annotation(kind), get_current_dataset(kind)
     lineage, imputation, uses_imputed, imputation_text = input_history(kind, annotation, dataset, source=source)
-    metadata = metadata[[c for c in ("sample", "condition", "new_sample") if c in metadata]].copy(deep=True)
+    metadata = metadata[[c for c in ("sample", "condition", "new_sample", "pair_id") if c in metadata]].copy(deep=True)
     mask = stats_tools._imputation_mask(kind, source, data, metadata["sample"].astype(str).tolist())
     identifiers = ["GeneNames", "Gene_group", "ProteinNames", "PTM_Collapse_key", "Phosphoprotein",
                    "site_num", "PTM_Collapse_keys", "Protein_group"]

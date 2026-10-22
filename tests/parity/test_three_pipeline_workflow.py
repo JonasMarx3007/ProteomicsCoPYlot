@@ -92,8 +92,12 @@ def workflow(request, tmp_path_factory, require_r):
     python, api = {}, {}
     for kind, raw in frames.items():
         raw.to_csv(directory / f"{kind}.csv", index=False)
-        normalized = nb.normalize_data(nb.log2_transform_data(raw, meta), meta, request.param)
-        filtered = nb.filter_data(normalized, meta, 3)
+        # The app's order since 2026-10-20: the filter decides the rows, the
+        # normalization is fitted on them and applied to every row.
+        logged = nb.log2_transform_data(raw, meta)
+        kept = nb.filter_data(logged, meta, 3)
+        normalized = nb.normalize_data(logged, meta, request.param, fit_rows=kept.index)
+        filtered = normalized.loc[kept.index]
         assert filtered[IDS[kind]].tolist() == raw[IDS[kind]].iloc[:10].tolist(), "Fixture's two rejected rows must stay excluded"
         python[f"{kind}_normalized"] = normalized
         python[f"{kind}_filtered"] = filtered

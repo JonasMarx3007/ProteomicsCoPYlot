@@ -25,6 +25,7 @@ from app.services.viewer_bootstrap import (
     viewer_mode_enabled,
 )
 from app.services.env_settings import env_flag
+from app.services.viewer_login_limits import ViewerPasswordBudget
 
 LOGGER = logging.getLogger(__name__)
 # Must contain at least one character that is not a dot: the name is used as a
@@ -55,6 +56,7 @@ class ViewerSessionAuth:
 
 
 _LOCK = RLock()
+PASSWORD_BUDGET = ViewerPasswordBudget()
 _SESSION_AUTH: dict[str, ViewerSessionAuth] = {}
 _BOOTSTRAPPED_SESSION_PROJECT: dict[str, str] = {}
 _ACCESS_FILE_CACHE_KEY: tuple[str, float, int] | None = None
@@ -353,22 +355,23 @@ def authenticate_viewer_session(password: str, *, project_root: Path | None = No
     if not candidate_password:
         raise ValueError("Password must not be empty.")
 
-    root = project_root or Path(__file__).resolve().parents[3]
-    entries = _load_access_entries(root)
-    if not entries:
-        raise RuntimeError(
-            "Viewer portal is enabled but no credentials are configured. "
-            "Create local/viewer_access.local.json."
-        )
+    with PASSWORD_BUDGET.check():
+        root = project_root or Path(__file__).resolve().parents[3]
+        entries = _load_access_entries(root)
+        if not entries:
+            raise RuntimeError(
+                "Viewer portal is enabled but no credentials are configured. "
+                "Create local/viewer_access.local.json."
+            )
 
-    selected: ViewerAccessEntry | None = None
-    for entry in entries:
-        if _password_matches(candidate_password, entry):
-            selected = entry
-            break
+        selected: ViewerAccessEntry | None = None
+        for entry in entries:
+            if _password_matches(candidate_password, entry):
+                selected = entry
+                break
 
-    if selected is None:
-        raise ValueError("Invalid viewer password.")
+        if selected is None:
+            raise ValueError("Invalid viewer password.")
 
     return _initialize_authenticated_viewer(selected.project, selected.project_label)
 

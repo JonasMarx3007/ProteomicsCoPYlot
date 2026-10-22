@@ -66,7 +66,7 @@ describe("App", () => {
     expect(at("phospho:phosprotRegulation").referenceLineColor).not.toBe(true);
     expect(at("phospho:phosprotRegulation").markerStyle).toBe(true);
     expect(at("phospho:phosprotRegulation").markerColor).toBe(false);
-    // KSEA, which used to share that case, draws both threshold lines.
+    // Kinase Library, which used to share that case, draws both threshold lines.
     expect(at("phospho:ksea").referenceLineColor).toBe(true);
     expect(at("phospho:ksea").markerColor).toBe(false);
     // Both Pearson renderers draw the fit line (the PNG since 2026-09-25), and

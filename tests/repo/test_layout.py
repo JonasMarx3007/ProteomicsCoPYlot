@@ -125,7 +125,7 @@ def test_deployment_and_reference_ci_use_exact_dependency_locks() -> None:
 
     assert "COPY backend/requirements-runtime.lock" in dockerfile
     assert "FROM python:3.13-" in dockerfile
-    assert "pip install -r /app/backend/requirements-runtime.lock" in dockerfile
+    assert "pip install --require-hashes -r /app/backend/requirements-runtime-hashed.lock" in dockerfile
     assert "pip_audit --requirement backend/requirements-runtime.lock" in security
     assert "pip_audit --requirement backend/requirements.lock" in security
     assert "pip install -r backend/requirements.lock" in tests

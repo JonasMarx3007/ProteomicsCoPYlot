@@ -11,6 +11,7 @@ from app.schemas.tool_auth import (
 )
 from app.api.login_attempt import login_attempt
 from app.services.request_security import LoginRateLimit
+from app.services.viewer_login_limits import ViewerPasswordBudget
 from app.services.session_context import set_session_cookie
 from app.services.tool_access import (
     authenticate_tool_password,
@@ -22,6 +23,14 @@ from app.services.tool_access import (
 
 router = APIRouter(prefix="/api/tool/auth", tags=["tool-auth"])
 LOGIN_RATE_LIMIT = LoginRateLimit("TOOL")
+# Server-wide budget for the PBKDF2 check, as the viewer login has;
+# the per-client limiter alone keys on addresses, which an attacker has many of.
+PASSWORD_BUDGET = ViewerPasswordBudget("Tool")
+
+
+def _check_tool_password(password: str) -> str:
+    with PASSWORD_BUDGET.check():
+        return authenticate_tool_password(password)
 
 
 @router.get("/status", response_model=ToolAuthStatusResponse)
@@ -42,7 +51,7 @@ def tool_auth_login_route(
         bucket="password",
         access="Tool",
         failure="Failed to authenticate tool session",
-        authenticate=lambda: authenticate_tool_password(payload.password),
+        authenticate=lambda: _check_tool_password(payload.password),
     )
     set_session_cookie(response, rotated)
     return ToolAuthLoginResponse(ok=True)

@@ -6,7 +6,7 @@ Between those two there was a gap: 20 functions present in both shipped packages
 that no test in `tests/package`, `tests/r`, `tests/backend` or `examples` ever
 called, in either language. A function nothing calls is a function that can
 drift in one language for a year without anyone finding out, and these are not
-all cosmetic -- the KSEA kinase-tree inputs and the PCA enclosing ellipse are
+all cosmetic -- the Kinase Library kinase-tree inputs and the PCA enclosing ellipse are
 numbers a reader interprets.
 
 This module closes that gap for the ones that produce numbers. The remaining
@@ -235,7 +235,7 @@ def test_both_packages_word_the_skip_notice_the_same_way() -> None:
     assert out["empty"] == ""
 
 
-# --- the KSEA kinase-tree inputs ------------------------------------------------
+# --- the Kinase Library kinase-tree inputs ------------------------------------------------
 
 KSEA_ST = pd.DataFrame(
     {

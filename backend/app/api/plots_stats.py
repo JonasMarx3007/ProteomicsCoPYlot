@@ -62,7 +62,7 @@ class VolcanoQuery:
     way and differ only in how they draw it, so both read it from here instead
     of repeating the list. The ORA pair drifted exactly that way once: the
     figure route lost `clusterMethod` and drew a different partition than the
-    table beside it (FABLE-REVIEW D2). Sharing the parameters makes that
+    table beside it. Sharing the parameters makes that
     impossible rather than unlikely.
     """
 
@@ -75,6 +75,7 @@ class VolcanoQuery:
     testType: StatsTestType = "unpaired"
     useUncorrected: bool = False
     highlightTerms: str = ""
+    proteinCorrection: bool = False
 
     def request(self, kind: AnnotationKind) -> VolcanoRequest:
         return VolcanoRequest(
@@ -88,6 +89,7 @@ class VolcanoQuery:
             testType=self.testType,
             useUncorrected=self.useUncorrected,
             highlightTerms=split_terms(self.highlightTerms),
+            proteinCorrection=self.proteinCorrection,
         )
 
 
@@ -113,6 +115,7 @@ class VolcanoControlQuery:
             log2fcThreshold=base.log2fcThreshold,
             testType=base.testType,
             useUncorrected=base.useUncorrected,
+            proteinCorrection=base.proteinCorrection,
             highlightTerms=split_terms(base.highlightTerms),
         )
 
@@ -121,20 +124,24 @@ class VolcanoControlQuery:
 def stats_volcano_route(
     kind: AnnotationKind,
     query: Annotated[VolcanoQuery, Depends()],
+    highlightOutline: bool = True,
     advanced: str = "",
 ) -> HTMLResponse:
     with plot_errors("Failed to render volcano plot"):
-        return _volcano_notebook_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced))
+        return _volcano_notebook_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced),
+                                      highlight_outline=highlightOutline)
 
 
 @router.get("/stats/{kind}/volcano-control.html", response_class=HTMLResponse)
 def stats_volcano_control_route(
     kind: AnnotationKind,
     query: Annotated[VolcanoControlQuery, Depends()],
+    highlightOutline: bool = True,
     advanced: str = "",
 ) -> HTMLResponse:
     with plot_errors("Failed to render control volcano plot"):
-        return _volcano_notebook_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced))
+        return _volcano_notebook_html(query.request(kind), advanced=parse_advanced_plot_settings(advanced),
+                                      highlight_outline=highlightOutline)
 
 
 @router.get("/stats/{kind}/volcano.png")
@@ -143,6 +150,8 @@ def stats_volcano_png_route(
     query: Annotated[VolcanoQuery, Depends()],
     labelTopUp: int = 0,
     labelTopDown: int = 0,
+    highlightOutline: bool = True,
+    highlightLabels: bool = False,
     widthCm: float = 18,
     heightCm: float = 14,
     dpi: int = 300,
@@ -158,6 +167,8 @@ def stats_volcano_png_route(
             dpi=dpi,
             label_top_up=labelTopUp,
             label_top_down=labelTopDown,
+            highlight_outline=highlightOutline,
+            highlight_labels=highlightLabels,
         )
 
 
@@ -167,6 +178,8 @@ def stats_volcano_control_png_route(
     query: Annotated[VolcanoControlQuery, Depends()],
     labelTopUp: int = 0,
     labelTopDown: int = 0,
+    highlightOutline: bool = True,
+    highlightLabels: bool = False,
     widthCm: float = 18,
     heightCm: float = 14,
     dpi: int = 300,
@@ -181,6 +194,8 @@ def stats_volcano_control_png_route(
             dpi=dpi,
             label_top_up=labelTopUp,
             label_top_down=labelTopDown,
+            highlight_outline=highlightOutline,
+            highlight_labels=highlightLabels,
         )
 
 
@@ -462,6 +477,7 @@ def stats_simulation_route(
     useUncorrected: bool = False,
     varianceMultiplier: float = 1.0,
     sampleSizeOverride: int = 0,
+    proteinCorrection: bool = False,
     advanced: str = "",
 ) -> HTMLResponse:
     with plot_errors("Failed to render simulation plot"):
@@ -478,5 +494,6 @@ def stats_simulation_route(
             useUncorrected=useUncorrected,
             varianceMultiplier=varianceMultiplier,
             sampleSizeOverride=sampleSizeOverride,
+            proteinCorrection=proteinCorrection,
         ))
         return HTMLResponse(content=simulation_html(payload, advanced=parse_advanced_plot_settings(advanced)))

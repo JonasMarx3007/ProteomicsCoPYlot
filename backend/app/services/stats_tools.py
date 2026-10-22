@@ -28,6 +28,7 @@ from app.schemas.stats import (
     AnovaRequest,
     AnovaResultResponse,
     EnrichmentRequest,
+    ProteinCorrectionOptions,
     EnrichmentResultResponse,
     EnrichmentTerm,
     OraDirection,
@@ -51,6 +52,7 @@ from app.services.clustering_tools import (
     drop_incomplete_features,
     row_zscore,
 )
+from app.services.r_limma import moderated_t_pvalues
 from app.services.functions import (
     _significance_pval_column,
     constant_within_group,
@@ -60,7 +62,9 @@ from app.services.functions import (
     intensity_unit_label,
     anova_posthoc_data,
     extract_sample_id as _extract_id_or_number,
+    MODERATED_VARIANCE_MODELS,
     paired_sample_columns,
+    unpaired_samples_note,
     paired_t_test,
     effective_test_type,
     resolve_test_type,
@@ -74,6 +78,7 @@ from app.services.plot_styling import (
     advanced_label,
     advanced_number,
     advanced_optional_number,
+    _advanced_bool,
     advanced_plotly_layout,
     advanced_size,
     advanced_text,
@@ -87,8 +92,11 @@ from app.services.runtime_cache import apply_cached_wrappers
 from app.services.plotting_common import get_plt as _get_plt, get_plotly_go as _get_plotly, plotly_html as _plotly_html
 from app.services.stats_core import (
     bh_adjust as _bh_adjust,
+    match_sites_to_proteins,
     pooled_se_df,
+    protein_corrected_site_changes,
     satterthwaite as _satterthwaite,
+    split_tokens,
     two_sided_t_pvalues,
 )
 
@@ -262,12 +270,24 @@ def statistical_options(kind: AnnotationKind) -> StatisticalOptionsResponse:
         kind=kind,
         sourceUsed=source_used,
         imputedAvailable=_imputed_available(kind),
+        proteinCorrection=protein_correction_options(kind),
         availableConditions=conditions,
         samplesByCondition=samples_by_condition,
         pairIdsBySample=pair_ids_by_sample,
         availableIdentifiers=identifiers,
         warnings=warnings,
     )
+
+
+def protein_correction_options(kind: AnnotationKind) -> ProteinCorrectionOptions:
+    """Phosphosites only, and only the data sources both datasets hold."""
+    from app.services.analysis_matrix import DATA_SOURCES, data_source_availability
+
+    if kind != "phospho":
+        return ProteinCorrectionOptions()
+    phospho, protein = data_source_availability("phospho"), data_source_availability("protein")
+    shared = [source for source in DATA_SOURCES if phospho.get(source) and protein.get(source)]
+    return ProteinCorrectionOptions(available=bool(shared), dataSources=shared)
 
 
 def _clean_feature_name(value: object) -> str:
@@ -282,14 +302,12 @@ def _clean_feature_name(value: object) -> str:
 
 
 def _gene_tokens(value: object) -> list[str]:
-    if value is None or pd.isna(value):
+    """The members of a gene or protein-group cell: the shared `split_tokens`
+    rule (`;` or `,` separated, blanks and NaN empty), so the app, the pip
+    package and the R functions cut cells the same way (2026-10-22)."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
         return []
-    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
-        return []
-    text = str(value or "").strip()
-    if not text:
-        return []
-    return [token.strip() for token in text.split(";") if token.strip()]
+    return split_tokens(value)
 
 
 def _normalize_highlight_token(value: object) -> str:
@@ -351,7 +369,19 @@ def _volcano_dataframe(
     frame_override: pd.DataFrame | None = None,
     metadata_override: pd.DataFrame | None = None,
     untested_out: list | None = None,
+    protein_correction: bool = False,
+    protein_stats: pd.DataFrame | None = None,
 ) -> tuple[ResolvedSource, str, pd.DataFrame, list[str]]:
+    """The volcano table for one comparison.
+
+    `protein_correction` (phosphosites only) subtracts each site's protein
+    change: the protein matrix of the same package is tested with the same
+    settings (`protein_stats` when the caller has it already, for the notebook
+    replay), each site is matched to its protein by accession, and
+    log2FC, SE and p-value are replaced by the corrected ones; the uncorrected
+    values stay in `site_log2FC` / `site_pval`, unmatched sites keep theirs and
+    are flagged (`protein_matched`). See `_core.protein_corrected_site_changes`.
+    """
     if condition1 == condition2:
         raise ValueError("Please select two different conditions.")
     if frame_override is None and metadata_override is None:
@@ -379,6 +409,9 @@ def _volcano_dataframe(
     paired, variance = resolve_test_type(test_type)
     if paired:
         cols1, cols2 = paired_sample_columns(metadata, condition1, condition2)
+        note = unpaired_samples_note(metadata, condition1, condition2)
+        if note:
+            warnings = [*warnings, note]
 
     selected_columns = [label_column, *cols1, *cols2]
     has_control1 = bool(condition1_control)
@@ -410,6 +443,7 @@ def _volcano_dataframe(
         "GeneNames",
         "Gene_group",
         "ProteinNames",
+        "ProteinAccessions",
         "PTM_Collapse_key",
         "UPD_seq",
         "Protein_group",
@@ -481,10 +515,22 @@ def _volcano_dataframe(
     # "condition1 - condition2", so the number under them must agree.
     log2fc = mean1 - mean2
 
+    moderated = variance in MODERATED_VARIANCE_MODELS
+    if moderated and control_arrays:
+        raise ValueError("Moderated t-tests are not available for control-corrected comparisons.")
+    se = dof = None
     if paired:
         diffs = arr_x - arr_y
         mean_diff, n_diff, pvals = paired_t_test(diffs)
         log2fc = mean_diff
+        se = np.sqrt(np.nanvar(diffs, axis=1, ddof=1) / n_diff)
+        dof = n_diff - 1.0
+        if moderated:
+            # limma on the within-pair differences; the plain paired test above
+            # supplies the same mean difference and pair count, only p changes.
+            pvals, dof, se = moderated_t_pvalues(
+                diffs, 0, paired=True, robust=variance == "moderated_robust"
+            )[:3]
         if control_arrays:
             # Subtracting the control means shifts each row by a constant, so the
             # within-pair spread that paired_t_test sees is unchanged and the
@@ -497,7 +543,14 @@ def _volcano_dataframe(
     else:
         var1 = np.nanvar(arr_x, axis=1, ddof=1)
         var2 = np.nanvar(arr_y, axis=1, ddof=1)
-        if variance == "welch":
+        if moderated:
+            # limma's two-group fit over the whole matrix: every row's variance
+            # is shrunk towards one prior, which is why it needs all rows at once.
+            pvals, dof, se = moderated_t_pvalues(
+                np.concatenate([arr_x, arr_y], axis=1), arr_x.shape[1],
+                paired=False, robust=variance == "moderated_robust",
+            )[:3]
+        elif variance == "welch":
             # Unequal variances: no pooling, Welch-Satterthwaite degrees of
             # freedom. Controls simply add two more independent components.
             components = [(var1, n1), (var2, n2)]
@@ -508,7 +561,34 @@ def _volcano_dataframe(
             # turned "unpaired" into "unpaired_welch", because a pooled two-group
             # standard error would omit the control means' uncertainty.
             se, dof = pooled_se_df(var1, n1, var2, n2)
-        pvals = two_sided_t_pvalues(log2fc, se, dof)
+        if not moderated:
+            pvals = two_sided_t_pvalues(log2fc, se, dof)
+
+    site_log2fc, site_pvals, site_se, site_dof = log2fc, pvals, se, dof
+    protein_matched = None
+    if protein_correction:
+        if kind != "phospho":
+            raise ValueError("Protein correction applies to phosphosite comparisons only.")
+        if se is None:
+            raise ValueError("Protein correction needs a standard error for every site; this test gives none.")
+        if protein_stats is None:
+            protein_stats = protein_comparison_stats(
+                condition1=condition1, condition2=condition2, test_type=test_type, data_source=data_source,
+                condition1_control=condition1_control, condition2_control=condition2_control,
+            )
+        corrected = _apply_protein_correction(df, log2fc, se, dof, pvals, protein_stats)
+        log2fc, pvals, protein_matched, protein_ambiguous, protein_log2fc, protein_pvals, se, dof = corrected
+        unmatched = int((~protein_matched & ~protein_ambiguous).sum())
+        if unmatched:
+            warnings.append(
+                f"Protein correction: {unmatched:,} of {len(df):,} sites have no quantified protein "
+                "and keep their uncorrected change."
+            )
+        if int(protein_ambiguous.sum()):
+            warnings.append(
+                f"Protein correction: {int(protein_ambiguous.sum()):,} sites match more than one "
+                "protein group and keep their uncorrected change and p-value (protein_ambiguous)."
+            )
 
     no_variation = without_variation(
         [np.round(diffs, 9), *control_arrays] if paired else [arr_x, arr_y, *control_arrays]
@@ -533,6 +613,18 @@ def _volcano_dataframe(
     result["log2FC"] = log2fc
     result["pval"] = pvals
     result["adj_pval"] = adj_pvals
+    if se is not None:
+        result["se"] = se
+        result["dof"] = dof
+    if protein_matched is not None:
+        result["site_log2FC"] = site_log2fc
+        result["site_pval"] = site_pvals
+        result["site_se"] = site_se
+        result["site_dof"] = site_dof
+        result["protein_log2FC"] = protein_log2fc
+        result["protein_pval"] = protein_pvals
+        result["protein_matched"] = protein_matched
+        result["protein_ambiguous"] = protein_ambiguous
     result["selected_pval"] = selected_pvals
     result["correction"] = _correction_label(use_uncorrected)
     result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
@@ -546,6 +638,93 @@ def _volcano_dataframe(
     # Imputation counts go last, after the statistics they qualify.
     result = result[[c for c in result.columns if c not in imputed_columns] + imputed_columns]
     return source_used, label_column, result, warnings
+
+
+def protein_comparison_stats(
+    *, condition1: str, condition2: str, test_type: str, data_source: DataSource,
+    condition1_control: str | None = None, condition2_control: str | None = None,
+    package_name: str | None = None,
+) -> pd.DataFrame:
+    """The protein-level comparison a phosphosite correction subtracts.
+
+    The protein dataset of the same package (and active metadata profile) is
+    tested with the same conditions, test type and data source; the result
+    carries `log2FC`, `se`, `dof`, `pval` and the accession and gene columns a
+    site is matched against. Raises when no protein dataset is loaded or the
+    conditions do not exist in its metadata.
+    """
+    from app.services.annotation_store import get_annotation
+
+    annotation = get_annotation("protein", package_name=package_name)
+    if annotation is None:
+        raise ValueError("Protein correction needs a protein dataset with an annotation in this package.")
+    conditions = set(annotation.metadata["condition"].astype(str))
+    wanted = [c for c in (condition1, condition2, condition1_control, condition2_control) if c]
+    missing = [c for c in wanted if c not in conditions]
+    if missing:
+        raise ValueError(
+            "Protein correction needs the compared conditions in the protein metadata too; "
+            f"missing there: {', '.join(missing)}."
+        )
+    frame, metadata, _ = _protein_frame_for_correction(data_source, package_name)
+    _, _, table, _ = _volcano_dataframe(
+        kind="protein", condition1=condition1, condition2=condition2, identifier="workflow",
+        p_value_threshold=0.05, log2fc_threshold=0.0, test_type=test_type, use_uncorrected=True,
+        data_source=data_source, frame_override=frame, metadata_override=metadata,
+        condition1_control=condition1_control, condition2_control=condition2_control,
+    )
+    if "ProteinAccessions" not in table.columns:
+        raise ValueError("A protein accession column is required for protein correction.")
+    return table[["ProteinAccessions", "log2FC", "se", "dof", "pval"]].reset_index(drop=True)
+
+
+def _protein_frame_for_correction(data_source: DataSource, package_name: str | None):
+    """The protein matrix on the same footing as the phospho one.
+
+    The data source is mirrored exactly: an imputed site comparison is
+    corrected with the imputed protein comparison, a filtered one with the
+    filtered. A source the protein dataset does not have is refused rather
+    than substituted, so both sides of a corrected change always come from
+    the same processing step (the UI offers only the sources both have).
+    """
+    from app.services.analysis_matrix import data_source_availability
+
+    available = data_source_availability("protein")
+    if not available.get(data_source):
+        raise ValueError(
+            f"Protein correction: the protein dataset has no '{data_source}' matrix; "
+            "choose a data source both datasets have."
+        )
+    resolved, frame, metadata = select_matrix("protein", data_source)
+    return frame, metadata, resolved
+
+
+def _apply_protein_correction(df, log2fc, se, dof, pvals, protein_stats):
+    """Match sites to proteins by accession and correct.
+
+    Returns (fc, p, matched, ambiguous, protein fc, protein p, se, dof). An unmatched or ambiguous
+    site keeps its own fold change and p-value. Only `ProteinAccessions` is
+    consulted on the protein side -- never `ProteinNames`, whatever it holds --
+    and only `Protein_group` on the site side; a gene fallback would hide which
+    path a site took."""
+    if "Protein_group" not in df.columns:
+        raise ValueError("A protein accession column (Protein_group) is required on the phosphosite data for protein correction.")
+    if "ProteinAccessions" not in protein_stats.columns:
+        raise ValueError("A protein accession column is required for protein correction.")
+    site_accessions = df["Protein_group"].astype(str).tolist()
+    protein_tokens = [split_tokens(v) for v in protein_stats["ProteinAccessions"].tolist()]
+    index, ambiguous = match_sites_to_proteins(site_accessions, protein_tokens)
+    matched = index >= 0
+    safe = np.where(matched, index, 0)
+    p_fc = np.where(matched, protein_stats["log2FC"].to_numpy(dtype=float)[safe], np.nan)
+    p_se = np.where(matched, protein_stats["se"].to_numpy(dtype=float)[safe], np.nan)
+    p_dof = np.where(matched, protein_stats["dof"].to_numpy(dtype=float)[safe], np.nan)
+    p_p = np.where(matched, protein_stats["pval"].to_numpy(dtype=float)[safe], np.nan)
+    fc_adj, se_adj, dof_adj, p_adj = protein_corrected_site_changes(log2fc, se, dof, p_fc, p_se, p_dof)
+    fc_out = np.where(matched, fc_adj, np.asarray(log2fc, dtype=float))
+    p_out = np.where(matched, p_adj, np.asarray(pvals, dtype=float))
+    return (fc_out, p_out, matched, ambiguous, p_fc, p_p,
+            np.where(matched, se_adj, se), np.where(matched, dof_adj, dof))
 
 
 def _volcano_response(
@@ -585,6 +764,7 @@ def run_volcano(payload: VolcanoRequest) -> VolcanoResultResponse:
         use_uncorrected=payload.useUncorrected,
         data_source=payload.dataSource,
         untested_out=untested,
+        protein_correction=bool(getattr(payload, "proteinCorrection", False)),
     )
     return _volcano_response(payload.kind, source_used, label_column, df, warnings,
                              untested[0] if untested else None)
@@ -604,6 +784,7 @@ def run_volcano_control(payload: VolcanoControlRequest) -> VolcanoResultResponse
         data_source=payload.dataSource,
         condition1_control=payload.condition1Control,
         condition2_control=payload.condition2Control,
+        protein_correction=bool(getattr(payload, "proteinCorrection", False)),
         untested_out=untested,
     )
     return _volcano_response(payload.kind, source_used, label_column, df, warnings,
@@ -709,9 +890,18 @@ def _volcano_marker_style(
             "color": advanced_text(advanced, color_key) or palette[significance],
             "shape": resolve_marker_shape(advanced_text(advanced, "markerShape")),
         }
+    # The ring follows the general marker size until it is set on its own
+    # (setting the general size in the panel clears it, as for the classes);
+    # the default ring is a little larger than the default dot so it shows.
+    general_size = advanced_optional_number(advanced, "markerSize")
     style["_highlight"] = {
-        "size": advanced_size(advanced, "volcanoHighlightSize", 10.0),
+        "size": advanced_size(
+            advanced, "volcanoHighlightSize",
+            general_size + 4.0 if general_size is not None else 10.0,
+        ),
         "color": advanced_text(advanced, "volcanoHighlightColor") or "#22c55e",
+        "legend": _advanced_bool(advanced, "volcanoHighlightLegend", True),
+        "label": advanced_text(advanced, "volcanoHighlightLegendLabel") or "Highlighted",
     }
     return style
 
@@ -762,7 +952,12 @@ def _volcano_figure(
     condition1_control: str | None = None,
     condition2_control: str | None = None,
     advanced: dict | None = None,
+    highlight_outline: bool = True,
+    highlight_labels: bool = False,
 ):
+    """The interactive volcano. `highlight_labels` is accepted for parity with the
+    static figure and ignored: hovering a point names it."""
+    del highlight_labels
     go = _get_plotly()
     style = _volcano_marker_style(advanced, palette=VOLCANO_COLORS)
     color_mapping = {
@@ -771,7 +966,7 @@ def _volcano_figure(
     normalized_highlights = {_normalize_highlight_token(term) for term in highlight_terms if _normalize_highlight_token(term)}
 
     def is_highlighted(value: object) -> bool:
-        if not normalized_highlights:
+        if not normalized_highlights or not highlight_outline:
             return False
         return any(_normalize_highlight_token(token) in normalized_highlights for token in _gene_tokens(value))
 
@@ -830,7 +1025,7 @@ def _volcano_figure(
             continue
         subset["_hover"] = subset.apply(build_hover_text, axis=1)
         subset["highlighted"] = subset[label_column].apply(is_highlighted)
-        for highlighted, suffix in ((False, ""), (True, " (highlighted)")):
+        for highlighted, suffix in ((False, ""), (True, f" ({style['_highlight']['label']})")):
             part = subset[subset["highlighted"] == highlighted]
             if part.empty:
                 continue
@@ -855,6 +1050,7 @@ def _volcano_figure(
                     mode="markers",
                     marker=marker,
                     name=f"{significance}{suffix}",
+                    showlegend=bool(style["_highlight"]["legend"]) if highlighted else True,
                     text=part["_hover"],
                     hovertemplate="%{text}<br>log2FC=%{x:.3f}<br>-log10 p=%{y:.3f}<extra></extra>",
                 )
@@ -1000,6 +1196,8 @@ def _volcano_png_figure(
     dpi: int = 300,
     label_top_up: int = 0,
     label_top_down: int = 0,
+    highlight_outline: bool = True,
+    highlight_labels: bool = False,
 ):
     """The volcano as a figure for a paper rather than for a mouse.
 
@@ -1052,19 +1250,22 @@ def _volcano_png_figure(
             rasterized=True,
         )
 
+    # The highlight terms can draw a ring, a text label (placed like the top
+    # hits), both or neither; the ring may have its own legend entry and text.
+    picked = volcano_df.head(0)
     if normalized_highlights and label_column in volcano_df.columns:
         picked = volcano_df[volcano_df[label_column].apply(is_highlighted)]
-        if not picked.empty:
-            ax.scatter(
-                picked["log2FC"],
-                picked["neg_log10_selected_pval"],
-                s=marker_area(float(style["_highlight"]["size"])),
-                facecolors="none",
-                edgecolors=str(style["_highlight"]["color"]),
-                linewidths=1.2,
-                label="Highlighted",
-                zorder=4,
-            )
+    if highlight_outline and not picked.empty:
+        ax.scatter(
+            picked["log2FC"],
+            picked["neg_log10_selected_pval"],
+            s=marker_area(float(style["_highlight"]["size"])),
+            facecolors="none",
+            edgecolors=str(style["_highlight"]["color"]),
+            linewidths=1.2,
+            label=str(style["_highlight"]["label"]) if style["_highlight"]["legend"] else "_nolegend_",
+            zorder=4,
+        )
 
     y_line = float(-np.log10(max(p_value_threshold, 1e-300)))
     threshold_line = resolve_reference_line(advanced, color="#9ca3af", width=0.8)
@@ -1109,10 +1310,18 @@ def _volcano_png_figure(
     # display coordinates, and `tight_layout` moves the axes -- so labels chosen
     # before it are checked against positions the figure does not end up having,
     # and land on each other anyway.
+    hits = volcano_df.head(0)
     if label_top_up > 0 or label_top_down > 0:
         hits = _volcano_top_hits(
             volcano_df, label_column=label_column, up=label_top_up, down=label_top_down
         )
+    if highlight_labels and not picked.empty:
+        # The union, one label per feature: a highlighted gene that is also a
+        # top hit is labelled once (`_volcano_top_hits` resets the index, so
+        # the match is on the label itself).
+        extra = picked.loc[~picked[label_column].isin(hits[label_column])] if not hits.empty else picked
+        hits = pd.concat([hits, extra], ignore_index=True)
+    if not hits.empty:
         _place_volcano_labels(
             fig,
             ax,
@@ -1147,6 +1356,7 @@ def _volcano_inputs(payload: VolcanoRequest | VolcanoControlRequest) -> tuple[pd
         test_type=payload.testType,
         use_uncorrected=payload.useUncorrected,
         data_source=payload.dataSource,
+        protein_correction=bool(getattr(payload, "proteinCorrection", False)),
         **controls,
     )
     figure_arguments = {
@@ -1171,6 +1381,8 @@ def volcano_png(
     dpi: int = 300,
     label_top_up: int = 0,
     label_top_down: int = 0,
+    highlight_outline: bool = True,
+    highlight_labels: bool = False,
 ) -> bytes:
     """The volcano as a figure for print; a control request draws the control volcano."""
     df, figure_arguments = _volcano_inputs(payload)
@@ -1183,16 +1395,19 @@ def volcano_png(
         dpi=dpi,
         label_top_up=label_top_up,
         label_top_down=label_top_down,
+        highlight_outline=highlight_outline,
+        highlight_labels=highlight_labels,
     )
     return _to_png_bytes(fig, plt, dpi=dpi)
 
 
 def volcano_html(
-    payload: VolcanoRequest | VolcanoControlRequest, advanced: dict | None = None
+    payload: VolcanoRequest | VolcanoControlRequest, advanced: dict | None = None,
+    *, highlight_outline: bool = True,
 ) -> str:
     """The same volcano as the interactive page."""
     df, figure_arguments = _volcano_inputs(payload)
-    fig = _volcano_figure(df, **figure_arguments, advanced=advanced)
+    fig = _volcano_figure(df, **figure_arguments, advanced=advanced, highlight_outline=highlight_outline)
     fig.update_layout(**advanced_plotly_layout(advanced))
     return _plotly_html(fig)
 
@@ -1226,6 +1441,9 @@ def _anova_dataframe(
         )
 
     sample_cols = [col for cols in condition_cols.values() for col in cols]
+    pairing_warning = _anova_pairing_warning(metadata, sample_cols)
+    if pairing_warning:
+        warnings = [*warnings, pairing_warning]
     selected_columns = [label_column, *sample_cols]
     for extra in (
         "GeneNames",
@@ -1415,6 +1633,32 @@ def _condition_columns(metadata: pd.DataFrame, frame: pd.DataFrame) -> dict[str,
         ]
         for condition in conditions
     }
+
+
+def _anova_pairing_warning(metadata: pd.DataFrame, samples: list[str]) -> str | None:
+    """One line when pair IDs link the analysed samples across conditions.
+
+    The ANOVA is a one-way, independent-samples test; a pairing saved for the
+    volcano is not a blocking factor here and is silently ignored. This names how many IDs are shared so the user knows. None
+    when there is no `pair_id` column, or no ID spans two analysed conditions.
+    """
+    if "pair_id" not in metadata.columns or metadata.empty:
+        return None
+    frame = metadata.copy()
+    frame["sample"] = frame["sample"].astype(str)
+    frame = frame[frame["sample"].isin([str(sample) for sample in samples])]
+    frame["pair_id"] = frame["pair_id"].map(lambda value: "" if value is None or pd.isna(value) else str(value).strip())
+    frame = frame[frame["pair_id"] != ""]
+    if frame.empty:
+        return None
+    conditions_per_id = frame.groupby("pair_id")["condition"].nunique()
+    shared = int((conditions_per_id > 1).sum())
+    if shared == 0:
+        return None
+    return (
+        f"Pairing IDs link samples across conditions ({shared} shared ID(s)); the ANOVA treats "
+        "every sample as independent and ignores these links."
+    )
 
 
 def run_anova(payload: AnovaRequest) -> AnovaResultResponse:
@@ -1955,16 +2199,9 @@ def _different_genes(
     if gene_column not in df.columns:
         raise ValueError("A gene label column is required for enrichment analysis.")
 
-    split_groups = payload.kind == "phosprot" or gene_column == "Gene_group"
-    up_genes = _genes_from_values(
-        df.loc[df["significance"] == "Upregulated", gene_column].tolist(),
-        split_groups=split_groups,
-    )
-    down_genes = _genes_from_values(
-        df.loc[df["significance"] == "Downregulated", gene_column].tolist(),
-        split_groups=split_groups,
-    )
-    tested_genes = _genes_from_values(df[gene_column].tolist(), split_groups=split_groups)
+    up_genes = _genes_from_values(df.loc[df["significance"] == "Upregulated", gene_column].tolist())
+    down_genes = _genes_from_values(df.loc[df["significance"] == "Downregulated", gene_column].tolist())
+    tested_genes = _genes_from_values(df[gene_column].tolist())
     return source_used, up_genes, down_genes, tested_genes, warnings
 
 
@@ -2006,15 +2243,8 @@ def _anova_cluster_genes(
     if gene_column not in selected_df.columns:
         raise ValueError("A gene label column is required for enrichment analysis.")
 
-    split_groups = payload.kind == "phosprot" or gene_column == "Gene_group"
-    genes = _genes_from_values(
-        selected_df[gene_column].tolist(),
-        split_groups=split_groups,
-    )
-    tested_genes = _genes_from_values(
-        anova_df[gene_column].tolist(),
-        split_groups=split_groups,
-    )
+    genes = _genes_from_values(selected_df[gene_column].tolist())
+    tested_genes = _genes_from_values(anova_df[gene_column].tolist())
     return source_used, genes, tested_genes, warnings
 
 
@@ -2026,23 +2256,16 @@ def _validate_enrichment_kind(kind: AnnotationKind) -> None:
         )
 
 
-def _genes_from_values(values: list[object], *, split_groups: bool) -> list[str]:
-    if split_groups:
-        return sorted(
-            {
-                gene
-                for value in values
-                for gene in _gene_tokens(value)
-                if gene
-            }
-        )
-    return sorted(
-        {
-            gene
-            for value in values
-            if (gene := _clean_feature_name(value))
-        }
-    )
+def _genes_from_values(values: list[object]) -> list[str]:
+    """Every member of every value, once, sorted.
+
+    A protein group "A;B" used to contribute only "A":
+    hits and background were consistent with each other, but a group's other
+    members were silently absent from the universe. All members count now, for
+    every source (volcano, control volcano, ANOVA cluster, pasted lists) and in
+    the pip and R packages alike.
+    """
+    return sorted({gene for value in values for gene in _gene_tokens(value) if gene})
 
 
 def _prepare_ora_universe(
@@ -2290,14 +2513,9 @@ def run_enrichment_from_list(payload: ListEnrichmentRequest) -> ListEnrichmentRe
     if payload.minTermSize > payload.maxTermSize:
         raise ValueError("Minimum term size cannot be larger than maximum term size.")
 
-    cleaned_genes = sorted({_clean_feature_name(gene) for gene in payload.genes if _clean_feature_name(gene)})
-    cleaned_background = sorted(
-        {
-            _clean_feature_name(gene)
-            for gene in payload.backgroundGenes
-            if _clean_feature_name(gene)
-        }
-    )
+    # Pasted lists may hold "A;B" groups too: every member counts.
+    cleaned_genes = _genes_from_values(list(payload.genes))
+    cleaned_background = _genes_from_values(list(payload.backgroundGenes))
     if payload.backgroundMode == "experiment" and not cleaned_background:
         raise ValueError(
             "Provide the tested-gene background for experiment-specific ORA, "
@@ -2878,11 +3096,22 @@ def pathway_heatmap_png(
 
 def _simulation_dataframe(
     payload: SimulationRequest,
+    *,
+    frame_override: pd.DataFrame | None = None,
+    metadata_override: pd.DataFrame | None = None,
+    protein_stats: pd.DataFrame | None = None,
 ) -> tuple[ResolvedSource, str, pd.DataFrame, list[str]]:
-    source_used, frame, metadata, warnings = _stats_source(
-        payload.kind,
-        data_source=payload.dataSource,
-    )
+    """The projected volcano. With `proteinCorrection`, the protein dataset is
+    projected with the same sample size and variance settings and each site's
+    change is corrected for it (`_apply_protein_correction`), so at the
+    observed n the projection reproduces the corrected volcano."""
+    if frame_override is not None and metadata_override is not None:
+        source_used, frame, metadata, warnings = "data", frame_override, metadata_override, []
+    else:
+        source_used, frame, metadata, warnings = _stats_source(
+            payload.kind,
+            data_source=payload.dataSource,
+        )
     label_column = _resolve_label_column(payload.kind, payload.identifier, frame)
 
     cols1 = metadata.loc[metadata["condition"] == payload.condition1, "sample"].astype(str).tolist()
@@ -2895,7 +3124,10 @@ def _simulation_dataframe(
         "GeneNames",
         "Gene_group",
         "ProteinNames",
+        "ProteinAccessions",
         "PTM_Collapse_key",
+        "UPD_seq",
+        "Protein_group",
         "Phosphoprotein",
         "site_num",
         "PTM_Collapse_keys",
@@ -2942,6 +3174,26 @@ def _simulation_dataframe(
         se, degrees_freedom = pooled_se_df(var1, simulated_n1, var2, simulated_n2)
 
     pvals = two_sided_t_pvalues(log2fc, se, degrees_freedom)
+    protein_correction = bool(getattr(payload, "proteinCorrection", False)) and frame_override is None
+    if protein_correction:
+        if payload.kind != "phospho":
+            raise ValueError("Protein correction applies to phosphosite comparisons only.")
+        if protein_stats is None:
+            protein_stats = protein_projection_stats(payload)
+        corrected = _apply_protein_correction(data_filtered, log2fc, se, degrees_freedom, pvals, protein_stats)
+        site_log2fc, site_pvals, site_se, site_dof = log2fc, pvals, se, degrees_freedom
+        log2fc, pvals, protein_matched, protein_ambiguous, protein_log2fc, protein_pvals, se, degrees_freedom = corrected
+        unmatched = int((~protein_matched & ~protein_ambiguous).sum())
+        if unmatched:
+            warnings = [*warnings, (
+                f"Protein correction: {unmatched:,} of {len(data_filtered):,} sites have no quantified "
+                "protein and keep their uncorrected change."
+            )]
+        if int(protein_ambiguous.sum()):
+            warnings = [*warnings, (
+                f"Protein correction: {int(protein_ambiguous.sum()):,} sites match more than one "
+                "protein group and keep their uncorrected change and p-value (protein_ambiguous)."
+            )]
     # Rows without variation in either group have a standard error of zero at
     # every projected n: the projection keeps the plain t-test arithmetic, but
     # follows the volcano's rule for these rows -- no p-value, out of the BH
@@ -2977,9 +3229,43 @@ def _simulation_dataframe(
     result["observed_n_condition2"] = n2_real.astype(int)
     result["effective_n_condition1"] = simulated_n1.astype(int)
     result["effective_n_condition2"] = simulated_n2.astype(int)
+    result["se"] = se
+    result["dof"] = degrees_freedom
+    if protein_correction:
+        result["site_log2FC"] = site_log2fc
+        result["site_pval"] = site_pvals
+        result["site_se"] = site_se
+        result["site_dof"] = site_dof
+        result["protein_log2FC"] = protein_log2fc
+        result["protein_pval"] = protein_pvals
+        result["protein_matched"] = protein_matched
+        result["protein_ambiguous"] = protein_ambiguous
     result["neg_log10_selected_pval"] = _safe_neg_log10(selected_pvals)
     result["significance"] = significance
     return source_used, label_column, result, warnings
+
+
+def protein_projection_stats(payload: SimulationRequest, package_name: str | None = None) -> pd.DataFrame:
+    """The protein comparison projected like the sites (same n override and
+    variance multiplier), for the simulated volcano's protein correction."""
+    from app.services.annotation_store import get_annotation
+
+    annotation = get_annotation("protein", package_name=package_name)
+    if annotation is None:
+        raise ValueError("Protein correction needs a protein dataset with an annotation in this package.")
+    conditions = set(annotation.metadata["condition"].astype(str))
+    missing = [c for c in (payload.condition1, payload.condition2) if c not in conditions]
+    if missing:
+        raise ValueError(
+            "Protein correction needs the compared conditions in the protein metadata too; "
+            f"missing there: {', '.join(missing)}."
+        )
+    frame, metadata, _ = _protein_frame_for_correction(payload.dataSource, package_name)
+    protein_payload = payload.model_copy(update={"kind": "protein", "identifier": "workflow", "proteinCorrection": False})
+    _, _, table, _ = _simulation_dataframe(protein_payload, frame_override=frame, metadata_override=metadata)
+    if "ProteinAccessions" not in table.columns:
+        raise ValueError("A protein accession column is required for protein correction.")
+    return table[["ProteinAccessions", "log2FC", "se", "dof", "pval"]].reset_index(drop=True)
 
 
 def run_simulation(payload: SimulationRequest) -> SimulationResultResponse:

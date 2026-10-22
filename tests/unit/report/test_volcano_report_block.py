@@ -74,7 +74,7 @@ def counted(monkeypatch):
             lambda k: annotation if annotation is not None else _annotation(),
         )
         monkeypatch.setattr(
-            report, "volcano_html", lambda payload, advanced=None: "<div>plot</div>"
+            report, "volcano_html", lambda payload, advanced=None, **options: "<div>plot</div>"
         )
         return report._volcano_block_html(
             kind=kind, entries=[entry or _entry(kind=kind)], warnings=[]
@@ -160,7 +160,7 @@ def test_counts_failure_warns_and_still_renders_the_plot(monkeypatch) -> None:
     monkeypatch.setattr(report, "run_volcano", boom)
     monkeypatch.setattr(report, "get_annotation", lambda k: _annotation())
     monkeypatch.setattr(
-        report, "volcano_html", lambda payload, advanced=None: "<div>plot</div>"
+        report, "volcano_html", lambda payload, advanced=None, **options: "<div>plot</div>"
     )
     warnings: list[str] = []
     markup = report._volcano_block_html(
@@ -186,3 +186,12 @@ def test_entity_names_agree_with_the_ai_context_vocabulary() -> None:
 
     for kind, labels in ai_functions._COMPLETENESS_KIND_LABELS.items():
         assert entity_labels_for_kind(kind) == labels, kind
+
+
+def test_a_protein_corrected_comparison_states_the_correction() -> None:
+    plain = report._volcano_statistics_html(SummaryVolcanoEntry(kind="phospho", condition1="A", condition2="B"))
+    corrected = report._volcano_statistics_html(
+        SummaryVolcanoEntry(kind="phospho", condition1="A", condition2="B", proteinCorrection=True))
+    assert "corrected for protein abundance" not in plain
+    assert "Site changes are corrected for protein abundance" in corrected
+    assert "Satterthwaite" in corrected and "keep their uncorrected change" in corrected

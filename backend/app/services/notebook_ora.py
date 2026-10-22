@@ -108,12 +108,12 @@ def export_term_rows(result, request, direction):
         else:
             raise ValueError("Unsupported ORA upstream calculation.")
         select = "def select_queries(data, metadata, imputation_mask, settings):\n" + selection + '''
-    split_groups = settings['request']['kind'] == 'phosprot' or label == 'Gene_group'
-    return ({key: _genes_from_values(values, split_groups=split_groups) for key, values in queries.items()},
-            _genes_from_values(table[label].tolist(), split_groups=split_groups))
+    return ({key: _genes_from_values(values) for key, values in queries.items()},
+            _genes_from_values(table[label].tolist()))
 '''
         code = merge_source(code, scientific, select, function_definition(original, "_genes_from_values"),
-            function_definition(original, "_gene_tokens"), function_definition(original, "_clean_feature_name"))
+            function_definition(original, "_gene_tokens"), function_definition(module_source("_core.py"), "split_tokens"),
+            function_definition(original, "_clean_feature_name"))
         roots += ("select_queries",)
     return extract_notebook_source(code, roots)
 

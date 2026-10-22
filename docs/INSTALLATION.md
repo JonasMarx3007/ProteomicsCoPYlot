@@ -39,6 +39,15 @@ backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
 ### Reproducible dependency sets
 
 - `backend/requirements-runtime.lock` is the exact Python 3.13 production set used by the Docker image and audited by security CI.
+- `backend/requirements-runtime-hashed.lock` contains the same versions plus SHA-256 hashes
+  for their published PyPI artifacts. Docker and macOS release builds require these hashes
+  for packages downloaded by pip. Intel macOS installs Numba and llvmlite through Conda;
+  packages already installed by Conda are outside pip's hash verification. Source-archive
+  hashes verify the archive, not dependencies fetched by an isolated build environment.
+  After reviewing runtime version updates, run `python tools/hash_runtime_requirements.py`
+  and commit both lockfiles together. This records hashes without changing versions.
+  For macOS release dispatches, select a `source_commit` containing the hash lock;
+  historical commits without it cannot use the hash-enforcing installation step.
 - `backend/requirements.lock` is the exact Python 3.13 development and reference-test set. It contains the runtime set plus test and packaging tools.
 - `backend/requirements.txt` and `backend/requirements-dev.txt` retain bounded ranges for supported-version compatibility testing, including Python 3.11–3.12.
 
@@ -106,6 +115,9 @@ override, remote clients cannot call server-local path operations such as `table
 Restore uploads from remote or protected sessions ignore saved dataset paths and replacement
 `sourcePath` values and require the dataset files to be uploaded. No server path is probed or
 opened. Ordinary local desktop restoration keeps its existing path-based behavior.
+A dataset upload always stores the uploaded bytes on the server and uses that copy as the
+dataset's source; it accepts no client-supplied path. Saved-state fingerprints are computed
+for regular files only, never for devices, pipes or sockets.
 When a reverse proxy is used, configure `COPYLOT_TRUSTED_PROXY_IPS` so the backend can enforce
 this policy against the forwarded client address.
 
@@ -259,8 +271,8 @@ R session:
 
 ```r
 install.packages(c("arrow", "hexbin", "plotly", "readxl", "scatterplot3d", "VennDiagram"))
-# VSN normalization (optional) comes from Bioconductor:
-install.packages("BiocManager"); BiocManager::install("vsn")
+# VSN normalization and the moderated t-tests (optional) come from Bioconductor:
+install.packages("BiocManager"); BiocManager::install(c("vsn", "limma"))
 ```
 
 The exact versions the tests run against are in `tests/r/renv.lock`.
@@ -372,13 +384,26 @@ editing the Compose files:
   `COPYLOT_VIEWER_CPUS` (default `2.0`), and `COPYLOT_VIEWER_TMPFS_SIZE` (default `1g`).
 
 Regular save states retain absolute dataset paths so they can reopen data on the same machine.
+App-created temporary files are released when their last dataset is replaced or its session
+is discarded. Shared datasets, active file readers, and restore rollback snapshots retain
+their files. Original files opened by local path are not deleted. A regular save state that
+references a released upload will ask for that original file again; derived tables remain
+embedded in the save state. Startup cleanup removes crash leftovers older than seven days
+(configurable with `COPYLOT_TEMP_FILE_MAX_AGE_SECONDS`).
 Before sharing a state file or moving it to another system, use **Save Portable State**. Portable
 states omit those paths and prompt the user to supply the referenced dataset files during restore.
 
 For busy servers, tune the [work queues](ENVIRONMENT.md#work-queues) alongside
 container resources. Higher concurrency requires more memory.
 
-The login limiter ignores forwarded client addresses unless the direct reverse-proxy peer is
+Viewer passwords have a server-wide budget:
+at most two password checks at once and 30 admitted attempts per rolling minute by default.
+Excess attempts receive HTTP 429 with a `Retry-After` hint instead of waiting for a worker.
+Successful password checks also count toward this budget. Existing sessions and QR logins
+do not spend it. The three `COPYLOT_VIEWER_PASSWORD_*` settings in
+[Environment variables](ENVIRONMENT.md#deployment-and-access) tune these limits.
+
+The per-client login limiter trusts forwarded addresses only from the reverse-proxy peers
 listed in `COPYLOT_TRUSTED_PROXY_IPS` (single addresses or CIDR ranges, comma-separated). The
 Compose files default it to the Docker bridge range `172.16.0.0/12`, which is where a reverse
 proxy on the host appears from inside the container; without a trusted proxy every client

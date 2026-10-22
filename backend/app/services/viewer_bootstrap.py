@@ -379,6 +379,7 @@ def _bootstrap_annotation(
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
                 normalization=filter_config.normalization,
+                normalization_fit=filter_config.normalizationFit,
             )
             metadata_source = metadata_source_with_metadata
         else:
@@ -391,6 +392,7 @@ def _bootstrap_annotation(
                 filter_method=filter_config.method,
                 min_percentage=filter_config.minPercentage,
                 normalization=filter_config.normalization,
+                normalization_fit=filter_config.normalizationFit,
             )
             metadata_source = "auto" if computed.auto_detected else "manual"
 
@@ -677,12 +679,26 @@ def _filter_config(
                 f"Viewer config filter mode {mode_text!r} for {suffix} was not recognised; "
                 f"{mode} was used."
             )
+    fit_raw = (
+        _config_string(config, f"normalization_fit_{suffix}")
+        or _config_string(config, "normalization_fit")
+        or "filtered_rows"
+    )
+    normalization_fit = str(fit_raw).strip().lower()
+    if normalization_fit not in {"filtered_rows", "complete_features"}:
+        if warnings is not None and str(fit_raw).strip().lower() not in NOT_PROVIDED_VALUES:
+            warnings.append(
+                f"Viewer config normalization_fit {fit_raw!r} for {suffix} was not recognised; "
+                "'filtered_rows' was used."
+            )
+        normalization_fit = "filtered_rows"
     resolved = AnnotationFilterConfig(
         method=method,
         minPresent=min_present,
         minPercentage=min_percentage,
         mode=mode,
         normalization=normalization,
+        normalizationFit=normalization_fit,
     )
     return (
         phosprot_filter_config(resolved)

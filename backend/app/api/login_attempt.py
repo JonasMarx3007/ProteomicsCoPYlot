@@ -8,6 +8,7 @@ from typing import TypeVar
 from fastapi import HTTPException, Request
 
 from app.services.request_security import LoginRateLimit
+from app.services.viewer_login_limits import ViewerLoginCapacityError
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -31,6 +32,9 @@ def login_attempt(
     limit.enforce(request, bucket=bucket)
     try:
         result = authenticate()
+    except ViewerLoginCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": str(exc.retry_after)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except FileNotFoundError as exc:

@@ -3,11 +3,9 @@ import { AssistantInput, AssistantSelect } from "../../components/AssistantField
 import CheckboxField from "../../components/CheckboxField";
 import { collectColumns } from "../../lib/tableData";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { TEST_TYPE_VALUES, TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType } from "../../lib/statisticalTests";
+import { TEST_TYPE_LABELS, restoreTestType, CONTROL_TEST_TYPE_OPTIONS, controlTestType, useTestTypeOptions, availableTestType, PAIRED_TEST_TYPES } from "../../lib/statisticalTests";
 import type { ContextMode, StatsTestType, DataSource } from "../../lib/types";
-import {
-  dataSourceOptions,
-} from "../../lib/types";
+import { PROTEIN_CORRECTION_LABEL, useProteinCorrection } from "../../lib/proteinCorrection";
 import {
   getPhosphoOptions,
   getPhosphoTable,
@@ -73,8 +71,13 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   const [selectedTestType, setTestType] = useState<StatsTestType>(() =>
     restoreTestType(persisted.testType)
   );
-  const testType = sourceMode === "volcano_control" ? controlTestType(selectedTestType) : selectedTestType;
+  const { options: testTypeOptions, moderatedAvailable } = useTestTypeOptions();
+  const testType = sourceMode === "volcano_control"
+    ? controlTestType(selectedTestType)
+    : availableTestType(selectedTestType, moderatedAvailable);
   const [useUncorrected, setUseUncorrected] = useState(() => Boolean(persisted.useUncorrected ?? false));
+  const proteinCorrection = useProteinCorrection(
+    "phospho", options, persisted.proteinCorrection, dataSource, chooseDataSource);
   const [organism, setOrganism] = useState<KseaOrganism>(() =>
     KSEA_ORGANISM_VALUES.includes(persisted.organism as KseaOrganism) ? (persisted.organism as KseaOrganism) : "human"
   );
@@ -96,9 +99,11 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
   useEffect(() => {
     onContextModeChange?.({ kind: "phospho", source: sourceMode, dataSource,
       condition1, condition2, condition1Control, condition2Control, pValueThreshold,
-      log2fcThreshold, testType, useUncorrected, organism, externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken });
+      log2fcThreshold, testType, useUncorrected, proteinCorrection: proteinCorrection.active, organism,
+      externalPlotPresent: Boolean(volcanoHtml), externalEvidenceToken });
   }, [onContextModeChange, sourceMode, dataSource, condition1, condition2, condition1Control,
-    condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, organism, volcanoHtml, externalEvidenceToken]);
+    condition2Control, pValueThreshold, log2fcThreshold, testType, useUncorrected, proteinCorrection.active, organism,
+    volcanoHtml, externalEvidenceToken]);
 
   useEffect(() => {
     writePersistedUiState("phospho.ksea.v1", {
@@ -112,6 +117,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection: proteinCorrection.enabled,
       organism,
       volcanoPValueThreshold,
       volcanoHeader,
@@ -128,6 +134,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     log2fcThreshold,
     testType,
     useUncorrected,
+    proteinCorrection.enabled,
     organism,
     volcanoPValueThreshold,
     volcanoHeader,
@@ -202,6 +209,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
       log2fcThreshold,
       testType,
       useUncorrected,
+      proteinCorrection: proteinCorrection.active,
       organism,
     };
   }, [
@@ -216,6 +224,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
     log2fcThreshold,
     testType,
     useUncorrected,
+    proteinCorrection.active,
     organism,
   ]);
   const debouncedTableRequest = useDebouncedValue(tableRequest, 650);
@@ -363,7 +372,7 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                   onChange={(event) => chooseDataSource(event.target.value as DataSource)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 outline-none focus:border-slate-900"
                 >
-                  {dataSourceOptions(options).map((option) => (
+                  {proteinCorrection.dataSourceOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -435,12 +444,12 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
               <SelectField
                 label="Test Type"
                 value={testType}
-                options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS.map(({ value }) => value) : TEST_TYPE_VALUES}
+                options={sourceMode === "volcano_control" ? CONTROL_TEST_TYPE_OPTIONS.map(({ value }) => value) : testTypeOptions.map(({ value }) => value)}
                 labels={sourceMode === "volcano_control" ? Object.fromEntries(CONTROL_TEST_TYPE_OPTIONS.map(({ value, label }) => [value, label])) : TEST_TYPE_LABELS}
                 onChange={(value) => setTestType(value as StatsTestType)}
               />
             </div>
-            {testType === "paired" ? (
+            {PAIRED_TEST_TYPES.includes(testType) ? (
               <PairingEditor
                 kind="phospho"
                 condition1={condition1}
@@ -456,6 +465,13 @@ export default function KseaPage({ advancedPlotOptions, onContextModeChange }: P
                 checked={useUncorrected}
                 onChange={setUseUncorrected}
               />
+              {proteinCorrection.offered ? (
+                <CheckboxField
+                  label={PROTEIN_CORRECTION_LABEL}
+                  checked={proteinCorrection.enabled}
+                  onChange={proteinCorrection.setEnabled}
+                />
+              ) : null}
             </div>
             {!validSelection ? (
               <InfoNotice
