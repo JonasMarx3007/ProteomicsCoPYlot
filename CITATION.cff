@@ -4,7 +4,7 @@ title: "Proteomics CoPYlot"
 type: "software"
 version: "1.0.0b1"
 license: "GPL-3.0-only"
-repository-code: "https://github.com/JonasMarx3007/ProteomicsCoPYlot"
+repository-code: "https://github.com/proteomics-ukj/ProteomicsCoPYlot"
 authors:
   - family-names: "Marx"
     given-names: "Jonas"

@@ -30,7 +30,7 @@ function licensesHtml(dev: boolean): string {
   const thirdParty = dev
     ? "Frontend third-party licences (listed in the production build)"
     : '<a href="THIRD_PARTY_LICENSES.md">Frontend third-party licences</a>';
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CoPYlot licences</title><body><h1>CoPYlot licences</h1><p>${thirdParty} | <a href="https://github.com/JonasMarx3007/ProteomicsCoPYlot">Source code</a></p><pre style="white-space:pre-wrap">${escape(notice)}\n${escape(license)}</pre></body></html>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CoPYlot licences</title><body><h1>CoPYlot licences</h1><p>${thirdParty} | <a href="https://github.com/proteomics-ukj/ProteomicsCoPYlot">Source code</a></p><pre style="white-space:pre-wrap">${escape(notice)}\n${escape(license)}</pre></body></html>`;
 }
 
 function licensesOnDevServer(): Plugin {

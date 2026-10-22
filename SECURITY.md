@@ -15,7 +15,7 @@ branches.
 Please do not open a public issue for a security problem.
 
 Report it privately through GitHub: go to the
-[Security tab](https://github.com/JonasMarx3007/ProteomicsCoPYlot/security/advisories/new)
+[Security tab](https://github.com/proteomics-ukj/ProteomicsCoPYlot/security/advisories/new)
 and choose "Report a vulnerability". That opens a private advisory visible only
 to the maintainers.
 
