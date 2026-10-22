@@ -1,6 +1,6 @@
 # Architecture
 
-Explore the [interactive architecture](https://jonasmarx3007.github.io/ProteomicsCoPYlot/) to see how frontend features, API routes and Python services connect.
+Explore the [interactive architecture](https://proteomics-ukj.github.io/ProteomicsCoPYlot/) to see how frontend features, API routes and Python services connect.
 
 ## Runtime flow
 

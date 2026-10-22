@@ -3,8 +3,8 @@
   Proteomics CoPYlot
 </h1>
 
-[![tests](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/tests.yml/badge.svg)](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/tests.yml)
-[![cross-implementation](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml/badge.svg)](https://github.com/JonasMarx3007/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml)
+[![tests](https://github.com/proteomics-ukj/ProteomicsCoPYlot/actions/workflows/tests.yml/badge.svg)](https://github.com/proteomics-ukj/ProteomicsCoPYlot/actions/workflows/tests.yml)
+[![cross-implementation](https://github.com/proteomics-ukj/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml/badge.svg)](https://github.com/proteomics-ukj/ProteomicsCoPYlot/actions/workflows/cross-implementation.yml)
 
 Proteomics CoPYlot is a React and FastAPI application for proteomics and phosphoproteomics analysis, visualization, reporting, and read-only dataset sharing. It also provides notebook-facing Python and R helpers.
 
@@ -27,7 +27,7 @@ The tests are two-group comparisons (pooled or Welch t, paired t on matched samp
 ## Download and run
 
 Download the complete ZIP for your computer from
-[GitHub Releases](https://github.com/JonasMarx3007/ProteomicsCoPYlot/releases),
+[GitHub Releases](https://github.com/proteomics-ukj/ProteomicsCoPYlot/releases),
 including releases marked **Pre-release** during the beta. Choose the standard
 edition or the **AI** edition for the optional chat features, then extract the ZIP.
 These application downloads include Python; no separate Python installation is needed.
@@ -76,7 +76,7 @@ On macOS and Linux, the same launchers are in `packaging/unix/` (for example `ba
 
 See [Installation, Running, and Packaging](docs/INSTALLATION.md) (and [Environment variables](docs/ENVIRONMENT.md)) for every supported platform, AI variants, production launch, Docker, viewer portals, and executable/package builds.
 
-For code navigation, explore the [interactive architecture](https://jonasmarx3007.github.io/ProteomicsCoPYlot/).
+For code navigation, explore the [interactive architecture](https://proteomics-ukj.github.io/ProteomicsCoPYlot/).
 
 ## Application modes
 
